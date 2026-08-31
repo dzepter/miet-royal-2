@@ -26,6 +26,7 @@
     "test:e2e": "pnpm --filter @mietroyal/e2e test:e2e",
     "db:generate": "pnpm --filter @mietroyal/database db:generate",
     "db:migrate": "pnpm --filter @mietroyal/database db:migrate",
+    "db:migrate:dev": "APP_ENV=development pnpm --filter @mietroyal/database db:migrate",
     "worker": "pnpm --filter @mietroyal/worker start",
     "api": "pnpm --filter @mietroyal/api start",
     "infra:up": "docker compose -f infra/docker-compose.yml up -d --wait",

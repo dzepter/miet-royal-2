@@ -20,8 +20,11 @@ Framework-Optimierungen, `APP_ENV` die fachliche Umgebung.
   Variablennamen nennt (nie Werte).
 - Echte Secrets niemals ins Repository oder in Chat-Prompts – nur als
   Umgebungsvariablen/Secrets auf dem Zielsystem.
-- `.env`-Dateien sind gitignored; committet ist nur `.env.example`
-  (Variablennamen ohne Werte).
+- Backend-Prozesse (API, Worker, Migrationen) lesen ausschließlich echte
+  Prozess-Umgebungsvariablen; eine `.env`-Datei wird **nicht** automatisch
+  geladen (bewusste Entscheidung, siehe TECH_DECISIONS.md). `.env.example`
+  ist eine Referenzliste der Variablennamen; `.env`-Dateien sind gitignored
+  und werden nur vom Isolations-Check explizit als Dateien eingelesen.
 
 ## Variablen
 
@@ -41,10 +44,15 @@ gehörenden `STORAGE_*`-Variablen). Optional mit Defaults: `API_HOST` (127.0.0.1
 | `mietroyal_test` | Integrationstests (`TEST_DATABASE_URL`)     |
 | `mietroyal_demo` | Lokale Demo-Experimente        |
 
-Lokale Verbindungsdaten (kein Geheimnis, nur Docker-lokal):
+Lokale Verbindungsdaten (kein Geheimnis, nur Docker-lokal; der Port ist
+ausschließlich an 127.0.0.1 gebunden):
 `postgresql://mietroyal:mietroyal_local_dev@localhost:55432/<datenbank>`
 
-Ohne `.env`-Datei startet development mit genau diesen Werten.
+Die Dev-Kommandos (`pnpm dev`, `pnpm db:migrate:dev`) setzen
+`APP_ENV=development` selbst; nur in dieser Umgebung greifen die obigen
+Defaults automatisch. Wer API/Worker einzeln mit `pnpm api`/`pnpm worker`
+startet, setzt `APP_ENV=development` (bzw. die vollständige Serverkonfiguration)
+explizit in der Shell.
 
 ## Isolation prüfen (produktionsnaher Check)
 

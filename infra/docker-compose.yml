@@ -9,7 +9,9 @@ services:
       POSTGRES_PASSWORD: mietroyal_local_dev
       POSTGRES_DB: mietroyal_dev
     ports:
-      - '55432:5432'
+      # Nur Loopback: die lokale Dev-Datenbank (mit committetem lokalen
+      # Passwort) darf nicht aus dem Netzwerk erreichbar sein.
+      - '127.0.0.1:55432:5432'
     volumes:
       - postgres-data:/var/lib/postgresql
       - ./postgres-init:/docker-entrypoint-initdb.d:ro

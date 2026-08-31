@@ -16,9 +16,16 @@ const noopLogger: JobRunnerLogger = {
 };
 
 /**
- * Verarbeitet Jobs aus einer JobQueue: pro Tick werden fällige Jobs
- * nacheinander beansprucht und ausgeführt, bis die Queue leer ist.
- * Fehler eines Jobs beenden den Runner nie – sie führen zu Retry oder "dead".
+ * Verarbeitet Jobs aus einer JobQueue: pro Tick werden zuerst verwaiste
+ * Jobs (abgelaufene Leases nach Worker-Absturz) wieder freigegeben, danach
+ * fällige Jobs nacheinander beansprucht und ausgeführt, bis die Queue leer
+ * ist. Fehler eines Jobs beenden den Runner nie – sie führen zu Retry oder
+ * "dead".
+ *
+ * Lebenszyklus: start() → stop(). Ein Runner kann nach vollständig
+ * abgeschlossenem stop() erneut gestartet werden; start() während eines noch
+ * laufenden Betriebs oder eines noch nicht abgeschlossenen stop() ist ein
+ * Programmierfehler und wirft, damit nie zwei Poll-Schleifen parallel laufen.
  */
 export class JobRunner {
   private readonly queue: JobQueue;
@@ -27,6 +34,7 @@ export class JobRunner {
   private readonly handlers = new Map<string, JobHandler>();
   private timer: NodeJS.Timeout | undefined;
   private stopped = true;
+  private stopInFlight: Promise<void> | undefined;
   private activeTick: Promise<void> = Promise.resolve();
 
   constructor(queue: JobQueue, workerId: string, logger: JobRunnerLogger = noopLogger) {
@@ -81,13 +89,30 @@ export class JobRunner {
     }
   }
 
+  /** Ein vollständiger Poll-Tick: Crash-Recovery, dann Verarbeitung. */
+  private async runTick(): Promise<void> {
+    const { reclaimed, died } = await this.queue.reclaimExpired();
+    if (reclaimed > 0 || died > 0) {
+      this.logger.warn(
+        { reclaimed, died },
+        'Verwaiste Jobs mit abgelaufener Lease freigegeben (Worker-Absturz?)',
+      );
+    }
+    await this.drain();
+  }
+
   start(pollIntervalMs: number): void {
-    if (!this.stopped) return;
+    if (!this.stopped) {
+      throw new Error('JobRunner läuft bereits');
+    }
+    if (this.stopInFlight !== undefined) {
+      throw new Error('JobRunner stoppt gerade – stop() erst abwarten');
+    }
     this.stopped = false;
 
     const tick = (): void => {
       if (this.stopped) return;
-      this.activeTick = this.drain()
+      this.activeTick = this.runTick()
         .catch((error: unknown) => {
           // Nur Infrastrukturfehler (z. B. DB weg) landen hier; Jobfehler
           // behandelt runOnce selbst. Runner läuft weiter und versucht es
@@ -107,8 +132,16 @@ export class JobRunner {
   }
 
   async stop(): Promise<void> {
+    if (this.stopped) {
+      // Bereits gestoppt bzw. Stop eines anderen Aufrufers noch im Gange.
+      await (this.stopInFlight ?? Promise.resolve());
+      return;
+    }
     this.stopped = true;
     if (this.timer !== undefined) clearTimeout(this.timer);
-    await this.activeTick;
+    this.stopInFlight = this.activeTick.finally(() => {
+      this.stopInFlight = undefined;
+    });
+    await this.stopInFlight;
   }
 }

@@ -14,7 +14,13 @@ nur, was die Foundation bereits festlegt.
 | Staff   | `pnpm --filter @mietroyal/staff build && … start` | Mitarbeiter-App (Next.js).      |
 
 Alle Prozesse werden über einen Prozessmanager (z. B. systemd) mit den
-Umgebungsvariablen der jeweiligen Umgebung betrieben. API und Worker laufen in
+Umgebungsvariablen der jeweiligen Umgebung betrieben (kein `.env`-Autoloading,
+siehe TECH_DECISIONS.md).
+
+Worker-Hinweis: Die Jobqueue arbeitet **at-least-once** mit Lease-basierter
+Crash-Recovery (Default 5 min, `PostgresJobQueueOptions.leaseMs`). Mehrere
+Worker-Instanzen sind sicher (SKIP LOCKED); Job-Handler müssen idempotent
+sein, und die Lease muss deutlich über der längsten Job-Laufzeit liegen. API und Worker laufen in
 Phase 0 über tsx direkt aus TypeScript; falls später ein kompilierter Build
 gewünscht ist, wird das als eigene Entscheidung in TECH_DECISIONS.md ergänzt.
 

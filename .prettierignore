@@ -7,6 +7,9 @@ test-results
 pnpm-lock.yaml
 packages/database/migrations
 
+# Von Next.js generiert (nutzt eigene Formatierung, wird ständig neu erzeugt)
+**/next-env.d.ts
+
 # Spezifikationspaket nicht umformatieren (Fachdokumente bleiben unverändert)
 CLAUDE.md
 docs/

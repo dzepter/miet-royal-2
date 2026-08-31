@@ -19,10 +19,13 @@ import {
  *
  * Statusmodell:
  *  - pending:    wartet auf Ausführung (run_at erreicht oder in Zukunft)
- *  - processing: von einem Worker beansprucht
+ *  - processing: von einem Worker beansprucht, Lease läuft (lease_expires_at)
  *  - succeeded:  erfolgreich abgeschlossen
  *  - dead:       maximale Versuche erschöpft, manuelle Klärung nötig
  * Ein fehlgeschlagener Versuch geht mit Backoff zurück auf pending.
+ * Stirbt ein Worker während der Verarbeitung, läuft die Lease ab und der
+ * Reclaim-Mechanismus (PostgresJobQueue.reclaimExpired) gibt den Job wieder
+ * frei bzw. setzt ihn auf dead, wenn die Versuche erschöpft sind.
  */
 export const integrationJobStatus = pgEnum('integration_job_status', [
   'pending',
@@ -48,6 +51,7 @@ export const integrationJobs = pgTable(
     runAt: timestamp('run_at', { withTimezone: true }).notNull().defaultNow(),
     lockedAt: timestamp('locked_at', { withTimezone: true }),
     lockedBy: text('locked_by'),
+    leaseExpiresAt: timestamp('lease_expires_at', { withTimezone: true }),
     lastError: text('last_error'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),

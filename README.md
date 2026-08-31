@@ -22,12 +22,16 @@ Noch keine Fachfunktionen.
 ```bash
 pnpm install        # Abhängigkeiten
 pnpm infra:up       # PostgreSQL 18 (Datenbanken: dev/test/demo)
-pnpm db:migrate     # versionierte Migrationen anwenden
+pnpm db:migrate:dev # versionierte Migrationen auf die lokale Dev-DB anwenden
 pnpm dev            # alle Apps im Watch-Modus
 ```
 
-Ohne `.env`-Datei läuft `APP_ENV=development` mit sicheren lokalen Defaults
-(siehe `docs/ENVIRONMENTS.md`). Danach:
+Diese vier Befehle funktionieren auf einem frischen Checkout ohne weitere
+Konfiguration: Die Entwicklungs-Kommandos (`pnpm dev`, `pnpm db:migrate:dev`)
+setzen selbst `APP_ENV=development`, und nur in dieser Umgebung greifen sichere
+lokale Defaults (passend zu `infra/docker-compose.yml`). Für staging/demo/
+production gibt es keine Defaults – dort müssen alle Variablen explizit gesetzt
+sein, sonst bricht der Start ab (siehe `docs/ENVIRONMENTS.md`). Danach:
 
 - Web: http://localhost:3000
 - Staff: http://localhost:3002
@@ -35,22 +39,23 @@ Ohne `.env`-Datei läuft `APP_ENV=development` mit sicheren lokalen Defaults
 
 ## Kommandos (Repo-Wurzel)
 
-| Kommando                               | Zweck                                                              |
-| -------------------------------------- | ------------------------------------------------------------------ |
-| `pnpm install`                         | Abhängigkeiten installieren                                        |
-| `pnpm dev`                             | Alle Apps parallel im Watch-Modus                                  |
-| `pnpm build`                           | Produktionsbuilds (Next-Apps)                                      |
-| `pnpm lint` / `lint:fix`               | ESLint                                                             |
-| `pnpm format` / `format:check`         | Prettier                                                           |
-| `pnpm typecheck`                       | `tsc --noEmit` über alle Pakete                                    |
-| `pnpm test`                            | Unit-Tests (ohne Infrastruktur lauffähig)                          |
-| `pnpm test:integration`                | Integrationstests gegen echtes PostgreSQL (`pnpm infra:up` zuerst) |
-| `pnpm test:e2e`                        | Playwright-E2E (startet Web + API auf Ports 3100/3101)             |
-| `pnpm db:generate`                     | Neue SQL-Migration aus Schemaänderung erzeugen                     |
-| `pnpm db:migrate`                      | Migrationen anwenden (`DATABASE_URL`/`APP_ENV` aus Umgebung)       |
-| `pnpm api` / `pnpm worker`             | API bzw. Worker einzeln starten                                    |
-| `pnpm infra:up` / `infra:down`         | Lokale Infrastruktur (PostgreSQL) starten/stoppen                  |
-| `pnpm check:env-isolation a.env b.env` | Prüft, dass zwei Umgebungen DB/Storage/Secrets nicht teilen        |
+| Kommando                               | Zweck                                                                            |
+| -------------------------------------- | -------------------------------------------------------------------------------- |
+| `pnpm install`                         | Abhängigkeiten installieren                                                      |
+| `pnpm dev`                             | Alle Apps parallel im Watch-Modus                                                |
+| `pnpm build`                           | Produktionsbuilds (Next-Apps)                                                    |
+| `pnpm lint` / `lint:fix`               | ESLint                                                                           |
+| `pnpm format` / `format:check`         | Prettier                                                                         |
+| `pnpm typecheck`                       | `tsc --noEmit` über alle Pakete                                                  |
+| `pnpm test`                            | Unit-Tests (ohne Infrastruktur lauffähig)                                        |
+| `pnpm test:integration`                | Integrationstests gegen echtes PostgreSQL (`pnpm infra:up` zuerst)               |
+| `pnpm test:e2e`                        | Playwright-E2E (startet Web + API auf Ports 3100/3101)                           |
+| `pnpm db:generate`                     | Neue SQL-Migration aus Schemaänderung erzeugen                                   |
+| `pnpm db:migrate`                      | Migrationen anwenden (`APP_ENV`/`DATABASE_URL` müssen gesetzt sein – für Server) |
+| `pnpm db:migrate:dev`                  | Migrationen auf die lokale Entwicklungs-DB anwenden                              |
+| `pnpm api` / `pnpm worker`             | API bzw. Worker einzeln starten                                                  |
+| `pnpm infra:up` / `infra:down`         | Lokale Infrastruktur (PostgreSQL) starten/stoppen                                |
+| `pnpm check:env-isolation a.env b.env` | Prüft, dass zwei Umgebungen DB/Storage/Secrets nicht teilen                      |
 
 Hinweis E2E: In Umgebungen mit vorinstalliertem Chromium
 `CHROMIUM_PATH=/pfad/zur/chromium pnpm test:e2e`; sonst einmalig

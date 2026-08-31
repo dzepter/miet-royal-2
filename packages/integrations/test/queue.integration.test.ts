@@ -154,3 +154,113 @@ describe('PostgresJobQueue (echte Datenbank)', () => {
     expect(await runner.runOnce()).toBe('idle');
   });
 });
+
+describe('Crash-Recovery über Leases (echte Datenbank)', () => {
+  it('Worker A claimt, stirbt, Lease läuft ab, Worker B kann den Job reclaimen', async () => {
+    const queue = new PostgresJobQueue(pool, { leaseMs: 40 });
+    const { jobId } = await queue.enqueue('test.crash', {}, { idempotencyKey: 'crash-1' });
+
+    const claimedByA = await queue.claimNext('worker-a');
+    expect(claimedByA?.id).toBe(jobId);
+    // Worker A "stirbt": kein markSucceeded/markFailed. Lease ablaufen lassen.
+    await sleep(80);
+
+    const reclaim = await queue.reclaimExpired();
+    expect(reclaim).toEqual({ reclaimed: 1, died: 0 });
+
+    const claimedByB = await queue.claimNext('worker-b');
+    expect(claimedByB?.id).toBe(jobId);
+    expect(claimedByB?.attempts).toBe(2);
+    await queue.markSucceeded(claimedByB!);
+
+    const row = await fetchJob(jobId);
+    expect(row.status).toBe('succeeded');
+  });
+
+  it('ein noch gültig gelockter Job wird weder reclaimt noch von Worker B übernommen', async () => {
+    const queue = new PostgresJobQueue(pool, { leaseMs: 60_000 });
+    const { jobId } = await queue.enqueue('test.locked', {}, { idempotencyKey: 'locked-1' });
+
+    const claimedByA = await queue.claimNext('worker-a');
+    expect(claimedByA?.id).toBe(jobId);
+
+    expect(await queue.reclaimExpired()).toEqual({ reclaimed: 0, died: 0 });
+    expect(await queue.claimNext('worker-b')).toBeNull();
+
+    const row = await fetchJob(jobId);
+    expect(row.status).toBe('processing');
+    expect(row.locked_by).toBe('worker-a');
+  });
+
+  it('zwei Worker claimen gleichzeitig – kein Job wird doppelt vergeben', async () => {
+    const queue = new PostgresJobQueue(pool);
+    const total = 12;
+    for (let i = 0; i < total; i += 1) {
+      await queue.enqueue('test.parallel', { i }, { idempotencyKey: `parallel-${i}` });
+    }
+
+    // Beide Worker claimen gleichzeitig in Schleifen, bis die Queue leer ist.
+    const claimAll = async (workerId: string): Promise<string[]> => {
+      const ids: string[] = [];
+      while (true) {
+        const job = await queue.claimNext(workerId);
+        if (job === null) return ids;
+        ids.push(job.id);
+      }
+    };
+    const [byA, byB] = await Promise.all([claimAll('worker-a'), claimAll('worker-b')]);
+
+    const allIds = [...byA, ...byB];
+    expect(allIds.length).toBe(total);
+    expect(new Set(allIds).size).toBe(total); // keine Doppelvergabe
+  });
+
+  it('maxAttempts wird auch über Reclaims hinweg respektiert (dead nach letztem Crash)', async () => {
+    const queue = new PostgresJobQueue(pool, { leaseMs: 30 });
+    const { jobId } = await queue.enqueue(
+      'test.crash-loop',
+      {},
+      { idempotencyKey: 'crash-loop-1', maxAttempts: 2 },
+    );
+
+    expect((await queue.claimNext('worker-a'))?.attempts).toBe(1); // Versuch 1, Crash
+    await sleep(60);
+    expect(await queue.reclaimExpired()).toEqual({ reclaimed: 1, died: 0 });
+
+    expect((await queue.claimNext('worker-b'))?.attempts).toBe(2); // Versuch 2, Crash
+    await sleep(60);
+    expect(await queue.reclaimExpired()).toEqual({ reclaimed: 0, died: 1 });
+
+    const row = await fetchJob(jobId);
+    expect(row.status).toBe('dead');
+    expect(row.attempts).toBe(2);
+    expect(String(row.last_error)).toContain('Lease abgelaufen');
+    expect(await queue.claimNext('worker-c')).toBeNull();
+  });
+
+  it('Zombie-Worker kann einen reclaimten, neu vergebenen Job nicht mehr verändern', async () => {
+    const queue = new PostgresJobQueue(pool, { leaseMs: 40 });
+    const { jobId } = await queue.enqueue('test.zombie', {}, { idempotencyKey: 'zombie-1' });
+
+    const staleClaim = await queue.claimNext('worker-a');
+    await sleep(80);
+    await queue.reclaimExpired();
+    const freshClaim = await queue.claimNext('worker-b');
+    expect(freshClaim?.id).toBe(jobId);
+
+    // Der totgeglaubte Worker A meldet sich zurück – beides muss wirkungslos sein.
+    await queue.markSucceeded(staleClaim!);
+    let row = await fetchJob(jobId);
+    expect(row.status).toBe('processing');
+    expect(row.locked_by).toBe('worker-b');
+
+    await queue.markFailed(staleClaim!, 'später Fehler des Zombies');
+    row = await fetchJob(jobId);
+    expect(row.status).toBe('processing');
+    expect(row.locked_by).toBe('worker-b');
+
+    await queue.markSucceeded(freshClaim!);
+    row = await fetchJob(jobId);
+    expect(row.status).toBe('succeeded');
+  });
+});
