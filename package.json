@@ -1,0 +1,44 @@
+{
+  "name": "mietroyal",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Miet-Royal 2.0 – Vermietungssystem (Monorepo)",
+  "engines": {
+    "node": ">=22.12.0",
+    "pnpm": ">=10.0.0"
+  },
+  "packageManager": "pnpm@10.33.0",
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
+  },
+  "scripts": {
+    "dev": "pnpm -r --parallel --if-present dev",
+    "build": "pnpm -r --if-present build",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "typecheck": "pnpm -r --if-present typecheck",
+    "test": "pnpm -r --if-present test",
+    "test:integration": "pnpm -r --if-present test:integration",
+    "test:e2e": "pnpm --filter @mietroyal/e2e test:e2e",
+    "db:generate": "pnpm --filter @mietroyal/database db:generate",
+    "db:migrate": "pnpm --filter @mietroyal/database db:migrate",
+    "worker": "pnpm --filter @mietroyal/worker start",
+    "api": "pnpm --filter @mietroyal/api start",
+    "infra:up": "docker compose -f infra/docker-compose.yml up -d --wait",
+    "infra:down": "docker compose -f infra/docker-compose.yml down",
+    "check:env-isolation": "pnpm --filter @mietroyal/config check:env-isolation"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@types/node": "26.4.0",
+    "eslint": "10.9.1",
+    "eslint-config-prettier": "10.1.8",
+    "prettier": "3.9.6",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.69.0"
+  }
+}

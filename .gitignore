@@ -1,0 +1,27 @@
+# Dependencies
+node_modules/
+
+# Builds
+dist/
+.next/
+out/
+
+# Environment files – nur .env.example wird committet
+.env
+.env.*
+!.env.example
+
+# Test artifacts
+coverage/
+playwright-report/
+test-results/
+
+# Local storage driver (Entwicklung)
+.storage/
+
+# Editor / OS
+.DS_Store
+*.log
+
+# TypeScript incremental build info
+*.tsbuildinfo

@@ -1,0 +1,21 @@
+{
+  "name": "@mietroyal/worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/main.ts",
+    "start": "tsx src/main.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@mietroyal/config": "workspace:*",
+    "@mietroyal/database": "workspace:*",
+    "@mietroyal/integrations": "workspace:*",
+    "pino": "10.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "26.4.0",
+    "tsx": "4.23.13"
+  }
+}

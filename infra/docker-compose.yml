@@ -1,0 +1,23 @@
+name: mietroyal-infra
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    container_name: mietroyal-postgres
+    environment:
+      POSTGRES_USER: mietroyal
+      POSTGRES_PASSWORD: mietroyal_local_dev
+      POSTGRES_DB: mietroyal_dev
+    ports:
+      - '55432:5432'
+    volumes:
+      - postgres-data:/var/lib/postgresql
+      - ./postgres-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U mietroyal -d mietroyal_dev']
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  postgres-data:

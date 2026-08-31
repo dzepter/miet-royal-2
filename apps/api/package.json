@@ -1,0 +1,26 @@
+{
+  "name": "@mietroyal/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "start": "tsx src/server.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:integration": "vitest run --config vitest.integration.config.ts"
+  },
+  "dependencies": {
+    "@mietroyal/config": "workspace:*",
+    "@mietroyal/database": "workspace:*",
+    "@mietroyal/validation": "workspace:*",
+    "fastify": "5.12.1",
+    "pg": "8.23.0"
+  },
+  "devDependencies": {
+    "@types/node": "26.4.0",
+    "@types/pg": "8.23.1",
+    "tsx": "4.23.13",
+    "vitest": "4.1.11"
+  }
+}
