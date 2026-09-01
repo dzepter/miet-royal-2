@@ -63,7 +63,8 @@ Vorschlag:
 
 ## Auth
 Staff: E-Mail+Passwort, optional 2FA, Geräte/Sessions, 15min App-Lock,
-30 Tage Maximalsession, Biometrie als Gerätekomfort.
+Session-Ablauf nach 30 Tagen Inaktivität (keine zusätzliche absolute
+Maximaldauer für regelmäßig aktive Sessions), Biometrie als Gerätekomfort.
 Customer: Magic Link 15min, 30 Tage Gerätesession.
 
 ## Storage

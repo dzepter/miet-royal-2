@@ -136,8 +136,8 @@ Keine spontanen Framework-/ORM-Wechsel (CLAUDE.md „Dependencies“).
 - **Unique-Rennen → 409** statt 500 (PG-Fehlercode 23505 zentral gemappt).
 - **App-Sperre blickdicht**: im gesperrten Zustand wird der Seiteninhalt
   nicht mehr gerendert.
-- **Gemeldeter Widerspruch (nicht still entschieden)**: ARCHITECTURE.md
-  nennt „30 Tage Maximalsession“, die Phase-1-Vorgabe definiert „30 Tage
-  Inaktivität“. Umgesetzt ist die Phase-1-Vorgabe (gleitendes Fenster);
-  ob zusätzlich eine absolute Obergrenze gewünscht ist, entscheidet der
-  Auftraggeber.
+- **Sessionregel (vom Auftraggeber verbindlich entschieden)**: Die
+  Mitarbeiter-Session läuft nach 30 Tagen INAKTIVITÄT ab; es gibt derzeit
+  KEINE zusätzliche absolute Maximaldauer für regelmäßig aktive Sessions.
+  Die 15-Minuten-App-Sperre bleibt unverändert. ARCHITECTURE.md wurde
+  entsprechend korrigiert; die implementierte Logik war bereits korrekt.
