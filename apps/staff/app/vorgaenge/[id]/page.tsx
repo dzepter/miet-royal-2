@@ -80,6 +80,11 @@ function ProcessView() {
   const [editingDate, setEditingDate] = useState(false);
   const [dateValue, setDateValue] = useState('');
   const [noteText, setNoteText] = useState('');
+  const [commerce, setCommerce] = useState<{
+    hasInquiry: boolean;
+    offerStatus: string | null;
+    confirmationStatus: string | null;
+  }>({ hasInquiry: false, offerStatus: null, confirmationStatus: null });
 
   const load = useCallback(async () => {
     const result = await apiFetch<ProcessDetail>(`/staff/processes/${params.id}`);
@@ -100,6 +105,36 @@ function ProcessView() {
       if (result.data !== null) setStaffOptions(result.data.staff);
     });
   }, []);
+
+  const loadCommerce = useCallback(async () => {
+    const [inquiryResult, offerResult] = await Promise.all([
+      apiFetch<{ inquiry: unknown }>(`/staff/processes/${params.id}/inquiry`),
+      apiFetch<{
+        offer: {
+          offer: { currentVersionId: string | null };
+          versions: { id: string; effectiveStatus: string }[];
+        } | null;
+        confirmation: { status: string } | null;
+      }>(`/staff/processes/${params.id}/offer`),
+    ]);
+    const hasInquiry =
+      inquiryResult.data?.inquiry !== null && inquiryResult.data?.inquiry !== undefined;
+    let offerStatus: string | null = null;
+    if (offerResult.data?.offer !== null && offerResult.data?.offer !== undefined) {
+      const currentId = offerResult.data.offer.offer.currentVersionId;
+      offerStatus =
+        offerResult.data.offer.versions.find((version) => version.id === currentId)
+          ?.effectiveStatus ?? null;
+    }
+    setCommerce({
+      hasInquiry,
+      offerStatus,
+      confirmationStatus: offerResult.data?.confirmation?.status ?? null,
+    });
+  }, [params.id]);
+  useEffect(() => {
+    void loadCommerce();
+  }, [loadCommerce]);
 
   async function runAction(path: string, body: unknown): Promise<void> {
     setBusy(true);
@@ -199,8 +234,45 @@ function ProcessView() {
 
       <div className="card" aria-label="Nächste Aktion">
         <h2 style={{ marginTop: 0 }}>Nächste Aktion</h2>
-        {/* Phase 2: bewusst neutraler Platzhalter – keine erfundene Logik. */}
-        <p>Vorgang bearbeiten</p>
+        {commerce.confirmationStatus === 'prepared' ? (
+          <p>
+            <Link href={`/vorgaenge/${params.id}/angebot`}>
+              <strong>Auftragsbestätigung prüfen</strong>
+            </Link>
+          </p>
+        ) : commerce.confirmationStatus === 'approved' ? (
+          <p>
+            <Link href={`/vorgaenge/${params.id}/angebot`}>
+              <strong>Auftragsbestätigung versenden</strong>
+            </Link>
+          </p>
+        ) : commerce.offerStatus === 'draft' ? (
+          <p>
+            <Link href={`/vorgaenge/${params.id}/angebot`}>
+              <strong>Angebot fertigstellen und versenden</strong>
+            </Link>
+          </p>
+        ) : commerce.offerStatus === 'recheck_requested' ? (
+          <p>
+            <Link href={`/vorgaenge/${params.id}/angebot`}>
+              <strong>Erneute Prüfung bearbeiten</strong>
+            </Link>
+          </p>
+        ) : !commerce.hasInquiry && isEditable ? (
+          <p>
+            <Link href={`/vorgaenge/${params.id}/anfrage`}>
+              <strong>Anfrage erfassen</strong>
+            </Link>
+          </p>
+        ) : commerce.hasInquiry && commerce.offerStatus === null && isEditable ? (
+          <p>
+            <Link href={`/vorgaenge/${params.id}/angebot`}>
+              <strong>Angebot erstellen</strong>
+            </Link>
+          </p>
+        ) : (
+          <p>Vorgang bearbeiten</p>
+        )}
       </div>
 
       {actionError !== null && <p className="error">{actionError}</p>}
@@ -346,12 +418,22 @@ function ProcessView() {
         </p>
       </div>
 
+      <div className="card">
+        <h2>Anfrage &amp; Angebot</h2>
+        <p>
+          <Link href={`/vorgaenge/${params.id}/anfrage`}>
+            Anfrage {commerce.hasInquiry ? 'ansehen/bearbeiten' : 'erfassen'}
+          </Link>
+        </p>
+        <p>
+          <Link href={`/vorgaenge/${params.id}/angebot`}>Angebot &amp; Auftragsbestätigung</Link>
+        </p>
+      </div>
+
       {/* Vorbereitete Bereiche späterer Phasen – bewusst ohne Fake-Inhalte. */}
       <div className="card">
         <h2>Weitere Bereiche</h2>
-        <p className="muted">
-          Angebot, Buchung, Lieferung und Abrechnung folgen in späteren Phasen.
-        </p>
+        <p className="muted">Lieferung/Tour, Rückgabe und Abrechnung folgen in späteren Phasen.</p>
       </div>
     </main>
   );

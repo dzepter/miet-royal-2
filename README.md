@@ -7,13 +7,19 @@ Ausgabe/Rückgabe, Abrechnung und Integrationen.
 **Leitprinzip: Das System darf intern komplex sein. Für Mitarbeitende und
 Kunden muss es einfach wirken.**
 
-Aktueller Stand: **Phase 2 (Kunden, Vorgänge, Zuständigkeit & globale
-Suche) umgesetzt** — auf Basis von Phase 1 (Staff-Authentifizierung mit
-TOTP-2FA, serverseitige Sessions, App-Sperre, granulare Rollen/Rechte):
-Kundenstammdaten mit Dublettenwarnung, zentrale Vorgänge mit race-sicherer
-MR-Nummer, Zuständigkeit, interne Notizen, Abschluss-/Sichtbarkeitslogik,
-Kunden-Papierkorb und tippfehlertolerante globale Suche (pg_trgm).
-Angebote, Buchungen, Maschinen & Lager folgen ab Phase 3.
+Aktueller Stand: **Phase 3 (Produkte, Preise, Anfragen, Angebote &
+Auftragsbestätigung) umgesetzt** — auf Basis von Phase 1
+(Staff-Authentifizierung mit TOTP-2FA, Sessions, App-Sperre, granulare
+Rollen/Rechte inkl. Systemadmin-Semantik) und Phase 2 (Kunden, Vorgänge,
+Notizen, globale Suche): Produktkatalog mit Preisverwaltung und
+zukünftigen Preisen, Anfragen im Vorgang, zentrale Preisengine
+(Integer-Cents), Angebotsversionen mit Rabatten/Sonderpreisen und
+Gültigkeitslogik (Europe/Berlin), sicherer öffentlicher Angebotslink
+(Token nur als Hash), verbindliche Online-Annahme mit
+Buchungs-Snapshot, Auftragsbestätigung mit Freigabe-Workflow,
+serverseitige PDF-Erzeugung mit immutabler Dokumententität und privatem
+Storage (FS dev/test, S3/MinIO). Maschinen-/Lagerverwaltung, Ausgabe/
+Rückgabe und Abrechnung folgen ab Phase 4.
 
 ## Voraussetzungen
 
@@ -25,7 +31,7 @@ Angebote, Buchungen, Maschinen & Lager folgen ab Phase 3.
 
 ```bash
 pnpm install        # Abhängigkeiten
-pnpm infra:up       # PostgreSQL 18 (Datenbanken: dev/test/demo)
+pnpm infra:up       # PostgreSQL 18 (dev/test/demo) + MinIO (S3-Dev/Test-Storage)
 pnpm db:migrate:dev # versionierte Migrationen auf die lokale Dev-DB anwenden
 pnpm dev            # alle Apps im Watch-Modus
 ```

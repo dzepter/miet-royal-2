@@ -1,9 +1,13 @@
 /**
- * Serverseitige Dokumenterzeugung (INTEGRATIONS.md "Dokumente"):
- * Angebot, AB, Lieferschein, Übergabe-/Rückgabeprotokoll.
- *
- * Phase 0 legt nur den Platz fest. Finale signierte PDFs sind
- * immutable und werden mit Hash abgelegt (CLAUDE.md
- * "Historische Unveränderbarkeit").
+ * Dokumenterzeugung (Phase 3): serverseitige PDF-Templates für Angebot und
+ * Auftragsbestätigung. Spätere Typen (Lieferschein, Übergabe-/
+ * Rückgabeprotokoll) nutzen dieselben Bausteine.
  */
-export const DOCUMENTS_PACKAGE_PLACEHOLDER = true;
+export {
+  formatEuro,
+  renderOfferPdf,
+  renderOrderConfirmationPdf,
+  type OfferPdfData,
+  type OrderConfirmationPdfData,
+  type PdfLineItem,
+} from './pdf.ts';

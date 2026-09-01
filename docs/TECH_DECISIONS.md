@@ -223,3 +223,158 @@ Keine spontanen Framework-/ORM-Wechsel (CLAUDE.md „Dependencies“).
 | Ernennung/Entzug | Nur ein bereits berechtigter Systemadmin darf die Systemrolle zuweisen oder entziehen (`FORBIDDEN` sonst, auch mit `permission.manage`). Beides wird auditiert (`permission.system_admin_granted/_revoked`). | Vier-Augen-Grundsatz auf der höchsten Berechtigungsstufe. |
 | Letzter-Admin-Schutz | Invariante umgestellt: Es muss immer mindestens ein AKTIVER Mitarbeiter Mitglied einer Systemrolle sein (Advisory-Lock bleibt). Die frühere Override-basierte Abdeckung (unbefristete allow-Overrides auf employee.manage+permission.manage) zählt NICHT mehr; die zeitliche Grenzwertprüfung entfiel, weil die Eigenschaft strukturell und unbefristet ist. Zwei Phase-1-Tests wurden entsprechend an die neue Fachregel angepasst. | Die Systemadmin-Eigenschaft ist nicht zeitbefristet und nicht deny-bar – nur sie garantiert dauerhaft volle Verwaltungsfähigkeit. |
 | Backfill | Migration 0005 markiert die Rolle „Administrator" (deterministischer Bootstrap-Name) einmalig; Sicherheitsnetz: existiert danach keine Systemrolle, werden Rollen mit employee.manage+permission.manage markiert. | Bestehende Installationen erhalten die Eigenschaft ohne Handarbeit; zur Laufzeit wird trotzdem nie über den Namen geprüft. |
+
+## Phase 3: Produkte, Preise, Anfragen, Angebote & Auftragsbestätigung
+
+- **Zentrale Preisengine**: `priceOffer()` in `@mietroyal/domain`
+  (packages/domain/src/pricing.ts) ist die EINZIGE Stelle, die
+  Angebotspreise berechnet – reine Funktion über Integer-Cents (kein
+  Float; Basispunkte für Prozente, `divRound` für Rundung). Sie erzeugt
+  die vollständige Positionsliste (Maschine, Gratis-Sirup „inklusive“,
+  Extras als Kommission, Becher/Strohhalme 25+25 einmal inklusive,
+  Kanister mit Max-2-je-Behälter-Regel, manueller Lieferpreis) samt
+  Abrechnungsart `fixed`/`commission`/`included`. Der FESTE ANGEBOTSWERT
+  enthält ausschließlich `fixed`-Positionen; Kommission wird separat als
+  Maximalbetrag ausgewiesen. Keine MwSt-Logik – bewusst nirgends ein
+  Steuersatz erfunden.
+- **Rabatt-Schwellen mit Aufrundung**: Der effektive Rabatt-Prozentsatz
+  eines EUR-Rabatts wird gegen die Maschinenmiete-Zwischensumme mit
+  `ceil` in Basispunkten berechnet – Schwellen (10 %/20 %) können so nie
+  durch Abrundung unterlaufen werden. Grund ab >10 % Pflicht, Freigabe
+  ab >20 % (`discount.over_20_approve`); wer selbst freigeben darf, gibt
+  mit dem Versand implizit frei. Sonderpreise speichern
+  vorher/nachher/Mitarbeiter/Zeitpunkt in der Position UND im
+  Versions-Eingabezustand; 0-EUR verlangt
+  `offer.apply_special_price_zero`.
+- **Zukünftige Preise ohne Background-Job**: `product_prices` mit
+  `effective_from`; „aktueller Preis“ ist eine reine Datumsabfrage.
+  Bereits wirksame Preise sind unveränderlich (CONFLICT), geplante frei
+  änder-/löschbar. Versendete Angebote frieren Preise in
+  `offer_line_items` ein und sind von jeder Preis-/Produktänderung
+  unabhängig (Pflichttests 4/6).
+- **Angebotsversionen**: Versand friert Kunden-/Event-Snapshot, Summen,
+  `terms_version_id`, `sent_at`/`expires_at` ein; jede Änderung danach
+  läuft über `createNewVersion` (Row-Locks auf Angebot+Version; die alte
+  Version wird SOFORT `superseded` – nicht erst beim neuen Versand, damit
+  es nie zwei annehmbare Stände gibt). Gültigkeit: Kalendertagdifferenz
+  Europe/Berlin (`Intl`-basiert, DST-fest); Event in ≤14 Tagen → 3 Tage,
+  sonst 7. `expires_at` ist persistiert; `expired`/`superseded` werden
+  lazy als Effektivstatus berechnet (kein Cron).
+- **Token-Rotation je Versand**: Jeder Versand widerruft alle alten
+  Zugriffstoken des Angebots und erzeugt ein frisches 32-Byte-Token
+  (base64url); die DB speichert NUR den SHA-256-Hash. Alte Links sind
+  damit strukturell tot (E2E-Szenario D). Ungültige Token → neutrales
+  404 ohne Detailpreisgabe; öffentliche Routen sind pro IP rate-limitiert.
+- **Atomare, idempotente Annahme**: `accept()` läuft in einer Transaktion
+  mit `FOR UPDATE` auf Angebot und Version; geprüft werden aktuell,
+  versendet, nicht abgelaufen, nicht storniert, Daten vorhanden. Bereits
+  angenommen → gleiche Buchungs-ID zurück (Doppel-Submit sicher). Die
+  Buchung snapshottet Positionen/Summen aus dem VERSAND-Zeitpunkt und die
+  Kundendaten zum ANNAHME-Zeitpunkt; spätere Profil-/Preisänderungen
+  berühren sie nie. Die Auftragsbestätigung wird automatisch `prepared`.
+- **AB-Freigabe blockiert ohne Abholadresse in JEDER Umgebung**: Die
+  Order verlangt die Blockade mindestens in Production; wir blockieren
+  Freigabe/`readiness` bei Selbstabholung auch in dev/test, solange
+  `pickup_exact_address` fehlt (Tests/Seeds setzen eine klar als
+  SYNTHETISCH markierte Adresse). Bewusst strenger als gefordert: eine
+  nur-Production-Blockade wäre in dev nie getestet worden. Die exakte
+  Adresse erscheint ausschließlich in der AB – nie im öffentlichen
+  Angebot. Transporthinweise (aufrecht, gegen Umkippen sichern, nur
+  Kofferraum/Ladefläche, Tragepersonen aus dem Produkt-Snapshot) stehen
+  in der AB; Gewichte werden unterstützt, aber nicht erfunden (Seeds
+  ohne Gewicht ⇒ keine Gewichtszeile).
+- **Dokumente immutable**: Zentrale `documents`-Entität (Typ, Vorgang,
+  Angebotsversion/Buchung, Storage-Key, SHA-256, Größe, `finalized_at`).
+  Es existiert KEIN Update-Pfad; jede Erzeugung schreibt ein neues Objekt
+  unter neuem Key. `bytesFor()` verifiziert beim Lesen den SHA-256 –
+  manipulierter Storage fällt auf (CONFLICT). PDFs entstehen serverseitig
+  (pdfkit, `compress:false`, damit Metadaten/Text im Bytestrom prüfbar
+  sind); neutraler Titel `Angebot <Vorgang> V<n>` bzw.
+  `Auftragsbestätigung <Vorgang>`; keine Steuertexte.
+- **Storage privat, je Umgebung getrennt**: `StorageProvider`-Abstraktion
+  aus Phase 0 mit `FilesystemStorageProvider` (dev/test) und
+  `S3StorageProvider` (forcePathStyle, KEINE ACLs, kurzlebige
+  `signedGetUrl`, Default 300 s). MinIO läuft als dev/test-Infra in
+  `infra/docker-compose.yml`. `assertConfigsIsolated` erkennt gemeinsame
+  Buckets/Endpoints/Zugangsdaten zwischen Umgebungen; Auslieferung nur
+  über autorisierte API-Routen (`offer.view` für Staff, Token für
+  Kunden). Frontends kennen keinerlei Storage-Secrets (Same-Origin-Proxy
+  `/api/*`).
+- **Versand über Gateway**: `OfferDeliveryGateway` mit
+  `OutboxDeliveryGateway` (Tabelle `offer_deliveries`) für dev/test und
+  `UnconfiguredProductionGateway`, das in Production hart mit CONFLICT
+  blockt, solange kein echter Versandweg konfiguriert ist. Analog
+  Mietbedingungen: `termsService.activeForSending()` nimmt in Production
+  nur Nicht-Test-Versionen und blockt den Versand mit klarer Meldung,
+  wenn keine existiert (TEST-Platzhalter nur dev/test; kein Rechtstext
+  erfunden).
+- **Berechtigungen**: PERMISSIONS.md-Schlüssel wortwörtlich
+  (offer.create/edit_draft/send/create_new_version/change_price/
+  apply_discount/apply_special_price, discount.up_to_10/
+  over_10_with_reason/over_20_request/over_20_approve, product.manage,
+  price.manage, booking.confirm); kontrolliert ergänzt: offer.view,
+  offer.apply_special_price_zero, inquiry.view/create/edit, product.view.
+  Systemadmins erhalten alle neuen Keys automatisch
+  (Phase-2-Finalisierung). AB-Freigabe UND -Versand laufen unter
+  `booking.confirm`; der manuelle Lieferpreis verlangt zusätzlich
+  `offer.change_price`. Nach Annahme ist das Angebot für normale
+  Bearbeitung gesperrt (Nachträge folgen in einer späteren Phase).
+
+### Ergebnisse des adversarialen Phase-3-Reviews (verifiziert und behoben)
+
+- **Versand komplett in EINER Transaktion**: Freigabe-/Grundpflicht-Prüfung
+  lief vorher auf einem Stand VOR der Transaktion (TOCTOU – paralleles
+  setDiscount hätte die >20-%-Freigabe umgehen können). Jetzt: Angebot- und
+  Versionszeile sperren (gleiche Reihenfolge wie accept/createNewVersion),
+  neu durchrechnen, auf GENAU dem eingefrorenen Endstand validieren,
+  Selbst-Freigabe in der Transaktion schreiben.
+- **Production blockiert VOR dem Einfrieren**: `assertConfigured()` am
+  Gateway wirft in Production ohne echten Versandadapter, bevor Status,
+  Token oder finales PDF entstehen – vorher wurde die Version als
+  „versendet“ persistiert, obwohl der Adapter danach blockte.
+- **Alle Entwurfs-Mutationen sperren die Version** (`FOR UPDATE` +
+  Status-Recheck in der Transaktion): ein zeitgleich abgeschlossener
+  Versand kann eine eingefrorene Version nicht mehr nachträglich mutieren.
+- **Rabatt-Drift**: Ein fester EUR-Rabatt wird entfernt, sobald sich die
+  Maschinen-Zwischensumme ändert (Maschinenwechsel, Maschinen-Sonderpreis,
+  Anfrage-Übernahme) – sonst wären Stufenrechte (>10 %/>20 %) still
+  unterlaufen worden; der Rabatt muss rechtegeprüft neu gesetzt werden.
+- **Races geschlossen**: `requestRecheck` und `markDeclined` sind
+  bedingte Updates (`WHERE status='sent'`) und können einen
+  accepted-Status nie überschreiben; `accept` prüft den Token-Widerruf
+  ERNEUT unter der Zeilensperre (alter Link kann im Rennen mit dem
+  V2-Versand nie V2 annehmen).
+- **Vorgangs-Sichtbarkeit auch im Commerce**: Alle vorgangsbezogenen
+  Staff-Routen (Anfrage, Angebot, Versionen, Dokumente, AB) verlangen
+  `process.view_all` und wenden die zentrale Phase-2-Sichtbarkeitsregel an
+  (unsichtbar = neutrales 404) – vorher reichte z. B. `offer.view` für
+  beliebige Vorgangs-IDs inkl. Kunden-Snapshot.
+- **AB-Freigabe/-Versand serialisiert**: Zeilensperre (`FOR NO KEY
+  UPDATE`, kompatibel mit dem FK-KEY-SHARE des Outbox-Inserts) +
+  Status-Recheck – Doppelklicks erzeugen keine zweiten finalen PDFs und
+  keinen Doppelversand. AB-Vorschau-PDF (`§41 „ansehen“`) und
+  Dokument-Link ergänzt; Versandtext behauptet keinen Anhang mehr.
+- **Keine Klartext-Token in der DB**: Die Outbox maskiert den
+  /angebot/-Link im persistierten Body (§25 „nur Hash“); Request-Logs
+  maskieren den Token im Pfad. Der interne Rabattgrund (§18) erscheint
+  nicht mehr in Kundendokumenten.
+- **Inhalte vervollständigt**: AB-PDF trägt jetzt Eventzeiten,
+  Zeitfenster, Lieferadresse und den Rabatt aus dem Buchungs-Snapshot;
+  Angebots-PDF/Web zeigen Eventzeiten; Kommissions-Fußnote nennt nur die
+  spezifizierte Sirup-Regel (§3) statt einer erfundenen Verallgemeinerung;
+  Migration 0008 entfernt erfundene Seed-Aussagen (Hygiene-Begründung,
+  Ungeöffnet-Regel auf Becher/Strohhalme).
+- **Kanisterlimit produktgenau**: Die Max-2-je-Behälter-Regel zählt nur
+  den 6-L-Mischkanister (CANISTER_SLUG), nicht alle künftigen
+  Kaufartikel; serverseitig zusätzlich per Integrationstest abgesichert.
+- **Berlin-Stichtag DST-fest**: Die Produkte-UI berechnet den
+  Wirksamkeits-Stichtag als Mitternacht Europe/Berlin (kein fester
+  +01:00-Offset mehr). UI-Lücken geschlossen: Produkt bearbeiten +
+  Metadaten (Gewicht/Tragepersonen), geplante Preise ändern, „Neu aus der
+  Anfrage übernehmen“ im Angebotsentwurf.
+- **Bewusst NICHT geändert** (geprüft, Entscheidung dokumentiert): Die
+  Angebotsgültigkeit rechnet mit festen 3×24 h/7×24 h ab `sent_at` (die
+  Europe/Berlin-Kalendertagslogik der Order bezieht sich auf die
+  Event-Distanz; ein DST-Übergang verschiebt die Wanduhrzeit des Ablaufs
+  um maximal eine Stunde – deterministisch und exakt persistiert). Die
+  Outbox bleibt über `system.settings` einsehbar (interner Prüfpfad).

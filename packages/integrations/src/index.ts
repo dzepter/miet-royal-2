@@ -19,5 +19,6 @@ export {
   InvalidStorageKeyError,
   assertValidStorageKey,
 } from './storage/storage.ts';
+export { S3StorageProvider } from './storage/s3-storage.ts';
 export { FilesystemStorageProvider } from './storage/fs-storage.ts';
 export { createStorageProvider } from './storage/factory.ts';

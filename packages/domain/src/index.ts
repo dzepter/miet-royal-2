@@ -1,10 +1,34 @@
 /**
- * Zentrale Geschäftslogik von Miet-Royal 2.0.
- *
- * Phase 0 legt nur den Platz fest: Ab Phase 2+ leben hier die
- * autoritativen Implementierungen der Fachregeln (Preise, Angebote,
- * Storno, Verfügbarkeit, Rückgabe, Abrechnung – siehe DOMAIN_RULES.md).
- * Frontends und API zeigen ausschließlich Ergebnisse dieser Logik an;
- * keine Regel wird in Web, Staff-App, PDF oder API dupliziert (CLAUDE.md).
+ * Zentrale Geschäftslogik von Miet-Royal 2.0 (eine autoritative
+ * Implementierung je Fachregel – CLAUDE.md). Phase 3: Preisengine,
+ * Angebotsgültigkeit und Rabatt-Schwellenregeln.
  */
-export const DOMAIN_PACKAGE_PLACEHOLDER = true;
+export {
+  CANISTER_SLUG,
+  CANISTERS_PER_CONTAINER_LIMIT,
+  DISCOUNT_APPROVAL_THRESHOLD_BP,
+  DISCOUNT_REASON_THRESHOLD_BP,
+  FREE_CUPS_PACKS_PER_RENTAL,
+  FREE_STRAWS_PACKS_PER_RENTAL,
+  LARGE_EVENT_GUEST_THRESHOLD,
+  LARGE_EVENT_NOTE,
+  OFFER_VALIDITY_FAR_DAYS,
+  OFFER_VALIDITY_NEAR_DAYS,
+  OFFER_VALIDITY_THRESHOLD_DAYS,
+  PricingError,
+  daysUntilEventBerlin,
+  discountNeedsApproval,
+  discountNeedsReason,
+  offerExpiresAt,
+  offerValidityDays,
+  priceOffer,
+  type BillingMode,
+  type LineItemKind,
+  type PricedLineItem,
+  type PriceSource,
+  type PricingInput,
+  type PricingProduct,
+  type PricingResult,
+  type PricingSelection,
+  type SpecialPriceEntry,
+} from './pricing.ts';

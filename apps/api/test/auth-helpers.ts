@@ -1,5 +1,9 @@
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { loadConfig, type AppConfig } from '@mietroyal/config';
 import { createDb, createPool, runMigrations, type Database } from '@mietroyal/database';
+import { FilesystemStorageProvider } from '@mietroyal/integrations';
 import type { FastifyInstance } from 'fastify';
 import type pg from 'pg';
 import { buildApp } from '../src/app.ts';
@@ -19,6 +23,7 @@ export interface TestContext {
   mail: InMemoryMailAdapter;
   auth: StaffAuthService;
   admin: StaffAdminService;
+  storage: FilesystemStorageProvider;
 }
 
 export async function createTestContext(
@@ -33,16 +38,19 @@ export async function createTestContext(
   const db = createDb(pool);
   await runMigrations(db);
   const mail = new InMemoryMailAdapter();
+  // Isolierter FS-Storage je Testkontext (PDF-/Dokumententests).
+  const storage = new FilesystemStorageProvider(mkdtempSync(join(tmpdir(), 'mietroyal-test-')));
   const app = buildApp({
     config,
     pool,
     mailAdapter: mail,
     rateLimitEnabled: options.rateLimitEnabled ?? false,
+    storage,
   });
   await app.ready();
   const auth = new StaffAuthService(db, config, mail);
   const admin = new StaffAdminService(auth);
-  return { pool, db, config, app, mail, auth, admin };
+  return { pool, db, config, app, mail, auth, admin, storage };
 }
 
 export async function destroyTestContext(context: TestContext): Promise<void> {

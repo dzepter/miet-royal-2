@@ -38,3 +38,42 @@ export async function setCompletedVisibilityDays(
       set: { value: days, updatedBy: actorId, updatedAt: new Date() },
     });
 }
+
+// ── Generische String-Settings (Phase 3: Abholung, Vorgaben Nr. 13/33) ────
+
+export const PICKUP_PUBLIC_AREA_KEY = 'pickup_public_area';
+export const PICKUP_PUBLIC_AREA_DEFAULT = 'Mainz-Hechtsheim';
+export const PICKUP_EXACT_ADDRESS_KEY = 'pickup_exact_address';
+
+export async function getStringSetting(db: Database, key: string): Promise<string | null> {
+  const rows = await db.select().from(systemSettings).where(eq(systemSettings.key, key));
+  const value = rows[0]?.value;
+  if (typeof value === 'string' && value.trim() !== '') return value;
+  return null;
+}
+
+export async function setStringSetting(
+  db: Database,
+  actorId: string,
+  key: string,
+  value: string | null,
+): Promise<void> {
+  const stored = value === null || value.trim() === '' ? null : value.trim();
+  await db
+    .insert(systemSettings)
+    .values({ key, value: stored, updatedBy: actorId })
+    .onConflictDoUpdate({
+      target: systemSettings.key,
+      set: { value: stored, updatedBy: actorId, updatedAt: new Date() },
+    });
+}
+
+/** Öffentliche Abholregion (Default: Mainz-Hechtsheim). */
+export async function getPickupPublicArea(db: Database): Promise<string> {
+  return (await getStringSetting(db, PICKUP_PUBLIC_AREA_KEY)) ?? PICKUP_PUBLIC_AREA_DEFAULT;
+}
+
+/** Exakte Abholadresse – NIE erfunden; null = nicht konfiguriert. */
+export async function getPickupExactAddress(db: Database): Promise<string | null> {
+  return getStringSetting(db, PICKUP_EXACT_ADDRESS_KEY);
+}

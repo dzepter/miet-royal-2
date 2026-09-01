@@ -15,9 +15,6 @@ export default function RootLayout({ children }: { children: ReactNode }) {
           margin: 0,
           fontFamily: 'system-ui, sans-serif',
           minHeight: '100vh',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
           background: '#fafafa',
           color: '#1a1a1a',
         }}

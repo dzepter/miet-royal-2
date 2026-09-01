@@ -10,7 +10,9 @@ import { StaffAdminService } from './auth/admin-service.ts';
 import { csrfRejects } from './auth/http.ts';
 import { createMailAdapter, type StaffMailPort } from './auth/mail.ts';
 import { StaffAuthService } from './auth/service.ts';
+import { createStorageProvider, type StorageProvider } from '@mietroyal/integrations';
 import { registerAuthRoutes } from './routes/auth.ts';
+import { registerCommerceRoutes } from './routes/commerce.ts';
 import { registerCrmRoutes } from './routes/crm.ts';
 import { registerStaffAdminRoutes } from './routes/staff-admin.ts';
 
@@ -27,6 +29,8 @@ export interface AppOptions {
   mailAdapter?: StaffMailPort;
   /** Brute-Force-Limits; in Integrationstests abschaltbar. Default: true. */
   rateLimitEnabled?: boolean;
+  /** Test-Injection für den Objektspeicher (Default: laut config.storage). */
+  storage?: StorageProvider;
 }
 
 /**
@@ -47,6 +51,7 @@ export function buildApp({
   pool,
   mailAdapter,
   rateLimitEnabled = true,
+  storage,
 }: AppOptions): FastifyInstance {
   const app = Fastify({
     logger: {
@@ -54,9 +59,14 @@ export function buildApp({
       redact: ['req.headers.authorization', 'req.headers.cookie'],
       serializers: {
         // Query-Strings enthalten Kundendaten (z. B. Suchbegriffe wie Namen
-        // oder Telefonnummern) – es wird nur der Pfad geloggt.
+        // oder Telefonnummern) – es wird nur der Pfad geloggt. Öffentliche
+        // Angebots-Token stehen im Pfad selbst und werden maskiert.
         req(request: FastifyRequest) {
-          return { method: request.method, url: request.url.split('?')[0] ?? request.url };
+          const path = request.url.split('?')[0] ?? request.url;
+          return {
+            method: request.method,
+            url: path.replace(/(\/public\/offers\/)[^/]+/, '$1***'),
+          };
         },
       },
     },
@@ -221,6 +231,13 @@ export function buildApp({
       });
       registerStaffAdminRoutes(instance, { auth: authService, admin: adminService, config });
       registerCrmRoutes(instance, { db, auth: authService, config });
+      registerCommerceRoutes(instance, {
+        db,
+        auth: authService,
+        config,
+        storage: storage ?? createStorageProvider(config.storage),
+        rateLimitEnabled,
+      });
     });
   }
 

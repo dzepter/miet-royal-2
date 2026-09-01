@@ -159,6 +159,7 @@ export function AuthGuard({ children }: { children: ReactNode }) {
           <Link href="/">Start</Link>
           {hasPermission(me, 'process.view_all') && <Link href="/vorgaenge">Vorgänge</Link>}
           {hasPermission(me, 'customer.view') && <Link href="/kunden">Kunden</Link>}
+          {hasPermission(me, 'product.view') && <Link href="/produkte">Produkte</Link>}
           {hasPermission(me, 'employee.manage') && <Link href="/mitarbeiter">Mitarbeiter</Link>}
           {hasPermission(me, 'permission.manage') && (
             <Link href="/rollen">Rollen &amp; Rechte</Link>

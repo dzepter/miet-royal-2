@@ -21,5 +21,27 @@ services:
       timeout: 3s
       retries: 20
 
+  # Reine Dev-/Test-Infrastruktur (Phase-3-Vorgabe Nr. 36): S3-kompatibler
+  # privater Storage für den S3StorageProvider-Integrationstest. In
+  # Production kommt ein echter S3-kompatibler Dienst mit eigenen Secrets.
+  minio:
+    image: minio/minio:latest
+    container_name: mietroyal-minio
+    command: server /data
+    environment:
+      MINIO_ROOT_USER: mietroyal-local
+      MINIO_ROOT_PASSWORD: mietroyal_local_dev_storage
+    ports:
+      # Nur Loopback (lokale Dev-Credentials).
+      - '127.0.0.1:59000:9000'
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ['CMD', 'mc', 'ready', 'local']
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
 volumes:
   postgres-data:
+  minio-data:

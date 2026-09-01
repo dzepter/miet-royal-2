@@ -48,9 +48,11 @@ test('Vorgang für den Kunden anlegen (MR-Nummer sichtbar)', async () => {
   processNumber = (await page.getByRole('heading', { name: /^MR-/ }).innerText()).trim();
   await expect(page.getByText('Klara Musterfrau')).toBeVisible();
   await expect(page.locator('.badge.active')).toHaveText('Offen');
-  // NÄCHSTE AKTION zeigt in Phase 2 nur den neutralen Platzhalter.
+  // NÄCHSTE AKTION ist seit Phase 3 dynamisch: ohne Anfrage → „Anfrage erfassen“.
   await expect(page.getByRole('heading', { name: 'Nächste Aktion' })).toBeVisible();
-  await expect(page.getByText('Vorgang bearbeiten', { exact: true })).toBeVisible();
+  await expect(
+    page.getByLabel('Nächste Aktion').getByRole('link', { name: 'Anfrage erfassen' }),
+  ).toBeVisible();
 });
 
 test('Vorgangsliste zeigt den offenen Vorgang', async () => {
@@ -98,8 +100,9 @@ test('Nach Abschluss: Bearbeitung gesperrt, Sichtbarkeit nur über Filter', asyn
   await expect(page.getByRole('button', { name: 'Wieder öffnen' })).toBeVisible();
 
   // Standard-Vorgangsliste zeigt nur offene Vorgänge – der Vorgang fehlt.
+  // (Offene Vorgänge aus dem Commerce-Spec können weiterhin gelistet sein.)
   await page.getByRole('link', { name: 'Vorgänge', exact: true }).click();
-  await expect(page.getByText('Keine offenen Vorgänge', { exact: false })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Vorgänge' })).toBeVisible();
   await expect(page.getByRole('link', { name: processNumber })).toHaveCount(0);
 
   // Mit „Abgeschlossene einblenden“ (Berechtigung!) erscheint er wieder.

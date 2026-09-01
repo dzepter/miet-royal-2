@@ -141,6 +141,20 @@ export const PERMISSION_DEFINITIONS = [
   ),
 
   // Angebote
+  def('inquiry.view', 'processes', 'Anfragen ansehen', 'Dir fehlt das Recht, Anfragen anzusehen.'),
+  def(
+    'inquiry.create',
+    'processes',
+    'Anfrage erfassen',
+    'Dir fehlt das Recht, Anfragen zu erfassen.',
+  ),
+  def(
+    'inquiry.edit',
+    'processes',
+    'Anfrage bearbeiten',
+    'Dir fehlt das Recht, Anfragen zu bearbeiten.',
+  ),
+  def('offer.view', 'offers', 'Angebote ansehen', 'Dir fehlt das Recht, Angebote anzusehen.'),
   def('offer.create', 'offers', 'Angebot erstellen', 'Dir fehlt das Recht, Angebote zu erstellen.'),
   def(
     'offer.edit_draft',
@@ -161,6 +175,12 @@ export const PERMISSION_DEFINITIONS = [
     'offers',
     'Rabatt anwenden',
     'Dir fehlt das Recht, Rabatte zu vergeben.',
+  ),
+  def(
+    'offer.apply_special_price_zero',
+    'offers',
+    '0-EUR-Sonderpreis vergeben',
+    'Dir fehlt das Recht, Positionen kostenlos abzugeben.',
   ),
   def(
     'offer.apply_special_price',
@@ -459,6 +479,7 @@ export const PERMISSION_DEFINITIONS = [
   ),
 
   // CMS / Website
+  def('product.view', 'cms', 'Produkte ansehen', 'Dir fehlt das Recht, Produkte anzusehen.'),
   def('product.manage', 'cms', 'Produkte verwalten', 'Dir fehlt das Recht, Produkte zu verwalten.'),
   def(
     'cms.edit',
