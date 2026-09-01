@@ -42,6 +42,10 @@ export function assertConfigsIsolated(a: AppConfig, b: AppConfig): void {
     }
   }
 
+  if (a.auth.secretKey === b.auth.secretKey) {
+    collisions.push('AUTH_SECRET_KEY: beide Umgebungen nutzen denselben Auth-Schlüssel');
+  }
+
   if (collisions.length > 0) {
     throw new EnvironmentIsolationError(a.appEnv, b.appEnv, collisions);
   }

@@ -29,8 +29,11 @@ Framework-Optimierungen, `APP_ENV` die fachliche Umgebung.
 ## Variablen
 
 Siehe `.env.example` für die vollständige Liste. Pflicht außerhalb von
-development: `APP_ENV`, `DATABASE_URL`, `STORAGE_DRIVER` (+ die zum Treiber
-gehörenden `STORAGE_*`-Variablen). Optional mit Defaults: `API_HOST` (127.0.0.1),
+development: `APP_ENV`, `DATABASE_URL`, `AUTH_SECRET_KEY` (≥ 32 Zeichen,
+verschlüsselt u. a. TOTP-Secrets im Ruhezustand; je Umgebung ein eigener
+Zufallswert – der Isolations-Check erzwingt das), `STORAGE_DRIVER` (+ die zum
+Treiber gehörenden `STORAGE_*`-Variablen). Optional: `AUTH_ALLOWED_ORIGINS`
+(CSRF-Legacy-Fallback, meist leer). Optional mit Defaults: `API_HOST` (127.0.0.1),
 `API_PORT` (3001), `LOG_LEVEL` (debug in development, sonst info),
 `WORKER_POLL_INTERVAL_MS` (2000).
 

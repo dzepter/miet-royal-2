@@ -1,9 +1,10 @@
 import { expect, test } from '@playwright/test';
 
 const API_BASE = 'http://127.0.0.1:3101';
+const WEB_BASE = 'http://127.0.0.1:3100';
 
 test('Web-Shell rendert die neutrale Startseite', async ({ page }) => {
-  await page.goto('/');
+  await page.goto(`${WEB_BASE}/`);
   await expect(page.getByRole('heading', { name: 'Miet-Royal 2.0' })).toBeVisible();
   await expect(page.getByText('Web-App läuft.')).toBeVisible();
 });

@@ -31,7 +31,8 @@
     "api": "pnpm --filter @mietroyal/api start",
     "infra:up": "docker compose -f infra/docker-compose.yml up -d --wait",
     "infra:down": "docker compose -f infra/docker-compose.yml down",
-    "check:env-isolation": "pnpm --filter @mietroyal/config check:env-isolation"
+    "check:env-isolation": "pnpm --filter @mietroyal/config check:env-isolation",
+    "staff:bootstrap-admin": "pnpm --filter @mietroyal/api bootstrap-admin"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",

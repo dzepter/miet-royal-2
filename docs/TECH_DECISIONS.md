@@ -71,3 +71,73 @@ Keine spontanen Framework-/ORM-Wechsel (CLAUDE.md „Dependencies“).
 | Unit        | Vitest 4                     | Config-Validierung, Umgebungs-Isolation, Backoff, Storage-Keys, API-Fehlerform (fastify inject).                       |
 | Integration | Vitest 4 + echtes PostgreSQL | Migrationen, /ready, Queue: enqueue → process → retry → dead → Idempotenz (Datenbank `mietroyal_test`).                |
 | E2E         | Playwright 1.62              | Web-Shell rendert, API /health + strukturierte 404 (eigene Ports 3100/3101; `CHROMIUM_PATH` für vorinstallierte Browser). |
+
+## Mitarbeiter-Authentifizierung & Berechtigungen (Phase 1)
+
+| Entscheidung | Wahl | Begründung |
+| ------------ | ---- | ----------- |
+| Passwort-Hashing | **Argon2id** über `@node-rs/argon2` (19 MiB, t=2, p=1 – OWASP-Empfehlung) | Etablierte Bibliothek mit vorgebauten nativen Binaries; keine Eigenkryptografie. |
+| Passwortregeln | Mindestens 10, höchstens 128 Zeichen; KEINE Kompositionsregeln | Phase-1-Vorgabe: passwortmanager-freundlich; Länge schlägt Zwangszeichen. |
+| Sessions | Opake 256-Bit-Zufallstokens; in der DB nur der SHA-256-Hash; HttpOnly-Cookie `mr_staff_session`, SameSite=Strict, Secure außerhalb development | Serverseitig jederzeit widerrufbar (keine Langzeit-JWTs). Ein DB-Leak liefert keine verwendbaren Tokens. Session-IDs entstehen ausschließlich serverseitig nach vollständigem Login → keine Session-Fixation. |
+| Session-Laufzeit | 30 Tage Inaktivität → endgültig widerrufen; 15 Minuten Inaktivität → App-Sperre (Session bleibt, Entsperren mit Passwort über /auth/unlock) | ARCHITECTURE.md + Phase-1-Vorgabe Nr. 5/6. Beides wird serverseitig durchgesetzt; die UI spiegelt es nur. |
+| CSRF | SameSite=Strict + Same-Origin-Proxy der Staff-App (`/api/*`-Rewrite) + serverseitige Prüfung: `Sec-Fetch-Site: cross-site` wird blockiert, Legacy-Fälle mit Origin-Header nur per Allowlist (`AUTH_ALLOWED_ORIGINS`) | Header-basierte Prüfung funktioniert auch hinter Proxies; kein Token-Tanz nötig. |
+| Brute-Force | `@fastify/rate-limit` per Route (Login/TOTP/Unlock: 10/min pro IP, Reset: 5/15min) | Einfach und wirksam für eine Instanz. Verteiltes/kontobasiertes Limit: bewusst offen (siehe Deferred). |
+| 2FA | TOTP (RFC 6238) über `otpauth`; QR-Code serverseitig via `qrcode`; Secrets **AES-256-GCM-verschlüsselt** (Schlüssel aus `AUTH_SECRET_KEY`, je Umgebung eigen); 10 Recovery-Codes, nur als Hash gespeichert, je einmal verwendbar | Authenticator-Apps sind der Phase-1-Standard; keine Sicherheitsfragen. Zweistufiger Login über kurzlebige, gehashte Login-Challenges (5 min) statt halbfertiger Sessions. |
+| Login-Fehler | Eine neutrale Meldung für falsches Passwort, unbekannte E-Mail, gesperrt und deaktiviert; Timing durch Dummy-Argon2-Prüfung angeglichen | Keine internen Details/Status nach außen (Phase-1-Vorgabe Nr. 1). |
+| Rechteberechnung | (Rollen ∪ gültige Allows) ∖ gültige Denies; **Deny gewinnt immer**, auch gegen gleichzeitig gültige befristete Allows | PERMISSIONS.md definiert keine Präzedenz; Deny-gewinnt ist die sicherheitskonservative Standardinterpretation. Befristungen werden bei JEDER Berechnung gegen die aktuelle Zeit geprüft – kein Background-Job. |
+| Sofortwirkung | Rechte werden bei jeder Anfrage frisch aus der DB berechnet; nichts wird in Session/Cookie eingefroren | Phase-1-Vorgabe Nr. 11. Bei heutigen Nutzerzahlen unkritisch; ein Cache wäre eine spätere, bewusste Optimierung. |
+| Letzter-Admin-Schutz | Nach jeder Status-/Rechte-Mutation prüft dieselbe Transaktion, ob noch ein aktiver Mitarbeiter `employee.manage` + `permission.manage` effektiv besitzt; sonst Rollback | Deckt alle Wege ab (Status, Rollen zuweisen/ändern/löschen, Overrides) inklusive indirekter Effekte über Rollenänderungen. |
+| Erster Admin | `pnpm staff:bootstrap-admin` (Env-Variablen oder interaktive Prompts, Passwort unsichtbar); nur solange KEIN Konto existiert; legt Rolle „Administrator“ mit allen Katalogrechten an | Kein hardcodierter Admin, kein Masterpasswort, nichts im Repository. |
+| Neue Mitarbeiter | Konto startet mit zufälligem, niemandem bekanntem Passwort; Admin erhält EINMALIG einen Einrichtungs-Link (7 Tage, einmal verwendbar), über den die Person ihr Passwort selbst setzt | Kein Passwort-Versand nötig, solange es keine Mail-Infrastruktur gibt. |
+| Mail | Schmaler `StaffMailPort`-Adapter: development loggt den Reset-Link lokal, staging/demo/production sind bewusst still (kein Token in Logs), Tests injizieren In-Memory | Echte Mail-Infrastruktur kommt planmäßig später (INTEGRATIONS.md); nichts vorweggenommen. |
+| Audit | Tabelle `staff_security_events`, nur sicherheitsrelevante Ereignisse (siehe Katalog in `apps/api/src/auth/audit.ts`); `details` nie mit Passwörtern/Tokens/Secrets | Phase-1-Vorgabe Nr. 14: bewusst klein, kein Tracking. `session.new_device_login` ist die Audit-Grundlage für den späteren Admin-Push (Phase 12). |
+
+### Bewusst offen (Deferred, Phase 1)
+
+- **Biometrie/WebAuthn als Geräteentsperrung**: Architektur ist vorbereitet
+  (App-Sperre ist ein eigener Zustand auf der weiterlaufenden Session;
+  /auth/unlock ist der einzige Entsperrpfad und kann später zusätzlich
+  WebAuthn akzeptieren). Bewusst nicht in Phase 1 gebaut.
+- **Admin-Push bei neuem Gerät**: kommt mit der Push-Infrastruktur (Phase 12);
+  das Audit-Ereignis existiert bereits.
+- **Verteiltes/kontobasiertes Brute-Force-Limit**: aktuelles Limit ist
+  IP-basiert und pro Prozess (in-memory). Ausreichend für den geplanten
+  Ein-Server-Betrieb; bei Mehrinstanzbetrieb bewusst nachrüsten.
+- **Aufräumjob für abgelaufene Tokens/Challenges**: abgelaufene Einträge sind
+  wirkungslos (Gültigkeit wird immer geprüft); ein Housekeeping-Job über die
+  bestehende Queue folgt, wenn fachliche Jobs kommen.
+
+### Härtungen aus dem adversarialen Phase-1-Security-Review
+
+- **Letzter-Admin-Schutz, zeitlich robust**: Die Invariante wird nicht nur
+  „jetzt“, sondern an jedem zukünftigen Override-Grenzzeitpunkt geprüft
+  (vordatierter Deny / auslaufendes Sonderrecht können das System nicht
+  admin-los machen).
+- **Letzter-Admin-Schutz, nebenläufig robust**: transaktionsweiter
+  PostgreSQL-Advisory-Lock serialisiert alle rechte-/statusrelevanten
+  Mutationen (kein Write-Skew bei zwei gleichzeitigen Sperrungen).
+- **Rate-Limits pro Konto statt pro Proxy**: keyGenerator = Client-IP +
+  E-Mail/Challenge/Session (Hook `preHandler`, damit der Body verfügbar
+  ist); zusätzlich `API_TRUST_PROXY_HOPS` für die echte Client-IP hinter
+  dem Staff-Proxy (niemals pauschales trustProxy).
+- **Admin-Reset-Weg**: `POST /staff/users/:id/reset-link` (employee.manage)
+  erzeugt einen einmaligen 60-Minuten-Reset-Link – der dokumentierte
+  Wiederherstellungspfad ohne Mail-Infrastruktur; mit UI-Button und Audit.
+- **TOTP-Replay-Schutz**: der höchste akzeptierte RFC-6238-Zeitschritt wird
+  je Konto gespeichert (Migration 0003) und atomar konsumiert – derselbe
+  Code wird nie zweimal akzeptiert.
+- **CSRF verschärft**: auch `Sec-Fetch-Site: same-site` wird blockiert
+  (Schwester-Subdomains können keine Staff-Aktionen auslösen).
+- **Session-Cookie mit Max-Age 30 Tage** (passend zur serverseitigen
+  Inaktivitätsgrenze; Autorität bleibt der Server).
+- **Atomare Einmal-Token**: Challenge/Reset-Token/Recovery-Codes werden mit
+  WHERE-Guard + Treffer-Prüfung entwertet (kein Double-Spend im Rennen);
+  Passwortwechsel/-reset entwertet zusätzlich alle offenen Reset-Tokens.
+- **Unique-Rennen → 409** statt 500 (PG-Fehlercode 23505 zentral gemappt).
+- **App-Sperre blickdicht**: im gesperrten Zustand wird der Seiteninhalt
+  nicht mehr gerendert.
+- **Gemeldeter Widerspruch (nicht still entschieden)**: ARCHITECTURE.md
+  nennt „30 Tage Maximalsession“, die Phase-1-Vorgabe definiert „30 Tage
+  Inaktivität“. Umgesetzt ist die Phase-1-Vorgabe (gleitendes Fenster);
+  ob zusätzlich eine absolute Obergrenze gewünscht ist, entscheidet der
+  Auftraggeber.

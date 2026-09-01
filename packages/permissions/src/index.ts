@@ -1,9 +1,25 @@
 /**
- * Granulares Rechtesystem (PERMISSIONS.md).
+ * Granulares Rechtesystem (PERMISSIONS.md hat Vorrang).
  *
- * Phase 0 legt nur den Platz fest: Ab Phase 1 leben hier die
- * Berechtigungs-Keys, Rollenvorlagen und die serverseitige Prüfung.
- * Jede kritische Aktion wird serverseitig geprüft – ausgeblendete
- * Buttons sind kein Berechtigungsschutz (CLAUDE.md).
+ * Enthält den typisierten Berechtigungskatalog (Keys + Metadaten für alle
+ * Fachbereiche, auch spätere Phasen) und die pure, serverseitig eindeutige
+ * Berechnung effektiver Rechte. Jede kritische Aktion wird serverseitig
+ * geprüft – ausgeblendete Buttons sind kein Berechtigungsschutz (CLAUDE.md).
  */
-export const PERMISSIONS_PACKAGE_PLACEHOLDER = true;
+export {
+  ADMIN_CRITICAL_PERMISSIONS,
+  getPermissionDefinition,
+  isPermissionKey,
+  PERMISSION_CATEGORIES,
+  PERMISSION_DEFINITIONS,
+  PERMISSION_KEYS,
+  type PermissionCategoryKey,
+  type PermissionDefinition,
+  type PermissionKey,
+} from './catalog.ts';
+export {
+  computeEffectivePermissions,
+  hasAdminCapability,
+  isOverrideActive,
+  type PermissionOverride,
+} from './effective.ts';

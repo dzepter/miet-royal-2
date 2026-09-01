@@ -4,6 +4,11 @@ import * as schema from './schema/index.ts';
 
 export type Database = NodePgDatabase<typeof schema>;
 
+/** Transaktions-Handle aus db.transaction(...). */
+export type DatabaseTransaction = Parameters<Parameters<Database['transaction']>[0]>[0];
+/** Datenbank ODER laufende Transaktion – für transaktionsfähige Helfer. */
+export type DatabaseExecutor = Database | DatabaseTransaction;
+
 export function createPool(databaseUrl: string): pg.Pool {
   const pool = new pg.Pool({
     connectionString: databaseUrl,

@@ -56,6 +56,7 @@ describe('loadConfig', () => {
       STORAGE_S3_BUCKET: 'mietroyal-prod',
       STORAGE_S3_ACCESS_KEY_ID: 'prod-key',
       STORAGE_S3_SECRET_ACCESS_KEY: 'prod-secret',
+      AUTH_SECRET_KEY: 'prod-auth-secret-key-0123456789abcdef',
       LOG_LEVEL: 'info',
       API_PORT: '8080',
     });
@@ -68,9 +69,17 @@ describe('loadConfig', () => {
       loadConfig({ APP_ENV: 'development', DATABASE_URL: 'mysql://root@localhost/db' }),
     ).toThrow(ConfigError);
   });
+
+  it('lehnt einen zu kurzen AUTH_SECRET_KEY ab', () => {
+    expect(() => loadConfig({ APP_ENV: 'development', AUTH_SECRET_KEY: 'zu-kurz' })).toThrow(
+      ConfigError,
+    );
+  });
 });
 
-describe('assertConfigsIsolated (Demo/Live-Trennung)', () => {
+// Phase-1-Pflichttest 23: Die Demo-/Production-Isolation bleibt grün –
+// inklusive des neuen AUTH_SECRET_KEY (2FA-Verschlüsselung je Umgebung).
+describe('assertConfigsIsolated (Demo/Live-Trennung – Pflichttest 23)', () => {
   const productionEnv = {
     APP_ENV: 'production',
     DATABASE_URL: 'postgresql://app:pw@db.internal:5432/mietroyal_prod',
@@ -80,12 +89,15 @@ describe('assertConfigsIsolated (Demo/Live-Trennung)', () => {
     STORAGE_S3_BUCKET: 'mietroyal-prod',
     STORAGE_S3_ACCESS_KEY_ID: 'prod-key',
     STORAGE_S3_SECRET_ACCESS_KEY: 'prod-secret',
+    AUTH_SECRET_KEY: 'prod-auth-secret-key-0123456789abcdef',
   };
+  const demoAuthKey = { AUTH_SECRET_KEY: 'demo-auth-secret-key-0123456789abcdef' };
 
   it('akzeptiert vollständig getrennte production/demo-Konfigurationen', () => {
     const prod = loadConfig(productionEnv);
     const demo = loadConfig({
       ...productionEnv,
+      ...demoAuthKey,
       APP_ENV: 'demo',
       DATABASE_URL: 'postgresql://app:pw@db.internal:5432/mietroyal_demo',
       STORAGE_S3_BUCKET: 'mietroyal-demo',
@@ -99,6 +111,7 @@ describe('assertConfigsIsolated (Demo/Live-Trennung)', () => {
     const prod = loadConfig(productionEnv);
     const demo = loadConfig({
       ...productionEnv,
+      ...demoAuthKey,
       APP_ENV: 'demo',
       // postgres:// statt postgresql://, Default-Port weggelassen – gleiche DB!
       DATABASE_URL: 'postgres://andererUser:anderesPw@db.internal/mietroyal_prod',
@@ -113,6 +126,7 @@ describe('assertConfigsIsolated (Demo/Live-Trennung)', () => {
     const prod = loadConfig(productionEnv);
     const demo = loadConfig({
       ...productionEnv,
+      ...demoAuthKey,
       APP_ENV: 'demo',
       DATABASE_URL: 'postgresql://app:pw@db.internal:5432/mietroyal_demo',
       STORAGE_S3_ACCESS_KEY_ID: 'demo-key',
@@ -133,11 +147,32 @@ describe('assertConfigsIsolated (Demo/Live-Trennung)', () => {
     const prod = loadConfig(productionEnv);
     const demo = loadConfig({
       ...productionEnv,
+      ...demoAuthKey,
       APP_ENV: 'demo',
       DATABASE_URL: 'postgresql://app:pw@db.internal:5432/mietroyal_demo',
       STORAGE_S3_BUCKET: 'mietroyal-demo',
     });
     expect(() => assertConfigsIsolated(prod, demo)).toThrow(EnvironmentIsolationError);
+  });
+
+  it('erkennt gemeinsamen AUTH_SECRET_KEY', () => {
+    const prod = loadConfig(productionEnv);
+    const demo = loadConfig({
+      ...productionEnv,
+      APP_ENV: 'demo',
+      DATABASE_URL: 'postgresql://app:pw@db.internal:5432/mietroyal_demo',
+      STORAGE_S3_BUCKET: 'mietroyal-demo',
+      STORAGE_S3_ACCESS_KEY_ID: 'demo-key',
+      STORAGE_S3_SECRET_ACCESS_KEY: 'demo-secret',
+      // AUTH_SECRET_KEY absichtlich identisch zu production
+    });
+    try {
+      assertConfigsIsolated(prod, demo);
+      expect.unreachable('gemeinsamer Auth-Schlüssel muss erkannt werden');
+    } catch (error) {
+      expect(error).toBeInstanceOf(EnvironmentIsolationError);
+      expect((error as EnvironmentIsolationError).collisions.join()).toContain('AUTH_SECRET_KEY');
+    }
   });
 
   it('erkennt gemeinsames Filesystem-Storage-Verzeichnis', () => {
@@ -146,10 +181,12 @@ describe('assertConfigsIsolated (Demo/Live-Trennung)', () => {
       DATABASE_URL: 'postgresql://app:pw@db.internal:5432/mietroyal_staging',
       STORAGE_DRIVER: 'fs',
       STORAGE_FS_ROOT: '/var/lib/mietroyal/storage',
+      AUTH_SECRET_KEY: 'staging-auth-secret-key-0123456789abc',
     };
     const staging = loadConfig(base);
     const demo = loadConfig({
       ...base,
+      ...demoAuthKey,
       APP_ENV: 'demo',
       DATABASE_URL: 'postgresql://app:pw@db.internal:5432/mietroyal_demo',
     });

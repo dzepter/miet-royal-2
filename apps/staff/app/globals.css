@@ -1,0 +1,244 @@
+/* Neutrale Phase-1-Basis – kein finales Branding. Mobile-first. */
+:root {
+  --bg: #f4f5f7;
+  --card: #ffffff;
+  --border: #e2e4e8;
+  --text: #1a1a1a;
+  --muted: #666a73;
+  --accent: #1f4e8c;
+  --danger: #b3261e;
+  --ok: #1e7d3c;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: system-ui, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+}
+
+main.page {
+  max-width: 64rem;
+  margin: 0 auto;
+  padding: 1rem;
+}
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+  padding: 1rem;
+  margin-bottom: 1rem;
+}
+
+h1 {
+  font-size: 1.25rem;
+  margin: 0.5rem 0 1rem;
+}
+h2 {
+  font-size: 1rem;
+  margin: 0 0 0.75rem;
+}
+
+label {
+  display: block;
+  font-size: 0.875rem;
+  color: var(--muted);
+  margin-bottom: 0.25rem;
+}
+
+input,
+select,
+textarea {
+  width: 100%;
+  padding: 0.6rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  font-size: 1rem;
+  margin-bottom: 0.75rem;
+  background: #fff;
+  color: var(--text);
+}
+
+input:focus-visible,
+select:focus-visible,
+button:focus-visible,
+a:focus-visible {
+  outline: 3px solid #7aa7dd;
+  outline-offset: 1px;
+}
+
+button {
+  font-size: 1rem;
+  padding: 0.6rem 1rem;
+  border-radius: 0.5rem;
+  border: 1px solid var(--border);
+  background: #fff;
+  color: var(--text);
+  cursor: pointer;
+  min-height: 44px; /* Touchfläche */
+}
+button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+button.danger {
+  background: #fff;
+  border-color: var(--danger);
+  color: var(--danger);
+}
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.error {
+  color: var(--danger);
+  font-size: 0.9rem;
+  margin: 0.25rem 0 0.75rem;
+}
+.success {
+  color: var(--ok);
+  font-size: 0.9rem;
+  margin: 0.25rem 0 0.75rem;
+}
+.muted {
+  color: var(--muted);
+  font-size: 0.875rem;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.75rem 1rem;
+  background: var(--card);
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+.topbar nav {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+.topbar a {
+  text-decoration: none;
+  color: var(--accent);
+  padding: 0.4rem 0.6rem;
+  border-radius: 0.4rem;
+}
+.topbar a:hover {
+  background: var(--bg);
+}
+
+.list-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.75rem 0;
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+.list-row:last-child {
+  border-bottom: none;
+}
+
+.badge {
+  display: inline-block;
+  font-size: 0.75rem;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--muted);
+}
+.badge.active {
+  color: var(--ok);
+  border-color: var(--ok);
+}
+.badge.locked,
+.badge.disabled {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+.perm-category {
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+.perm-category summary {
+  cursor: pointer;
+  padding: 0.6rem 0.75rem;
+  font-weight: 600;
+}
+.perm-category .perm-items {
+  padding: 0 0.75rem 0.5rem;
+}
+.perm-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.35rem 0;
+}
+.perm-item input {
+  width: auto;
+  margin: 0;
+  min-width: 20px;
+  min-height: 20px;
+}
+
+.lock-overlay {
+  position: fixed;
+  inset: 0;
+  background: var(--bg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  z-index: 50;
+}
+.lock-overlay .card {
+  width: 100%;
+  max-width: 22rem;
+}
+
+.auth-page {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+}
+.auth-page .card {
+  width: 100%;
+  max-width: 24rem;
+}
+
+.code-box {
+  font-family: ui-monospace, monospace;
+  background: var(--bg);
+  border: 1px dashed var(--border);
+  border-radius: 0.5rem;
+  padding: 0.75rem;
+  word-break: break-all;
+  user-select: all;
+}
+
+@media (min-width: 48rem) {
+  main.page {
+    padding: 1.5rem;
+  }
+  .grid-2 {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1rem;
+  }
+}

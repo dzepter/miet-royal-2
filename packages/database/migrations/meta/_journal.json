@@ -15,6 +15,20 @@
       "when": 1788209213616,
       "tag": "0001_job_lease",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1788239359533,
+      "tag": "0002_staff_auth",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1788244560913,
+      "tag": "0003_totp_replay_guard",
+      "breakpoints": true
     }
   ]
 }

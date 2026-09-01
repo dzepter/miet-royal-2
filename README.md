@@ -7,9 +7,11 @@ Ausgabe/Rückgabe, Abrechnung und Integrationen.
 **Leitprinzip: Das System darf intern komplex sein. Für Mitarbeitende und
 Kunden muss es einfach wirken.**
 
-Aktueller Stand: **Phase 0 (Fundament) umgesetzt** — Monorepo, API, Worker,
-Datenbank/Migrationen, Umgebungen, Jobqueue, Storage-Abstraktion, Testbasis.
-Noch keine Fachfunktionen.
+Aktueller Stand: **Phase 1 (Staff-Authentifizierung & Berechtigungen)
+umgesetzt** — Mitarbeiterkonten, Login mit optionalem TOTP-2FA, serverseitige
+Sessions mit Geräteübersicht, 15-Minuten-App-Sperre, Passwort-Reset,
+granulare Rollen/Rechte mit befristeten Sonderrechten und Security-Audit.
+Fachfunktionen (Vorgänge, Angebote, Maschinen, …) folgen ab Phase 2.
 
 ## Voraussetzungen
 
@@ -34,7 +36,7 @@ production gibt es keine Defaults – dort müssen alle Variablen explizit geset
 sein, sonst bricht der Start ab (siehe `docs/ENVIRONMENTS.md`). Danach:
 
 - Web: http://localhost:3000
-- Staff: http://localhost:3002
+- Staff: http://localhost:3002 (Anmeldung; erstes Konto über `pnpm staff:bootstrap-admin`)
 - API: http://localhost:3001/health und http://localhost:3001/ready
 
 ## Kommandos (Repo-Wurzel)

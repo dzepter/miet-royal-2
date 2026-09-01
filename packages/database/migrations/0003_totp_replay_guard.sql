@@ -1,0 +1,1 @@
+ALTER TABLE "staff_users" ADD COLUMN "totp_last_used_step" bigint;

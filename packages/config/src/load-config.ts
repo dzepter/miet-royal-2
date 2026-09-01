@@ -20,10 +20,20 @@ export type StorageConfig =
 export interface AppConfig {
   appEnv: AppEnvironment;
   databaseUrl: string;
-  api: { host: string; port: number };
+  api: { host: string; port: number; trustProxyHops: number };
   logLevel: LogLevel;
   worker: { pollIntervalMs: number };
   storage: StorageConfig;
+  auth: {
+    /**
+     * Schlüsselmaterial für die Verschlüsselung von Auth-Geheimnissen im
+     * Ruhezustand (z. B. TOTP-Secrets). Muss je Umgebung verschieden sein –
+     * wird von assertConfigsIsolated geprüft.
+     */
+    secretKey: string;
+    /** Origin-Allowlist für den CSRF-Legacy-Fallback (meist leer). */
+    allowedOrigins: readonly string[];
+  };
 }
 
 /**
@@ -63,6 +73,15 @@ const rawEnvSchema = z.object({
   STORAGE_S3_BUCKET: z.string().min(1).optional(),
   STORAGE_S3_ACCESS_KEY_ID: z.string().min(1).optional(),
   STORAGE_S3_SECRET_ACCESS_KEY: z.string().min(1).optional(),
+  AUTH_SECRET_KEY: z.string().min(32, 'muss mindestens 32 Zeichen lang sein').max(256).optional(),
+  /** Kommagetrennte Origin-Allowlist für den CSRF-Legacy-Fallback (optional). */
+  AUTH_ALLOWED_ORIGINS: z.string().optional(),
+  /**
+   * Anzahl vertrauenswürdiger Proxy-Hops vor der API (z. B. 1 hinter dem
+   * Staff-Proxy/nginx), damit request.ip die echte Client-IP aus
+   * X-Forwarded-For auflöst. 0 = keinem Proxy vertrauen (Default).
+   */
+  API_TRUST_PROXY_HOPS: z.coerce.number().int().min(0).max(10).optional(),
 });
 
 /**
@@ -75,6 +94,9 @@ const DEVELOPMENT_DEFAULTS = {
   DATABASE_URL: 'postgresql://mietroyal:mietroyal_local_dev@localhost:55432/mietroyal_dev',
   STORAGE_DRIVER: 'fs',
   STORAGE_FS_ROOT: '.storage',
+  // Nur lokale Entwicklung – kein Geheimnis. Verschlüsselt lokale
+  // TOTP-Secrets; alle anderen Umgebungen MÜSSEN einen eigenen Wert setzen.
+  AUTH_SECRET_KEY: 'mietroyal-development-only-auth-secret-key',
 } as const;
 
 export function loadConfig(env: Record<string, string | undefined> = process.env): AppConfig {
@@ -106,6 +128,11 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     'STORAGE_DRIVER',
     DEVELOPMENT_DEFAULTS.STORAGE_DRIVER,
   );
+  const authSecretKey = requireVar(
+    raw.AUTH_SECRET_KEY,
+    'AUTH_SECRET_KEY',
+    DEVELOPMENT_DEFAULTS.AUTH_SECRET_KEY,
+  );
 
   let storage: StorageConfig | undefined;
   if (storageDriver === 'fs') {
@@ -132,7 +159,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   if (problems.length > 0) {
     throw new ConfigError(problems);
   }
-  if (databaseUrl === undefined || storage === undefined) {
+  if (databaseUrl === undefined || storage === undefined || authSecretKey === undefined) {
     // Durch die problems-Prüfung oben nicht erreichbar; hält die Typen eng.
     throw new ConfigError(['Konfiguration unvollständig']);
   }
@@ -143,11 +170,19 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     api: {
       host: raw.API_HOST ?? '127.0.0.1',
       port: raw.API_PORT ?? 3001,
+      trustProxyHops: raw.API_TRUST_PROXY_HOPS ?? 0,
     },
     logLevel: raw.LOG_LEVEL ?? (isDevelopment ? 'debug' : 'info'),
     worker: {
       pollIntervalMs: raw.WORKER_POLL_INTERVAL_MS ?? 2000,
     },
     storage,
+    auth: {
+      secretKey: authSecretKey,
+      allowedOrigins: (raw.AUTH_ALLOWED_ORIGINS ?? '')
+        .split(',')
+        .map((origin) => origin.trim())
+        .filter((origin) => origin !== ''),
+    },
   };
 }
