@@ -4,13 +4,14 @@ import fastifyRateLimit from '@fastify/rate-limit';
 import type { AppConfig } from '@mietroyal/config';
 import { createDb, pingDatabase } from '@mietroyal/database';
 import { RequestValidationError } from '@mietroyal/validation';
-import Fastify, { type FastifyInstance } from 'fastify';
+import Fastify, { type FastifyInstance, type FastifyRequest } from 'fastify';
 import type pg from 'pg';
 import { StaffAdminService } from './auth/admin-service.ts';
 import { csrfRejects } from './auth/http.ts';
 import { createMailAdapter, type StaffMailPort } from './auth/mail.ts';
 import { StaffAuthService } from './auth/service.ts';
 import { registerAuthRoutes } from './routes/auth.ts';
+import { registerCrmRoutes } from './routes/crm.ts';
 import { registerStaffAdminRoutes } from './routes/staff-admin.ts';
 
 export const API_VERSION = '0.1.0';
@@ -51,6 +52,13 @@ export function buildApp({
     logger: {
       level: config.logLevel,
       redact: ['req.headers.authorization', 'req.headers.cookie'],
+      serializers: {
+        // Query-Strings enthalten Kundendaten (z. B. Suchbegriffe wie Namen
+        // oder Telefonnummern) – es wird nur der Pfad geloggt.
+        req(request: FastifyRequest) {
+          return { method: request.method, url: request.url.split('?')[0] ?? request.url };
+        },
+      },
     },
     genReqId: (req) => {
       const incoming = req.headers[CORRELATION_ID_HEADER];
@@ -137,9 +145,20 @@ export function buildApp({
       return;
     }
 
+    // Drizzle verpackt PostgreSQL-Fehler in DrizzleQueryError; der PG-Code
+    // steckt dann in error.cause. Beide Formen berücksichtigen.
+    const cause = (error as { cause?: unknown }).cause as
+      { code?: unknown; constraint?: unknown; table?: unknown } | undefined;
+    const pgCode =
+      (error as { code?: unknown }).code === '23505' || cause?.code === '23505'
+        ? '23505'
+        : typeof cause?.code === 'string'
+          ? cause.code
+          : undefined;
+
     // Unique-Constraint-Rennen (z. B. doppelte E-Mail/Rollenname parallel):
     // korrektes 409 statt generischem 500.
-    if ((error as { code?: unknown }).code === '23505') {
+    if (pgCode === '23505') {
       const body: ErrorBody = {
         error: {
           code: 'CONFLICT',
@@ -148,6 +167,31 @@ export function buildApp({
         },
       };
       void reply.status(409).send(body);
+      return;
+    }
+
+    // Datenbankfehler: DrizzleQueryError trägt das vollständige SQL samt
+    // Parametern (= potenziell Kundendaten) in message/query/params – davon
+    // wird NICHTS geloggt, nur technische Metadaten.
+    if ((error as { query?: unknown }).query !== undefined || pgCode !== undefined) {
+      request.log.error(
+        {
+          // Kein message/stack: beide enthalten bei DrizzleQueryError das
+          // vollständige SQL inkl. Parameterwerten.
+          dbCode: pgCode ?? null,
+          constraint: typeof cause?.constraint === 'string' ? cause.constraint : null,
+          table: typeof cause?.table === 'string' ? cause.table : null,
+        },
+        'Unbehandelter Datenbankfehler',
+      );
+      const body: ErrorBody = {
+        error: {
+          code: 'INTERNAL_ERROR',
+          message: 'Interner Fehler. Bitte später erneut versuchen.',
+          correlationId: request.id,
+        },
+      };
+      void reply.status(500).send(body);
       return;
     }
 
@@ -176,6 +220,7 @@ export function buildApp({
         rateLimitEnabled,
       });
       registerStaffAdminRoutes(instance, { auth: authService, admin: adminService, config });
+      registerCrmRoutes(instance, { db, auth: authService, config });
     });
   }
 

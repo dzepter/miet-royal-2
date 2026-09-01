@@ -22,6 +22,7 @@ const pool = createPool(config.databaseUrl);
 try {
   const db = createDb(pool);
   await runMigrations(db);
+  await pool.query('TRUNCATE process_notes, processes, customers, system_settings CASCADE');
   await pool.query(
     `TRUNCATE staff_security_events, staff_user_permission_overrides, staff_user_roles,
      staff_role_permissions, staff_roles, staff_recovery_codes,

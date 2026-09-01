@@ -29,6 +29,13 @@
       "when": 1788244560913,
       "tag": "0003_totp_replay_guard",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1788246648371,
+      "tag": "0004_crm_core",
+      "breakpoints": true
     }
   ]
 }

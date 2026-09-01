@@ -7,11 +7,13 @@ Ausgabe/Rückgabe, Abrechnung und Integrationen.
 **Leitprinzip: Das System darf intern komplex sein. Für Mitarbeitende und
 Kunden muss es einfach wirken.**
 
-Aktueller Stand: **Phase 1 (Staff-Authentifizierung & Berechtigungen)
-umgesetzt** — Mitarbeiterkonten, Login mit optionalem TOTP-2FA, serverseitige
-Sessions mit Geräteübersicht, 15-Minuten-App-Sperre, Passwort-Reset,
-granulare Rollen/Rechte mit befristeten Sonderrechten und Security-Audit.
-Fachfunktionen (Vorgänge, Angebote, Maschinen, …) folgen ab Phase 2.
+Aktueller Stand: **Phase 2 (Kunden, Vorgänge, Zuständigkeit & globale
+Suche) umgesetzt** — auf Basis von Phase 1 (Staff-Authentifizierung mit
+TOTP-2FA, serverseitige Sessions, App-Sperre, granulare Rollen/Rechte):
+Kundenstammdaten mit Dublettenwarnung, zentrale Vorgänge mit race-sicherer
+MR-Nummer, Zuständigkeit, interne Notizen, Abschluss-/Sichtbarkeitslogik,
+Kunden-Papierkorb und tippfehlertolerante globale Suche (pg_trgm).
+Angebote, Buchungen, Maschinen & Lager folgen ab Phase 3.
 
 ## Voraussetzungen
 

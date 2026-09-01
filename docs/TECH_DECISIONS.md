@@ -141,3 +141,73 @@ Keine spontanen Framework-/ORM-Wechsel (CLAUDE.md „Dependencies“).
   KEINE zusätzliche absolute Maximaldauer für regelmäßig aktive Sessions.
   Die 15-Minuten-App-Sperre bleibt unverändert. ARCHITECTURE.md wurde
   entsprechend korrigiert; die implementierte Logik war bereits korrekt.
+
+## Phase 2: Kunden, Vorgänge, Zuständigkeit & globale Suche
+
+| Thema | Entscheidung | Begründung |
+| --- | --- | --- |
+| Vorgangsnummer | PostgreSQL-Sequenz `process_number_seq` + Formatierung `MR-<Berliner Jahr>-<lfd. Nr., min. 4-stellig>` in einer Transaktion; Unveränderbarkeit zusätzlich per DB-Trigger `processes_number_immutable` | Sequenzen sind race-sicher ohne Locks (nie doppelt, nie wiederverwendet) und laufen fachgemäß über den Jahreswechsel weiter. Das Jahr kommt aus `Intl` mit Zeitzone Europe/Berlin, nicht aus UTC. Der Trigger schützt auch vor direkten SQL-Updates. |
+| Tippfehlertolerante Suche | `pg_trgm` (Migration 0004) mit GIN-Indexen auf Name/Organisation/E-Mail/Vorgangsnummer; Treffer = ILIKE-Teilstring ODER `similarity() > 0.3`, Ranking per `GREATEST(similarity …)`, offene vor abgeschlossenen | In PostgreSQL bordeigen (Phase-2-Vorgabe: kein Elasticsearch). Erweiterung um neue Felder (z. B. Maschinen-ID) = zusätzlicher Matcher + ggf. Index in einer neuen Migration. |
+| Zentrale Sichtbarkeitsregel | EINE Implementierung (`apps/api/src/crm/visibility.ts`) für Liste, Detail, Kundenakte, Suche und Dashboard: offen immer; abgeschlossen/storniert nur innerhalb `completed_process_staff_visibility_days` (Default 7, Admin-einstellbar, Tabelle `system_settings`); wieder geöffnet nur mit `process.view_completed` | „Keine Sicherheit durch UI“ – jede Route filtert serverseitig über dieselbe Regel; unsichtbares Detail liefert 404 (kein Existenz-Orakel). |
+| Dubletten | Warnung (gleiche E-Mail, gleiche normalisierte Telefonnummer, `similarity > 0.5` bei Name/Organisation), niemals Blockade oder automatische Zusammenführung | Phase-2-Vorgabe Nr. 2: Der Mitarbeiter entscheidet bewusst; der Anlage-Endpunkt liefert die Warnungen mit, blockiert aber nicht. |
+| Normalisierung | E-Mail: trim + lowercase. Telefon: zusätzliche Spalte `phone_normalized` (nur Ziffern, deutsche Vorwahl-Heuristik 0→49); die eingegebene Darstellung bleibt erhalten | Suche und Dublettenprüfung arbeiten auf der Normalform, Anzeige auf dem Original (Vorgabe Nr. 1). |
+| Papierkorb | Soft-Delete (`deleted_at`/`deleted_by`) NUR für Kunden ohne Vorgänge; `trash.manage` (Admin), Wiederherstellungsfrist 30 Tage serverseitig erzwungen; für Vorgänge existiert kein Lösch-Endpunkt | Geschäftsvorgänge sind nie hart löschbar (Vorgabe Nr. 11); keine Legal-Retention-Engine in Phase 2. |
+| Statusmodell | `main_status`: open / completed / reopened / cancelled als kleiner, erweiterbarer Hauptstatus; Statuswechsel transaktional mit Zustandsprüfung; UI zeigt deutsche Labels | Spätere Fachstatus (Angebot, Rückgabe, Abrechnung) kommen als eigene Module und ersetzen diesen Überstatus nicht. `cancel` setzt in Phase 2 nur den Status – Storno-Fachlogik (Gebühren etc.) folgt in Phase 9. |
+| Berechtigungen | Ausschließlich das Phase-1-System; neue Katalogrechte: `process.edit`, `process.complete`, `process.view_completed`, `trash.manage` | Kein Parallelsystem. WICHTIG für bestehende Installationen: Vorhandene Administrator-Rollen erhalten neue Katalogrechte NICHT automatisch – nach dem Deployment einmalig der Admin-Rolle zuweisen (frische Bootstraps enthalten sie automatisch). |
+| Zuständigkeit | `assigned_user_id` optional; NEUE Zuweisung nur an aktive Mitarbeitende, bestehende historische Referenzen bleiben bei Deaktivierung erhalten | Eine zentrale Auflösungsstelle (`ProcessService.assign`), auf der die spätere Vertretungslogik aufsetzen kann. |
+
+### Bewusst offen (Deferred, Phase 2)
+
+- **Papierkorb-Endreinigung**: Einträge älter als 30 Tage sind nicht mehr
+  sichtbar/wiederherstellbar; die physische Endlöschung kommt als
+  Housekeeping-Job, sobald die Queue fachliche Jobs erhält.
+- **„Heute“-Dashboard**: Phase 2 liefert nur die Abfragegrundlage
+  (offene / meine / neueste Vorgänge) – ohne Termine und Kalender.
+- **Vorbereitete Vorgangs-Bereiche** (Angebot, Buchung, Lieferung,
+  Abrechnung): als leere Struktur sichtbar, bewusst ohne Fake-Logik.
+
+### Härtungen aus dem adversarialen Phase-2-Review
+
+- **Datenminimierung im Vorgangsdetail**: `GET /staff/processes/:id` liefert
+  vom Kunden nur Anzeige-/Kontaktdaten (Name/Organisation, E-Mail, Telefon);
+  vollständige Stammdaten (Rechnungsadresse, USt-ID, Kostenstelle …) gibt es
+  ausschließlich über `GET /staff/customers/:id` (customer.view).
+- **Sichtbarkeitsregel auch auf Schreibpfaden**: PATCH/assign/complete/
+  cancel/notes laden den Vorgang in einer Transaktion mit `FOR UPDATE` und
+  wenden dieselbe Sichtbarkeitsregel an – unsichtbare Vorgänge sind auch
+  beim Schreiben ein 404 (kein Status-Orakel, kein Bearbeiten unsichtbarer
+  wieder geöffneter Vorgänge). Ausnahme bewusst: `reopen`, weil
+  `process.reopen_completed` den Zugriff auf Abgeschlossene fachlich
+  einschließt. Der Zeilen-Lock beseitigt zugleich Check-then-act-Rennen
+  (z. B. Notiz vs. gleichzeitiges Abschließen).
+- **Erstzuweisung = Zuweisung**: `POST /staff/processes` mit
+  `assignedUserId` verlangt zusätzlich `process.reassign` (§7: „Zuweisung
+  und Wechsel serverseitig berechtigungsgeprüft“).
+- **Eigenes Storno-Recht**: `process.cancel` statt des Buchungsrechts
+  `booking.cancel` (das bleibt für die spätere Buchungs-Fachlogik).
+- **Keine Kundendaten in Logs**: Der Request-Serializer loggt URLs ohne
+  Query-String (Suchbegriffe!), und Datenbankfehler (DrizzleQueryError
+  trägt SQL + Parameter in message/stack) werden nur mit technischen
+  Metadaten (PG-Code, Constraint, Tabelle) geloggt; der PG-Code 23505 wird
+  jetzt auch aus `error.cause` erkannt (409 statt 500).
+- **Kalender-echte Datumsvalidierung**: `31.02.` & Co. werden in Suche und
+  eventDate-Schema abgewiesen (400 bzw. ignoriert) statt als
+  PostgreSQL-Datumsfehler zu enden.
+- **Suche konsistent zur Liste**: Die Standardsuche umfasst open UND
+  reopened (gefiltert durch die zentrale Sichtbarkeitsregel); die
+  Tippfehler-Arme nutzen den indexfähigen `%`-Operator PLUS explizite
+  `similarity() > 0.3`-Schwelle (GUC-unabhängig; Klammerung nötig, da `%`
+  stärker bindet als `||`).
+- **Papierkorb ohne TOCTOU**: `moveToTrash` sperrt die Kundenzeile
+  (`FOR UPDATE`), die Vorgangserstellung hält `FOR KEY SHARE` auf den
+  Kunden – „löschen während gleichzeitig ein Vorgang entsteht“ ist damit
+  serialisiert.
+- **Bewusst NICHT geändert** (Reviewer-Vorschläge, verifiziert als nicht
+  spezifikationswidrig): Der „Abgeschlossene einblenden“-Filter bleibt an
+  `process.view_completed` gebunden (§15: Filter „darf“ angeboten werden,
+  §17-Recht ist genau dieses); kein DB-Trigger gegen DELETE auf processes
+  (es existiert keine Lösch-Funktion – Invariante erfüllt); die
+  pg_trgm-Spezialobjekte leben nur in Migration 0004 (drizzle-kit kennt
+  sie nicht, löscht sie aber auch nicht); der Dubletten-Check ist mit
+  `customer.create` erreichbar (fachlich nötig für die Warnung beim
+  Anlegen, minimale Felder).

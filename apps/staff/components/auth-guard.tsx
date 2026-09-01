@@ -157,11 +157,17 @@ export function AuthGuard({ children }: { children: ReactNode }) {
         <strong>Miet-Royal Staff</strong>
         <nav aria-label="Hauptnavigation">
           <Link href="/">Start</Link>
+          {hasPermission(me, 'process.view_all') && <Link href="/vorgaenge">Vorgänge</Link>}
+          {hasPermission(me, 'customer.view') && <Link href="/kunden">Kunden</Link>}
           {hasPermission(me, 'employee.manage') && <Link href="/mitarbeiter">Mitarbeiter</Link>}
           {hasPermission(me, 'permission.manage') && (
             <Link href="/rollen">Rollen &amp; Rechte</Link>
           )}
+          {hasPermission(me, 'system.settings') && <Link href="/einstellungen">Einstellungen</Link>}
           <Link href="/konto">Mein Konto</Link>
+          <Link href="/suche" aria-label="Suche">
+            🔍 Suche
+          </Link>
         </nav>
         <button onClick={() => void logout()} aria-label="Abmelden">
           Abmelden

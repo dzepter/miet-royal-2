@@ -104,10 +104,34 @@ export const PERMISSION_DEFINITIONS = [
   ),
   def('process.create', 'processes', 'Vorgang anlegen', 'Dir fehlt das Recht, Vorgänge anzulegen.'),
   def(
+    'process.edit',
+    'processes',
+    'Vorgang bearbeiten',
+    'Dir fehlt das Recht, Vorgänge zu bearbeiten.',
+  ),
+  def(
+    'process.complete',
+    'processes',
+    'Vorgang abschließen',
+    'Dir fehlt das Recht, Vorgänge abzuschließen.',
+  ),
+  def(
+    'process.view_completed',
+    'processes',
+    'Abgeschlossene Vorgänge sehen',
+    'Dir fehlt das Recht, ältere abgeschlossene Vorgänge einzusehen.',
+  ),
+  def(
     'process.reassign',
     'processes',
     'Vorgang neu zuweisen',
     'Dir fehlt das Recht, Vorgänge neu zuzuweisen.',
+  ),
+  def(
+    'process.cancel',
+    'processes',
+    'Vorgang stornieren',
+    'Dir fehlt das Recht, Vorgänge zu stornieren.',
   ),
   def(
     'process.reopen_completed',
@@ -466,6 +490,13 @@ export const PERMISSION_DEFINITIONS = [
   ),
 
   // Systemeinstellungen (Admin-Infrastruktur)
+  def(
+    'trash.manage',
+    'system',
+    'Papierkorb verwalten',
+    'Nur Administratoren verwalten den Papierkorb.',
+    true,
+  ),
   def(
     'system.settings',
     'system',
