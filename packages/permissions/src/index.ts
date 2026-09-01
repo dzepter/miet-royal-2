@@ -19,6 +19,7 @@ export {
 } from './catalog.ts';
 export {
   computeEffectivePermissions,
+  fullPermissionSet,
   hasAdminCapability,
   isOverrideActive,
   type PermissionOverride,

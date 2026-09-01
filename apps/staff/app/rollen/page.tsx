@@ -8,6 +8,7 @@ interface RoleRow {
   id: string;
   name: string;
   permissionKeys: string[];
+  isSystemAdmin: boolean;
 }
 interface PermissionMeta {
   key: string;
@@ -255,21 +256,30 @@ function RolesAdmin() {
         {roles.map((role) => (
           <div className="list-row" key={role.id}>
             <div>
-              <strong>{role.name}</strong>
-              <div className="muted">{role.permissionKeys.length} Rechte</div>
+              <strong>{role.name}</strong>{' '}
+              {role.isSystemAdmin && <span className="badge active">Systemadmin</span>}
+              <div className="muted">
+                {role.isSystemAdmin
+                  ? 'Alle Rechte – dynamisch aus dem Katalog, auch zukünftige'
+                  : `${role.permissionKeys.length} Rechte`}
+              </div>
             </div>
-            <div>
-              <button
-                onClick={() =>
-                  setEditing({ id: role.id, name: role.name, keys: new Set(role.permissionKeys) })
-                }
-              >
-                Bearbeiten
-              </button>{' '}
-              <button className="danger" onClick={() => void removeRole(role.id)}>
-                Löschen
-              </button>
-            </div>
+            {role.isSystemAdmin ? (
+              <div className="muted">Systemrolle – nicht änderbar</div>
+            ) : (
+              <div>
+                <button
+                  onClick={() =>
+                    setEditing({ id: role.id, name: role.name, keys: new Set(role.permissionKeys) })
+                  }
+                >
+                  Bearbeiten
+                </button>{' '}
+                <button className="danger" onClick={() => void removeRole(role.id)}>
+                  Löschen
+                </button>
+              </div>
+            )}
           </div>
         ))}
       </div>

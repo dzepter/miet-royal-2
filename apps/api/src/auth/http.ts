@@ -25,6 +25,7 @@ const AUTH_ERROR_STATUS: Record<AuthError['code'], number> = {
   NOT_FOUND: 404,
   CONFLICT: 409,
   LAST_ADMIN: 409,
+  FORBIDDEN: 403,
 };
 
 /** Mappt AuthError auf eine strukturierte Antwort; andere Fehler laufen weiter. */

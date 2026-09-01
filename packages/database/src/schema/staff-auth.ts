@@ -146,6 +146,12 @@ export const staffRoles = pgTable('staff_roles', {
     .primaryKey()
     .default(sql`gen_random_uuid()`),
   name: text('name').notNull().unique(),
+  /**
+   * Stabile Systemadmin-Eigenschaft (Phase-2-Finalisierung): Mitglieder
+   * einer Systemrolle erhalten dynamisch ALLE Katalogrechte – auch künftig
+   * neu eingeführte. Niemals über den frei änderbaren Anzeigenamen prüfen.
+   */
+  isSystemAdmin: boolean('is_system_admin').notNull().default(false),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });

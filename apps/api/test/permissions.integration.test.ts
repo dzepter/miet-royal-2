@@ -262,23 +262,26 @@ describe('19. Letzter aktiver Admin ist geschützt', () => {
     await expect(ctx.admin.setUserRoles(admin.id, admin.id, [])).rejects.toMatchObject({
       code: 'LAST_ADMIN',
     });
-    await expect(
-      ctx.admin.addOverride(admin.id, admin.id, {
-        permissionKey: 'permission.manage',
-        effect: 'deny',
-      }),
-    ).rejects.toMatchObject({ code: 'LAST_ADMIN' });
-
-    const roles = await ctx.admin.listRoles();
-    const adminRole = roles.find((r) => r.name === 'Administrator');
-    await expect(
-      ctx.admin.updateRole(admin.id, adminRole!.id, { permissionKeys: ['customer.view'] }),
-    ).rejects.toMatchObject({ code: 'LAST_ADMIN' });
-    await expect(ctx.admin.deleteRole(admin.id, adminRole!.id)).rejects.toMatchObject({
-      code: 'LAST_ADMIN',
+    // Systemadmin-Semantik (Phase-2-Finalisierung): Ein Deny ist speicherbar,
+    // aber für einen Systemadmin WIRKUNGSLOS (Pflichttest 4) – er kann sich
+    // nicht versehentlich entmachten.
+    await ctx.admin.addOverride(admin.id, admin.id, {
+      permissionKey: 'permission.manage',
+      effect: 'deny',
     });
 
-    // Alles unverändert wirksam:
+    const roles = await ctx.admin.listRoles();
+    const adminRole = roles.find((r) => r.isSystemAdmin);
+    // Die Systemrolle ist strukturell geschützt: Rechte kommen dynamisch aus
+    // dem Katalog, Bearbeiten/Löschen ist blockiert.
+    await expect(
+      ctx.admin.updateRole(admin.id, adminRole!.id, { permissionKeys: ['customer.view'] }),
+    ).rejects.toMatchObject({ code: 'CONFLICT' });
+    await expect(ctx.admin.deleteRole(admin.id, adminRole!.id)).rejects.toMatchObject({
+      code: 'CONFLICT',
+    });
+
+    // Alles unverändert wirksam (trotz gespeichertem Deny):
     const effective = await ctx.auth.effectivePermissions(admin.id);
     expect(effective.has('employee.manage')).toBe(true);
     expect(effective.has('permission.manage')).toBe(true);
@@ -293,7 +296,7 @@ describe('19. Letzter aktiver Admin ist geschützt', () => {
       password: 'backup-passwort-1234',
     });
     const roles = await ctx.admin.listRoles();
-    const adminRole = roles.find((r) => r.name === 'Administrator');
+    const adminRole = roles.find((r) => r.isSystemAdmin);
     await ctx.admin.setUserRoles(admin.id, second.id, [adminRole!.id]);
 
     // Jetzt darf der erste Admin gesperrt werden.
@@ -313,24 +316,27 @@ describe('19. Letzter aktiver Admin ist geschützt', () => {
       expect.unreachable();
     } catch (error) {
       expect(error).toBeInstanceOf(AuthError);
-      expect((error as AuthError).message).toContain('Administrator');
+      expect((error as AuthError).message).toContain('Systemadministrator');
     }
   });
 });
 
 describe('19b. Letzter-Admin-Schutz: zeitliche Robustheit (Review-Fix)', () => {
-  it('vordatierter Deny auf den einzigen Admin wird abgelehnt', async () => {
+  it('vordatierter Deny auf den einzigen Admin ist speicherbar, aber wirkungslos (Systemadmin-Semantik)', async () => {
     const { admin } = await setup();
-    await expect(
-      ctx.admin.addOverride(admin.id, admin.id, {
-        permissionKey: 'employee.manage',
-        effect: 'deny',
-        validFrom: new Date(Date.now() + 60_000), // greift erst in 1 Minute
-      }),
-    ).rejects.toMatchObject({ code: 'LAST_ADMIN' });
+    // Früher wurde der vordatierte Deny abgelehnt; mit der stabilen
+    // Systemadmin-Eigenschaft ist er schlicht wirkungslos – der Systemadmin
+    // behält zu jedem Zeitpunkt alle Katalogrechte.
+    await ctx.admin.addOverride(admin.id, admin.id, {
+      permissionKey: 'employee.manage',
+      effect: 'deny',
+      validFrom: new Date(Date.now() + 60_000),
+    });
+    const effective = await ctx.auth.effectivePermissions(admin.id, new Date(Date.now() + 120_000));
+    expect(effective.has('employee.manage')).toBe(true);
   });
 
-  it('Deaktivieren des letzten permanenten Admins wird abgelehnt, wenn die Vertretung nur ein auslaufendes Sonderrecht hat', async () => {
+  it('Deaktivieren des letzten Systemadmins bleibt verboten – Overrides machen niemanden zum Systemadmin', async () => {
     const { admin } = await setup();
     const cover = await createEmployeeWithPassword(ctx, admin.id, {
       firstName: 'Vera',
@@ -338,25 +344,17 @@ describe('19b. Letzter-Admin-Schutz: zeitliche Robustheit (Review-Fix)', () => {
       email: 'vertretung@test.example',
       password: 'vertretung-passwort-1',
     });
-    // Befristete Admin-Fähigkeit für die Vertretung (läuft in 1 h aus).
-    for (const key of ['employee.manage', 'permission.manage'] as const) {
-      await ctx.admin.addOverride(admin.id, cover.id, {
-        permissionKey: key,
-        effect: 'allow',
-        validUntil: new Date(Date.now() + 60 * 60_000),
-      });
-    }
-    // Ohne Zeitprüfung würde das durchgehen – nach Ablauf gäbe es keinen Admin.
-    await expect(ctx.admin.setUserStatus(admin.id, admin.id, 'disabled')).rejects.toMatchObject({
-      code: 'LAST_ADMIN',
-    });
-
-    // Mit UNBEFRISTETER Vertretungs-Fähigkeit ist es erlaubt.
+    // Auch UNBEFRISTETE Admin-Fähigkeiten per Override (employee.manage +
+    // permission.manage) verleihen KEINE Systemadmin-Eigenschaft – der letzte
+    // aktive Systemadmin darf deshalb weiterhin nicht deaktiviert werden
+    // (Phase-2-Finalisierung, Pflichttest 6).
     for (const key of ['employee.manage', 'permission.manage'] as const) {
       await ctx.admin.addOverride(admin.id, cover.id, { permissionKey: key, effect: 'allow' });
     }
-    await ctx.admin.setUserStatus(admin.id, admin.id, 'disabled');
-    expect((await ctx.auth.findUserById(admin.id))?.status).toBe('disabled');
+    await expect(ctx.admin.setUserStatus(admin.id, admin.id, 'disabled')).rejects.toMatchObject({
+      code: 'LAST_ADMIN',
+    });
+    expect((await ctx.auth.findUserById(admin.id))?.status).toBe('active');
   });
 
   it('zwei gleichzeitige Sperrungen der letzten beiden Admins: genau eine gewinnt (kein Write-Skew)', async () => {
@@ -368,7 +366,7 @@ describe('19b. Letzter-Admin-Schutz: zeitliche Robustheit (Review-Fix)', () => {
       password: 'zweitadmin-passwort-1',
     });
     const roles = await ctx.admin.listRoles();
-    const adminRole = roles.find((r) => r.name === 'Administrator');
+    const adminRole = roles.find((r) => r.isSystemAdmin);
     await ctx.admin.setUserRoles(admin.id, second.id, [adminRole!.id]);
 
     const results = await Promise.allSettled([

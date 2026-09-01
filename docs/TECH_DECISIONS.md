@@ -153,7 +153,7 @@ Keine spontanen Framework-/ORM-Wechsel (CLAUDE.md „Dependencies“).
 | Normalisierung | E-Mail: trim + lowercase. Telefon: zusätzliche Spalte `phone_normalized` (nur Ziffern, deutsche Vorwahl-Heuristik 0→49); die eingegebene Darstellung bleibt erhalten | Suche und Dublettenprüfung arbeiten auf der Normalform, Anzeige auf dem Original (Vorgabe Nr. 1). |
 | Papierkorb | Soft-Delete (`deleted_at`/`deleted_by`) NUR für Kunden ohne Vorgänge; `trash.manage` (Admin), Wiederherstellungsfrist 30 Tage serverseitig erzwungen; für Vorgänge existiert kein Lösch-Endpunkt | Geschäftsvorgänge sind nie hart löschbar (Vorgabe Nr. 11); keine Legal-Retention-Engine in Phase 2. |
 | Statusmodell | `main_status`: open / completed / reopened / cancelled als kleiner, erweiterbarer Hauptstatus; Statuswechsel transaktional mit Zustandsprüfung; UI zeigt deutsche Labels | Spätere Fachstatus (Angebot, Rückgabe, Abrechnung) kommen als eigene Module und ersetzen diesen Überstatus nicht. `cancel` setzt in Phase 2 nur den Status – Storno-Fachlogik (Gebühren etc.) folgt in Phase 9. |
-| Berechtigungen | Ausschließlich das Phase-1-System; neue Katalogrechte: `process.edit`, `process.complete`, `process.view_completed`, `trash.manage` | Kein Parallelsystem. WICHTIG für bestehende Installationen: Vorhandene Administrator-Rollen erhalten neue Katalogrechte NICHT automatisch – nach dem Deployment einmalig der Admin-Rolle zuweisen (frische Bootstraps enthalten sie automatisch). |
+| Berechtigungen | Ausschließlich das Phase-1-System; neue Katalogrechte: `process.edit`, `process.complete`, `process.view_completed`, `trash.manage` | Kein Parallelsystem. Neue Katalogrechte gelten für Systemadmins automatisch (siehe Systemadmin-Semantik, Phase-2-Finalisierung); normale Rollen erhalten neue Keys bewusst NICHT automatisch. |
 | Zuständigkeit | `assigned_user_id` optional; NEUE Zuweisung nur an aktive Mitarbeitende, bestehende historische Referenzen bleiben bei Deaktivierung erhalten | Eine zentrale Auflösungsstelle (`ProcessService.assign`), auf der die spätere Vertretungslogik aufsetzen kann. |
 
 ### Bewusst offen (Deferred, Phase 2)
@@ -211,3 +211,15 @@ Keine spontanen Framework-/ORM-Wechsel (CLAUDE.md „Dependencies“).
   sie nicht, löscht sie aber auch nicht); der Dubletten-Check ist mit
   `customer.create` erreichbar (fachlich nötig für die Warnung beim
   Anlegen, minimale Felder).
+
+
+## Phase-2-Finalisierung: Systemadmin-Semantik
+
+| Thema | Entscheidung | Begründung |
+| --- | --- | --- |
+| Systemadmin-Erkennung | Stabile Spalte `staff_roles.is_system_admin` (Migration 0005); ein Benutzer ist Systemadmin, wenn er Mitglied mindestens einer Systemrolle ist. NIE über den frei änderbaren Anzeigenamen prüfen. | Auftraggeber-Vorgabe: Der Hauptadmin darf nach Updates niemals manuell neue Permission Keys benötigen. |
+| Rechteberechnung | `effectivePermissions()` liefert für Systemadmins `fullPermissionSet()` – dynamisch ALLE aktuell im Katalog definierten Keys, auch zukünftige. Individuelle Deny-Overrides sind für Systemadmins wirkungslos (speicherbar, aber inert). | Neue Keys späterer Phasen gelten automatisch; ein Deny kann den Systemadmin nicht versehentlich entmachten. |
+| Systemrolle | Die von `bootstrapFirstAdmin` angelegte Rolle „Administrator" trägt das Flag; sie ist nicht bearbeitbar/löschbar (ihre expliziten `staff_role_permissions` sind irrelevant und werden nicht mehr befüllt). Mehrere Systemadmins = mehrere Mitglieder dieser Rolle. | Eine geschützte Systemrolle statt Pro-Benutzer-Flag passt zur bestehenden Rollen-/Zuweisungsarchitektur. |
+| Ernennung/Entzug | Nur ein bereits berechtigter Systemadmin darf die Systemrolle zuweisen oder entziehen (`FORBIDDEN` sonst, auch mit `permission.manage`). Beides wird auditiert (`permission.system_admin_granted/_revoked`). | Vier-Augen-Grundsatz auf der höchsten Berechtigungsstufe. |
+| Letzter-Admin-Schutz | Invariante umgestellt: Es muss immer mindestens ein AKTIVER Mitarbeiter Mitglied einer Systemrolle sein (Advisory-Lock bleibt). Die frühere Override-basierte Abdeckung (unbefristete allow-Overrides auf employee.manage+permission.manage) zählt NICHT mehr; die zeitliche Grenzwertprüfung entfiel, weil die Eigenschaft strukturell und unbefristet ist. Zwei Phase-1-Tests wurden entsprechend an die neue Fachregel angepasst. | Die Systemadmin-Eigenschaft ist nicht zeitbefristet und nicht deny-bar – nur sie garantiert dauerhaft volle Verwaltungsfähigkeit. |
+| Backfill | Migration 0005 markiert die Rolle „Administrator" (deterministischer Bootstrap-Name) einmalig; Sicherheitsnetz: existiert danach keine Systemrolle, werden Rollen mit employee.manage+permission.manage markiert. | Bestehende Installationen erhalten die Eigenschaft ohne Handarbeit; zur Laufzeit wird trotzdem nie über den Namen geprüft. |

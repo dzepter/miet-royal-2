@@ -5,6 +5,7 @@ import {
   staffRecoveryCodes,
   staffRolePermissions,
   staffSessions,
+  staffRoles,
   staffUserPermissionOverrides,
   staffUserRoles,
   staffUsers,
@@ -14,6 +15,7 @@ import {
 } from '@mietroyal/database';
 import {
   computeEffectivePermissions,
+  fullPermissionSet,
   hasAdminCapability,
   type PermissionKey,
   type PermissionOverride,
@@ -55,7 +57,8 @@ export type AuthErrorCode =
   | 'VALIDATION'
   | 'NOT_FOUND'
   | 'CONFLICT'
-  | 'LAST_ADMIN';
+  | 'LAST_ADMIN'
+  | 'FORBIDDEN';
 
 export class AuthError extends Error {
   readonly code: AuthErrorCode;
@@ -115,6 +118,11 @@ export class StaffAuthService {
     userId: string,
     now = new Date(),
   ): Promise<ReadonlySet<PermissionKey>> {
+    // Systemadmin (stabile is_system_admin-Eigenschaft der Systemrolle,
+    // niemals der Anzeigename): dynamisch ALLE Katalogrechte, auch kuenftig
+    // neue Keys. Denies wirken hier bewusst nicht (Phase-2-Finalisierung).
+    if (await this.isSystemAdmin(userId)) return fullPermissionSet();
+
     const roleKeys = await this.db
       .select({ permissionKey: staffRolePermissions.permissionKey })
       .from(staffUserRoles)
@@ -628,5 +636,16 @@ export class StaffAuthService {
 
   async isAdminCapable(userId: string): Promise<boolean> {
     return hasAdminCapability(await this.effectivePermissions(userId));
+  }
+
+  /** Ist der Benutzer Mitglied einer Systemrolle (is_system_admin)? */
+  async isSystemAdmin(userId: string): Promise<boolean> {
+    const rows = await this.db
+      .select({ roleId: staffUserRoles.roleId })
+      .from(staffUserRoles)
+      .innerJoin(staffRoles, eq(staffUserRoles.roleId, staffRoles.id))
+      .where(and(eq(staffUserRoles.userId, userId), eq(staffRoles.isSystemAdmin, true)))
+      .limit(1);
+    return rows.length > 0;
   }
 }

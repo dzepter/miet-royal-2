@@ -1,4 +1,9 @@
-import { ADMIN_CRITICAL_PERMISSIONS, isPermissionKey, type PermissionKey } from './catalog.ts';
+import {
+  ADMIN_CRITICAL_PERMISSIONS,
+  PERMISSION_DEFINITIONS,
+  isPermissionKey,
+  type PermissionKey,
+} from './catalog.ts';
 
 /**
  * Ein individueller Override (Allow ODER Deny), optional zeitlich befristet.
@@ -63,4 +68,20 @@ export function computeEffectivePermissions(input: {
 /** Besitzt dieses effektive Rechteset die volle Admin-Fähigkeit? */
 export function hasAdminCapability(effective: ReadonlySet<PermissionKey>): boolean {
   return ADMIN_CRITICAL_PERMISSIONS.every((key) => effective.has(key));
+}
+
+/**
+ * Vollständiges Rechteset eines SYSTEMADMINS (Phase-2-Finalisierung):
+ * dynamisch ALLE aktuell im zentralen Katalog definierten Rechte – neue
+ * Keys späterer Phasen gelten damit automatisch, ohne Rollenpflege.
+ * Individuelle Deny-Overrides wirken auf Systemadmins bewusst NICHT
+ * (sie könnten den Systemadmin sonst versehentlich entmachten).
+ *
+ * `definitions` ist parametrisierbar, damit Tests die Zukunftssicherheit
+ * mit einem synthetisch erweiterten Katalog belegen können.
+ */
+export function fullPermissionSet(
+  definitions: readonly { key: string }[] = PERMISSION_DEFINITIONS,
+): ReadonlySet<PermissionKey> {
+  return new Set(definitions.map((definition) => definition.key)) as ReadonlySet<PermissionKey>;
 }

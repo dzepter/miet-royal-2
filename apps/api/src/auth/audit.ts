@@ -11,6 +11,8 @@ export const SECURITY_EVENT_TYPES = [
   'employee.disabled',
   'employee.reactivated',
   'permission.roles_changed',
+  'permission.system_admin_granted',
+  'permission.system_admin_revoked',
   'permission.role_created',
   'permission.role_updated',
   'permission.role_deleted',

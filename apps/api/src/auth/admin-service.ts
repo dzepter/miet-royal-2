@@ -12,13 +12,7 @@ import {
   type DatabaseExecutor,
   type StaffUser,
 } from '@mietroyal/database';
-import {
-  computeEffectivePermissions,
-  hasAdminCapability,
-  isPermissionKey,
-  PERMISSION_DEFINITIONS,
-  type PermissionOverride,
-} from '@mietroyal/permissions';
+import { isPermissionKey } from '@mietroyal/permissions';
 import { and, desc, eq, isNull, or, sql } from 'drizzle-orm';
 import { recordSecurityEvent } from './audit.ts';
 import { generateToken, sha256Hex } from './crypto.ts';
@@ -29,7 +23,7 @@ import { AuthError, normalizeEmail, type StaffAuthService } from './service.ts';
 export const EMPLOYEE_SETUP_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 const LAST_ADMIN_MESSAGE =
-  'Nicht möglich: Es muss immer mindestens ein aktiver Administrator mit vollen Verwaltungsrechten bestehen bleiben.';
+  'Nicht möglich: Es muss immer mindestens ein aktiver Systemadministrator bestehen bleiben.';
 
 /**
  * Schutzregel „letzter aktiver Admin“ (Phase-1-Vorgabe Nr. 2):
@@ -38,82 +32,30 @@ const LAST_ADMIN_MESSAGE =
  * kritischen Admin-Rechte effektiv besitzt. Falls nicht, wirft die Prüfung
  * und die Transaktion wird zurückgerollt – die Änderung passiert nie.
  */
+/**
+ * Schutzregel „letzter aktiver Systemadmin" (Phase-2-Finalisierung):
+ * Nach JEDER Mutation, die Status, Rollen oder die Systemrolle betrifft,
+ * prüft dieselbe Transaktion, ob noch mindestens ein AKTIVER Mitarbeiter
+ * Mitglied einer Systemrolle (is_system_admin) ist. Die Eigenschaft ist
+ * strukturell (nicht zeitbefristet, nicht durch Denies aushebelbar) –
+ * Override-Grenzzeitpunkte spielen daher keine Rolle mehr.
+ */
 export async function assertActiveAdminRemains(executor: DatabaseExecutor): Promise<void> {
   // Nebenläufigkeitsschutz (Write-Skew): Ein transaktionsweiter Advisory-Lock
   // serialisiert alle invariantenrelevanten Mutationen. Die zweite von zwei
   // konkurrierenden Transaktionen wartet hier, sieht danach (READ COMMITTED,
   // frischer Statement-Snapshot) die committeten Änderungen der ersten und
-  // schlägt korrekt fehl, statt gemeinsam den letzten Admin zu entfernen.
+  // schlägt korrekt fehl, statt gemeinsam den letzten Systemadmin zu entfernen.
   await executor.execute(sql`SELECT pg_advisory_xact_lock(hashtext('staff_admin_invariant'))`);
 
-  const activeUsers = await executor
-    .select({ id: staffUsers.id })
-    .from(staffUsers)
-    .where(eq(staffUsers.status, 'active'));
-  const activeIds = new Set(activeUsers.map((u) => u.id));
-
-  const roleRows = await executor
-    .select({
-      userId: staffUserRoles.userId,
-      permissionKey: staffRolePermissions.permissionKey,
-    })
+  const rows = await executor
+    .select({ userId: staffUserRoles.userId })
     .from(staffUserRoles)
-    .innerJoin(staffRolePermissions, eq(staffUserRoles.roleId, staffRolePermissions.roleId));
-  const overrideRows = await executor.select().from(staffUserPermissionOverrides);
-
-  const roleKeysByUser = new Map<string, string[]>();
-  for (const row of roleRows) {
-    if (!activeIds.has(row.userId)) continue;
-    const list = roleKeysByUser.get(row.userId) ?? [];
-    list.push(row.permissionKey);
-    roleKeysByUser.set(row.userId, list);
-  }
-  const overridesByUser = new Map<string, PermissionOverride[]>();
-  for (const row of overrideRows) {
-    if (!activeIds.has(row.userId)) continue;
-    const list = overridesByUser.get(row.userId) ?? [];
-    list.push({
-      permissionKey: row.permissionKey,
-      effect: row.effect,
-      validFrom: row.validFrom,
-      validUntil: row.validUntil,
-    });
-    overridesByUser.set(row.userId, list);
-  }
-
-  // Zeitliche Robustheit: Effektive Rechte sind zwischen Override-Grenzen
-  // stückweise konstant. Geprüft wird deshalb nicht nur JETZT, sondern jeder
-  // zukünftige Grenzzeitpunkt (validFrom aktiviert Denies, validUntil lässt
-  // Allows auslaufen). So kann weder ein vordatierter Deny noch ein
-  // auslaufendes Sonderrecht das System später admin-los machen.
-  const now = new Date();
-  const instants = [now.getTime()];
-  for (const overrides of overridesByUser.values()) {
-    for (const override of overrides) {
-      for (const boundary of [override.validFrom, override.validUntil]) {
-        if (boundary !== null && boundary.getTime() > now.getTime()) {
-          instants.push(boundary.getTime());
-        }
-      }
-    }
-  }
-
-  for (const instant of new Set(instants)) {
-    const at = new Date(instant);
-    let adminExistsAt = false;
-    for (const userId of activeIds) {
-      const effective = computeEffectivePermissions({
-        rolePermissionKeys: roleKeysByUser.get(userId) ?? [],
-        overrides: overridesByUser.get(userId) ?? [],
-        now: at,
-      });
-      if (hasAdminCapability(effective)) {
-        adminExistsAt = true;
-        break;
-      }
-    }
-    if (!adminExistsAt) throw new AuthError('LAST_ADMIN', LAST_ADMIN_MESSAGE);
-  }
+    .innerJoin(staffRoles, eq(staffUserRoles.roleId, staffRoles.id))
+    .innerJoin(staffUsers, eq(staffUserRoles.userId, staffUsers.id))
+    .where(and(eq(staffRoles.isSystemAdmin, true), eq(staffUsers.status, 'active')))
+    .limit(1);
+  if (rows.length === 0) throw new AuthError('LAST_ADMIN', LAST_ADMIN_MESSAGE);
 }
 
 function assertValidPermissionKeys(keys: readonly string[]): void {
@@ -181,15 +123,15 @@ export class StaffAdminService {
       const admin = inserted[0];
       if (admin === undefined) throw new AuthError('CONFLICT', 'Anlegen fehlgeschlagen.');
 
+      // Systemrolle: Rechte kommen DYNAMISCH aus dem Katalog
+      // (is_system_admin), nicht aus staff_role_permissions – neue Keys
+      // späterer Phasen gelten damit automatisch.
       const roleRows = await tx
         .insert(staffRoles)
-        .values({ name: 'Administrator' })
+        .values({ name: 'Administrator', isSystemAdmin: true })
         .returning({ id: staffRoles.id });
       const roleId = roleRows[0]?.id;
       if (roleId === undefined) throw new AuthError('CONFLICT', 'Rollen-Anlage fehlgeschlagen.');
-      for (const definition of PERMISSION_DEFINITIONS) {
-        await tx.insert(staffRolePermissions).values({ roleId, permissionKey: definition.key });
-      }
       await tx.insert(staffUserRoles).values({ userId: admin.id, roleId });
       return admin;
     });
@@ -358,6 +300,12 @@ export class StaffAdminService {
     const existing = await this.db.select().from(staffRoles).where(eq(staffRoles.id, roleId));
     const role = existing[0];
     if (role === undefined) throw new AuthError('NOT_FOUND', 'Rolle nicht gefunden.');
+    if (role.isSystemAdmin) {
+      throw new AuthError(
+        'CONFLICT',
+        'Die Systemrolle kann nicht bearbeitet werden – ihre Rechte kommen dynamisch aus dem Katalog.',
+      );
+    }
     if (input.permissionKeys !== undefined) assertValidPermissionKeys(input.permissionKeys);
     const newName = input.name?.trim();
     if (newName !== undefined && newName === '') {
@@ -390,6 +338,9 @@ export class StaffAdminService {
     const existing = await this.db.select().from(staffRoles).where(eq(staffRoles.id, roleId));
     const role = existing[0];
     if (role === undefined) throw new AuthError('NOT_FOUND', 'Rolle nicht gefunden.');
+    if (role.isSystemAdmin) {
+      throw new AuthError('CONFLICT', 'Die Systemrolle kann nicht gelöscht werden.');
+    }
 
     await this.db.transaction(async (tx) => {
       await tx.delete(staffRoles).where(eq(staffRoles.id, roleId));
@@ -411,9 +362,30 @@ export class StaffAdminService {
     const target = await this.auth.findUserById(targetUserId);
     if (target === undefined) throw new AuthError('NOT_FOUND', 'Mitarbeiter nicht gefunden.');
     const uniqueRoleIds = [...new Set(roleIds)];
+    const systemRoleIds = new Set<string>();
     for (const roleId of uniqueRoleIds) {
       const role = await this.db.select().from(staffRoles).where(eq(staffRoles.id, roleId));
-      if (role.length === 0) throw new AuthError('NOT_FOUND', 'Rolle nicht gefunden.');
+      const found = role[0];
+      if (found === undefined) throw new AuthError('NOT_FOUND', 'Rolle nicht gefunden.');
+      if (found.isSystemAdmin) systemRoleIds.add(found.id);
+    }
+
+    // Ernennen/Entziehen der Systemadmin-Eigenschaft darf ausschließlich ein
+    // bereits berechtigter Systemadmin (Phase-2-Finalisierung) – nicht jeder
+    // Inhaber von permission.manage.
+    const currentSystemMembership = await this.db
+      .select({ roleId: staffUserRoles.roleId })
+      .from(staffUserRoles)
+      .innerJoin(staffRoles, eq(staffUserRoles.roleId, staffRoles.id))
+      .where(and(eq(staffUserRoles.userId, targetUserId), eq(staffRoles.isSystemAdmin, true)));
+    const wasSystemAdmin = currentSystemMembership.length > 0;
+    const becomesSystemAdmin = systemRoleIds.size > 0;
+    const membershipChanges = wasSystemAdmin !== becomesSystemAdmin;
+    if (membershipChanges && !(await this.auth.isSystemAdmin(actorId))) {
+      throw new AuthError(
+        'FORBIDDEN',
+        'Nur ein Systemadmin darf die Systemadmin-Eigenschaft vergeben oder entziehen.',
+      );
     }
 
     await this.db.transaction(async (tx) => {
@@ -429,6 +401,17 @@ export class StaffAdminService {
       targetUserId,
       details: { roleCount: uniqueRoleIds.length },
     });
+    if (membershipChanges) {
+      // Sicherheitskritische Änderung: eigenes Audit-Ereignis.
+      await recordSecurityEvent(this.db, {
+        type: becomesSystemAdmin
+          ? 'permission.system_admin_granted'
+          : 'permission.system_admin_revoked',
+        actorUserId: actorId,
+        targetUserId,
+        details: {},
+      });
+    }
   }
 
   // ── Individuelle Overrides / befristete Sonderrechte ────────────────────
@@ -603,7 +586,7 @@ export class StaffAdminService {
     const user = await this.auth.findUserById(userId);
     if (user === undefined) throw new AuthError('NOT_FOUND', 'Mitarbeiter nicht gefunden.');
     const roles = await this.db
-      .select({ id: staffRoles.id, name: staffRoles.name })
+      .select({ id: staffRoles.id, name: staffRoles.name, isSystemAdmin: staffRoles.isSystemAdmin })
       .from(staffUserRoles)
       .innerJoin(staffRoles, eq(staffUserRoles.roleId, staffRoles.id))
       .where(eq(staffUserRoles.userId, userId));
@@ -652,6 +635,7 @@ export class StaffAdminService {
     return roles.map((role) => ({
       id: role.id,
       name: role.name,
+      isSystemAdmin: role.isSystemAdmin,
       permissionKeys: permissions
         .filter((p) => p.roleId === role.id)
         .map((p) => p.permissionKey)
