@@ -123,6 +123,9 @@ kontrolliertes Deployment → Smoke Test → ggf. Rollback.
 ### Offen / bewusst nicht Teil der Aufgabe
 ### Risiken / Beobachtungen
 
+Abschluss-/Phasenberichte immer ZUSÄTZLICH als einen einzelnen
+kopierbaren Textblock (Codefence) liefern – nicht nur gerendert.
+
 ## Quellenreihenfolge bei Widerspruch
 1. MASTER_SPEC
 2. DOMAIN_RULES
