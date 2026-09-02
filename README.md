@@ -7,8 +7,9 @@ Ausgabe/Rückgabe, Abrechnung und Integrationen.
 **Leitprinzip: Das System darf intern komplex sein. Für Mitarbeitende und
 Kunden muss es einfach wirken.**
 
-Aktueller Stand: **Phase 4 (Kalender, Termine, Zuständigkeit,
-Vertretung, Konflikte & „Heute“) umgesetzt** — auf Basis von Phase 1
+Aktueller Stand: **Phase 5 (Physische Maschinen, Verfügbarkeit, QR &
+Lagerbestand) umgesetzt** — zusätzlich zu Phase 4 (Kalender, Termine,
+Zuständigkeit, Vertretung, Konflikte & „Heute“) — auf Basis von Phase 1
 (Staff-Authentifizierung mit TOTP-2FA, Sessions, App-Sperre, granulare
 Rollen/Rechte inkl. Systemadmin-Semantik), Phase 2 (Kunden, Vorgänge,
 Notizen, globale Suche) und Phase 3 (Produktkatalog mit Preisverwaltung,
@@ -25,8 +26,14 @@ Termin, Same-Day-Übernahmebestätigung, Vertretungsregelung mit
 effektiver Zuständigkeit, warnender (nie blockierender)
 Konflikterkennung mit Fingerprint-Unterdrückung, überfälligen Rückgaben
 samt „Heute“-Startseite sowie vorbereiteten Reminder-/Push-Datenlagen.
-Maschinen-/Lagerverwaltung, Ausgabe/Rückgabe und Abrechnung folgen ab
-Phase 5.
+Neu in Phase 5: 11 physische Slush-Maschinen mit unveränderbaren
+MR-Maschinen-IDs, Status/Standort/Sperren, sicherer QR-Grundlage und
+Referenzfotos im privaten Storage; interne Maschinenverfügbarkeit mit
+Kapazitätswarnungen über die bestehende Konfliktarchitektur und
+Auswahlvorschlag für Phase 6; Lagerbestand als Bewegungs-Ledger mit
+Wareneingang, Mindestbeständen, Warnungen und Inventur mit
+Admin-Freigabe (kein erfundener Anfangsbestand). Konkrete
+Maschinenzuweisung, Ausgabe/Rückgabe und Abrechnung folgen ab Phase 6.
 
 ## Voraussetzungen
 

@@ -51,13 +51,20 @@ function EntryRow({
   );
 }
 
+interface WarehouseWarnings {
+  lowStock: { itemId: string }[] | null;
+  machineWarnings: { machineId: string; machineCode: string; reason: string }[] | null;
+}
+
 function Home() {
   const me = useMe();
   const [today, setToday] = useState<TodayData | null>(null);
   const [selected, setSelected] = useState<CalendarEntry | null>(null);
   const [myProcesses, setMyProcesses] = useState<ProcessRow[]>([]);
+  const [warehouse, setWarehouse] = useState<WarehouseWarnings | null>(null);
   const canCalendar = hasPermission(me, 'calendar.view');
   const canSeeProcesses = hasPermission(me, 'process.view_all');
+  const canWarehouse = hasPermission(me, 'machine.view') || hasPermission(me, 'inventory.view');
 
   const load = useCallback(async () => {
     if (!canCalendar) return;
@@ -87,6 +94,38 @@ function Home() {
       if (result.data !== null) setMyProcesses(result.data.myProcesses);
     });
   }, [canSeeProcesses]);
+
+  useEffect(() => {
+    if (!canWarehouse) return;
+    void apiFetch<WarehouseWarnings>('/staff/warehouse/warnings').then((result) => {
+      if (result.data !== null) setWarehouse(result.data);
+    });
+  }, [canWarehouse]);
+
+  // Kompakte Maschinen-/Lagerwarnungen (Order §48/UX_RULES „Heute“ Nr. 4)
+  // – die operative Startseite bleibt schlank, Details hinter dem Link.
+  const lowStockCount = warehouse?.lowStock?.length ?? 0;
+  const machineWarningCount = warehouse?.machineWarnings?.length ?? 0;
+  const warehouseCard =
+    lowStockCount > 0 || machineWarningCount > 0 ? (
+      <div className="card" data-testid="warehouse-warnings">
+        <h2>Maschinen- &amp; Lagerwarnungen</h2>
+        {machineWarningCount > 0 && (
+          <p>
+            <Link href="/maschinen">
+              {machineWarningCount === 1
+                ? '1 Maschine nicht regulär einsetzbar'
+                : `${machineWarningCount} Maschinen nicht regulär einsetzbar`}
+            </Link>
+          </p>
+        )}
+        {lowStockCount > 0 && (
+          <p>
+            <Link href="/lager">Lagerbestand niedrig: {lowStockCount} Artikel</Link>
+          </p>
+        )}
+      </div>
+    ) : null;
 
   const dateLabel = new Date().toLocaleDateString('de-DE', {
     timeZone: 'Europe/Berlin',
@@ -134,6 +173,8 @@ function Home() {
             </div>
           )}
 
+          {warehouseCard}
+
           {today.upcoming.length > 0 && (
             <div className="card">
               <h2>Nächste Termine</h2>
@@ -157,6 +198,8 @@ function Home() {
           </p>
         </>
       )}
+
+      {!canCalendar && warehouseCard}
 
       {canSeeProcesses && myProcesses.length > 0 && (
         <div className="card">

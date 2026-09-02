@@ -71,6 +71,13 @@
       "when": 1788334852462,
       "tag": "0009_scheduling_core",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1788378185418,
+      "tag": "0010_warehouse_core",
+      "breakpoints": true
     }
   ]
 }

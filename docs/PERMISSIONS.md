@@ -36,10 +36,18 @@ bestätigen, Konflikt als gelöst markieren),
 `machine.view`, `machine.assign`, `machine.change_status`,
 `machine.block`, `machine.override_block`, `machine.replace_reference_photo`
 
+Kontrollierte Phase-5-Ergänzungen (keine zweite Rechtearchitektur):
+`machine.manage` (Stammdaten pflegen, neue Maschine anlegen),
+`machine.change_location` (aktuellen Standort ändern),
+`machine.qr` (QR-Code anzeigen/drucken)
+
 ### Lager
 `inventory.view`, `inventory.add_stock`, `inventory.issue`,
 `inventory.return`, `inventory.count`, `inventory.approve_adjustment`,
 `inventory.view_movement_history`
+
+Kontrollierte Phase-5-Ergänzung:
+`inventory.manage_min_stock` (Mindestbestände festlegen)
 
 ### Ausgabe/Rückgabe
 `handover.perform`, `handover.correct_actual_time`,

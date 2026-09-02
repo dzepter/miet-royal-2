@@ -2,7 +2,7 @@ import { loadConfig } from '@mietroyal/config';
 import { parseOrThrow, z } from '@mietroyal/validation';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import { buildApp } from '../src/app.ts';
+import { buildApp, maskLoggedPath } from '../src/app.ts';
 
 const config = loadConfig({ APP_ENV: 'development', LOG_LEVEL: 'error' });
 
@@ -125,5 +125,17 @@ describe('Fehlerform', () => {
     });
     expect(response.statusCode).toBe(400);
     expect(response.json().error.correlationId).toBeDefined();
+  });
+
+  it('Request-Log maskiert opake Tokens (Angebots-Links, Maschinen-QR) und Query-Strings', () => {
+    expect(maskLoggedPath('/public/offers/abc123token/summary?x=1')).toBe(
+      '/public/offers/***/summary',
+    );
+    expect(maskLoggedPath(`/staff/machines/qr/${'ab'.repeat(24)}`)).toBe('/staff/machines/qr/***');
+    expect(maskLoggedPath('/staff/machines/qr/deadbeef?redirect=1')).toBe('/staff/machines/qr/***');
+    expect(maskLoggedPath('/staff/search?q=Marta+Muster')).toBe('/staff/search');
+    expect(maskLoggedPath('/staff/machines/1b2e39ff-0000-0000-0000-000000000000')).toBe(
+      '/staff/machines/1b2e39ff-0000-0000-0000-000000000000',
+    );
   });
 });

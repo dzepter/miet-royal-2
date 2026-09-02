@@ -303,6 +303,25 @@ export const PERMISSION_DEFINITIONS = [
     'Referenzfoto ersetzen',
     'Dir fehlt das Recht, Referenzfotos zu ersetzen.',
   ),
+  // Kontrollierte Phase-5-Ergänzungen (Order §44; PERMISSIONS.md führend):
+  def(
+    'machine.manage',
+    'machines',
+    'Maschinen-Stammdaten verwalten',
+    'Dir fehlt das Recht, Maschinen-Stammdaten zu verwalten.',
+  ),
+  def(
+    'machine.change_location',
+    'machines',
+    'Maschinenstandort ändern',
+    'Dir fehlt das Recht, den Maschinenstandort zu ändern.',
+  ),
+  def(
+    'machine.qr',
+    'machines',
+    'Maschinen-QR anzeigen/drucken',
+    'Dir fehlt das Recht, Maschinen-QR-Codes anzuzeigen.',
+  ),
 
   // Lager
   def('inventory.view', 'inventory', 'Lager ansehen', 'Dir fehlt das Recht, das Lager einzusehen.'),
@@ -336,6 +355,13 @@ export const PERMISSION_DEFINITIONS = [
     'inventory',
     'Lagerbewegungen ansehen',
     'Dir fehlt das Recht, die Bewegungshistorie zu sehen.',
+  ),
+  // Kontrollierte Phase-5-Ergänzung (Order §44):
+  def(
+    'inventory.manage_min_stock',
+    'inventory',
+    'Mindestbestände festlegen',
+    'Dir fehlt das Recht, Mindestbestände festzulegen.',
   ),
 
   // Ausgabe

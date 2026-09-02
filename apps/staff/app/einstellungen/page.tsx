@@ -63,8 +63,71 @@ function SettingsView() {
         </form>
       </div>
       <PickupSettings />
+      <BaseUrlSettings />
       <TermsSettings />
     </main>
+  );
+}
+
+function BaseUrlSettings() {
+  const [url, setUrl] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    void apiFetch<{ url: string | null }>('/staff/settings/staff-app-base-url').then((result) => {
+      if (result.data !== null) setUrl(result.data.url ?? '');
+      else setError(result.errorMessage ?? 'Einstellung konnte nicht geladen werden.');
+    });
+  }, []);
+
+  async function save(event: React.FormEvent) {
+    event.preventDefault();
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    const result = await apiFetch<{ url: string | null }>('/staff/settings/staff-app-base-url', {
+      method: 'PUT',
+      body: { url: url.trim() === '' ? null : url.trim() },
+    });
+    setBusy(false);
+    if (!result.ok) {
+      setError(result.errorMessage ?? 'Speichern fehlgeschlagen.');
+      return;
+    }
+    setUrl(result.data?.url ?? '');
+    setNotice(
+      (result.data?.url ?? null) === null
+        ? 'Basis-URL entfernt – QR-Codes zeigen nur den Identifier.'
+        : 'Gespeichert. QR-Codes verlinken jetzt auf diese Basis-URL.',
+    );
+  }
+
+  return (
+    <div className="card">
+      <h2>Staff-App-Basis-URL (QR-Codes)</h2>
+      <p className="muted">
+        Absolute Adresse der Mitarbeiter-App (z. B. https://staff.example.de). Sie wird
+        ausschließlich für druckbare Maschinen-QR-Codes verwendet – ohne Konfiguration wird bewusst
+        keine Live-URL erfunden.
+      </p>
+      {error !== null && <p className="error">{error}</p>}
+      {notice !== null && <p className="success">{notice}</p>}
+      <form onSubmit={(e) => void save(e)}>
+        <label htmlFor="s-base-url">Basis-URL (leer = nicht konfiguriert)</label>
+        <input
+          id="s-base-url"
+          type="text"
+          placeholder="https://staff.example.de"
+          value={url}
+          onChange={(e) => setUrl(e.target.value)}
+        />
+        <button className="primary" type="submit" disabled={busy}>
+          Speichern
+        </button>
+      </form>
+    </div>
   );
 }
 

@@ -51,6 +51,8 @@ export async function createAcceptedBooking(
     collectionWindowFrom?: Date | null;
     collectionWindowTo?: Date | null;
     assignProcessTo?: string | null;
+    machineSlug?: string;
+    machineQuantity?: number;
   } = {},
 ): Promise<BookingWorld> {
   const fulfillment = options.fulfillment ?? 'pickup';
@@ -58,7 +60,9 @@ export async function createAcceptedBooking(
     eventInDays: options.eventInDays ?? 30,
     fulfillment,
   });
-  const machine = await productServiceFor(ctx).getProductBySlug('slush-2x10');
+  const machine = await productServiceFor(ctx).getProductBySlug(
+    options.machineSlug ?? 'slush-2x10',
+  );
   const eventDate =
     options.eventDate ??
     new Date(Date.now() + (options.eventInDays ?? 30) * 86_400_000).toISOString().slice(0, 10);
@@ -88,6 +92,11 @@ export async function createAcceptedBooking(
   }
   const services = commerceServices(ctx);
   const { versionId } = await services.offers.createOffer(adminId, world.processId);
+  if (options.machineQuantity !== undefined && options.machineQuantity !== 1) {
+    await services.offers.updateDraft(adminId, versionId, {
+      machineQuantity: options.machineQuantity,
+    });
+  }
   const effective = await ctx.auth.effectivePermissions(adminId);
   const { token } = await services.offers.send(adminId, versionId, effective);
   const { bookingId } = await services.offers.accept(token);

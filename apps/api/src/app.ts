@@ -15,12 +15,26 @@ import { registerAuthRoutes } from './routes/auth.ts';
 import { registerCommerceRoutes } from './routes/commerce.ts';
 import { registerCrmRoutes } from './routes/crm.ts';
 import { registerSchedulingRoutes } from './routes/scheduling.ts';
+import { registerWarehouseRoutes } from './routes/warehouse.ts';
 import { registerStaffAdminRoutes } from './routes/staff-admin.ts';
 
 export const API_VERSION = '0.1.0';
 
 const CORRELATION_ID_HEADER = 'x-correlation-id';
 const CORRELATION_ID_PATTERN = /^[A-Za-z0-9_-]{8,64}$/;
+
+/**
+ * Pfad fürs Request-Log: Query-Strings enthalten Kundendaten (z. B.
+ * Suchbegriffe wie Namen oder Telefonnummern) und werden komplett
+ * weggelassen; opake Tokens im Pfad (öffentliche Angebots-Links,
+ * Maschinen-QR-Identifier) erscheinen nie im Klartext im Log.
+ */
+export function maskLoggedPath(url: string): string {
+  const path = url.split('?')[0] ?? url;
+  return path
+    .replace(/(\/public\/offers\/)[^/]+/, '$1***')
+    .replace(/(\/staff\/machines\/qr\/)[^/]+/, '$1***');
+}
 
 export interface AppOptions {
   config: AppConfig;
@@ -59,15 +73,8 @@ export function buildApp({
       level: config.logLevel,
       redact: ['req.headers.authorization', 'req.headers.cookie'],
       serializers: {
-        // Query-Strings enthalten Kundendaten (z. B. Suchbegriffe wie Namen
-        // oder Telefonnummern) – es wird nur der Pfad geloggt. Öffentliche
-        // Angebots-Token stehen im Pfad selbst und werden maskiert.
         req(request: FastifyRequest) {
-          const path = request.url.split('?')[0] ?? request.url;
-          return {
-            method: request.method,
-            url: path.replace(/(\/public\/offers\/)[^/]+/, '$1***'),
-          };
+          return { method: request.method, url: maskLoggedPath(request.url) };
         },
       },
     },
@@ -232,14 +239,21 @@ export function buildApp({
       });
       registerStaffAdminRoutes(instance, { auth: authService, admin: adminService, config });
       registerCrmRoutes(instance, { db, auth: authService, config });
+      const storageProvider = storage ?? createStorageProvider(config.storage);
       registerCommerceRoutes(instance, {
         db,
         auth: authService,
         config,
-        storage: storage ?? createStorageProvider(config.storage),
+        storage: storageProvider,
         rateLimitEnabled,
       });
       registerSchedulingRoutes(instance, { db, auth: authService, config });
+      registerWarehouseRoutes(instance, {
+        db,
+        auth: authService,
+        config,
+        storage: storageProvider,
+      });
     });
   }
 

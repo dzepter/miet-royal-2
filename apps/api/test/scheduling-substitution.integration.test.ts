@@ -64,14 +64,13 @@ const IN_DAYS = (days: number, hours = 0) =>
  * liegt (kurz vor Mitternacht: 30 min zurück statt vor).
  */
 function sameBerlinDayStart(): Date {
-  const hour = Number(
-    new Intl.DateTimeFormat('de-DE', {
-      timeZone: 'Europe/Berlin',
-      hour: '2-digit',
-      hourCycle: 'h23',
-    }).format(new Date()),
-  );
-  return hour < 23 ? new Date(Date.now() + 30 * 60_000) : new Date(Date.now() - 30 * 60_000);
+  // Robust gegen Mitternacht: +30 min, solange das derselbe Berliner
+  // Kalendertag bleibt (sonst, kurz vor Mitternacht, -30 min).
+  const berlinDay = (value: Date) =>
+    value.toLocaleDateString('en-CA', { timeZone: 'Europe/Berlin' });
+  const now = new Date();
+  const later = new Date(now.getTime() + 30 * 60_000);
+  return berlinDay(later) === berlinDay(now) ? later : new Date(now.getTime() - 30 * 60_000);
 }
 
 describe('15.–21. Vertretungen', () => {

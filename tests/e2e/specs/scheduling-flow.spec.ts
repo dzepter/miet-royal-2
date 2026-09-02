@@ -225,6 +225,10 @@ test('C: Überlappende Termine desselben Mitarbeiters erzeugen einen sichtbaren 
   // Willis Abholung: exakte Zeit übermorgen 10:30 – mitten in Paulas Fenster.
   await staff.locator('.entry-row', { hasText: 'Abholung / Ausgabe' }).click();
   await saveTimeInPreview(staff, { start: fillAt(berlinDayPlus(2), 10, 30) });
+  // Erst auf den neu geladenen Stand warten (Version!), dann zuweisen.
+  await expect(
+    staff.locator('.entry-row', { hasText: 'Abholung / Ausgabe' }).getByText('10:30 Uhr'),
+  ).toBeVisible();
   await preview().getByLabel('Mitarbeiter zuweisen').selectOption({ label: 'E2E, Erika' });
   await preview().getByRole('button', { name: 'Zuweisen' }).click();
   await expect(preview().getByText('Mitarbeiter: Erika E2E')).toBeVisible();

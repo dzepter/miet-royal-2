@@ -275,7 +275,7 @@ describe('40. Erweiterbarkeit (Phase-5-Vorbereitung)', () => {
       .select()
       .from(appointments)
       .where(eq(appointments.bookingId, world.bookingId));
-    const detected = service.detectAll({
+    const detected = await service.detectAll({
       appointments: rows.map((row) => ({ ...row, effectiveAssigneeId: null })),
     });
     expect(detected.some((c) => c.type === 'machine_capacity_dummy')).toBe(true);

@@ -72,6 +72,27 @@ try {
      ('TEST-Platzhalter v1', 'TEST – Dies ist ein Platzhalter, kein echter Rechtstext.', true)
      ON CONFLICT (label) DO NOTHING`,
   );
+  // Phase 5: Warehouse auf den Seed-Stand der Migration 0010 zurücksetzen.
+  // (Die Auth-Truncates oben haben Sperren/Bewegungen/Inventuren bereits
+  // mit abgeräumt – hier bleiben Maschinen-/Artikelzustand.)
+  await pool.query(
+    `DELETE FROM machines WHERE machine_code NOT IN (
+       'MR-08-01-01','MR-08-01-02','MR-08-02-01',
+       'MR-10-01-01','MR-10-01-02','MR-10-01-03','MR-10-01-04','MR-10-01-05','MR-10-01-06',
+       'MR-10-02-01','MR-10-02-02')`,
+  );
+  await pool.query(
+    `UPDATE machines SET status = 'ready', location_kind = 'warehouse', location_note = NULL,
+     purchase_date = NULL, weight_grams = NULL, reference_photo_key = NULL,
+     reference_photo_mime = NULL`,
+  );
+  await pool.query(`UPDATE inventory_items SET current_stock = NULL, min_stock = NULL`);
+  // Synthetische QR-Basis-URL (Order §11 – dev/test dürfen das).
+  await pool.query(
+    `INSERT INTO system_settings (key, value) VALUES
+     ('staff_app_base_url', '"http://127.0.0.1:3102"'::jsonb)
+     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
+  );
 
   const auth = new StaffAuthService(db, config, new NoopMailAdapter());
   const admin = new StaffAdminService(auth);

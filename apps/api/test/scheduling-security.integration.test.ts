@@ -174,8 +174,17 @@ describe('53.–56./58. Serverseitige Rechte', () => {
     });
     const scheduling = schedulingServiceFor(ctx);
     const entry = await scheduling.entryById(appointmentId);
+    // "Gleicher Tag" meint den Berliner Kalendertag: kurz vor Mitternacht
+    // fiele now+10min bereits auf morgen – dann rückwärts ausweichen, damit
+    // der Termin sicher HEUTE liegt (kein Mitternachts-Flake).
+    const berlinDay = (value: Date) =>
+      value.toLocaleDateString('en-CA', { timeZone: 'Europe/Berlin' });
+    let sameDayStart = new Date(Date.now() + 10 * 60_000);
+    if (berlinDay(sameDayStart) !== berlinDay(new Date())) {
+      sameDayStart = new Date(Date.now() - 10 * 60_000);
+    }
     await scheduling.reschedule(admin.id, appointmentId, {
-      startAt: new Date(Date.now() + 10 * 60_000),
+      startAt: sameDayStart,
       endAt: null,
       expectedVersion: entry.version,
     });

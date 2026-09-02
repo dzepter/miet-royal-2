@@ -44,7 +44,10 @@ const assignBody = z.object({
 
 const resolveConflictBody = z.object({
   type: z.string().min(1).max(60),
-  appointmentIds: z.array(uuidSchema).min(2).max(10),
+  // Kapazitätskonflikte (Phase 5) umfassen ALLE Termine transitiv
+  // überlappender Buchungen eines Typs – auch große Cluster müssen als
+  // gelöst markierbar bleiben, daher großzügiger als Personen-Konflikte.
+  appointmentIds: z.array(uuidSchema).min(2).max(200),
 });
 
 const substitutionBody = z.object({

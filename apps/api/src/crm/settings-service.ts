@@ -118,3 +118,39 @@ export async function setAppointmentReminderMinutes(
       set: { value: minutes, updatedBy: actorId, updatedAt: new Date() },
     });
 }
+
+// ── Phase 5: QR-Basis-URL (Order §11) ────────────────────────────────────
+
+/**
+ * Absolute Basis-URL der Staff-App für druckbare QR-Codes. Bewusst KEIN
+ * hartkodierter Produktionswert – ohne Konfiguration wird der QR-Druck
+ * verständlich blockiert bzw. nur der Identifier angezeigt.
+ * Development/Test dürfen eine synthetische URL setzen.
+ */
+export const STAFF_APP_BASE_URL_KEY = 'staff_app_base_url';
+
+export async function getStaffAppBaseUrl(db: Database): Promise<string | null> {
+  const value = await getStringSetting(db, STAFF_APP_BASE_URL_KEY);
+  if (value === null) return null;
+  const trimmed = value.trim().replace(/\/+$/, '');
+  return /^https?:\/\/[^\s]+$/.test(trimmed) ? trimmed : null;
+}
+
+export async function setStaffAppBaseUrl(
+  db: Database,
+  actorId: string,
+  value: string | null,
+): Promise<void> {
+  if (value === null || value.trim() === '') {
+    await setStringSetting(db, actorId, STAFF_APP_BASE_URL_KEY, null);
+    return;
+  }
+  const trimmed = value.trim().replace(/\/+$/, '');
+  if (!/^https?:\/\/[^\s]+$/.test(trimmed)) {
+    throw new AuthError(
+      'VALIDATION',
+      'Die Basis-URL muss eine absolute http(s)-Adresse sein (z. B. https://staff.example.de).',
+    );
+  }
+  await setStringSetting(db, actorId, STAFF_APP_BASE_URL_KEY, trimmed);
+}

@@ -41,11 +41,21 @@ export interface ConflictContext {
 
 export interface ConflictProvider {
   readonly key: string;
-  detect(context: ConflictContext): DetectedConflict[];
+  /** Darf synchron ODER asynchron arbeiten (Phase-5-Provider lesen die DB). */
+  detect(context: ConflictContext): DetectedConflict[] | Promise<DetectedConflict[]>;
 }
 
-/** Serverseitiger Fingerprint – Clients können ihn nicht selbst wählen. */
-export function conflictFingerprint(type: string, members: readonly ConflictAppointment[]): string {
+/**
+ * Serverseitiger Fingerprint – Clients können ihn nicht selbst wählen.
+ * `extra` erlaubt Providern, zusätzlichen fachlichen Zustand einzurechnen
+ * (z. B. Maschinenbestand/Sperren, Order §47): ändert sich der Zustand,
+ * entsteht ein neuer Fingerprint und eine alte Suppression wirkt nicht mehr.
+ */
+export function conflictFingerprint(
+  type: string,
+  members: readonly ConflictAppointment[],
+  extra?: unknown,
+): string {
   const canonical = {
     type,
     members: members
@@ -56,6 +66,7 @@ export function conflictFingerprint(type: string, members: readonly ConflictAppo
         effectiveAssigneeId: appointment.effectiveAssigneeId,
       }))
       .sort((a, b) => a.id.localeCompare(b.id)),
+    ...(extra === undefined ? {} : { extra }),
   };
   return createHash('sha256').update(JSON.stringify(canonical)).digest('hex');
 }
@@ -151,13 +162,14 @@ export class ConflictDetectionService {
     this.providers.push(provider);
   }
 
-  detectAll(context: ConflictContext): DetectedConflict[] {
-    return this.providers.flatMap((provider) => provider.detect(context));
+  async detectAll(context: ConflictContext): Promise<DetectedConflict[]> {
+    const results = await Promise.all(this.providers.map((provider) => provider.detect(context)));
+    return results.flat();
   }
 
   /** Erkennen + als "gelöst" markierte Konflikte (Suppression) ausblenden. */
   async detectVisible(context: ConflictContext): Promise<DetectedConflict[]> {
-    const conflicts = this.detectAll(context);
+    const conflicts = await this.detectAll(context);
     if (conflicts.length === 0) return conflicts;
     const fingerprints = conflicts.map((conflict) => conflict.fingerprint);
     const suppressed = await this.db
@@ -180,7 +192,7 @@ export class ConflictDetectionService {
     appointmentIds: readonly string[],
   ): Promise<void> {
     const wanted = [...appointmentIds].sort().join('|');
-    const conflicts = this.detectAll(context);
+    const conflicts = await this.detectAll(context);
     const match = conflicts.find(
       (conflict) => conflict.type === type && conflict.appointmentIds.join('|') === wanted,
     );

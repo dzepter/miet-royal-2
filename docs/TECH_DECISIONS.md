@@ -516,3 +516,166 @@ Keine spontanen Framework-/ORM-Wechsel (CLAUDE.md „Dependencies“).
   Vorgänge bleiben sichtbar (s. o.), und jede vereinbarte und erneut
   gerissene Rückgabezeit ist ein eigener Vorfall mit eigenem
   Push-Anspruch (Order §24-Semantik).
+
+## Phase 5: Physische Maschinen, Verfügbarkeit, QR & Lagerbestand
+
+- **Maschinentyp vs. physische Maschine strikt getrennt**: Angebote/
+  Buchungen referenzieren weiterhin NUR den Typ (Phase-3-Produkt); die
+  neuen `machines` verweisen auf das Produkt und werden erst in Phase 6
+  einer Buchung zugeordnet (keine `machine_assignments`-Tabelle).
+- **Maschinen-ID serverseitig und unveränderbar**: Schema
+  `MR-[Liter]-[Behälter]-[Laufnummer]` wird aus den Produktfeldern
+  (containerVolumeLiters/containerCount) abgeleitet; Vergabe unter
+  `pg_advisory_xact_lock` je Typ-Präfix + Unique-Index (race-sicher,
+  max(Laufnummer)+1 – keine Wiederverwendung). Kein Update-Pfad und
+  strikte Zod-Schemas: `machine_code` ist nie ein editierbares Feld.
+  Initialbestand (11 Maschinen, 2/1/6/2) als Migration-0010-Seed;
+  Kaufdatum/Gewicht bleiben NULL (nichts erfinden), Tragepersonen kommen
+  aus dem Produkt.
+- **Zentrale Statusregeln**: 6 Status (Enum englisch, UI deutsch mit
+  Icon+Text); manuell nur Einsatzbereit/Reinigung/Reparatur/Außer
+  Betrieb – Reserviert/Vermietet lehnen Service UND UI ab, weil sie erst
+  durch Zuweisung/Ausgabe (Phase 6/7) fachlich entstehen. Keine
+  Reparaturhistorie (Order §7). Standort als zentrale Logik
+  (Lager/Kunde/Mitarbeiter/Reparatur/Sonstiges + optionale Notiz),
+  keine Fahrzeugverwaltung.
+- **Sperren**: Zeitraum + Pflichtgrund + Ersteller; Anlage ist auch bei
+  entstehendem Kapazitätskonflikt erlaubt – die Route antwortet dann mit
+  einer STARKEN Warnung (Availability-Check über den Sperrzeitraum)
+  statt zu blockieren. Aufheben ohne Pflichtgrund per konditionalem
+  UPDATE (`lifted_at IS NULL AND ends_at > now`); Datensätze bleiben.
+- **QR-Grundlage**: opaker Zufallstoken je Maschine (Seeds: 64 Hex aus
+  gen_random_uuid-Material; Service: crypto.randomBytes(24)), im
+  Klartext gespeichert, aber bewusst KEIN Bearer: Auflösung nur nach
+  Staff-Login + `machine.view`, Anzeige/Druck nur mit `machine.qr`, der
+  Token erscheint weder in Logs (Request-Logger maskiert
+  `/staff/machines/qr/…` wie die öffentlichen Angebots-Links) noch in
+  normalen Antworten – auch Mutationsantworten liefern eine Projektion
+  ohne qrToken/Storage-Keys. Druckbare QR-URL nur mit konfiguriertem
+  Setting `staff_app_base_url` (adminpflegbar unter „Einstellungen“ mit
+  `system.settings`; dev/test synthetisch) – ohne Basis wird nur der
+  Identifier gezeigt, keine erfundene Live-URL. Staff-Route
+  `/qr/[token]` öffnet nach Login die richtige Maschine; QR-Bild
+  clientseitig via `qrcode`-Bibliothek.
+- **Referenzfoto**: privater Storage über die Phase-3-Abstraktion
+  (Key `machines/<id>/reference-<random>.<ext>`), Upload als Base64-JSON
+  (Limit 6 MB, JPEG/PNG/WebP), Auslieferung nur über die
+  authentifizierte API; Ersetzen serialisiert parallele Aufrufe per
+  Zeilensperre (der jeweils verdrängte Key wird gezielt gelöscht, kein
+  dauerhaft verwaistes Objekt), Löschen des Altobjekts best effort –
+  keine Foto-Historie.
+- **MachineAvailabilityService**: rechnet ausschließlich intern aus dem
+  ECHTEN Bestand: einsetzbar = Status `ready` minus zeitlich
+  überlappende offene Sperren (Reinigung/Reparatur/Außer Betrieb nicht
+  regulär verfügbar; Reserviert/Vermietet sind in Phase 5 nicht
+  erreichbar und zählen defensiv ebenfalls nicht). Bedarf aus
+  bestätigten Buchungen über die Phase-4-Termine (Abhol-/Lieferbeginn
+  bis Rückgabe-Ende), gewichtet mit der gebuchten MENGE aus dem
+  Buchungs-Snapshot (eine Buchung über 2 Maschinen belegt 2); fehlende
+  Zeiten ⇒ „Verfügbarkeit noch nicht vollständig prüfbar – Terminzeit
+  fehlt“ (nur für offene Vorgänge gelistet), NIE eine Blockade.
+  Bewertung an kritischen Zeitpunkten (Bedarfs-/Sperrbeginne): conflict
+  (Fehlmenge – auch wenn OHNE konkurrierende Buchung keine einzige
+  Maschine einsetzbar ist), tight (keine Reserve), available; der
+  Warntext nennt Bedarf und Einsetzbarkeit desselben
+  Engpass-Zeitpunkts. Alternativen sind eine feste, kleine Domänenliste
+  (2×10 → zwei 1×10; 2×8 → größere 2×10) und IMMER nur „Mögliche
+  Alternative“ mit Verfügbarkeitsindikator – keine Umstellung, kein
+  Preis, keine Kundenkommunikation.
+- **Kapazitätskonflikte über die Phase-4-Engine**: ConflictProvider
+  dürfen jetzt async sein (`detectAll` awaitet); der Provider
+  `machine_capacity` bildet Überlappungs-Cluster je Maschinentyp und
+  warnt (severity warning), wenn der mengen­gewichtete Spitzenbedarf die
+  einsetzbaren Maschinen übersteigt; vollständig vergangene Cluster
+  werden nicht rückwirkend mit dem heutigen Flottenzustand bewertet.
+  Der Fingerprint rechnet über `extra` den kapazitätsrelevanten Zustand
+  ein (Maschinen+Status, Sperren NUR im Cluster-Fenster – irrelevante
+  Sperren entwerten keine Suppression –, Buchungszeiträume samt Menge,
+  deterministisch sortiert) – kapazitätsrelevante Änderungen ergeben
+  einen neuen Fingerprint, alte Suppressions wirken nicht weiter.
+  „Konflikt gelöst“ nutzt unverändert den serverseitigen Resolve-Pfad
+  (Limit der Termin-IDs auf 200, damit auch große transitiv verkettete
+  Cluster lösbar bleiben). Bewusste Entscheidung: Lösen verlangt
+  Sichtbarkeit ALLER Cluster-Termine – Kapazitätskonflikte quer über
+  fremde Termine löst also die Planung (calendar.view_all); Basis-Nutzer
+  sehen die Warnung an den eigenen Terminen.
+- **Auswahlvorschlag (Phase-6-Vorbereitung)**: reine Vorschlagsfunktion
+  (`preferred` + Basis, weitere Maschinen, Warnungen) mit Eligibility
+  eligible/warning(Reinigung)/override_required(Status/Sperre);
+  Präferenz ältestes BEKANNTES Kaufdatum, deterministischer Fallback
+  Maschinen-ID, Standort nur Zusatzinfo. Keine Assignment-Tabelle,
+  kein Override-Vollzug.
+- **Lager als Ledger**: `inventory_items` referenziert die Phase-3-
+  Produkte 1:1 (Einheit = sale_unit, Preise bleiben im Produktmodul);
+  `current_stock` NULL = „Noch nicht initial erfasst“ (nie still 0),
+  `min_stock` NULL = „nicht festgelegt“. JEDE Bestandsänderung läuft
+  durch `applyMovement` (Zeilenlock FOR NO KEY UPDATE → Bewegung mit
+  resulting_stock → Bestand), Integer-only. Aktive Arten: initial
+  (Erstinventur), incoming (Wareneingang, NUR hinzugefügte Menge),
+  inventory_adjustment (freigegebene Inventur); issue/return sind als
+  Domain-Schnittstellen für Phase 6/7 vorbereitet (ohne Routen, mit
+  `allowNegative`-Option für die spätere Warn-statt-Block-Regel).
+- **Inventur mit Freigabe**: Anlegen speichert System-/Ist-Stand und
+  ändert den Bestand NICHT; ohne Differenz (und initialisiert) sofort
+  `completed`, sonst `pending_approval`. Der Ist-Wert ist vor der
+  Freigabe korrigierbar (nur pending, unter Zeilenlock). Die Freigabe
+  claimt den Status per konditionalem UPDATE (pending→approved) –
+  Double-Submit und parallele Freigaben erzeugen exakt EINE Bewegung je
+  Artikel. Die Korrektur ist die bei der ZÄHLUNG festgestellte Differenz
+  (Ist − System-Snapshot) und wird auf den aktuellen Bestand angewendet:
+  ein Wareneingang zwischen Zählung und Freigabe bleibt erhalten. Wurde
+  der Artikel zwischenzeitlich durch eine ANDERE Inventur initialisiert
+  oder würde die Freigabe den Bestand unter 0 senken, bricht die
+  Freigabe mit klarem Konflikt ab („bitte neu zählen“) statt still zu
+  überschreiben; dass zwei parallel offene Inventuren desselben Artikels
+  ihre Differenzen nacheinander anwenden, ist bewusste
+  Differenz-Semantik. Erstinventur
+  („Anfangsbestand erfassen“) initialisiert per `initial`-Bewegung
+  (Delta 0 nur hier erlaubt). Prozentdifferenz in Integer-Arithmetik
+  mit einer Nachkommastelle; System 0/unbekannt ⇒ „nicht berechenbar“.
+- **Rechte (PERMISSIONS.md führend)**: wiederverwendet machine.view/
+  change_status/block/replace_reference_photo und inventory.view/
+  add_stock/count/approve_adjustment/view_movement_history; kontrolliert
+  ergänzt machine.manage (Stammdaten/Anlage), machine.change_location,
+  machine.qr, inventory.manage_min_stock. `machine.assign`/
+  `machine.override_block`/`inventory.issue`/`inventory.return` bleiben
+  für Phase 6/7 reserviert. Datenminimierung: Maschinen-Antworten
+  enthalten weder Storage-Keys noch QR-Token (eigener Endpunkt).
+- **Heute-Integration kompakt**: eine Karte „Maschinen- & Lagerwarnungen“
+  (nicht einsetzbare/gesperrte Maschinen als §22-Datengrundlage, „Lagerbestand
+  niedrig: N Artikel“) zwischen „Organisatorisch offen“ und „Nächste
+  Termine“ – überfällige Rückgaben bleiben immer oben, kein Dashboard.
+  Als Maschinen-Warnung zählen nur JETZT wirksame Sperren; rein
+  zukünftige Sperren sind heute keine Warnung (die Maschinenliste zeigt
+  sie als „Sperre geplant“).
+- **Deaktivierte Lagerartikel serverseitig historisch**: Wareneingang,
+  Mindestbestand und NEUE Inventuren lehnen deaktivierte Artikel im
+  Service ab (kein Security-by-UI); die Komplettinventur zählt nur
+  aktive Artikel. Historie, Bestand und alte Inventuren bleiben
+  vollständig sichtbar.
+- **Adversarialer Review (Phase 5)**: 6-dimensionaler Workflow-Review
+  (Maschinen-ID/Stammdaten, Sperren/Verfügbarkeit, QR/Foto/Security,
+  Kapazitätskonflikt/Kalender, Lager-Ledger, Scope/Tests) mit
+  Refute-Pass; 29 Findings, alle selbst gegen Order und Code
+  verifiziert. Behoben u. a.: Mutationsantworten leakten qrToken/
+  Storage-Keys (jetzt Projektion), QR-Token stand im Request-Log (jetzt
+  maskiert + Test), Bedarf ignorierte die gebuchte Maschinen-MENGE
+  (jetzt mengengewichtet in Availability UND Kapazitätsprovider),
+  „verfügbar“ trotz null einsetzbarer Maschinen (jetzt Konflikt inkl.
+  Alternativen), Inventur-Freigabe überschrieb zwischenzeitliche
+  Wareneingänge (jetzt Differenz-Semantik), Fingerprint enthielt
+  irrelevante Sperren (jetzt Cluster-Fenster + stabiler Sortschlüssel),
+  vergangene Cluster wurden mit heutigem Zustand bewertet (jetzt
+  übersprungen), Resolve-Limit 24 machte große Cluster unlösbar (200),
+  QR-Basis-URL war nicht pflegbar (Route + Einstellungs-UI mit
+  `system.settings`), Heute zählte zukünftige Sperren, Foto-Ersetzen
+  hatte ein Verwaisungs-Race, Kalenderdaten/ID-Grenzen validieren
+  jetzt (kein 500 bei 31.02. oder 100-L-Typen), deaktivierte Artikel
+  waren nur im UI gesperrt. Bewusst NICHT geändert: QR-Token bleibt
+  Klartext-Spalte (kein Bearer – Auflösung verlangt Session + Recht),
+  Kapazitätskonflikte löst die Planung mit calendar.view_all, parallele
+  VERSCHIEDENE Inventuren desselben Artikels wenden ihre Differenzen
+  nacheinander an (mit Konflikt-Abbruch bei Initialisierungs-/
+  Negativ-Kollisionen). Zusatztests R1–R10 sichern alle Fixes ab; zwei
+  Phase-4-Testflakes am Berliner Tageswechsel (NaN-Stundenparser,
+  ungeprüftes now+10min) wurden testseitig robust gemacht.

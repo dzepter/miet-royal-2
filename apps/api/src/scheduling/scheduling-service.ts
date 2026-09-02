@@ -29,6 +29,7 @@ import {
   getPickupExactAddress,
   getPickupPublicArea,
 } from '../crm/settings-service.ts';
+import { createMachineCapacityProvider } from '../warehouse/capacity-conflict.ts';
 import { effectiveAssigneeForAppointment, loadSubstitutions } from './assignee.ts';
 import {
   ConflictDetectionService,
@@ -107,6 +108,9 @@ export class SchedulingService {
 
   constructor(private readonly db: Database) {
     this.conflicts = new ConflictDetectionService(db);
+    // Phase 5 (Order §18/§47): Kapazitätswarnungen laufen über die
+    // BESTEHENDE Konfliktarchitektur – keine zweite Engine.
+    this.conflicts.registerProvider(createMachineCapacityProvider(this.db));
   }
 
   // ── Termin-Erzeugung aus bestätigter Buchung (Order §§4–7, §40) ─────────
