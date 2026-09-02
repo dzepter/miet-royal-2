@@ -14,6 +14,7 @@ import { createStorageProvider, type StorageProvider } from '@mietroyal/integrat
 import { registerAuthRoutes } from './routes/auth.ts';
 import { registerCommerceRoutes } from './routes/commerce.ts';
 import { registerCrmRoutes } from './routes/crm.ts';
+import { registerSchedulingRoutes } from './routes/scheduling.ts';
 import { registerStaffAdminRoutes } from './routes/staff-admin.ts';
 
 export const API_VERSION = '0.1.0';
@@ -238,6 +239,7 @@ export function buildApp({
         storage: storage ?? createStorageProvider(config.storage),
         rateLimitEnabled,
       });
+      registerSchedulingRoutes(instance, { db, auth: authService, config });
     });
   }
 

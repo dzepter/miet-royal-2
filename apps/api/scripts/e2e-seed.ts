@@ -107,6 +107,8 @@ try {
       'discount.up_to_10',
       'discount.over_10_with_reason',
       'discount.over_20_request',
+      // Phase 4: Kalenderzugriff ("Meine Termine", Übernahmebestätigung).
+      'calendar.view',
     ],
   });
   await admin.setUserRoles(adminUser.id, seller.user.id, [salesRoleId]);

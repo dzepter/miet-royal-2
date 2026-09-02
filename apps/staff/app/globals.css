@@ -242,3 +242,150 @@ button:disabled {
     gap: 1rem;
   }
 }
+
+/* ── Phase 4: Kalender & Termine ─────────────────────────────────────── */
+
+.page-wide {
+  max-width: 1200px;
+}
+
+.calendar-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.8rem;
+}
+
+.kind-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  margin-right: 0.5rem;
+}
+
+.calendar-grid {
+  display: grid;
+  gap: 0.4rem;
+}
+.calendar-grid.view-day {
+  grid-template-columns: 1fr;
+}
+.calendar-grid.view-week {
+  grid-template-columns: repeat(7, 1fr);
+}
+.calendar-grid.view-month {
+  grid-template-columns: repeat(7, 1fr);
+}
+
+/* Handy: kompakte Listenansicht statt gequetschtem Raster (Order §14). */
+@media (max-width: 720px) {
+  .calendar-grid.view-week,
+  .calendar-grid.view-month {
+    grid-template-columns: 1fr;
+  }
+  .calendar-grid.view-month .calendar-day:not(:has(.calendar-chip)) {
+    display: none;
+  }
+}
+
+.calendar-day {
+  border: 1px solid #e2e2e2;
+  border-radius: 8px;
+  background: #fff;
+  min-height: 5rem;
+  padding: 0.3rem;
+}
+.calendar-today {
+  border-color: #2563eb;
+}
+.calendar-outside {
+  opacity: 0.55;
+}
+.calendar-day-head {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #555;
+  margin-bottom: 0.25rem;
+}
+
+.calendar-chip {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: 1px solid #d8d8d8;
+  border-left-width: 4px;
+  border-radius: 6px;
+  background: #fafafa;
+  padding: 0.3rem 0.4rem;
+  margin-bottom: 0.3rem;
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.82rem;
+  min-height: 44px;
+}
+.calendar-chip .chip-sub {
+  display: block;
+  color: #555;
+}
+.chip-pickup {
+  border-left-color: #2563eb;
+}
+.chip-return {
+  border-left-color: #059669;
+}
+.chip-delivery {
+  border-left-color: #d97706;
+}
+/* Konflikt: Warnsymbol + bei stärkerem Konflikt dezente rote Umrandung –
+   NIE die komplette Terminfarbe rot (Order §19). */
+.chip-conflict-strong {
+  outline: 1px solid #dc2626;
+  outline-offset: 1px;
+}
+.chip-overdue .badge.locked,
+.overdue-card h2 {
+  color: #b91c1c;
+}
+.conflict-icon {
+  margin-left: 0.25rem;
+  /* Rotes Warnsymbol (Order §19): Textvariante des Zeichens, damit die
+     Farbe greift – der Termin selbst behält seine normale Farbe. */
+  color: #b91c1c;
+  font-weight: 700;
+}
+.overdue-card {
+  border-color: #dc2626;
+}
+
+.entry-row {
+  display: flex;
+  width: 100%;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.6rem;
+  text-align: left;
+  background: none;
+  border: none;
+  border-top: 1px solid #eee;
+  padding: 0.5rem 0.1rem;
+  cursor: pointer;
+  font: inherit;
+  min-height: 44px;
+}
+.entry-row:first-of-type {
+  border-top: none;
+}
+
+.appointment-preview {
+  border-color: #2563eb;
+}
+
+.button-like {
+  display: inline-block;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  padding: 0.35rem 0.7rem;
+  text-decoration: none;
+}

@@ -22,6 +22,9 @@ export default defineConfig({
   globalSetup: './global-setup.ts',
   timeout: 90_000,
   fullyParallel: false,
+  // Alle Specs teilen sich EINE Testdatenbank (global-setup) – die Dateien
+  // laufen deshalb strikt nacheinander in alphabetischer Reihenfolge.
+  workers: 1,
   retries: 0,
   reporter: [['list']],
   use: {

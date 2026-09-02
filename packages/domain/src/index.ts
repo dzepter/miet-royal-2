@@ -1,8 +1,10 @@
 /**
  * Zentrale Geschäftslogik von Miet-Royal 2.0 (eine autoritative
  * Implementierung je Fachregel – CLAUDE.md). Phase 3: Preisengine,
- * Angebotsgültigkeit und Rabatt-Schwellenregeln.
+ * Angebotsgültigkeit und Rabatt-Schwellenregeln. Phase 4: Termin-,
+ * Vertretungs-, Konflikt- und Überfälligkeitsregeln (scheduling.ts).
  */
+export * from './scheduling.ts';
 export {
   CANISTER_SLUG,
   CANISTERS_PER_CONTAINER_LIMIT,

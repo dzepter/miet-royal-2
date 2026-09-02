@@ -26,7 +26,7 @@ test('Admin meldet sich an', async () => {
   await page.getByLabel('E-Mail').fill(ADMIN_EMAIL);
   await page.getByLabel('Passwort', { exact: true }).fill(ADMIN_PASSWORD);
   await page.getByRole('button', { name: 'Anmelden' }).click();
-  await expect(page.getByRole('heading', { name: /Willkommen, Erika/ })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Heute' })).toBeVisible();
 });
 
 test('Kunde anlegen (Privatperson, minimale Pflichtfelder)', async () => {

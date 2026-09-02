@@ -1,117 +1,178 @@
 'use client';
 
 import Link from 'next/link';
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { AuthGuard, useMe } from '../components/auth-guard';
+import { AppointmentPreview } from '../components/appointment-preview';
 import { apiFetch, hasPermission } from '../lib/api';
-import {
-  customerName,
-  formatEventDate,
-  STATUS_BADGE_CLASS,
-  STATUS_LABELS,
-  type ProcessRow,
-} from '../lib/crm';
+import { customerName, formatEventDate, STATUS_LABELS, type ProcessRow } from '../lib/crm';
+import { dayTimeLabel, KIND_LABELS, type CalendarEntry } from '../lib/scheduling';
 
-interface DashboardData {
-  openCount: number | null;
-  myProcesses: ProcessRow[];
-  recentProcesses: ProcessRow[];
+/**
+ * „Heute“ – die operative Startseite (Order §22/§37/§38):
+ * 1. überfällige Rückgaben IMMER ganz oben, 2. heutige Termine,
+ * 3. organisatorisch Offenes („Zeit festlegen“ / „Mitarbeiter zuweisen“),
+ * 4. bei wenig Inhalt bis zu 2 kommende Termine. Keine Umsatzcharts.
+ */
+
+interface TodayData {
+  scope: 'mine' | 'all';
+  overdue: CalendarEntry[];
+  today: CalendarEntry[];
+  organizational: CalendarEntry[];
+  upcoming: CalendarEntry[];
 }
 
-function ProcessMiniList({ rows, emptyText }: { rows: ProcessRow[]; emptyText: string }) {
-  if (rows.length === 0) return <p className="muted">{emptyText}</p>;
+function EntryRow({
+  entry,
+  onSelect,
+}: {
+  entry: CalendarEntry;
+  onSelect: (entry: CalendarEntry) => void;
+}) {
   return (
-    <>
-      {rows.map((process) => (
-        <div className="list-row" key={process.id}>
-          <div>
-            <Link href={`/vorgaenge/${process.id}`}>{process.processNumber}</Link> ·{' '}
-            {customerName(process)}
-            <div className="muted">Event: {formatEventDate(process.eventDate)}</div>
-          </div>
-          <span className={`badge ${STATUS_BADGE_CLASS[process.mainStatus]}`}>
-            {STATUS_LABELS[process.mainStatus]}
+    <button className="entry-row" onClick={() => onSelect(entry)}>
+      <span>
+        <strong>{dayTimeLabel(entry)}</strong> · {KIND_LABELS[entry.kind]} · {entry.customerName}
+        <span className="muted"> · {entry.processNumber}</span>
+      </span>
+      <span>
+        {entry.overdue && <span className="badge locked">Überfällig</span>}{' '}
+        {entry.startAt === null && <span className="badge">Zeit festlegen</span>}{' '}
+        {entry.assignedUserId === null && <span className="badge">Mitarbeiter zuweisen</span>}{' '}
+        {entry.acknowledgementPending && <span className="badge">Übernahme ausstehend</span>}{' '}
+        {entry.conflicts.length > 0 && (
+          <span aria-label="Konflikt" title="Konflikt" className="conflict-icon">
+            ⚠︎
           </span>
-        </div>
-      ))}
-    </>
+        )}
+      </span>
+    </button>
   );
 }
 
 function Home() {
   const me = useMe();
-  const [dashboard, setDashboard] = useState<DashboardData | null>(null);
+  const [today, setToday] = useState<TodayData | null>(null);
+  const [selected, setSelected] = useState<CalendarEntry | null>(null);
+  const [myProcesses, setMyProcesses] = useState<ProcessRow[]>([]);
+  const canCalendar = hasPermission(me, 'calendar.view');
   const canSeeProcesses = hasPermission(me, 'process.view_all');
+
+  const load = useCallback(async () => {
+    if (!canCalendar) return;
+    const result = await apiFetch<TodayData>('/staff/today');
+    if (result.data !== null) {
+      setToday(result.data);
+      setSelected((current) => {
+        if (current === null) return null;
+        const all = [
+          ...result.data!.overdue,
+          ...result.data!.today,
+          ...result.data!.organizational,
+          ...result.data!.upcoming,
+        ];
+        return all.find((entry) => entry.id === current.id) ?? null;
+      });
+    }
+  }, [canCalendar]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
 
   useEffect(() => {
     if (!canSeeProcesses) return;
-    void apiFetch<DashboardData>('/staff/dashboard').then((result) => {
-      if (result.data !== null) setDashboard(result.data);
+    void apiFetch<{ myProcesses: ProcessRow[] }>('/staff/dashboard').then((result) => {
+      if (result.data !== null) setMyProcesses(result.data.myProcesses);
     });
   }, [canSeeProcesses]);
 
+  const dateLabel = new Date().toLocaleDateString('de-DE', {
+    timeZone: 'Europe/Berlin',
+    weekday: 'long',
+    day: 'numeric',
+    month: 'long',
+    year: 'numeric',
+  });
+
   return (
     <main className="page">
-      <h1>Willkommen{me !== null ? `, ${me.user.firstName}` : ''}!</h1>
+      <h1>Heute</h1>
+      <p className="muted">
+        Willkommen{me !== null ? `, ${me.user.firstName}` : ''} · {dateLabel}
+      </p>
 
-      {canSeeProcesses && dashboard !== null && (
+      {canCalendar && today !== null && (
         <>
-          <div className="grid-2">
-            <div className="card">
-              <h2>Offene Vorgänge</h2>
-              <p style={{ fontSize: '2rem', margin: 0 }}>{dashboard.openCount ?? '–'}</p>
-              <Link href="/vorgaenge">Zur Vorgangsliste</Link>
+          {today.overdue.length > 0 && (
+            <div className="card overdue-card">
+              <h2>Überfällige Rückgaben</h2>
+              {today.overdue.map((entry) => (
+                <EntryRow key={entry.id} entry={entry} onSelect={setSelected} />
+              ))}
             </div>
-            <div className="card">
-              <h2>Meine Vorgänge</h2>
-              <ProcessMiniList
-                rows={dashboard.myProcesses}
-                emptyText="Dir sind derzeit keine offenen Vorgänge zugewiesen."
-              />
-            </div>
-          </div>
+          )}
+
           <div className="card">
-            <h2>Neueste offene Vorgänge</h2>
-            <ProcessMiniList
-              rows={dashboard.recentProcesses}
-              emptyText="Keine offenen Vorgänge vorhanden."
-            />
+            <h2>Heutige Termine</h2>
+            {today.today.length === 0 ? (
+              <p className="muted">Heute stehen keine Termine an.</p>
+            ) : (
+              today.today.map((entry) => (
+                <EntryRow key={entry.id} entry={entry} onSelect={setSelected} />
+              ))
+            )}
           </div>
+
+          {today.organizational.length > 0 && (
+            <div className="card">
+              <h2>Organisatorisch offen</h2>
+              {today.organizational.map((entry) => (
+                <EntryRow key={entry.id} entry={entry} onSelect={setSelected} />
+              ))}
+            </div>
+          )}
+
+          {today.upcoming.length > 0 && (
+            <div className="card">
+              <h2>Nächste Termine</h2>
+              {today.upcoming.map((entry) => (
+                <EntryRow key={entry.id} entry={entry} onSelect={setSelected} />
+              ))}
+            </div>
+          )}
+
+          {selected !== null && (
+            <AppointmentPreview
+              entry={selected}
+              me={me}
+              onChanged={load}
+              onClose={() => setSelected(null)}
+            />
+          )}
+
+          <p>
+            <Link href="/kalender">Zum Kalender</Link>
+          </p>
         </>
       )}
 
-      <div className="grid-2">
-        {hasPermission(me, 'customer.view') && (
-          <div className="card">
-            <h2>Kunden</h2>
-            <p className="muted">Kundenstammdaten ansehen und pflegen.</p>
-            <Link href="/kunden">Zu den Kunden</Link>
-          </div>
-        )}
-        {hasPermission(me, 'employee.manage') && (
-          <div className="card">
-            <h2>Mitarbeiter</h2>
-            <p className="muted">Konten, Status, Geräte, Rechte und 2FA verwalten.</p>
-            <Link href="/mitarbeiter">Zur Mitarbeiterverwaltung</Link>
-          </div>
-        )}
-        {hasPermission(me, 'permission.manage') && (
-          <div className="card">
-            <h2>Rollen &amp; Rechte</h2>
-            <p className="muted">Rollen-Vorlagen anlegen und Berechtigungen pflegen.</p>
-            <Link href="/rollen">Zu Rollen &amp; Rechten</Link>
-          </div>
-        )}
+      {canSeeProcesses && myProcesses.length > 0 && (
         <div className="card">
-          <h2>Mein Konto</h2>
-          <p className="muted">Passwort, Geräte und Zwei-Faktor-Authentifizierung.</p>
-          <Link href="/konto">Zu meinem Konto</Link>
+          <h2>Meine Vorgänge</h2>
+          {myProcesses.map((process) => (
+            <div className="list-row" key={process.id}>
+              <div>
+                <Link href={`/vorgaenge/${process.id}`}>{process.processNumber}</Link> ·{' '}
+                {customerName(process)}
+                <div className="muted">Event: {formatEventDate(process.eventDate)}</div>
+              </div>
+              <span className="badge">{STATUS_LABELS[process.mainStatus]}</span>
+            </div>
+          ))}
         </div>
-        <div className="card">
-          <h2>Weitere Fachbereiche</h2>
-          <p className="muted">„Heute“, Kalender sowie Maschinen &amp; Lager folgen ab Phase 3.</p>
-        </div>
-      </div>
+      )}
     </main>
   );
 }

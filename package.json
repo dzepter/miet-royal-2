@@ -2,7 +2,7 @@
   "name": "mietroyal",
   "private": true,
   "version": "0.1.0",
-  "description": "Miet-Royal 2.0 – Vermietungssystem (Monorepo)",
+  "description": "Miet-Royal 2.0 \u2013 Vermietungssystem (Monorepo)",
   "engines": {
     "node": ">=22.12.0",
     "pnpm": ">=10.0.0"
@@ -32,7 +32,8 @@
     "infra:up": "docker compose -f infra/docker-compose.yml up -d --wait",
     "infra:down": "docker compose -f infra/docker-compose.yml down",
     "check:env-isolation": "pnpm --filter @mietroyal/config check:env-isolation",
-    "staff:bootstrap-admin": "pnpm --filter @mietroyal/api bootstrap-admin"
+    "staff:bootstrap-admin": "pnpm --filter @mietroyal/api bootstrap-admin",
+    "scheduling:ensure-booking-appointments": "pnpm --filter @mietroyal/api scheduling:ensure-booking-appointments"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",

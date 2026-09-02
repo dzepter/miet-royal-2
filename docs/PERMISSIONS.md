@@ -26,6 +26,12 @@ Admin vergibt granulare Rechte; Rollen nur Vorlagen.
 `calendar.view_all`, `calendar.drag_drop`,
 `appointment.assign`, `appointment.reassign_same_day`
 
+Kontrollierte Phase-4-Ergänzungen (keine zweite Rechtearchitektur):
+`calendar.view` (Basiszugang: „Heute“, eigene Termine, Übernahme
+bestätigen, Konflikt als gelöst markieren),
+`calendar.manage` (Termine intern abschließen),
+`substitution.manage` (Vertretungen anlegen/beenden)
+
 ### Maschinen
 `machine.view`, `machine.assign`, `machine.change_status`,
 `machine.block`, `machine.override_block`, `machine.replace_reference_photo`

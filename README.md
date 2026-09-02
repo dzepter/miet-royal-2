@@ -7,19 +7,26 @@ Ausgabe/Rückgabe, Abrechnung und Integrationen.
 **Leitprinzip: Das System darf intern komplex sein. Für Mitarbeitende und
 Kunden muss es einfach wirken.**
 
-Aktueller Stand: **Phase 3 (Produkte, Preise, Anfragen, Angebote &
-Auftragsbestätigung) umgesetzt** — auf Basis von Phase 1
+Aktueller Stand: **Phase 4 (Kalender, Termine, Zuständigkeit,
+Vertretung, Konflikte & „Heute“) umgesetzt** — auf Basis von Phase 1
 (Staff-Authentifizierung mit TOTP-2FA, Sessions, App-Sperre, granulare
-Rollen/Rechte inkl. Systemadmin-Semantik) und Phase 2 (Kunden, Vorgänge,
-Notizen, globale Suche): Produktkatalog mit Preisverwaltung und
-zukünftigen Preisen, Anfragen im Vorgang, zentrale Preisengine
-(Integer-Cents), Angebotsversionen mit Rabatten/Sonderpreisen und
-Gültigkeitslogik (Europe/Berlin), sicherer öffentlicher Angebotslink
-(Token nur als Hash), verbindliche Online-Annahme mit
-Buchungs-Snapshot, Auftragsbestätigung mit Freigabe-Workflow,
-serverseitige PDF-Erzeugung mit immutabler Dokumententität und privatem
-Storage (FS dev/test, S3/MinIO). Maschinen-/Lagerverwaltung, Ausgabe/
-Rückgabe und Abrechnung folgen ab Phase 4.
+Rollen/Rechte inkl. Systemadmin-Semantik), Phase 2 (Kunden, Vorgänge,
+Notizen, globale Suche) und Phase 3 (Produktkatalog mit Preisverwaltung,
+Anfragen, zentrale Preisengine in Integer-Cents, Angebotsversionen mit
+Rabatten und Gültigkeitslogik, sicherer öffentlicher Angebotslink,
+verbindliche Online-Annahme mit Buchungs-Snapshot, Auftragsbestätigung
+mit Freigabe-Workflow, PDF-Erzeugung mit immutabler Dokumententität und
+privatem Storage): Operative Termine (Abholung/Ausgabe, Rückgabe,
+Lieferung) entstehen idempotent aus bestätigten Buchungen, mit exakter
+Zeit oder Zeitfenster (Europe/Berlin, DST-fest), Wochenend-Standard
+Fr 18:00/So 11:00 als validiertem Vorschlag, Kalender Tag/Woche/Monat
+mit Filtern und Drag & Drop, genau einem zuständigen Mitarbeiter je
+Termin, Same-Day-Übernahmebestätigung, Vertretungsregelung mit
+effektiver Zuständigkeit, warnender (nie blockierender)
+Konflikterkennung mit Fingerprint-Unterdrückung, überfälligen Rückgaben
+samt „Heute“-Startseite sowie vorbereiteten Reminder-/Push-Datenlagen.
+Maschinen-/Lagerverwaltung, Ausgabe/Rückgabe und Abrechnung folgen ab
+Phase 5.
 
 ## Voraussetzungen
 

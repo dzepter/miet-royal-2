@@ -26,13 +26,15 @@ test('Staff-Login: Admin meldet sich an', async () => {
   await page.getByLabel('E-Mail').fill(ADMIN_EMAIL);
   await page.getByLabel('Passwort', { exact: true }).fill(ADMIN_PASSWORD);
   await page.getByRole('button', { name: 'Anmelden' }).click();
-  await expect(page.getByRole('heading', { name: /Willkommen, Erika/ })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Heute' })).toBeVisible();
 });
 
 test('Admin öffnet die Mitarbeiterverwaltung', async () => {
   await page.getByRole('link', { name: 'Mitarbeiter', exact: true }).first().click();
   await expect(page.getByRole('heading', { name: 'Mitarbeiter' })).toBeVisible();
-  await expect(page.getByText('E2E, Erika')).toBeVisible();
+  // Seit Phase 4 erscheint der Name zusätzlich in den Vertretungs-Selects –
+  // deshalb gezielt auf den Detail-Link prüfen.
+  await expect(page.getByRole('link', { name: 'E2E, Erika' })).toBeVisible();
 });
 
 test('Mitarbeiter erstellen (inkl. Passwort über Einrichtungs-Link)', async () => {
@@ -45,7 +47,7 @@ test('Mitarbeiter erstellen (inkl. Passwort über Einrichtungs-Link)', async () 
   await expect(page.getByRole('heading', { name: /Einrichtungs-Link/ })).toBeVisible();
   const setupLink = (await page.locator('.code-box').textContent()) ?? '';
   expect(setupLink).toContain('/passwort-zuruecksetzen?token=');
-  await expect(page.getByText('Neu, Nora')).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Neu, Nora' })).toBeVisible();
 
   // Die neue Person setzt über den Link ihr eigenes Passwort (eigener Kontext).
   const employeeContext = await page.context().browser()!.newContext();
@@ -60,7 +62,7 @@ test('Mitarbeiter erstellen (inkl. Passwort über Einrichtungs-Link)', async () 
   await employeePage.getByLabel('E-Mail').fill(EMPLOYEE_EMAIL);
   await employeePage.getByLabel('Passwort', { exact: true }).fill(EMPLOYEE_PASSWORD);
   await employeePage.getByRole('button', { name: 'Anmelden' }).click();
-  await expect(employeePage.getByRole('heading', { name: /Willkommen, Nora/ })).toBeVisible();
+  await expect(employeePage.getByRole('heading', { name: 'Heute' })).toBeVisible();
   await employeeContext.close();
 });
 

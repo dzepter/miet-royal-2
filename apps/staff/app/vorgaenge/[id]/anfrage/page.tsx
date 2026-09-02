@@ -6,6 +6,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { AuthGuard, useMe } from '../../../../components/auth-guard';
 import { apiFetch, hasPermission } from '../../../../lib/api';
 import { OCCASION_LABELS, type ProductRow } from '../../../../lib/commerce';
+import { fromBerlinInput, toBerlinInput } from '../../../../lib/scheduling';
 
 /**
  * Interne Anfrage im Vorgang (Phase-3-Vorgabe Nr. 39): Eventdaten, Gäste,
@@ -36,17 +37,11 @@ interface InquiryData {
   notes: string[];
 }
 
-function toLocalInput(value: string | null): string {
-  if (value === null) return '';
-  const date = new Date(value);
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
-}
-
-function fromLocalInput(value: string): string | null {
-  if (value === '') return null;
-  return new Date(value).toISOString();
-}
+// Zeit-Eingaben gelten IMMER als Europe-Berlin-Wanduhrzeit (Order §3) –
+// unabhängig von der Gerätezeitzone; die Werte fließen später in den
+// eingefrorenen Buchungs-Snapshot und damit in die Terminplanung.
+const toLocalInput = toBerlinInput;
+const fromLocalInput = fromBerlinInput;
 
 function InquiryView() {
   const params = useParams<{ id: string }>();

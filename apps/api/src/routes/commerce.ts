@@ -14,6 +14,7 @@ import { InquiryService } from '../commerce/inquiry-service.ts';
 import { OfferService } from '../commerce/offer-service.ts';
 import { ProductService } from '../commerce/product-service.ts';
 import { TermsService } from '../commerce/terms-service.ts';
+import { SchedulingService } from '../scheduling/scheduling-service.ts';
 import {
   getCompletedVisibilityDays,
   getPickupExactAddress,
@@ -761,6 +762,20 @@ export function registerCommerceRoutes(app: FastifyInstance, options: CommerceRo
     const params = parseOrThrow(tokenParams, request.params, 'params');
     try {
       const result = await offerService.accept(params.token);
+      // Die verbindliche Annahme löst die operative Terminplanung aus
+      // (Phase-4-Order §4) – als Routen-Orchestrierung, damit der
+      // OfferService selbst keine Terminlogik kennt. Best effort: schlägt
+      // die Terminerzeugung fehl, bleibt die Annahme gültig; der
+      // Selbstheilungs-Pass der Heute-/Offen-Ansichten zieht die Termine
+      // nach (keine bestätigte Buchung geht verloren, §8).
+      try {
+        await new SchedulingService(db).ensureAppointmentsForBooking(result.bookingId);
+      } catch (schedulingError) {
+        request.log.warn(
+          { err: schedulingError, bookingId: result.bookingId },
+          'Terminerzeugung nach Annahme fehlgeschlagen – Selbstheilung greift beim nächsten Kalenderaufruf.',
+        );
+      }
       return { accepted: true, bookingId: result.bookingId };
     } catch (error) {
       if (sendAuthError(request, reply, error)) return;

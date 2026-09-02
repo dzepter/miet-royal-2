@@ -77,3 +77,44 @@ export async function getPickupPublicArea(db: Database): Promise<string> {
 export async function getPickupExactAddress(db: Database): Promise<string | null> {
   return getStringSetting(db, PICKUP_EXACT_ADDRESS_KEY);
 }
+
+// ── Scheduling-Settings (Phase 4, Order §25/§32) ──────────────────────────
+
+export const APPOINTMENT_REMINDER_MINUTES_KEY = 'appointment_reminder_minutes';
+export const APPOINTMENT_REMINDER_MINUTES_DEFAULT = 60;
+
+/**
+ * Vorlauf der geschäftskritischen Termin-Erinnerung in Minuten (Default 60).
+ * Adminpflegbar als Systemsetting; NICHT pro Mitarbeiter deaktivierbar.
+ */
+export async function getAppointmentReminderMinutes(db: Database): Promise<number> {
+  const rows = await db
+    .select()
+    .from(systemSettings)
+    .where(eq(systemSettings.key, APPOINTMENT_REMINDER_MINUTES_KEY));
+  const value = rows[0]?.value;
+  if (typeof value === 'number' && Number.isInteger(value) && value >= 5 && value <= 24 * 60) {
+    return value;
+  }
+  return APPOINTMENT_REMINDER_MINUTES_DEFAULT;
+}
+
+export async function setAppointmentReminderMinutes(
+  db: Database,
+  actorId: string,
+  minutes: number,
+): Promise<void> {
+  if (!Number.isInteger(minutes) || minutes < 5 || minutes > 24 * 60) {
+    throw new AuthError(
+      'VALIDATION',
+      'Bitte einen Erinnerungs-Vorlauf zwischen 5 und 1440 Minuten angeben.',
+    );
+  }
+  await db
+    .insert(systemSettings)
+    .values({ key: APPOINTMENT_REMINDER_MINUTES_KEY, value: minutes, updatedBy: actorId })
+    .onConflictDoUpdate({
+      target: systemSettings.key,
+      set: { value: minutes, updatedBy: actorId, updatedAt: new Date() },
+    });
+}

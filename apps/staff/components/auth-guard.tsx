@@ -156,7 +156,8 @@ export function AuthGuard({ children }: { children: ReactNode }) {
       <header className="topbar">
         <strong>Miet-Royal Staff</strong>
         <nav aria-label="Hauptnavigation">
-          <Link href="/">Start</Link>
+          <Link href="/">Heute</Link>
+          {hasPermission(me, 'calendar.view') && <Link href="/kalender">Kalender</Link>}
           {hasPermission(me, 'process.view_all') && <Link href="/vorgaenge">Vorgänge</Link>}
           {hasPermission(me, 'customer.view') && <Link href="/kunden">Kunden</Link>}
           {hasPermission(me, 'product.view') && <Link href="/produkte">Produkte</Link>}

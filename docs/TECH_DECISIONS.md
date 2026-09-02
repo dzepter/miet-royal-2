@@ -378,3 +378,141 @@ Keine spontanen Framework-/ORM-Wechsel (CLAUDE.md „Dependencies“).
   Event-Distanz; ein DST-Übergang verschiebt die Wanduhrzeit des Ablaufs
   um maximal eine Stunde – deterministisch und exakt persistiert). Die
   Outbox bleibt über `system.settings` einsehbar (interner Prüfpfad).
+
+## Phase 4: Kalender, Termine, Zuständigkeit, Vertretung, Konflikte & „Heute“
+
+- **SchedulingService strikt getrennt**: Terminerzeugung/-pflege lebt in
+  `apps/api/src/scheduling/` – der OfferService kennt keine Termine. Die
+  verbindliche Annahme löst die Terminerzeugung als ROUTEN-Orchestrierung
+  aus (best effort im öffentlichen Accept-Endpunkt); zusätzlich zieht ein
+  Selbstheilungs-Pass in Heute-/Offen-Ansichten Buchungen ohne
+  vollständige Termine nach (`ensureMissingBookingAppointments`) – keine
+  bestätigte Buchung geht verloren, selbst wenn der Hook fehlschlug. Die
+  Terminplanung im Vorgang ensured weiterhin lazy; Backfill-Kommando
+  `pnpm scheduling:ensure-booking-appointments`. Idempotenz über
+  `UNIQUE (booking_id, kind)` + `ON CONFLICT DO NOTHING`; Buchungs- und
+  Angebots-Snapshots bleiben unangetastet. Ein fachlich unmögliches
+  Snapshot-Fenster (Ende ≤ Beginn) wird NICHT zu einer erfundenen exakten
+  Zeit – der Termin bleibt „Zeit festlegen“.
+- **Zeitposition ehrlich**: exakte Zeit (nur `start_at`), Zeitfenster
+  (`start_at` + `end_at > start_at`) oder ungeplant (beides NULL, sichtbar
+  als „Zeit festlegen“). Aus Zeitfenstern werden nie exakte Zeiten
+  erfunden; Zeitzone fest `Europe/Berlin` (Spalte dokumentiert das).
+  DST-feste Wanduhrzeit-Konstruktion via Offset-Probing (+01:00/+02:00 mit
+  Intl-Verifikation) in `packages/domain/src/scheduling.ts`; Drag & Drop
+  verschiebt Termine unter Erhalt der Berliner Wanduhrzeit und der
+  Fensterdauer.
+- **Wochenend-Standard als zentrale Funktion**: letzter Freitag ≤ Event
+  18:00 / erster Sonntag ≥ Event 11:00, validiert gegen Eventbeginn/-ende
+  (ersatzweise Berliner Tagesgrenzen). Unpassende Vorschläge werden nie
+  automatisch gespeichert – die API antwortet mit Begründung. Der Standard
+  ist eine SELBSTABHOLUNGS-Regel: Lieferbuchungen lehnt der Server ab
+  (das vereinbarte Liefer-/Rückholfenster bleibt führend), und beide
+  Zeiten werden ATOMAR in einer Transaktion gesetzt (deterministische
+  Lock-Reihenfolge – nie ein halb angewendeter Standard).
+- **Genau ein Zuständiger, effektiv über Vertretung**: initiale Zuweisung
+  nur aus dem aktiven Vorgangs-Zuständigen, sonst offen („Mitarbeiter
+  zuweisen“, nie Auto-Pick). `resolveEffectiveAssigneeId` ist die EINZIGE
+  Auflösungsstelle (Single-Hop, exklusiv: während einer aktiven Vertretung
+  sieht die Vertretung die Termine unter „Meine“, das Original nicht).
+  Ausgewertet wird für ZUKÜNFTIGE Termine zum Terminbeginn, für bereits
+  begonnene/überfällige und ungeplante Termine zum JETZT-Zeitpunkt – so
+  fällt OFFENE Zuständigkeit nach Vertretungsende automatisch an das
+  Original zurück (rein zeitbasiert, kein Background-Job). Vertretungen
+  mit gesperrter/deaktivierter Vertretung werden ignoriert (Rückfall an
+  das Original – ein Nutzer ohne Login betreut keine Termine).
+  Vorgangs-Zuständigkeit wird durch Termin-Zuweisungen nie verändert.
+- **Same-Day-Übernahmebestätigung serverseitig**: Umzuweisung am selben
+  Berliner Tag (nur mit `appointment.reassign_same_day`) setzt
+  `acknowledgement_requested_at/_for`; jede erneute Umzuweisung
+  invalidiert die alte Anforderung, Bestätigen ist identitätsgebunden.
+  Erstzuweisung ist bewusst KEINE Umzuweisung (keine Bestätigung nötig).
+  Push-Vorbereitung als Datenlage: angefragt/nicht versendet/bestätigt.
+- **Vertretungen kollisionsfrei**: `pg_advisory_xact_lock` je
+  Original-Mitarbeiter verhindert parallele überlappende Anlagen; nur
+  aktive Mitarbeiter, Original ≠ Vertretung, Ein-Klick-Frühende über
+  konditionales UPDATE.
+- **Konflikte als Provider-Registry**: `staff_double_booking` (stark,
+  Überlappung desselben effektiven Mitarbeiters; halboffene Fenster,
+  gleiche Startzeiten kollidieren) und `process_sequence` (Warnung:
+  Rückgabe vor Abholung/Lieferung derselben Buchung). Phase 5 registriert
+  weitere Provider; Konflikte warnen nur, blockieren nie. „Konflikt
+  gelöst“ darf jeder aktive Mitarbeiter mit Sicht auf ALLE beteiligten
+  Termine – ohne Kommentar, Historie oder Audit-Event. Die Unterdrückung
+  speichert ausschließlich einen serverseitig berechneten
+  SHA-256-Fingerprint über (Typ + beteiligte Termine mit Zeiten und
+  effektivem Mitarbeiter); Clients liefern nur Typ + Termin-IDs, der
+  Server rechnet auf aktuellem Stand – relevante Änderungen ⇒ neuer
+  Fingerprint ⇒ Konflikt erscheint wieder.
+- **Überfällige Rückgaben lazy statt Cron**: `ensureOverdueIncidents`
+  heilt beim Lesen zuerst (offene Vorfälle, die zum aktuellen Terminstand
+  nicht mehr passen – Termin erledigt, Vorgang storniert, Zeit geändert,
+  Race-Phantome – werden gelöst) und erzeugt dann idempotent je aktuell
+  überfälliger Rückgabe genau EINEN OFFENEN Vorfall pro verpasster Zeit.
+  Die Eindeutigkeit ist ein PARTIELLER Unique-Index
+  `(appointment_id, missed_at) WHERE resolved_at IS NULL` – auch eine
+  identische, erneut gerissene Zeit ergibt einen NEUEN Vorfall mit neuem
+  Push-Anspruch. `admin_notified_at IS NULL` modelliert „genau ein
+  Admin-Push fällig“; interner Abschluss beendet offene Vorfälle sofort.
+  Neue vereinbarte Rückgabezeit beendet alle offenen Vorfälle des Termins
+  und markiert „Kundeninformation erforderlich“ (jede vereinbarte und
+  wieder gerissene Zeit ist bewusst ein EIGENER Vorfall – „Kunde
+  kontaktiert“ gehört zum jeweiligen Vorfall, kein Verlauf). Interne
+  Umzuweisung allein löst keine Kundeninformation aus. 1-h-Reminder nur
+  als Datenlage (`reminder_sent_at`, Fenster aus
+  `appointment_reminder_minutes`, Default 60, `system_settings`).
+  Stornierte Vorgänge verschwinden aus Kalender/Heute/Offen-Liste und
+  erzeugen keine Vorfälle; ABGESCHLOSSENE Vorgänge behalten ihre offenen
+  Termine bewusst sichtbar (eine reale ausstehende Rückgabe darf durch
+  einen CRM-Abschluss nicht unsichtbar werden).
+- **Nebenläufigkeit**: optimistische Versionsspalte (`expectedVersion` ⇒
+  409 bei Konflikt) plus `FOR NO KEY UPDATE`-Zeilenlocks (kompatibel mit
+  FK-`KEY SHARE` paralleler Vorfalls-Inserts – Lehre aus dem
+  Phase-3-Deadlock). Keine globalen Locks.
+- **Rechte (PERMISSIONS.md führend)**: wiederverwendet werden
+  `calendar.view_all` (Gesamtkalender + Mitarbeiterfilter),
+  `calendar.drag_drop` (ALLE Umplanungspfade: DnD, Vorschau-Formular,
+  neue Rückgabezeit, Wochenend-Standard), `appointment.assign`,
+  `appointment.reassign_same_day` (zusätzlich zur Zuweisung am selben
+  Tag). Kontrolliert ergänzt: `calendar.view` (Basis: Heute, Meine
+  Termine, Übernahme bestätigen, Kunde kontaktiert, Konflikt lösen),
+  `calendar.manage` (interner Planungsabschluss), `substitution.manage`.
+  Systemadmins erhalten neue Schlüssel automatisch (Phase-1-Semantik);
+  Konfliktlösung ist bewusst NICHT admin-exklusiv. Einzeltermin-Sicht ohne
+  `view_all`: nur zugewiesene/effektive eigene Termine, sonst neutrale
+  404 (kein ID-Oracle).
+- **Datenminimierung**: `CalendarEntry` liefert nur operative Felder
+  (Kunde Name/Telefon, MR-Nummer, Maschinen-Name aus dem Snapshot,
+  Standort-Label); intern zeigt der „base“-Standort die LIVE-Einstellung
+  `pickup_exact_address` (öffentlich bleibt Mainz-Hechtsheim). Keine
+  Kundendaten in Logs des Scheduling-Pfads.
+- **„Heute“ als operative Startseite**: Reihenfolge fest – überfällige
+  Rückgaben, heutige Termine, organisatorisch Offenes, danach höchstens
+  2 kommende Termine, wenn weniger als 3 heute anstehen. Keine
+  Umsatz-/Analytics-Elemente. Interner Abschluss heißt ehrlich „Intern
+  als erledigt markieren“ und ändert nie den Vorgangsstatus.
+- **Apple-/Lager-Vorbereitung ohne Sonderfelder**: stabile
+  Termin-Entität; Lager-Sichten der Phase 5 lesen DIESELBEN Termine
+  (`/staff/calendar`-Datenmodell), eine spätere `integration_mapping`-
+  Tabelle koppelt Apple-Kalender an – Miet-Royal bleibt führend.
+- **Adversarialer Phase-4-Review (Ultracode, 6 Dimensionen + Refute-Pass)**
+  – bestätigte Funde behoben: (1) verbindliche Annahme erzeugt Termine
+  jetzt sofort (Routen-Hook) plus Selbstheilungs-Pass in Heute/Offen –
+  vorher konnten bestätigte Buchungen im Terminbereich unsichtbar bleiben;
+  (2) Wochenend-Standard nur noch für Selbstabholung und atomar; (3)
+  stornierte Vorgänge fallen aus allen operativen Termin-Sichten und
+  Vorfällen; (4) alle Zeit-Eingaben der Staff-App (Termin, Vertretung,
+  Anfrage) werden geräteunabhängig als Europe-Berlin-Wanduhrzeit
+  interpretiert; (5) Incident-Eindeutigkeit partiell (identische erneut
+  gerissene Zeit ⇒ neuer Vorfall), interner Abschluss/Selbstheilung
+  beenden offene Vorfälle; (6) Zuständigkeits-Rückfall auch für
+  vergangene offene Termine, gesperrte Vertretungen zählen nicht; (7)
+  Termin-Endpunkte je Vorgang respektieren die zentrale
+  Vorgangs-Sichtbarkeitsregel der Phase 2; (8) Übernahmebestätigung ohne
+  Existenz-Orakel (neutrale 404); (9) Jahres-Plausibilität 2020–2100;
+  (10) UI: leerer Terminart-Filter zeigt nichts, Vorschau scrollt in den
+  sichtbaren Bereich, rotes Warnsymbol, „Heute“ zeigt Datum bei nicht
+  heutigen Zeiten. Bewusst NICHT geändert: Termine ABGESCHLOSSENER
+  Vorgänge bleiben sichtbar (s. o.), und jede vereinbarte und erneut
+  gerissene Rückgabezeit ist ein eigener Vorfall mit eigenem
+  Push-Anspruch (Order §24-Semantik).

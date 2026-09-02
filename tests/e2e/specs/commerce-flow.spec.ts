@@ -44,9 +44,8 @@ async function login(page: Page, email: string, password: string, firstName: str
   await page.getByLabel('E-Mail').fill(email);
   await page.getByLabel('Passwort', { exact: true }).fill(password);
   await page.getByRole('button', { name: 'Anmelden' }).click();
-  await expect(
-    page.getByRole('heading', { name: new RegExp(`Willkommen, ${firstName}`) }),
-  ).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Heute' })).toBeVisible();
+  await expect(page.getByText(new RegExp(`Willkommen, ${firstName}`))).toBeVisible();
 }
 
 /** Kunde + Vorgang anlegen; liefert die Vorgangs-ID aus der URL. */

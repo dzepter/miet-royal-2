@@ -9,7 +9,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:integration": "vitest run --config vitest.integration.config.ts",
-    "bootstrap-admin": "tsx scripts/bootstrap-admin.ts"
+    "bootstrap-admin": "tsx scripts/bootstrap-admin.ts",
+    "scheduling:ensure-booking-appointments": "tsx scripts/ensure-booking-appointments.ts"
   },
   "dependencies": {
     "@fastify/cookie": "11.1.2",

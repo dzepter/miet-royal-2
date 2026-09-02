@@ -247,6 +247,24 @@ export const PERMISSION_DEFINITIONS = [
     'Termin am selben Tag neu zuweisen',
     'Dir fehlt das Recht, Termine kurzfristig neu zuzuweisen.',
   ),
+  def(
+    'calendar.view',
+    'calendar',
+    'Kalender ansehen (eigene Termine)',
+    'Dir fehlt das Recht, den Kalender zu sehen.',
+  ),
+  def(
+    'calendar.manage',
+    'calendar',
+    'Termine verwalten (intern abschließen, Terminplanung)',
+    'Dir fehlt das Recht, Termine zu verwalten.',
+  ),
+  def(
+    'substitution.manage',
+    'calendar',
+    'Vertretungen verwalten',
+    'Dir fehlt das Recht, Vertretungen zu verwalten.',
+  ),
 
   // Maschinen
   def(

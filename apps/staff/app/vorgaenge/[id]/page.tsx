@@ -234,7 +234,13 @@ function ProcessView() {
 
       <div className="card" aria-label="Nächste Aktion">
         <h2 style={{ marginTop: 0 }}>Nächste Aktion</h2>
-        {commerce.confirmationStatus === 'prepared' ? (
+        {commerce.confirmationStatus === 'sent' ? (
+          <p>
+            <Link href={`/vorgaenge/${params.id}/termine`}>
+              <strong>Terminplanung öffnen</strong>
+            </Link>
+          </p>
+        ) : commerce.confirmationStatus === 'prepared' ? (
           <p>
             <Link href={`/vorgaenge/${params.id}/angebot`}>
               <strong>Auftragsbestätigung prüfen</strong>
@@ -427,6 +433,9 @@ function ProcessView() {
         </p>
         <p>
           <Link href={`/vorgaenge/${params.id}/angebot`}>Angebot &amp; Auftragsbestätigung</Link>
+        </p>
+        <p>
+          <Link href={`/vorgaenge/${params.id}/termine`}>Terminplanung</Link>
         </p>
       </div>
 
