@@ -12,7 +12,7 @@ import {
   type DatabaseExecutor,
   type Product,
 } from '@mietroyal/database';
-import { and, asc, desc, eq, inArray } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm';
 import { AuthError } from '../auth/service.ts';
 
 /**
@@ -290,17 +290,33 @@ export class InventoryService {
       seen.add(entry.itemId);
     }
     const stocktakeId = await this.db.transaction(async (tx) => {
+      // Exklusivität je Artikel (Phase-5-Finalisierung): Advisory-Locks in
+      // deterministischer Reihenfolge (keine Deadlocks) serialisieren
+      // parallele Zähl-Anlagen desselben Artikels; unterschiedliche Artikel
+      // laufen ungebremst parallel. Der partielle Unique-Index auf
+      // open_item_id ist der datenbankseitige Backstop.
+      const sortedItemIds = [...new Set(entries.map((entry) => entry.itemId))].sort();
+      for (const itemId of sortedItemIds) {
+        await tx.execute(
+          sql`SELECT pg_advisory_xact_lock(hashtext(${'stocktake-item:' + itemId}))`,
+        );
+      }
       const itemRows = await tx
-        .select({ item: inventoryItems, productActive: products.active })
+        .select({
+          item: inventoryItems,
+          productActive: products.active,
+          productName: products.name,
+        })
         .from(inventoryItems)
         .innerJoin(products, eq(products.id, inventoryItems.productId))
-        .where(
-          inArray(
-            inventoryItems.id,
-            entries.map((entry) => entry.itemId),
-          ),
-        )
-        .then((rows) => rows.map(({ item, productActive }) => ({ ...item, productActive })));
+        .where(inArray(inventoryItems.id, sortedItemIds))
+        .then((rows) =>
+          rows.map(({ item, productActive, productName }) => ({
+            ...item,
+            productActive,
+            productName,
+          })),
+        );
       if (itemRows.length !== entries.length) {
         throw new AuthError('NOT_FOUND', 'Mindestens ein Lagerartikel wurde nicht gefunden.');
       }
@@ -308,6 +324,23 @@ export class InventoryService {
         throw new AuthError(
           'VALIDATION',
           'Deaktivierte Artikel sind nur historisch sichtbar und können nicht neu gezählt werden.',
+        );
+      }
+      // Höchstens EINE offene (pending) Zählung je Artikel – gilt auch
+      // zwischen Einzelartikel- und Komplettinventur.
+      const openRows = await tx
+        .select({ itemId: inventoryStocktakeItems.itemId })
+        .from(inventoryStocktakeItems)
+        .where(inArray(inventoryStocktakeItems.openItemId, sortedItemIds));
+      if (openRows.length > 0) {
+        const blocked = new Set(openRows.map((row) => row.itemId));
+        const names = itemRows
+          .filter((row) => blocked.has(row.id))
+          .map((row) => row.productName)
+          .sort();
+        throw new AuthError(
+          'CONFLICT',
+          `Für ${names.map((name) => `„${name}“`).join(', ')} ist bereits eine Inventur mit ausstehender Freigabe offen. Bitte zuerst freigeben.`,
         );
       }
       const needsApproval = entries.some((entry) => {
@@ -328,6 +361,7 @@ export class InventoryService {
           itemId: entry.itemId,
           systemStock: itemRows.find((row) => row.id === entry.itemId)!.currentStock,
           countedStock: entry.countedStock,
+          openItemId: needsApproval ? entry.itemId : null,
         })),
       );
       return id;
@@ -468,6 +502,12 @@ export class InventoryService {
           'Diese Inventur ist bereits freigegeben oder ohne Differenz abgeschlossen.',
         );
       }
+      // Exklusivität freigeben: nach der Freigabe darf der Artikel wieder
+      // gezählt werden (open_item_id = NULL, siehe partieller Unique-Index).
+      await tx
+        .update(inventoryStocktakeItems)
+        .set({ openItemId: null, updatedAt: new Date() })
+        .where(eq(inventoryStocktakeItems.stocktakeId, stocktakeId));
       const lines = await tx
         .select()
         .from(inventoryStocktakeItems)

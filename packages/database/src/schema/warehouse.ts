@@ -232,11 +232,21 @@ export const inventoryStocktakeItems = pgTable(
     systemStock: integer('system_stock'),
     /** Gezählter Ist-Bestand; vor Freigabe durch Admin korrigierbar. */
     countedStock: integer('counted_stock').notNull(),
+    /**
+     * Exklusivitäts-Backstop (Phase-5-Finalisierung): solange die Inventur
+     * "Freigabe erforderlich" ist, trägt die Zeile hier den Artikel – der
+     * partielle Unique-Index garantiert datenbankseitig höchstens EINE
+     * offene Zählung je Artikel. Freigabe setzt das Feld auf NULL.
+     */
+    openItemId: uuid('open_item_id').references(() => inventoryItems.id),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
     uniqueIndex('inventory_stocktake_items_unique').on(table.stocktakeId, table.itemId),
+    uniqueIndex('inventory_stocktake_items_open_item_unique')
+      .on(table.openItemId)
+      .where(sql`"open_item_id" IS NOT NULL`),
     check('inventory_stocktake_items_counted_check', sql`"counted_stock" >= 0`),
   ],
 );

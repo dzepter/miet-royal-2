@@ -78,6 +78,13 @@
       "when": 1788378185418,
       "tag": "0010_warehouse_core",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1788412346639,
+      "tag": "0011_stocktake_exclusivity",
+      "breakpoints": true
     }
   ]
 }

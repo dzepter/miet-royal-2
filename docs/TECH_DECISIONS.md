@@ -627,9 +627,18 @@ Keine spontanen Framework-/ORM-Wechsel (CLAUDE.md „Dependencies“).
   der Artikel zwischenzeitlich durch eine ANDERE Inventur initialisiert
   oder würde die Freigabe den Bestand unter 0 senken, bricht die
   Freigabe mit klarem Konflikt ab („bitte neu zählen“) statt still zu
-  überschreiben; dass zwei parallel offene Inventuren desselben Artikels
-  ihre Differenzen nacheinander anwenden, ist bewusste
-  Differenz-Semantik. Erstinventur
+  überschreiben. **Exklusivität (Phase-5-Finalisierung):** je Lagerartikel
+  existiert zu jedem Zeitpunkt höchstens EINE offene Zählung (pending) –
+  auch zwischen Einzelartikel- und Komplettinventur. `createStocktake`
+  nimmt je Artikel einen `pg_advisory_xact_lock` in deterministisch
+  sortierter Reihenfolge (keine Deadlocks, unterschiedliche Artikel
+  parallel), prüft dann auf offene Zählungen und lehnt mit CONFLICT ab
+  („… bereits eine Inventur mit ausstehender Freigabe offen“); der
+  partielle Unique-Index auf `inventory_stocktake_items.open_item_id`
+  (gesetzt solange pending, bei Freigabe NULL) ist der
+  datenbankseitige Backstop. Damit kann eine später freigegebene zweite
+  Zählung nie eine veraltete Differenz auf einen bereits korrigierten
+  Bestand anwenden. Erstinventur
   („Anfangsbestand erfassen“) initialisiert per `initial`-Bewegung
   (Delta 0 nur hier erlaubt). Prozentdifferenz in Integer-Arithmetik
   mit einer Nachkommastelle; System 0/unbekannt ⇒ „nicht berechenbar“.
@@ -673,9 +682,10 @@ Keine spontanen Framework-/ORM-Wechsel (CLAUDE.md „Dependencies“).
   jetzt (kein 500 bei 31.02. oder 100-L-Typen), deaktivierte Artikel
   waren nur im UI gesperrt. Bewusst NICHT geändert: QR-Token bleibt
   Klartext-Spalte (kein Bearer – Auflösung verlangt Session + Recht),
-  Kapazitätskonflikte löst die Planung mit calendar.view_all, parallele
-  VERSCHIEDENE Inventuren desselben Artikels wenden ihre Differenzen
-  nacheinander an (mit Konflikt-Abbruch bei Initialisierungs-/
-  Negativ-Kollisionen). Zusatztests R1–R10 sichern alle Fixes ab; zwei
+  Kapazitätskonflikte löst die Planung mit calendar.view_all. Die
+  ursprünglich dokumentierte Nacheinander-Anwendung parallel offener
+  Inventuren desselben Artikels wurde in der Phase-5-Finalisierung durch
+  die Exklusivitätsregel (höchstens eine offene Zählung je Artikel)
+  ersetzt. Zusatztests R1–R10 sichern alle Fixes ab; zwei
   Phase-4-Testflakes am Berliner Tageswechsel (NaN-Stundenparser,
   ungeprüftes now+10min) wurden testseitig robust gemacht.

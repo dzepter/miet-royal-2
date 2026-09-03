@@ -77,6 +77,12 @@ function InventoryView() {
 
   const lowCount = (items ?? []).filter((item) => item.lowStock).length;
   const pending = stocktakes.filter((row) => row.status === 'pending_approval');
+  // Exklusivität: Artikel mit offener Zählung (Freigabe ausstehend) sind bis
+  // zur Freigabe nicht erneut zählbar – der Server lehnt das ohnehin ab.
+  const openCountByItem = new Map<string, string>();
+  for (const row of pending) {
+    for (const line of row.items) openCountByItem.set(line.itemId, row.id);
+  }
 
   return (
     <main className="page">
@@ -147,7 +153,17 @@ function InventoryView() {
                   <button onClick={() => setFullCountMode(false)}>Abbrechen</button>
                 </>
               ) : (
-                <button onClick={() => setFullCountMode(true)}>Komplette Lagerinventur</button>
+                <button
+                  onClick={() => setFullCountMode(true)}
+                  disabled={openCountByItem.size > 0}
+                  title={
+                    openCountByItem.size > 0
+                      ? 'Zuerst die offenen Inventuren freigeben.'
+                      : undefined
+                  }
+                >
+                  Komplette Lagerinventur
+                </button>
               )}
             </span>
           )}
@@ -245,56 +261,71 @@ function InventoryView() {
                   </button>
                 </p>
               )}
-              {canCount && item.productActive && !fullCountMode && item.currentStock === null && (
+              {canCount && openCountByItem.has(item.itemId) && (
                 <p style={{ margin: '0.2rem 0' }}>
-                  <input
-                    aria-label={`Anfangsbestand ${item.productName}`}
-                    type="number"
-                    min={0}
-                    style={{ width: '6rem' }}
-                    placeholder="Gezählt"
-                    value={countInput[item.itemId] ?? ''}
-                    onChange={(event) =>
-                      setCountInput({ ...countInput, [item.itemId]: event.target.value })
-                    }
-                  />{' '}
-                  <button
-                    disabled={busy || (countInput[item.itemId] ?? '') === ''}
-                    onClick={() =>
-                      void startStocktake([
-                        { itemId: item.itemId, countedStock: Number(countInput[item.itemId]) },
-                      ])
-                    }
-                  >
-                    Anfangsbestand erfassen
-                  </button>
+                  <Link href={`/lager/inventur/${openCountByItem.get(item.itemId)}`}>
+                    <span className="badge">Inventur offen – Freigabe ausstehend</span>
+                  </Link>
                 </p>
               )}
-              {canCount && item.productActive && !fullCountMode && item.currentStock !== null && (
-                <p style={{ margin: '0.2rem 0' }}>
-                  <input
-                    aria-label={`Inventur ${item.productName}`}
-                    type="number"
-                    min={0}
-                    style={{ width: '6rem' }}
-                    placeholder="Gezählt"
-                    value={countInput[item.itemId] ?? ''}
-                    onChange={(event) =>
-                      setCountInput({ ...countInput, [item.itemId]: event.target.value })
-                    }
-                  />{' '}
-                  <button
-                    disabled={busy || (countInput[item.itemId] ?? '') === ''}
-                    onClick={() =>
-                      void startStocktake([
-                        { itemId: item.itemId, countedStock: Number(countInput[item.itemId]) },
-                      ])
-                    }
-                  >
-                    Artikel-Inventur
-                  </button>
-                </p>
-              )}
+              {canCount &&
+                item.productActive &&
+                !openCountByItem.has(item.itemId) &&
+                !fullCountMode &&
+                item.currentStock === null && (
+                  <p style={{ margin: '0.2rem 0' }}>
+                    <input
+                      aria-label={`Anfangsbestand ${item.productName}`}
+                      type="number"
+                      min={0}
+                      style={{ width: '6rem' }}
+                      placeholder="Gezählt"
+                      value={countInput[item.itemId] ?? ''}
+                      onChange={(event) =>
+                        setCountInput({ ...countInput, [item.itemId]: event.target.value })
+                      }
+                    />{' '}
+                    <button
+                      disabled={busy || (countInput[item.itemId] ?? '') === ''}
+                      onClick={() =>
+                        void startStocktake([
+                          { itemId: item.itemId, countedStock: Number(countInput[item.itemId]) },
+                        ])
+                      }
+                    >
+                      Anfangsbestand erfassen
+                    </button>
+                  </p>
+                )}
+              {canCount &&
+                item.productActive &&
+                !openCountByItem.has(item.itemId) &&
+                !fullCountMode &&
+                item.currentStock !== null && (
+                  <p style={{ margin: '0.2rem 0' }}>
+                    <input
+                      aria-label={`Inventur ${item.productName}`}
+                      type="number"
+                      min={0}
+                      style={{ width: '6rem' }}
+                      placeholder="Gezählt"
+                      value={countInput[item.itemId] ?? ''}
+                      onChange={(event) =>
+                        setCountInput({ ...countInput, [item.itemId]: event.target.value })
+                      }
+                    />{' '}
+                    <button
+                      disabled={busy || (countInput[item.itemId] ?? '') === ''}
+                      onClick={() =>
+                        void startStocktake([
+                          { itemId: item.itemId, countedStock: Number(countInput[item.itemId]) },
+                        ])
+                      }
+                    >
+                      Artikel-Inventur
+                    </button>
+                  </p>
+                )}
               {canCount && item.productActive && fullCountMode && (
                 <p style={{ margin: '0.2rem 0' }}>
                   <input
