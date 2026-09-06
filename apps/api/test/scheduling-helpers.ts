@@ -53,6 +53,8 @@ export async function createAcceptedBooking(
     assignProcessTo?: string | null;
     machineSlug?: string;
     machineQuantity?: number;
+    /** Zusatz-/Gratisartikel der Anfrage (Phase-6-Tests: Sirup, Becher, Kanister). */
+    selections?: { productId: string; role: 'free' | 'extra'; quantity: number }[];
   } = {},
 ): Promise<BookingWorld> {
   const fulfillment = options.fulfillment ?? 'pickup';
@@ -81,7 +83,7 @@ export async function createAcceptedBooking(
     deliveryWindowTo: options.deliveryWindowTo ?? null,
     collectionWindowFrom: options.collectionWindowFrom ?? null,
     collectionWindowTo: options.collectionWindowTo ?? null,
-    selections: [],
+    selections: options.selections ?? [],
   });
   if (options.assignProcessTo !== undefined) {
     await processServiceFor(ctx).assign(

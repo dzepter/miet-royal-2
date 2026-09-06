@@ -53,6 +53,16 @@ Kontrollierte Phase-5-Ergänzung:
 `handover.perform`, `handover.correct_actual_time`,
 `return.perform`, `return.correct_actual_time`, `return.mark_cleanup_issue`
 
+Kontrollierte Phase-6-Ergänzungen (keine zweite Rechtearchitektur):
+`handover.view` (Ausgabe-Bereich, Übergabe-/Lieferschein-Dokumente ansehen),
+`handover.prepare` (Ausgabe vorbereiten: Vorbereitung, Abholperson),
+`delivery_note.edit` (Ausgabemengen und Zusatzpositionen vor Finalisierung).
+Wiederverwendet: `machine.assign` (konkrete Maschine zuordnen/lösen),
+`machine.override_block` (Problemmaschinen-Override, Override-Liste),
+`handover.perform` (Übergabe durchführen und final abschließen – schließt
+die Lagerausgabe des Übergabeprozesses ein), `machine.block`
+(Risiko-Incident „Geprüft“).
+
 ### Schäden/Fehlteile
 `damage.document`, `damage.set_cost`, `damage.edit_cost_before_lexware`,
 `missing_item.create`, `missing_item.set_cost`, `missing_item.resolve`

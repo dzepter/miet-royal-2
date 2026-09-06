@@ -14,6 +14,7 @@ import {
   blockOverlaps,
 } from '../warehouse/machine-service.ts';
 import { InventoryService } from '../warehouse/inventory-service.ts';
+import { AssignmentService } from '../handover/assignment-service.ts';
 import { UUID_PATTERN } from './auth.ts';
 
 const uuidSchema = z.string().regex(UUID_PATTERN, 'muss eine UUID sein');
@@ -144,6 +145,8 @@ export function registerWarehouseRoutes(
 ): void {
   const { db, auth, config, storage } = options;
   const machineService = new MachineService(db, storage);
+  // Risikohinweise (Phase 6) entstehen sofort bei Status-/Sperränderungen.
+  const assignments = new AssignmentService(db, machineService, storage);
   const availability = new MachineAvailabilityService(db);
   const inventory = new InventoryService(db);
 
@@ -310,6 +313,7 @@ export function registerWarehouseRoutes(
     const body = parseOrThrow(statusBody, request.body);
     try {
       const machine = await machineService.setStatus(params.id, body.status);
+      await assignments.refreshRiskIncidents();
       return { machine: serializeMachine(machine) };
     } catch (error) {
       if (sendAuthError(request, reply, error)) return;
@@ -350,6 +354,7 @@ export function registerWarehouseRoutes(
         endsAt: new Date(body.endsAt),
         reason: body.reason,
       });
+      await assignments.refreshRiskIncidents();
       // Starke interne Warnung statt Verhinderung (Order §12): entsteht
       // durch die Sperre ein Kapazitätsproblem, wird es benannt.
       const { product } = await machineService.byId(params.id);
@@ -380,6 +385,7 @@ export function registerWarehouseRoutes(
     const params = parseOrThrow(idParams, request.params, 'params');
     try {
       await machineService.liftBlock(params.id, context.user.id);
+      await assignments.refreshRiskIncidents();
       return { lifted: true };
     } catch (error) {
       if (sendAuthError(request, reply, error)) return;

@@ -272,3 +272,245 @@ export function renderOrderConfirmationPdf(data: OrderConfirmationPdfData): Prom
     }
   }, `Auftragsbestätigung ${data.processNumber}`);
 }
+
+// ── Phase 6: Lieferschein & Übergabeprotokoll (Order §§18/37/38) ──────────
+
+export interface DeliveryNoteMachineLine {
+  machineCode: string;
+  typeName: string;
+}
+
+export interface DeliveryNoteItemLine {
+  description: string;
+  quantity: number;
+  unit: string;
+  /** „inklusive“ | „Kommission“ | „Kauf“ */
+  kindLabel: string;
+}
+
+export interface DeliveryNotePdfData {
+  processNumber: string;
+  customerName: string;
+  customerAddressLines: string[];
+  eventDateLabel: string;
+  eventTimeLabel: string | null;
+  fulfillmentLabel: string;
+  deliveryAddressLines: string[];
+  scheduleLabel: string | null;
+  machines: DeliveryNoteMachineLine[];
+  items: DeliveryNoteItemLine[];
+  createdAtLabel: string;
+  /** Entwurf (Vorschau) oder finales Dokument. */
+  isFinal: boolean;
+}
+
+export interface HandoverProtocolMachineSection {
+  machineCode: string;
+  typeName: string;
+  checkedLabel: string;
+  existingDamagesLines: string[];
+  notes: string[];
+}
+
+export interface HandoverSignatureBlock {
+  /** PNG-Bytes der gezeichneten Unterschrift. */
+  png: Uint8Array;
+  name: string;
+  signedAtLabel: string;
+}
+
+export interface HandoverProtocolPdfData {
+  processNumber: string;
+  customerName: string;
+  recipientLabel: string;
+  eventDateLabel: string;
+  fulfillmentLabel: string;
+  machines: HandoverProtocolMachineSection[];
+  itemLines: string[];
+  customerSignature: HandoverSignatureBlock;
+  staffSignature: HandoverSignatureBlock;
+  finalizedAtLabel: string;
+  /** Interne Dokumentkennung (Übergabe-ID) für die Integritätszuordnung. */
+  documentReference: string;
+}
+
+function simpleTable(
+  doc: PDFKit.PDFDocument,
+  columns: { title: string; width: number; align?: 'left' | 'right' }[],
+  rows: string[][],
+): void {
+  const startX = MARGIN;
+  const rowHeight = 18;
+  doc.font('Helvetica-Bold').fontSize(9);
+  let y = doc.y;
+  let x = startX;
+  for (const column of columns) {
+    doc.text(column.title, x, y, { width: column.width, align: column.align ?? 'left' });
+    x += column.width;
+  }
+  y += rowHeight;
+  doc
+    .moveTo(startX, y - 4)
+    .lineTo(startX + columns.reduce((sum, c) => sum + c.width, 0), y - 4)
+    .strokeColor('#999999')
+    .stroke();
+  doc.font('Helvetica').fontSize(9);
+  for (const row of rows) {
+    const height = Math.max(
+      rowHeight,
+      ...row.map((cell, index) =>
+        doc.heightOfString(cell, { width: columns[index]?.width ?? 100 }),
+      ),
+    );
+    if (y + height > doc.page.height - MARGIN - 40) {
+      doc.addPage();
+      y = MARGIN;
+    }
+    x = startX;
+    row.forEach((cell, index) => {
+      const column = columns[index];
+      if (column === undefined) return;
+      doc.text(cell, x, y, { width: column.width, align: column.align ?? 'left' });
+      x += column.width;
+    });
+    y += height + 4;
+  }
+  doc.y = y + 6;
+  doc.x = MARGIN;
+}
+
+export function renderDeliveryNotePdf(data: DeliveryNotePdfData): Promise<Buffer> {
+  return renderDocument((doc) => {
+    header(doc, data.isFinal ? 'Lieferschein' : 'Lieferschein (Entwurf)', data.processNumber);
+    doc.font('Helvetica-Bold').fontSize(10).text(data.customerName);
+    doc.font('Helvetica').fontSize(10);
+    for (const line of data.customerAddressLines) doc.text(line);
+    doc.moveDown(0.6);
+    doc.text(`Eventdatum: ${data.eventDateLabel}`);
+    if (data.eventTimeLabel !== null) doc.text(`Zeitraum: ${data.eventTimeLabel}`);
+    doc.text(`Abwicklung: ${data.fulfillmentLabel}`);
+    for (const line of data.deliveryAddressLines) doc.text(line);
+    if (data.scheduleLabel !== null) doc.text(data.scheduleLabel);
+    doc.text(`Erstellt am: ${data.createdAtLabel}`);
+    doc.moveDown(1);
+
+    doc.font('Helvetica-Bold').fontSize(11).text('Maschinen');
+    doc.moveDown(0.3);
+    simpleTable(
+      doc,
+      [
+        { title: 'Maschinen-ID', width: 160 },
+        { title: 'Typ', width: 335 },
+      ],
+      data.machines.map((machine) => [machine.machineCode, machine.typeName]),
+    );
+
+    doc.font('Helvetica-Bold').fontSize(11).text('Artikel');
+    doc.moveDown(0.3);
+    simpleTable(
+      doc,
+      [
+        { title: 'Position', width: 275 },
+        { title: 'Menge', width: 110, align: 'right' },
+        { title: 'Art', width: 110, align: 'right' },
+      ],
+      data.items.map((item) => [item.description, `${item.quantity} ${item.unit}`, item.kindLabel]),
+    );
+    doc
+      .font('Helvetica')
+      .fontSize(8)
+      .fillColor('#555555')
+      .text(
+        'Kommissionsartikel werden nach tatsächlichem Verbrauch abgerechnet (nur ungeöffnet zurückgabefähig). Kaufartikel verbleiben beim Kunden. Preise laut Auftragsbestätigung.',
+      )
+      .fillColor('#000000');
+  }, `Lieferschein ${data.processNumber}`);
+}
+
+/** Eine Unterschrift, die pdfkit nicht einbetten kann, ist keine Unterschrift. */
+export class SignatureImageError extends Error {
+  constructor(title: string) {
+    super(`Die Unterschrift „${title}“ ist nicht darstellbar.`);
+    this.name = 'SignatureImageError';
+  }
+}
+
+function signatureBlock(
+  doc: PDFKit.PDFDocument,
+  title: string,
+  block: HandoverSignatureBlock,
+): void {
+  const x = doc.x;
+  const y = doc.y;
+  doc.font('Helvetica-Bold').fontSize(9).text(title, x, y);
+  const imageY = doc.y + 4;
+  try {
+    doc.image(Buffer.from(block.png), x, imageY, { fit: [220, 80] });
+  } catch {
+    // Kein Platzhaltertext im finalen Protokoll (Order §37): Abbruch, die
+    // Unterschrift muss erneut erfasst werden.
+    throw new SignatureImageError(title);
+  }
+  doc.y = imageY + 84;
+  doc.x = x;
+  doc
+    .moveTo(x, doc.y)
+    .lineTo(x + 220, doc.y)
+    .strokeColor('#333333')
+    .stroke();
+  doc.moveDown(0.3);
+  doc.font('Helvetica').fontSize(9).text(`${block.name} · ${block.signedAtLabel}`, x);
+}
+
+export function renderHandoverProtocolPdf(data: HandoverProtocolPdfData): Promise<Buffer> {
+  return renderDocument((doc) => {
+    header(doc, 'Übergabeprotokoll', data.processNumber);
+    doc.font('Helvetica').fontSize(10);
+    doc.text(`Kunde: ${data.customerName}`);
+    doc.text(`Übergabe an: ${data.recipientLabel}`);
+    doc.text(`Eventdatum: ${data.eventDateLabel}`);
+    doc.text(`Ausgabeart: ${data.fulfillmentLabel}`);
+    doc.text(`Übergabe abgeschlossen am: ${data.finalizedAtLabel}`);
+    doc.moveDown(1);
+
+    for (const machine of data.machines) {
+      if (doc.y > doc.page.height - MARGIN - 140) doc.addPage();
+      doc
+        .font('Helvetica-Bold')
+        .fontSize(11)
+        .text(`Maschine ${machine.machineCode} – ${machine.typeName}`);
+      doc.font('Helvetica').fontSize(9);
+      doc.text(`Übergabeprüfung: ${machine.checkedLabel}`);
+      doc.text('Bestehende Schäden:');
+      for (const line of machine.existingDamagesLines) doc.text(`  • ${line}`);
+      for (const note of machine.notes) doc.text(`  ${note}`);
+      doc.moveDown(0.6);
+    }
+
+    doc.font('Helvetica-Bold').fontSize(11).text('Ausgegebene Artikel');
+    doc.font('Helvetica').fontSize(9);
+    if (data.itemLines.length === 0) doc.text('Keine Artikel.');
+    for (const line of data.itemLines) doc.text(`  • ${line}`);
+    doc.moveDown(1);
+
+    if (doc.y > doc.page.height - MARGIN - 200) doc.addPage();
+    const top = doc.y;
+    doc.x = MARGIN;
+    signatureBlock(doc, 'Unterschrift Kunde / Vertreter', data.customerSignature);
+    const afterCustomer = doc.y;
+    doc.x = MARGIN + 260;
+    doc.y = top;
+    signatureBlock(doc, 'Unterschrift Mitarbeiter', data.staffSignature);
+    doc.y = Math.max(doc.y, afterCustomer) + 12;
+    doc.x = MARGIN;
+
+    doc
+      .font('Helvetica')
+      .fontSize(8)
+      .fillColor('#555555')
+      .text(
+        `Dokumentkennung ${data.documentReference}. Dieses Dokument ist nach Unterzeichnung unveränderlich; die Integrität wird über einen serverseitig gespeicherten SHA-256-Hash gesichert.`,
+      )
+      .fillColor('#000000');
+  }, `Übergabeprotokoll ${data.processNumber}`);
+}

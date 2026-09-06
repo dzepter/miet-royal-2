@@ -62,6 +62,7 @@ function Home() {
   const [selected, setSelected] = useState<CalendarEntry | null>(null);
   const [myProcesses, setMyProcesses] = useState<ProcessRow[]>([]);
   const [warehouse, setWarehouse] = useState<WarehouseWarnings | null>(null);
+  const [riskCount, setRiskCount] = useState(0);
   const canCalendar = hasPermission(me, 'calendar.view');
   const canSeeProcesses = hasPermission(me, 'process.view_all');
   const canWarehouse = hasPermission(me, 'machine.view') || hasPermission(me, 'inventory.view');
@@ -100,6 +101,11 @@ function Home() {
     void apiFetch<WarehouseWarnings>('/staff/warehouse/warnings').then((result) => {
       if (result.data !== null) setWarehouse(result.data);
     });
+    // Phase 6 (Order §45): zugewiesene Maschinen, die für eine spätere
+    // Buchung problematisch geworden sind – klarer Risikohinweis.
+    void apiFetch<{ incidents: unknown[] }>('/staff/machine-risk-incidents').then((result) => {
+      if (result.data !== null) setRiskCount(result.data.incidents.length);
+    });
   }, [canWarehouse]);
 
   // Kompakte Maschinen-/Lagerwarnungen (Order §48/UX_RULES „Heute“ Nr. 4)
@@ -107,9 +113,17 @@ function Home() {
   const lowStockCount = warehouse?.lowStock?.length ?? 0;
   const machineWarningCount = warehouse?.machineWarnings?.length ?? 0;
   const warehouseCard =
-    lowStockCount > 0 || machineWarningCount > 0 ? (
+    lowStockCount > 0 || machineWarningCount > 0 || riskCount > 0 ? (
       <div className="card" data-testid="warehouse-warnings">
         <h2>Maschinen- &amp; Lagerwarnungen</h2>
+        {riskCount > 0 && (
+          <p>
+            <Link href="/maschinen/risiken" data-testid="risk-incidents-link">
+              ⚠️ {riskCount === 1 ? '1 zugewiesene Maschine' : `${riskCount} zugewiesene Maschinen`}{' '}
+              für zukünftige Buchungen problematisch
+            </Link>
+          </p>
+        )}
         {machineWarningCount > 0 && (
           <p>
             <Link href="/maschinen">

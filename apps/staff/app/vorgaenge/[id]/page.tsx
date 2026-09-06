@@ -11,6 +11,16 @@ import {
   STATUS_LABELS,
   type MainStatus,
 } from '../../../lib/crm';
+import {
+  ASSIGNMENT_STATUS_LABELS,
+  DOCUMENT_TYPE_LABELS,
+  formatBerlin,
+  NEXT_ACTION_LABELS,
+  PACKET_STATUS_LABELS,
+  type DeliveryPacketView,
+  type HandoverDetail,
+  type HandoverDocument,
+} from '../../../lib/handover';
 
 const SOURCE_LABELS: Record<string, string> = {
   website: 'Website',
@@ -85,6 +95,9 @@ function ProcessView() {
     offerStatus: string | null;
     confirmationStatus: string | null;
   }>({ hasInquiry: false, offerStatus: null, confirmationStatus: null });
+  const [handover, setHandover] = useState<HandoverDetail | null>(null);
+  const [handoverDocs, setHandoverDocs] = useState<HandoverDocument[]>([]);
+  const [packets, setPackets] = useState<DeliveryPacketView[]>([]);
 
   const load = useCallback(async () => {
     const result = await apiFetch<ProcessDetail>(`/staff/processes/${params.id}`);
@@ -135,6 +148,29 @@ function ProcessView() {
   useEffect(() => {
     void loadCommerce();
   }, [loadCommerce]);
+
+  const canHandover = hasPermission(me, 'handover.view');
+  useEffect(() => {
+    if (!canHandover) return;
+    void apiFetch<{ detail: HandoverDetail | null }>(`/staff/processes/${params.id}/handover`).then(
+      async (result) => {
+        if (result.data === null) return;
+        setHandover(result.data.detail);
+        if (result.data.detail !== null) {
+          const docs = await apiFetch<{ documents: HandoverDocument[] }>(
+            `/staff/handover/${result.data.detail.booking.id}`,
+          );
+          if (docs.data !== null) setHandoverDocs(docs.data.documents);
+          if (result.data.detail.handover.status === 'finalized') {
+            const packetResult = await apiFetch<{ packets: DeliveryPacketView[] }>(
+              `/staff/processes/${params.id}/delivery-packets`,
+            );
+            if (packetResult.data !== null) setPackets(packetResult.data.packets);
+          }
+        }
+      },
+    );
+  }, [canHandover, params.id, commerce.confirmationStatus]);
 
   async function runAction(path: string, body: unknown): Promise<void> {
     setBusy(true);
@@ -235,11 +271,35 @@ function ProcessView() {
       <div className="card" aria-label="Nächste Aktion">
         <h2 style={{ marginTop: 0 }}>Nächste Aktion</h2>
         {commerce.confirmationStatus === 'sent' ? (
-          <p>
-            <Link href={`/vorgaenge/${params.id}/termine`}>
-              <strong>Terminplanung öffnen</strong>
-            </Link>
-          </p>
+          <>
+            {/* Terminplanung bleibt an fester Stelle (kein Umbau beim Nachladen der Ausgabe). */}
+            <p>
+              <Link href={`/vorgaenge/${params.id}/termine`}>
+                <strong>Terminplanung öffnen</strong>
+              </Link>
+            </p>
+            {handover !== null && handover.nextAction === 'done' && (
+              <p>
+                <span className="badge ok">Übergabe abgeschlossen</span>{' '}
+                <Link href={`/vorgaenge/${params.id}/uebergabe`}>Protokoll ansehen</Link>
+              </p>
+            )}
+            {handover !== null && handover.nextAction === 'handover' && (
+              <p>
+                <Link href={`/vorgaenge/${params.id}/uebergabe`}>
+                  <strong>Übergabe starten</strong>
+                </Link>
+              </p>
+            )}
+            {handover !== null &&
+              (handover.nextAction === 'assign' || handover.nextAction === 'prepare') && (
+                <p>
+                  <Link href={`/vorgaenge/${params.id}/ausgabe`}>
+                    <strong>{NEXT_ACTION_LABELS[handover.nextAction]}</strong>
+                  </Link>
+                </p>
+              )}
+          </>
         ) : commerce.confirmationStatus === 'prepared' ? (
           <p>
             <Link href={`/vorgaenge/${params.id}/angebot`}>
@@ -438,6 +498,71 @@ function ProcessView() {
           <Link href={`/vorgaenge/${params.id}/termine`}>Terminplanung</Link>
         </p>
       </div>
+
+      {handover !== null && (
+        <div className="card" data-testid="process-handover">
+          <h2>Ausgabe</h2>
+          <p>
+            Gebucht:{' '}
+            {handover.booking.machineQuantity > 1 ? `${handover.booking.machineQuantity} × ` : ''}
+            {handover.booking.machineTypeName ?? 'Maschine'} ·{' '}
+            {handover.booking.fulfillment === 'pickup' ? 'Selbstabholung' : 'Lieferung'}
+          </p>
+          <ul>
+            {handover.slots.map((slot) => (
+              <li key={slot.id}>
+                Maschine {slot.slotNo}:{' '}
+                {slot.machine === null ? (
+                  <span className="badge locked">noch nicht zugewiesen</span>
+                ) : (
+                  <>
+                    <strong>{slot.machine.machineCode}</strong>{' '}
+                    <span
+                      className={`badge ${slot.status === 'prepared' || slot.status === 'issued' ? 'ok' : ''}`}
+                    >
+                      {ASSIGNMENT_STATUS_LABELS[slot.status]}
+                    </span>
+                  </>
+                )}
+              </li>
+            ))}
+          </ul>
+          <p>
+            Ausgabestatus:{' '}
+            {handover.handover.status === 'finalized' ? (
+              <span className="badge ok">
+                abgeschlossen am {formatBerlin(handover.handover.finalizedAt)}
+              </span>
+            ) : (
+              <span className="badge">{NEXT_ACTION_LABELS[handover.nextAction]}</span>
+            )}
+          </p>
+          <p>
+            <Link href={`/vorgaenge/${params.id}/ausgabe`}>Ausgabe vorbereiten</Link>
+            {' · '}
+            <Link href={`/vorgaenge/${params.id}/uebergabe`}>Übergabe</Link>
+            {handoverDocs.map((doc) => (
+              <span key={doc.id}>
+                {' · '}
+                <a href={`/api/staff/documents/${doc.id}`} target="_blank" rel="noreferrer">
+                  {DOCUMENT_TYPE_LABELS[doc.type] ?? doc.type}
+                </a>
+              </span>
+            ))}
+          </p>
+          {packets.map((packet) => (
+            <p className="muted" key={packet.id} data-testid="delivery-packet">
+              Dokumentpaket:{' '}
+              <span className="badge ok">
+                {PACKET_STATUS_LABELS[packet.status] ?? packet.status}
+              </span>{' '}
+              an {packet.recipient !== '' ? packet.recipient : '– (keine E-Mail hinterlegt)'} ·{' '}
+              {packet.subject} · {packet.documentIds.length} Dokumente (Outbox, kein Versand in
+              Phase 6)
+            </p>
+          ))}
+        </div>
+      )}
 
       {/* Vorbereitete Bereiche späterer Phasen – bewusst ohne Fake-Inhalte. */}
       <div className="card">

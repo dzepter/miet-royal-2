@@ -4,6 +4,7 @@ import {
   machines,
   products,
   type Database,
+  type DatabaseExecutor,
   type Machine,
   type MachineBlock,
   type Product,
@@ -226,6 +227,33 @@ export class MachineService {
     const row = updated[0];
     if (row === undefined) throw new AuthError('NOT_FOUND', 'Maschine nicht gefunden.');
     return row;
+  }
+
+  /**
+   * Fachprozess-Status (Phase 6, Order §§10/11/40/42): Reserviert/Vermietet/
+   * Einsatzbereit werden NUR von Vorbereitung/Übergabe (und später Rückgabe)
+   * innerhalb deren Transaktion gesetzt – nie manuell. Standort optional in
+   * demselben Schritt (z. B. „Kunde – MR-2026-0843“).
+   */
+  async applyProcessStatus(
+    tx: DatabaseExecutor,
+    machineId: string,
+    status: 'ready' | 'reserved' | 'rented',
+    location?: { locationKind: Machine['locationKind']; locationNote: string | null },
+    now = new Date(),
+  ): Promise<void> {
+    const updated = await tx
+      .update(machines)
+      .set({
+        status,
+        ...(location === undefined
+          ? {}
+          : { locationKind: location.locationKind, locationNote: location.locationNote }),
+        updatedAt: now,
+      })
+      .where(eq(machines.id, machineId))
+      .returning({ id: machines.id });
+    if (updated.length === 0) throw new AuthError('NOT_FOUND', 'Maschine nicht gefunden.');
   }
 
   /** Zentrale Standortlogik (Order §8) – auch spätere Phasen nutzen SIE. */

@@ -1,5 +1,10 @@
 import { createHash } from 'node:crypto';
-import { documents, type Database, type DocumentRow } from '@mietroyal/database';
+import {
+  documents,
+  type Database,
+  type DatabaseExecutor,
+  type DocumentRow,
+} from '@mietroyal/database';
 import type { StorageProvider } from '@mietroyal/integrations';
 import { eq } from 'drizzle-orm';
 import { AuthError } from '../auth/service.ts';
@@ -18,7 +23,7 @@ export class DocumentService {
   ) {}
 
   async createFinalDocument(input: {
-    type: 'offer' | 'order_confirmation';
+    type: DocumentRow['type'];
     processId: string;
     offerVersionId?: string | undefined;
     bookingId?: string | undefined;
@@ -39,6 +44,51 @@ export class DocumentService {
         storageKey: input.storageKey,
         sha256,
         byteSize: input.bytes.length,
+        mimeType: 'application/pdf',
+        finalizedAt: new Date(),
+      })
+      .returning();
+    const row = inserted[0];
+    if (row === undefined)
+      throw new AuthError('CONFLICT', 'Dokument konnte nicht angelegt werden.');
+    return row;
+  }
+
+  /**
+   * Zweiphasige Finalisierung (Phase 6, Order §41): Bytes ZUERST in den
+   * Storage laden (außerhalb der Business-Transaktion), danach die
+   * Dokumentzeile innerhalb der Transaktion registrieren. Schlägt der
+   * Upload fehl, entsteht kein Fachzustand; schlägt die Transaktion fehl,
+   * bleibt höchstens ein unreferenziertes Storage-Objekt zurück.
+   */
+  async uploadBytes(storageKey: string, bytes: Buffer): Promise<{ sha256: string }> {
+    const sha256 = createHash('sha256').update(bytes).digest('hex');
+    await this.storage.put(storageKey, new Uint8Array(bytes), {
+      contentType: 'application/pdf',
+    });
+    return { sha256 };
+  }
+
+  async registerUploaded(
+    tx: DatabaseExecutor,
+    input: {
+      type: DocumentRow['type'];
+      processId: string;
+      bookingId?: string | undefined;
+      storageKey: string;
+      sha256: string;
+      byteSize: number;
+    },
+  ): Promise<DocumentRow> {
+    const inserted = await tx
+      .insert(documents)
+      .values({
+        type: input.type,
+        processId: input.processId,
+        bookingId: input.bookingId ?? null,
+        storageKey: input.storageKey,
+        sha256: input.sha256,
+        byteSize: input.byteSize,
         mimeType: 'application/pdf',
         finalizedAt: new Date(),
       })

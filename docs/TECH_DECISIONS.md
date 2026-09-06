@@ -689,3 +689,256 @@ Keine spontanen Framework-/ORM-Wechsel (CLAUDE.md „Dependencies“).
   ersetzt. Zusatztests R1–R10 sichern alle Fixes ab; zwei
   Phase-4-Testflakes am Berliner Tageswechsel (NaN-Stundenparser,
   ungeprüftes now+10min) wurden testseitig robust gemacht.
+
+## Phase 6: Maschinenzuweisung, Vorbereitung, Ausgabe & Übergabe
+
+- **Zuweisung als stabile Slots**: `machine_assignments` legt je
+  bestätigter Buchung genau `machineQuantity` Zeilen (`slot_no` 1…n,
+  Unique `(booking_id, slot_no)`) idempotent an (`ensureSlotsForBooking`
+  unter Advisory-Lock je Buchung); `machine_id` bleibt NULL bis zur
+  konkreten Zuordnung. Status open → assigned → prepared → issued
+  (→ returned ab Phase 7). Ein partieller Unique-Index
+  `machine_id WHERE status = 'issued'` ist der datenbankseitige Backstop
+  dafür, dass eine physische Maschine nie an zwei Kunden gleichzeitig
+  ausgegeben ist. Der Mietzeitraum (Abhol-/Lieferbeginn bis Rückgabe-Ende
+  aus den Phase-4-Terminen) wird bei jeder Zuordnung in die Zeile
+  gespiegelt (`rental_from/to`), damit Kollisionen ohne Join-Kaskaden
+  berechenbar bleiben.
+- **Bewertung rechnet ausschließlich der Server**: `evaluateMachine`
+  liefert Typprüfung, Problemliste mit stabilen Deskriptoren
+  (`status_cleaning/status_repair/status_out_of_service/status_rented`,
+  `blocked:<blockId>`, `collision:<assignmentId>`,
+  `issued_elsewhere:<assignmentId>`, `period_unknown` nur Warnung),
+  `hardBlocked`, `overrideRequired` und einen Situations-Fingerprint
+  (SHA-256 über die sortierten nicht-warnenden Deskriptoren). Harte
+  Blockade = Maschine ist physisch an einen anderen Vorgang ausgegeben
+  (Assignment `issued` oder Status Vermietet) – keine Ausnahme, auch nicht
+  für Admins. Alles andere (zeitliche Kollision, Sperre, Reinigung,
+  Reparatur, Außer Betrieb) ist eine STARKE Warnung mit Override.
+  Domainentscheidung: auch Reinigung verlangt eine bewusste Bestätigung,
+  weil eine nicht gereinigte Maschine ohne Grundangabe nicht beim Kunden
+  landen soll.
+- **Override**: eigener Datensatz `machine_assignment_overrides`
+  (Maschine, Vorgang, Buchung, Problemcodes, Zusammenfassung,
+  Fingerprint, Pflichtgrund, bestätigt von/am, `archived_at` vorbereitet)
+  – die Route nimmt nur `{confirmed: true, reason}` entgegen, ob ein
+  Override nötig ist, entscheidet der Server aus der aktuellen Lage
+  (Client kann nichts „freischalten“). Ohne Override → 409 mit
+  Problemtext, ohne Recht `machine.override_block` → 403, ohne Grund →
+  400. Ein Override gilt nur für die Lage, für die er bestätigt wurde:
+  Ändert sich der Fingerprint (`overrideStale`), zeigt die UI
+  „Problemlage geändert – erneut bestätigen“ und die Finalisierung lehnt
+  ab, bis erneut bewusst bestätigt wurde. Admin-Liste
+  `/staff/machine-overrides` (Maschine/Vorgang/Grund/Mitarbeiter).
+- **Vorbereiten → 🟠 Reserviert nur über den Fachprozess**: `prepare`
+  setzt die Maschine von `ready` auf `reserved` (nur aus `ready`; andere
+  Status werden nicht still überschrieben) und das Assignment auf
+  `prepared`; `unprepare`, `release` und der Wechsel auf eine andere
+  Maschine setzen `reserved` sauber auf `ready` zurück – aber nur, wenn
+  kein ANDERES vorbereitetes Assignment dieselbe Maschine hält
+  (`otherPreparedExists`) und der Status tatsächlich noch `reserved` ist
+  (kein Überschreiben einer zwischenzeitlichen Reparatur). Alle Pfade
+  serialisieren über `pg_advisory_xact_lock('machine-assign:<machineId>')`
+  plus Zeilensperre des Slots; das Lösen braucht keinen Pflichtgrund.
+  Dieselbe Maschine erneut zu bestätigen (Override nach geänderter Lage)
+  lässt `prepared` bestehen.
+- **Risikohinweise (Future-Risk-Incidents)**: `machine_risk_incidents`
+  mit Fingerprint `risk:<assignmentId>:<machineId>:<descriptor>` und
+  partiellem Unique-Index auf offene Incidents (dedupliziert). Erzeugt
+  werden sie lazy (`refreshRiskIncidents` bei Zuordnungsänderungen,
+  Finalisierung und beim Laden der Liste) für zugewiesene, noch nicht
+  ausgegebene Maschinen, deren Status/Sperre nach der Zuweisung
+  problematisch wurde – Kollisionen/Ausgabe anderswo sind keine
+  Incidents (sie sind Zuweisungsprobleme), und Deskriptoren, die ein
+  gültiger Override bereits abdeckt, ebenfalls nicht. Felder für die
+  Admin-Benachrichtigung sind vorbereitet: `admin_notification_due_at`
+  (sofort), `admin_notified_at`, `follow_up_due_at` (= notified + 6 h),
+  `follow_up_sent_at` (genau EIN Follow-up), `resolved_at/by`,
+  `resolution` (`resolved` = Problem verschwunden, `acknowledged` =
+  Admin „Geprüft“ ohne Grund; ein bestätigter Incident wird für dieselbe
+  Lage nicht neu erzeugt und beim Verschwinden zu
+  `acknowledged_cleared`). Kein Versand in Phase 6 (Outbox-Grundlage),
+  keine automatische Neuzuweisung. Kompakter Hinweis auf „Heute“.
+- **AUSGABE-Ansicht**: `/staff/handover/day?date=` liefert die Abhol-/
+  Liefertermine des Berliner Kalendertags aus bestätigten Buchungen plus
+  bestätigte, noch ungeplante Ausgaben (`unscheduled`), mit
+  Vorbereitungsstand (none/partial/prepared) und effektivem
+  Mitarbeiter. Die Staff-Seite `/ausgabe` ist Tablet-/Smartphone-first
+  (große Touch-Karten, keine Tabellenwand).
+- **QR-Scan ohne Hardwarezwang**: Kamera nur während der aktiven
+  Scan-Funktion (Stream wird beim Schließen gestoppt), Erkennung über die
+  Browser-`BarcodeDetector`-API, wenn vorhanden – sonst/immer auch
+  manuelle Eingabe des Identifiers oder der gescannten Adresse. Die
+  Auflösung läuft AUTHENTIFIZIERT über den Phase-5-Resolver
+  (`/staff/machines/qr/:token`, `machine.view`); ein Scan macht nie
+  Rechte weiter. Im Wizard bestätigt der Scan die zugewiesene Maschine
+  (falsche Maschine ⇒ klare Fehlermeldung, keine stille Umbuchung).
+- **Ausgabeartikel getrennt vom Snapshot**: `delivery_notes` (1 je
+  Buchung, `draft`/`final`) und `delivery_note_items` (Art
+  inklusive/Kommission/Kauf, Soll aus dem Buchungs-Snapshot, Ist
+  editierbar, eingefrorener Einzelpreis) entstehen automatisch beim
+  ersten Aufruf des Vorgangs im Ausgabebereich; der Buchungs-Snapshot
+  wird NIE verändert. Inklusive Regeln kommen aus dem Snapshot (1 L
+  Sirup je Behälter, 25 Becher + 25 Strohhalme je Vorgang – nicht je
+  Maschine); Kommission (Sirup 12 €/L, Becher/Strohhalme 25er-Pack) und
+  Kaufartikel (Kanister) werden bei der Ausgabe als `issue`-Bewegung
+  gebucht. Zusatzpositionen (`booking_additions`) sind nur für
+  Sirup/Becher/Strohhalme/Kanister möglich (keine Maschine), frieren den
+  aktuellen Listenpreis ein und erzeugen eine Lieferscheinposition
+  („nachträglich vereinbart“); das Kanister-Maximum (2 je gebuchtem
+  Behälter) prüft der Server. KEINE Endabrechnung in Phase 6.
+- **Lagerausgabe atomar, verständlich blockierend**: Bei der
+  Finalisierung werden die Ist-Mengen je Lagerartikel aggregiert und über
+  `InventoryService.issueWithin` (Zeilenlock, Ledger-Bewegung `issue`)
+  gebucht – niemals negativ. Unzureichender oder nicht erfasster Bestand
+  ist VOR der Finalisierung ein sichtbarer Blocker „Lagerbestand
+  prüfen: …“ (Vorbereitung, Wizard-Schritt Artikel und Abschluss) und
+  bei einem Race in der Finalisierung selbst ein 409 mit derselben
+  Botschaft – nie ein 500. Zuweisung und Vorbereitung bleiben trotz
+  Lagerblocker möglich; Abhilfe: Wareneingang/Inventur oder Ist-Menge
+  korrigieren.
+- **Lieferschein-Vorschau und finales Dokument**: Die Vorschau rendert
+  denselben serverseitigen pdfkit-Renderer aus dem Entwurf („Lieferschein
+  (Entwurf)“, nur mit `handover.view`), das finale Dokument entsteht
+  ausschließlich in der Finalisierung als Phase-3-Dokumententität
+  (SHA-256, privater Storage, kein Update-Pfad). Inhalt: Maschinen-IDs
+  und -Typen, Artikel mit Ist-Mengen, Abhol-/Lieferadresse, Zeitpunkt.
+- **Alternative Abholperson**: genau EINE je Buchung
+  (`booking_pickup_representatives`, Unique `booking_id`; Vorname,
+  Nachname, Telefon – kein Ausweis), nur bei Selbstabholung. Die
+  1-Stunden-Regel (Kunde kann bis 1 h vor Abholung ändern) ist nur als
+  Datenlage vorbereitet (`changeableUntil` = Abholbeginn − 1 h in der
+  Antwort); ein Kundenzugang existiert in Phase 6 nicht. Telefonnummern
+  von Abholperson und sonstigem Vertreter werden bei der Finalisierung
+  gelöscht (`phone_deleted_at`) – Datenminimierung, das Protokoll trägt
+  nur den Namen.
+- **Geführte Übergabe (Tablet-first)**: 9 Bildschirme mit genau einer
+  dominanten nächsten Aktion (Vorgang → Maschinen scannen/bestätigen →
+  Artikel → je Maschine „Maschine gemeinsam geprüft“ + Pflicht-Gesamtfoto
+  → Empfänger → Zusammenfassung → Unterschrift Kunde → Unterschrift
+  Mitarbeiter → Abschluss). Die Pflichtprüfungen rechnet der Server
+  (`computeBlockers`): alle Slots zugewiesen und vorbereitet, keine
+  veralteten Overrides, keine harte Blockade, je Maschine Prüfung UND
+  mindestens ein Foto, Empfänger gesetzt, beide Unterschriften, Bestand
+  ausreichend. KEIN Bypass – auch nicht für Admins. Ein kombiniertes
+  Protokoll bei mehreren Maschinen; ein `ExistingDamageProvider`-Hook
+  ist als Schnittstelle (ohne Implementierung) vorbereitet.
+- **Fotos und Unterschriften privat**: Fotos (JPEG/PNG/WebP, ≤ 6 MB,
+  Base64-JSON wie das Phase-5-Referenzfoto) liegen unter
+  `handovers/<id>/photos/<assignment>-<random>.<ext>` im privaten
+  Storage mit SHA-256; sie erscheinen NICHT im Kunden-PDF und werden nur
+  über die authentifizierte API (`handover.view` + Vorgangs­sichtbarkeit)
+  ausgeliefert. Unterschriften sind Canvas-PNGs (Magic-Byte-Prüfung,
+  ≤ 2 MB), je Rolle genau eine (Unique `(handover_id, role)`; erneutes
+  Unterschreiben ersetzt), Base64 taucht in keiner Antwort/keinem Log
+  auf. Der Mitarbeiter-Unterzeichner kommt aus der Session, nie aus dem
+  Body; ein Wechsel des Empfängers entwertet eine bereits vorhandene
+  Kundenunterschrift.
+- **Empfänger**: Kunde selbst, hinterlegte Abholperson oder sonstiger
+  Vertreter (Name Pflicht, Telefon optional, vom Mitarbeiter bestätigt) –
+  keine Ausweiskontrolle, keine Ausweisdaten. Bei Lieferung ist der
+  Vor-Ort-Kontakt mit Anrufbutton (`tel:`) sichtbar.
+- **Finalisierung zweiphasig, idempotent, atomar im Fachzustand**:
+  Phase 1 (außerhalb der Transaktion): Blocker erneut prüfen, beide PDFs
+  rendern und in den Storage laden (`uploadBytes`, Keys mit
+  Zufallsanteil – ein Retry kollidiert nie mit einem alten Objekt).
+  Phase 2 (eine Transaktion unter
+  `pg_advisory_xact_lock('handover-finalize:<id>')`, Handover-Zeile FOR NO
+  KEY UPDATE): ist die Übergabe bereits `finalized`, endet der Aufruf
+  sofort erfolgreich (Double-Submit/parallele Finalisierung = genau ein
+  Ergebnis, keine zweite Bewegung, kein zweites Dokument); sonst Blocker
+  unter Sperre erneut prüfen, Dokumente registrieren, `issue`-Bewegungen
+  buchen, Assignments `issued`, Maschinen 🔵 Vermietet mit Standort
+  Kunde (Notiz = Vorgangsnummer ⇒ Anzeige „Kunde – MR-…“), Abhol-/
+  Liefertermin über `SchedulingService.completeWithin` abschließen,
+  Lieferschein `final`, Handover `finalized` (`finalized_at/by`,
+  optional abweichende tatsächliche Ausgabezeit nur mit
+  `handover.correct_actual_time`), Telefonnummern löschen und das
+  Dokumentpaket `delivery_packets(handover_completed)` als
+  `ready` anlegen (Outbox-Grundlage; kein Versand, Production nie
+  „versendet“). Schlägt Storage/PDF fehl, bleibt der Fachzustand
+  unberührt (nur verwaiste Storage-Objekte, keine DB-Zeilen); schlägt die
+  Transaktion fehl, verweisen keine Zeilen auf die Uploads – ein Retry ist
+  sicher. Der Vorgang wird NICHT abgeschlossen (Rückgabe/Abrechnung ab
+  Phase 7).
+- **Terminabschluss nur über die Übergabe**: `SchedulingService.complete`
+  lehnt Abhol-/Liefertermine aus Buchungen mit klarem Konflikt ab
+  („… werden über den Übergabeprozess abgeschlossen“); `completeWithin`
+  ist idempotent, setzt den Mitarbeiter bei fehlender Zuständigkeit auf
+  den Ausgebenden und schließt Überfälligkeits-Incidents. Der
+  Rückgabetermin bleibt offen.
+- **Dokumentzugriff ohne IDOR**: `/staff/documents/:id` verlangt
+  `offer.view` ODER (`handover.view` für Lieferschein/Übergabeprotokoll)
+  plus die Phase-2-Vorgangssichtbarkeit; alle Handover-Routen laufen
+  über `visibleBooking` (neutrales 404) und prüfen, dass Slot/Foto/
+  Signatur zur Buchung gehören (`slotOfBooking`). Nichts ist öffentlich
+  erreichbar, es gibt keine signierten Links.
+- **Rechte (PERMISSIONS.md führend)**: wiederverwendet `machine.assign`
+  (Zuweisen/Lösen), `machine.override_block` (Override, Override-Liste),
+  `machine.block` („Geprüft“ am Risikohinweis), `machine.view`
+  (Risikoliste, QR-Auflösung), `handover.perform` (= Übergabe
+  durchführen und abschließen INKLUSIVE Lagerausgabe – ein zusätzliches
+  `inventory.issue` würde die Ausgabe an der Rampe in zwei Rollen
+  zerreißen), `handover.correct_actual_time`; kontrolliert ergänzt
+  `handover.view` (Ausgabe-Bereich/Details), `handover.prepare`
+  (Vorbereitung, Abholperson) und `delivery_note.edit` (Ist-Mengen,
+  Zusatzpositionen). `document.view` sinngemäß über `offer.view`/
+  `handover.view` abgebildet, kein neuer Key.
+- **Datenmodell versioniert**: Migration 0012 (8 Enums, 12 Tabellen),
+  Rückgabe-/Zubehör-Metadaten nur vorbereitet (`returned`-Status,
+  `return_protocol`-Dokumenttyp aus Phase 3), keine Rückgabe-Checkliste.
+- **Adversarialer Review (Phase 6)**: 6-dimensionaler Workflow-Review
+  (Races/TOCTOU, Override/Incidents, Lager/Dokumente, Security, Spec-
+  Vollständigkeit, Tests/Schema) mit Refute-Pass; 45 Findings, alle selbst
+  gegen Vorgabe und Code verifiziert. Behoben u. a.: Übergabe-Mutatoren
+  (Mengen, Zusatzpositionen, Empfänger, Prüfung, Foto, Abholperson) liefen
+  nur mit ungesperrtem Draft-Vorabcheck – jetzt ALLE unter der Zeilensperre
+  der handovers-Zeile (`withDraftLock`), serialisiert mit der Finalisierung;
+  Finalisierung sperrt Slot-Zeilen und Maschinen-Advisory-Locks VOR dem
+  Recheck, vergleicht einen Inhalt-Fingerprint (Mengen, Maschinen, Empfänger,
+  Fotos, Unterschrift-Hashes) zwischen PDF-Rendern und Transaktion und setzt
+  `issued` nur bei unveränderter Maschine/Status `prepared`; einheitliche
+  Sperrreihenfolge Slot → Maschinen (sortiert, alte + neue) → Lager →
+  Maschinenzeile (kein Deadlock zwischen assign/prepare/release/finalize,
+  Inventur-Freigabe sperrt Artikel jetzt ebenfalls sortiert); Mietzeitraum
+  IMMER live aus den Phase-4-Terminen (gespeicherte `rental_from/to` waren
+  nach Terminverschiebung veraltet → stille Doppelbelegung); dieselbe
+  Maschine in zwei Slots derselben Buchung abgelehnt; Risiko-Scan
+  prozessintern serialisiert + try-Advisory-Lock, Auto-Auflösung nur für
+  Incidents vor Scanbeginn, Refresh sofort bei Status-/Sperränderung;
+  Storno löst nicht ausgegebene Zuordnungen systemseitig (Reserviert
+  zurück, keine Phantom-Kollisionen); Overrides gelöster/ersetzter
+  Zuordnungen werden archiviert; Sperre vor bekanntem Beginn ohne Ende
+  irrelevant, ohne Beginn nur Warnung; „Bevorzugt“ nie override-pflichtig;
+  Ausgabe-Liste unterliegt der Phase-2-Sichtbarkeit (`process.view_all` +
+  Fenster); abgeschlossene Vorgänge gesperrt, Vorgangsabschluss mit aktiven
+  Zuordnungen verweigert; ephemere Telefonnummern auch bei Storno/Abschluss
+  gelöscht; Dokument-/Fotoroute prüfen Recht/Sichtbarkeit vor Existenz und
+  Storage-Zugriff; inklusive Positionen auf das gebuchte Kontingent
+  begrenzt, nicht genutztes Gratis-Sirup-Kontingent wird bei Zusatzpositionen
+  automatisch inklusive (Rest Kommission); Unterschrift-PNG wird VOR dem
+  Speichern vollständig geprüft (Chunks, IDAT synchron dekomprimiert) – ein
+  nicht dekodierbares Bild hätte pdfkit asynchron und damit den Prozess
+  abgebrochen; Foto-Magic-Bytes gegen den deklarierten Typ; tatsächliche
+  Ausgabezeit nur bei Abweichung vom ABSCHLUSS; Vorbereitung („Reserviert“)
+  ist Pflichtvorbedingung der Finalisierung; Prüfung/Gesamtfoto werden beim
+  Lösen/Maschinenwechsel entfernt (erneute aktive Prüfung); Korrektur der
+  Abholperson folgt in den Empfänger und entwertet die Kundenunterschrift;
+  Outbox-Paket im Vorgang/Wizard sichtbar; QR-Scanner scannt nach
+  Fehlschlag weiter; Gesamtfoto aus Kamera ODER Galerie; Transporthinweise
+  im Wizard vollständig. Zusatztests R1–R18 sichern alle Fixes ab (Test 42
+  nutzt jetzt getrennte Service-Instanzen, damit die DB-Sperren – nicht die
+  prozessinterne Mutex – die Parallelität entscheiden). Bewusst NICHT
+  geändert: `detail()` liest in Phase 2 weiterhin über den Pool (unter den
+  gehaltenen Sperren konsistent); die prozessinterne `KeyedMutex` je Buchung
+  verhindert, dass Doppeltipps Transaktionen und Pool-Verbindungen stapeln –
+  ≥ 10 gleichzeitige Finalisierungen VERSCHIEDENER Übergaben auf einer
+  Instanz mit Pool 10 bleiben ein dokumentiertes Restrisiko (Timeout → 409/
+  500 ohne Fachzustand, Retry sicher).
+- **Bewusst offen (Deferred, Phase 6)**: Versand des Dokumentpakets
+  (Outbox-Worker), Admin-Benachrichtigung/Follow-up der Risikohinweise
+  (Datenlage vorbereitet), Kundenportal für die 1-Stunden-Regel der
+  Abholperson, Rückgabe/Zubehörprüfung/Schadensmeldung, Endabrechnung,
+  bestehende-Schäden-Provider (Schnittstelle vorhanden), Kamera-Scan in
+  Browsern ohne `BarcodeDetector` (Fallback manuell), Mehrfach-Fotos je
+  Maschine sind möglich, aber nur ein Foto ist Pflicht.

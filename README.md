@@ -7,8 +7,9 @@ Ausgabe/Rückgabe, Abrechnung und Integrationen.
 **Leitprinzip: Das System darf intern komplex sein. Für Mitarbeitende und
 Kunden muss es einfach wirken.**
 
-Aktueller Stand: **Phase 5 (Physische Maschinen, Verfügbarkeit, QR &
-Lagerbestand) umgesetzt** — zusätzlich zu Phase 4 (Kalender, Termine,
+Aktueller Stand: **Phase 6 (Maschinenzuweisung, Vorbereitung, Ausgabe &
+Übergabe) umgesetzt** — zusätzlich zu Phase 5 (Physische Maschinen,
+Verfügbarkeit, QR & Lagerbestand) und Phase 4 (Kalender, Termine,
 Zuständigkeit, Vertretung, Konflikte & „Heute“) — auf Basis von Phase 1
 (Staff-Authentifizierung mit TOTP-2FA, Sessions, App-Sperre, granulare
 Rollen/Rechte inkl. Systemadmin-Semantik), Phase 2 (Kunden, Vorgänge,
@@ -32,8 +33,20 @@ Referenzfotos im privaten Storage; interne Maschinenverfügbarkeit mit
 Kapazitätswarnungen über die bestehende Konfliktarchitektur und
 Auswahlvorschlag für Phase 6; Lagerbestand als Bewegungs-Ledger mit
 Wareneingang, Mindestbeständen, Warnungen und Inventur mit
-Admin-Freigabe (kein erfundener Anfangsbestand). Konkrete
-Maschinenzuweisung, Ausgabe/Rückgabe und Abrechnung folgen ab Phase 6.
+Admin-Freigabe (kein erfundener Anfangsbestand). Neu in Phase 6:
+konkrete Maschinenzuweisung je Buchungsslot mit Vorschlag, QR-Scan und
+bewusstem Override (Pflichtgrund, protokolliert; physisch ausgegebene
+Maschinen sind hart blockiert), Vorbereitung als 🟠 Reserviert,
+Risikohinweise für nachträglich problematisch gewordene Maschinen,
+AUSGABE-Bereich für Tablet/Smartphone, Lieferschein-Entwurf mit
+Ist-Mengen und Zusatzpositionen (Buchungs-Snapshot bleibt unverändert),
+geführte Übergabe mit aktiver Maschinenprüfung, Pflicht-Gesamtfoto,
+Empfänger/Abholperson und gezeichneten Unterschriften, serverseitige
+finale PDFs (Lieferschein, Übergabeprotokoll) im privaten Storage,
+atomare Lagerausgabe mit verständlichem Blocker bei unzureichendem
+Bestand sowie idempotente Finalisierung (Vermietet beim Kunden,
+Abholtermin abgeschlossen, Dokumentpaket versandbereit). Rückgabe,
+Schäden und Abrechnung folgen ab Phase 7.
 
 ## Voraussetzungen
 

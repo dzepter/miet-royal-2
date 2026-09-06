@@ -552,6 +552,15 @@ export class SchedulingService {
       if (locked.status !== 'scheduled') {
         throw new AuthError('CONFLICT', 'Dieser Termin ist bereits abgeschlossen.');
       }
+      // Phase 6 (Order §44): Ausgabe-/Liefertermine aus einer Buchung werden
+      // AUSSCHLIESSLICH durch die Übergabe-Finalisierung abgeschlossen –
+      // der Kalender darf die Übergabe nicht umgehen.
+      if (locked.source === 'booking' && (locked.kind === 'pickup' || locked.kind === 'delivery')) {
+        throw new AuthError(
+          'CONFLICT',
+          'Ausgabe- und Liefertermine werden über den Übergabeprozess abgeschlossen („Übergabe starten“ im Vorgang).',
+        );
+      }
       if (locked.assignedUserId === null) {
         throw new AuthError(
           'VALIDATION',
@@ -584,6 +593,49 @@ export class SchedulingService {
         );
       return row;
     });
+  }
+
+  /**
+   * Fachlicher Abschluss durch die Übergabe-Finalisierung (Phase 6, Order
+   * §§40/44) INNERHALB deren Transaktion: idempotent (bereits abgeschlossen
+   * → keine Änderung), ohne Versionsprüfung (der Abschluss ist Folge der
+   * Übergabe, nicht einer Kalenderbearbeitung). Ist niemand zugewiesen,
+   * wird die durchführende Person als Zuständige eingetragen.
+   */
+  async completeWithin(
+    tx: DatabaseTransaction,
+    actorId: string,
+    appointmentId: string,
+    now = new Date(),
+  ): Promise<void> {
+    const locked = await this.lockAppointment(tx, appointmentId);
+    if (locked.status === 'completed') return;
+    if (locked.status !== 'scheduled') {
+      throw new AuthError(
+        'CONFLICT',
+        'Der Termin ist storniert und kann nicht abgeschlossen werden.',
+      );
+    }
+    await tx
+      .update(appointments)
+      .set({
+        status: 'completed',
+        completedAt: now,
+        completedBy: actorId,
+        assignedUserId: locked.assignedUserId ?? actorId,
+        version: locked.version + 1,
+        updatedAt: now,
+      })
+      .where(eq(appointments.id, locked.id));
+    await tx
+      .update(appointmentOverdueIncidents)
+      .set({ resolvedAt: now })
+      .where(
+        and(
+          eq(appointmentOverdueIncidents.appointmentId, locked.id),
+          isNull(appointmentOverdueIncidents.resolvedAt),
+        ),
+      );
   }
 
   // ── Überfälligkeit & Incidents (Order §§23/24/26/27) ────────────────────

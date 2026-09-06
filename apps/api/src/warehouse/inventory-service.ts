@@ -512,6 +512,9 @@ export class InventoryService {
         .select()
         .from(inventoryStocktakeItems)
         .where(eq(inventoryStocktakeItems.stocktakeId, stocktakeId));
+      // Deterministische Sperrreihenfolge wie createStocktake/issueWithin
+      // (Ausgabe) – kein Deadlock zwischen Freigabe und Lagerausgabe.
+      lines.sort((a, b) => a.itemId.localeCompare(b.itemId));
       for (const line of lines) {
         // Die Korrektur ist die bei der ZÄHLUNG festgestellte DIFFERENZ
         // (Ist − System-Snapshot). Sie wird auf den AKTUELLEN Bestand
@@ -607,6 +610,24 @@ export class InventoryService {
       }
       return this.applyMovement(tx, { itemId, kind: 'issue', quantityDelta: -quantity, actorId });
     });
+  }
+
+  /**
+   * Ausgabe INNERHALB einer fremden Transaktion (Phase 6, Order §22/§40):
+   * die Übergabe-Finalisierung bucht alle Positionen atomar mit ihrem
+   * Fachzustand. Strikt – nie unter 0 (Order §23: kein stiller
+   * Negativbestand; der Aufrufer prüft vorab verständlich).
+   */
+  async issueWithin(
+    tx: DatabaseExecutor,
+    actorId: string,
+    itemId: string,
+    quantity: number,
+  ): Promise<InventoryMovement> {
+    if (!Number.isInteger(quantity) || quantity <= 0) {
+      throw new AuthError('VALIDATION', 'Die Ausgabemenge muss eine ganze Zahl größer 0 sein.');
+    }
+    return this.applyMovement(tx, { itemId, kind: 'issue', quantityDelta: -quantity, actorId });
   }
 
   /** Rücknahme ungeöffneter Ware (Phase 7) – vorbereitete Schnittstelle. */

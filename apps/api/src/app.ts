@@ -16,6 +16,7 @@ import { registerCommerceRoutes } from './routes/commerce.ts';
 import { registerCrmRoutes } from './routes/crm.ts';
 import { registerSchedulingRoutes } from './routes/scheduling.ts';
 import { registerWarehouseRoutes } from './routes/warehouse.ts';
+import { registerHandoverRoutes } from './routes/handover.ts';
 import { registerStaffAdminRoutes } from './routes/staff-admin.ts';
 
 export const API_VERSION = '0.1.0';
@@ -249,6 +250,12 @@ export function buildApp({
       });
       registerSchedulingRoutes(instance, { db, auth: authService, config });
       registerWarehouseRoutes(instance, {
+        db,
+        auth: authService,
+        config,
+        storage: storageProvider,
+      });
+      registerHandoverRoutes(instance, {
         db,
         auth: authService,
         config,

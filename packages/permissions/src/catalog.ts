@@ -366,6 +366,18 @@ export const PERMISSION_DEFINITIONS = [
 
   // Ausgabe
   def(
+    'handover.view',
+    'handover',
+    'Ausgabe-Bereich ansehen',
+    'Dir fehlt das Recht, den Ausgabe-Bereich einzusehen.',
+  ),
+  def(
+    'handover.prepare',
+    'handover',
+    'Ausgabe vorbereiten',
+    'Dir fehlt das Recht, Ausgaben vorzubereiten.',
+  ),
+  def(
     'handover.perform',
     'handover',
     'Ausgabe durchführen',
@@ -376,6 +388,12 @@ export const PERMISSION_DEFINITIONS = [
     'handover',
     'Ausgabezeit korrigieren',
     'Dir fehlt das Recht, Ausgabezeiten zu korrigieren.',
+  ),
+  def(
+    'delivery_note.edit',
+    'handover',
+    'Lieferschein bearbeiten',
+    'Dir fehlt das Recht, Lieferscheine zu bearbeiten.',
   ),
 
   // Rückgabe

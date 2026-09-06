@@ -1,5 +1,9 @@
 import {
+  bookingPickupRepresentatives,
+  bookings,
   customers,
+  handovers,
+  machineAssignments,
   processNotes,
   processes,
   staffUsers,
@@ -7,7 +11,7 @@ import {
   type DatabaseTransaction,
   type Process,
 } from '@mietroyal/database';
-import { and, asc, desc, eq, isNull, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
 import { AuthError } from '../auth/service.ts';
 import { berlinYear } from './normalize.ts';
 import {
@@ -191,10 +195,29 @@ export class ProcessService {
       if (process.mainStatus !== 'open' && process.mainStatus !== 'reopened') {
         throw new AuthError('CONFLICT', 'Nur offene Vorgänge können abgeschlossen werden.');
       }
+      // Phase 6: zugewiesene, vorbereitete oder ausgegebene Maschinen halten
+      // den Vorgang operativ offen (Rückgabe folgt in Phase 7).
+      const activeAssignments = await tx
+        .select({ id: machineAssignments.id })
+        .from(machineAssignments)
+        .where(
+          and(
+            eq(machineAssignments.processId, processId),
+            inArray(machineAssignments.status, ['assigned', 'prepared', 'issued']),
+          ),
+        );
+      if (activeAssignments.length > 0) {
+        throw new AuthError(
+          'CONFLICT',
+          'Der Vorgang hat noch zugewiesene, vorbereitete oder ausgegebene Maschinen – bitte zuerst die Zuordnungen lösen bzw. die Rückgabe abschließen.',
+        );
+      }
+      const now = new Date();
       await tx
         .update(processes)
-        .set({ mainStatus: 'completed', completedAt: new Date(), updatedAt: new Date() })
+        .set({ mainStatus: 'completed', completedAt: now, updatedAt: now })
         .where(eq(processes.id, processId));
+      await this.deleteEphemeralPhones(tx, processId, now);
     });
   }
 
@@ -239,11 +262,42 @@ export class ProcessService {
       if (process.mainStatus !== 'open' && process.mainStatus !== 'reopened') {
         throw new AuthError('CONFLICT', 'Nur offene Vorgänge können storniert werden.');
       }
+      const now = new Date();
       await tx
         .update(processes)
-        .set({ mainStatus: 'cancelled', cancelledAt: new Date(), updatedAt: new Date() })
+        .set({ mainStatus: 'cancelled', cancelledAt: now, updatedAt: now })
         .where(eq(processes.id, processId));
+      await this.deleteEphemeralPhones(tx, processId, now);
     });
+  }
+
+  /**
+   * Ephemere Telefonnummern (Abholperson, sonstiger Vertreter – Phase 6)
+   * werden mit dem Ende des Vorgangs gelöscht, auch ohne Finalisierung
+   * (MASTER_SPEC §12: Telefon nach Abschluss löschen, Name bleibt).
+   */
+  private async deleteEphemeralPhones(
+    tx: DatabaseTransaction,
+    processId: string,
+    now: Date,
+  ): Promise<void> {
+    const bookingIds = tx
+      .select({ id: bookings.id })
+      .from(bookings)
+      .where(eq(bookings.processId, processId));
+    await tx
+      .update(bookingPickupRepresentatives)
+      .set({ phone: null, phoneDeletedAt: now, updatedAt: now })
+      .where(
+        and(
+          inArray(bookingPickupRepresentatives.bookingId, bookingIds),
+          isNotNull(bookingPickupRepresentatives.phone),
+        ),
+      );
+    await tx
+      .update(handovers)
+      .set({ recipientPhone: null, updatedAt: now })
+      .where(and(eq(handovers.processId, processId), isNotNull(handovers.recipientPhone)));
   }
 
   async addNote(

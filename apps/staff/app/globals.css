@@ -389,3 +389,58 @@ button:disabled {
   padding: 0.35rem 0.7rem;
   text-decoration: none;
 }
+
+/* ── Phase 6: Ausgabe / Übergabe (Tablet-first) ─────────────────────────── */
+.badge.ok {
+  background: #e3f6e8;
+  color: #1b5e20;
+}
+a.touch-card {
+  display: block;
+  color: inherit;
+  text-decoration: none;
+  padding: 1rem 1.2rem;
+}
+a.touch-card:hover {
+  border-color: #666;
+}
+.button-like.primary {
+  background: #1a5fb4;
+  color: #fff;
+  border-color: #1a5fb4;
+}
+.wizard-step {
+  font-size: 1.05rem;
+}
+.wizard-step button.primary,
+.wizard-step .big {
+  font-size: 1.15rem;
+  padding: 0.9rem 1.4rem;
+  min-height: 56px;
+}
+.wizard-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+}
+.wizard-nav span {
+  padding: 0.3rem 0.6rem;
+  border-radius: 999px;
+  background: #eee;
+  font-size: 0.85rem;
+}
+.wizard-nav span.active {
+  background: #1a5fb4;
+  color: #fff;
+}
+.wizard-nav span.done {
+  background: #e3f6e8;
+  color: #1b5e20;
+}
+.photo-thumb {
+  max-width: 160px;
+  max-height: 120px;
+  border-radius: 6px;
+  border: 1px solid #ccc;
+}
