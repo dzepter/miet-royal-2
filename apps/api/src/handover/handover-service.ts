@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto';
-import { inflateSync } from 'node:zlib';
 import { KeyedMutex } from './keyed-mutex.ts';
+import { imageMagicMatches, signaturePngLooksValid } from './media.ts';
 import {
   appointments,
   bookingAdditions,
@@ -45,6 +45,7 @@ import type { SchedulingService } from '../scheduling/scheduling-service.ts';
 import type { InventoryService } from '../warehouse/inventory-service.ts';
 import type { MachineService } from '../warehouse/machine-service.ts';
 import type { AssignmentService, AssignmentView } from './assignment-service.ts';
+import { sketchImagesFor } from '../returns/sketch-assets.ts';
 
 /**
  * Geführter Ausgabe-/Übergabeprozess (Phase-6-Order §§10, 12, 14–44):
@@ -57,8 +58,36 @@ import type { AssignmentService, AssignmentView } from './assignment-service.ts'
  */
 
 /** Order §26: spätere Phase-7-Quelle bestehender Schäden – kein eigener Speicher hier. */
+/**
+ * Eingefrorener Schaden-Snapshot für das Übergabeprotokoll (Phase 7, Order
+ * §35): Schema-Markierungen + Text – KEINE Fotos. Wird bei der
+ * Finalisierung in `handover_machine_checks.existing_damages_snapshot`
+ * gespeichert; spätere Auflösungen ändern weder Snapshot noch PDF.
+ */
+export interface ExistingDamageSnapshot {
+  id: string;
+  /** Maschinentyp für die Asset-Schnittstelle des Schadensschemas (Order §30). */
+  productSlug?: string | undefined;
+  severity: 'light' | 'medium' | 'severe';
+  severityLabel: string;
+  description: string;
+  createdAt: string;
+  markers: {
+    view: 'front' | 'back' | 'left' | 'right';
+    markerType: 'point' | 'area';
+    x: number;
+    y: number;
+    width: number | null;
+    height: number | null;
+  }[];
+  summary: string;
+}
+
 export interface ExistingDamageProvider {
-  existingDamagesFor(machineId: string): Promise<{ summary: string }[]>;
+  existingDamagesFor(
+    machineId: string,
+    executor?: DatabaseExecutor,
+  ): Promise<ExistingDamageSnapshot[]>;
 }
 
 export const NO_EXISTING_DAMAGES: ExistingDamageProvider = {
@@ -207,71 +236,6 @@ const RECIPIENT_KIND_LABELS = {
   representative: 'Hinterlegte Abholperson',
   other: 'Vertreter',
 } as const;
-
-const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-const JPEG_MAGIC = Buffer.from([0xff, 0xd8, 0xff]);
-
-/**
- * Unterschrift-PNG prüfen (Magic, IHDR mit plausiblen Maßen, IDAT/IEND,
- * Bilddaten synchron dekomprimierbar): pdfkit dekomprimiert PNGs mit
- * Alphakanal ASYNCHRON – ein nicht dekodierbares Bild würde dort nicht als
- * Fehler zurückkommen, sondern den Prozess abbrechen. Deshalb wird jede
- * Unterschrift VOR dem Speichern vollständig geprüft; ein nicht
- * darstellbares Bild wäre ohnehin keine Unterschrift (Order §§33/37).
- */
-function signaturePngLooksValid(bytes: Uint8Array): boolean {
-  if (bytes.length < 64 || bytes.length > 2 * 1024 * 1024) return false;
-  const buf = Buffer.from(bytes);
-  if (!buf.subarray(0, 8).equals(PNG_MAGIC)) return false;
-  if (buf.readUInt32BE(8) !== 13 || buf.subarray(12, 16).toString('latin1') !== 'IHDR') {
-    return false;
-  }
-  const width = buf.readUInt32BE(16);
-  const height = buf.readUInt32BE(20);
-  if (width === 0 || height === 0 || width > 10_000 || height > 10_000) return false;
-  const bitDepth = buf[24] ?? 0;
-  const colorType = buf[25] ?? -1;
-  if (![1, 2, 4, 8, 16].includes(bitDepth) || ![0, 2, 3, 4, 6].includes(colorType)) return false;
-  // Chunks durchlaufen, IDAT-Daten sammeln, IEND verlangen.
-  const idat: Buffer[] = [];
-  let offset = 8;
-  let sawEnd = false;
-  while (offset + 12 <= buf.length) {
-    const length = buf.readUInt32BE(offset);
-    const type = buf.subarray(offset + 4, offset + 8).toString('latin1');
-    const dataStart = offset + 8;
-    const dataEnd = dataStart + length;
-    if (dataEnd + 4 > buf.length) return false;
-    if (type === 'IDAT') idat.push(buf.subarray(dataStart, dataEnd));
-    if (type === 'IEND') {
-      sawEnd = true;
-      break;
-    }
-    offset = dataEnd + 4;
-  }
-  if (!sawEnd || idat.length === 0) return false;
-  try {
-    const raw = inflateSync(Buffer.concat(idat), { maxOutputLength: 64 * 1024 * 1024 });
-    // Mindestens eine Filterbyte-Zeile je Bildzeile.
-    return raw.length >= height;
-  } catch {
-    return false;
-  }
-}
-
-/** Deklarierter MIME-Typ muss zu den tatsächlichen Bytes passen (kein Fremdinhalt im Storage). */
-function imageMagicMatches(bytes: Uint8Array, mimeType: string): boolean {
-  const head = Buffer.from(bytes.subarray(0, 12));
-  if (mimeType === 'image/png') return head.subarray(0, 8).equals(PNG_MAGIC);
-  if (mimeType === 'image/jpeg') return head.subarray(0, 3).equals(JPEG_MAGIC);
-  if (mimeType === 'image/webp') {
-    return (
-      head.subarray(0, 4).toString('latin1') === 'RIFF' &&
-      head.subarray(8, 12).toString('latin1') === 'WEBP'
-    );
-  }
-  return false;
-}
 
 /**
  * Fachlicher Inhalt, der in die finalen PDFs einfließt: ändert er sich
@@ -1566,9 +1530,12 @@ export class HandoverService {
     const customerSig = signatureRows.find((row) => row.role === 'customer')!;
     const staffSig = signatureRows.find((row) => row.role === 'staff')!;
     const machineSections = [];
+    // Snapshot je Slot: derselbe Stand fließt in PDF UND Datenbank (Order §35).
+    const damageSnapshots = new Map<string, ExistingDamageSnapshot[]>();
     for (const slot of view.slots) {
       const damages =
         slot.machine === null ? [] : await this.damages.existingDamagesFor(slot.machine.id);
+      damageSnapshots.set(slot.id, damages);
       const check = view.machines.find((m) => m.assignmentId === slot.id);
       machineSections.push({
         machineCode: slot.machine?.machineCode ?? '–',
@@ -1581,6 +1548,12 @@ export class HandoverService {
           damages.length === 0
             ? ['Keine bestehenden Schäden dokumentiert.']
             : damages.map((d) => d.summary),
+        existingDamages: damages.map((d) => ({
+          severityLabel: d.severityLabel,
+          description: d.description,
+          markers: d.markers,
+          sketchImages: sketchImagesFor(d.productSlug ?? null),
+        })),
         notes: [],
       });
     }
@@ -1763,6 +1736,11 @@ export class HandoverService {
           { locationKind: 'customer', locationNote: processNumber },
           finalizedAt,
         );
+        // Bestehende Schäden zum Zeitpunkt der Übergabe einfrieren (Order §35).
+        await tx
+          .update(handoverMachineChecks)
+          .set({ existingDamagesSnapshot: damageSnapshots.get(slot.id) ?? [] })
+          .where(eq(handoverMachineChecks.assignmentId, slot.id));
       }
 
       // Ausgabe-/Liefertermin fachlich abschließen (Order §44).

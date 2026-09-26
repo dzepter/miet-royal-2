@@ -137,9 +137,7 @@ export function AppointmentPreview({
         {entry.customerInfoRequiredAt !== null && (
           <span className="badge">Kundeninformation erforderlich</span>
         )}{' '}
-        {entry.status === 'completed' && (
-          <span className="badge active">Intern abgeschlossen (kein Rückgabeabschluss)</span>
-        )}
+        {entry.status === 'completed' && <span className="badge active">Abgeschlossen</span>}
       </p>
 
       {entry.conflicts.length > 0 && (
@@ -178,6 +176,11 @@ export function AppointmentPreview({
         <Link className="button-like" href={`/vorgaenge/${entry.processId}`}>
           Vorgang öffnen
         </Link>{' '}
+        {entry.kind === 'return' && entry.status === 'scheduled' && (
+          <Link className="button-like" href={`/vorgaenge/${entry.processId}/rueckgabe`}>
+            Rückgabe öffnen
+          </Link>
+        )}{' '}
         {entry.overdue && (
           <button
             disabled={busy}
@@ -282,7 +285,7 @@ export function AppointmentPreview({
             onClick={() => {
               if (
                 !window.confirm(
-                  'Termin nur INTERN als erledigt markieren? Die fachliche Übergabe/Rückgabe folgt in einer späteren Phase.',
+                  'Termin nur INTERN als erledigt markieren? Abhol- und Rückgabetermine ausgegebener Buchungen werden ausschließlich über Übergabe bzw. Rückgabe abgeschlossen.',
                 )
               )
                 return;

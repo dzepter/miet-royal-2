@@ -444,3 +444,47 @@ a.touch-card:hover {
   border-radius: 6px;
   border: 1px solid #ccc;
 }
+
+/* ── Phase 7: Rückgabe, Schäden, Reinigung ──────────────────────────────── */
+.conflict-box {
+  border: 1px solid #e0b64d;
+  background: #fff8e6;
+  border-radius: 6px;
+  padding: 0.6rem 0.8rem;
+  margin: 0.5rem 0;
+}
+.conflict-box.cleaning-warning {
+  border-color: #b3261e;
+  background: #fdecea;
+  color: #7a1a14;
+}
+.warning-red {
+  color: #b3261e;
+  font-weight: 600;
+}
+.damage-diagram {
+  margin: 0.5rem 0;
+}
+.damage-diagram svg {
+  display: block;
+  max-width: 100%;
+  border: 1px dashed #bbb;
+  border-radius: 6px;
+  background: #fff;
+}
+.diagram-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  margin-bottom: 0.4rem;
+}
+.diagram-tabs button {
+  min-height: 40px;
+  padding: 0.3rem 0.7rem;
+  font-size: 0.9rem;
+}
+.diagram-tabs button.active {
+  background: #1a5fb4;
+  color: #fff;
+  border-color: #1a5fb4;
+}

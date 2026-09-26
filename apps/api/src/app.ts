@@ -17,6 +17,7 @@ import { registerCrmRoutes } from './routes/crm.ts';
 import { registerSchedulingRoutes } from './routes/scheduling.ts';
 import { registerWarehouseRoutes } from './routes/warehouse.ts';
 import { registerHandoverRoutes } from './routes/handover.ts';
+import { registerReturnRoutes } from './routes/returns.ts';
 import { AssignmentService } from './handover/assignment-service.ts';
 import { createRiskRefreshListener } from './handover/risk-refresh-listener.ts';
 import { MachineService } from './warehouse/machine-service.ts';
@@ -37,7 +38,8 @@ export function maskLoggedPath(url: string): string {
   const path = url.split('?')[0] ?? url;
   return path
     .replace(/(\/public\/offers\/)[^/]+/, '$1***')
-    .replace(/(\/staff\/machines\/qr\/)[^/]+/, '$1***');
+    .replace(/(\/staff\/machines\/qr\/)[^/]+/, '$1***')
+    .replace(/(\/staff\/returns\/resolve-qr\/)[^/]+/, '$1***');
 }
 
 export interface AppOptions {
@@ -270,6 +272,12 @@ export function buildApp({
         storage: storageProvider,
       });
       registerHandoverRoutes(instance, {
+        db,
+        auth: authService,
+        config,
+        storage: storageProvider,
+      });
+      registerReturnRoutes(instance, {
         db,
         auth: authService,
         config,

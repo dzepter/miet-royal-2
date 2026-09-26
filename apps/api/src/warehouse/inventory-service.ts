@@ -630,6 +630,33 @@ export class InventoryService {
     return this.applyMovement(tx, { itemId, kind: 'issue', quantityDelta: -quantity, actorId });
   }
 
+  /**
+   * Rücknahme ungeöffneter Ware INNERHALB einer fremden Transaktion (Phase 7,
+   * Order §24): die Rückgabe-Finalisierung bucht alle ungeöffnet
+   * zurückgegebenen Einheiten atomar mit ihrem Fachzustand – nie eine
+   * direkte current_stock-Mutation, genau eine return-Bewegung je Artikel.
+   */
+  async returnWithin(
+    tx: DatabaseExecutor,
+    actorId: string,
+    itemId: string,
+    quantity: number,
+  ): Promise<InventoryMovement> {
+    if (!Number.isInteger(quantity) || quantity <= 0) {
+      throw new AuthError('VALIDATION', 'Die Rücknahmemenge muss eine ganze Zahl größer 0 sein.');
+    }
+    return this.applyMovement(tx, {
+      itemId,
+      kind: 'return',
+      quantityDelta: quantity,
+      actorId,
+      // Ein ausgegebener Artikel war bei der Ausgabe initial erfasst; ein
+      // zwischenzeitlich nie erfasster Bestand darf die Rücknahme nicht
+      // blockieren (Rückgabe hat Vorrang vor der Inventurpflicht).
+      allowUninitialized: true,
+    });
+  }
+
   /** Rücknahme ungeöffneter Ware (Phase 7) – vorbereitete Schnittstelle. */
   async returnToStock(
     actorId: string,

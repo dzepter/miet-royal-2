@@ -7,8 +7,10 @@ Ausgabe/Rückgabe, Abrechnung und Integrationen.
 **Leitprinzip: Das System darf intern komplex sein. Für Mitarbeitende und
 Kunden muss es einfach wirken.**
 
-Aktueller Stand: **Phase 6 (Maschinenzuweisung, Vorbereitung, Ausgabe &
-Übergabe) umgesetzt** — zusätzlich zu Phase 5 (Physische Maschinen,
+Aktueller Stand: **Phase 7 (Rückgabe, Schäden, Fehlteile,
+Kommissionsrückgabe, Reinigung & Rückgabeprotokoll) umgesetzt** —
+zusätzlich zu Phase 6 (Maschinenzuweisung, Vorbereitung, Ausgabe &
+Übergabe), Phase 5 (Physische Maschinen,
 Verfügbarkeit, QR & Lagerbestand) und Phase 4 (Kalender, Termine,
 Zuständigkeit, Vertretung, Konflikte & „Heute“) — auf Basis von Phase 1
 (Staff-Authentifizierung mit TOTP-2FA, Sessions, App-Sperre, granulare
@@ -45,8 +47,27 @@ Empfänger/Abholperson und gezeichneten Unterschriften, serverseitige
 finale PDFs (Lieferschein, Übergabeprotokoll) im privaten Storage,
 atomare Lagerausgabe mit verständlichem Blocker bei unzureichendem
 Bestand sowie idempotente Finalisierung (Vermietet beim Kunden,
-Abholtermin abgeschlossen, Dokumentpaket versandbereit). Rückgabe,
-Schäden und Abrechnung folgen ab Phase 7.
+Abholtermin abgeschlossen, Dokumentpaket versandbereit). Neu in Phase 7:
+zentraler Rückgabeprozess je ausgegebener Buchung (RÜCKGABE-Bereich mit
+überfälligen Rückgaben zuerst, QR-Einstieg über die ausgegebene Maschine),
+anwesende Rückgabeperson (Kunde/Abholperson/sonstige Person, Telefon
+ephemer), verpflichtende Zubehörkontrolle (1 Behälter: 1 Deckel + 1
+Tropfschale, 2 Behälter: 2 + 2) mit Fehlteil-Fällen und Follow-up ohne
+Fälligkeit, Rückgabevorbereitung (entleert, zweimal gespült, nichts
+demontiert) mit unveränderlichem Reinigungsgebühr-Fakt 75 € je betroffener
+Maschine und Pflicht-Beweisfoto, Kommissionsrückgabe nur ungeöffneter
+Ware mit systemseitiger Verbrauchsermittlung und eingefrorenem
+Preis-Snapshot, Schadensdokumentation mit Schweregrad, Pflichttext,
+Markierungen am neutralen Maschinenschema (normalisierte Koordinaten) und
+Pflichtfoto – ohne Geldbetrag –, aktuelle Maschinenschäden mit „nicht mehr
+aktuell“, eingefrorenem Schaden-Snapshot bei der nächsten Übergabe,
+nachträglicher Feststellung während der Reinigung und internen technischen
+Defekten, gezeichnete Unterschriften, kombiniertes Rückgabeprotokoll als
+immutables PDF, atomare/idempotente Finalisierung (Lagerrücknahme,
+Zuordnungen zurückgegeben, Maschinen 🟡 Reinigung im Lager, Rückgabetermin
+abgeschlossen, Dokumentpaket versandbereit) sowie Reinigungsabschluss
+„Gereinigt & einsatzbereit“ mit 24-h-Warnung. Endabrechnung, Schadens-
+und Fehlteilkosten folgen ab Phase 9.
 
 ## Voraussetzungen
 

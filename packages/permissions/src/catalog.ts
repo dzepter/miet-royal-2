@@ -322,6 +322,13 @@ export const PERMISSION_DEFINITIONS = [
     'Maschinen-QR anzeigen/drucken',
     'Dir fehlt das Recht, Maschinen-QR-Codes anzuzeigen.',
   ),
+  // Kontrollierte Phase-7-Ergänzung (PERMISSIONS.md „Maschinen“).
+  def(
+    'machine.clean_complete',
+    'machines',
+    'Reinigung abschließen („Gereinigt & einsatzbereit“)',
+    'Dir fehlt das Recht, die Reinigung einer Maschine abzuschließen.',
+  ),
 
   // Lager
   def('inventory.view', 'inventory', 'Lager ansehen', 'Dir fehlt das Recht, das Lager einzusehen.'),
@@ -415,6 +422,19 @@ export const PERMISSION_DEFINITIONS = [
     'Reinigungsmangel erfassen',
     'Dir fehlt das Recht, Reinigungsmängel zu erfassen.',
   ),
+  // Kontrollierte Phase-7-Ergänzungen (PERMISSIONS.md „Ausgabe/Rückgabe“).
+  def(
+    'return.view',
+    'returns',
+    'Rückgabe-Bereich ansehen',
+    'Dir fehlt das Recht, den Rückgabe-Bereich einzusehen.',
+  ),
+  def(
+    'return.complete',
+    'returns',
+    'Rückgabe final abschließen',
+    'Dir fehlt das Recht, Rückgaben final abzuschließen.',
+  ),
 
   // Schäden / Fehlteile
   def(
@@ -422,6 +442,13 @@ export const PERMISSION_DEFINITIONS = [
     'damages',
     'Schaden dokumentieren',
     'Dir fehlt das Recht, Schäden zu dokumentieren.',
+  ),
+  // Kontrollierte Phase-7-Ergänzung (PERMISSIONS.md „Schäden/Fehlteile“).
+  def(
+    'damage.resolve_current',
+    'damages',
+    'Schaden als nicht mehr aktuell markieren',
+    'Dir fehlt das Recht, aktuelle Schäden aufzulösen.',
   ),
   def(
     'damage.set_cost',

@@ -30,3 +30,23 @@ export function resetE2eDatabase(): void {
     },
   });
 }
+
+/**
+ * Reinigungsbeginn einer Maschine (nach Rückgabe) um `hours` Stunden
+ * zurücksetzen – macht die rein zeitabhängige 24-h-Warnung (Order §53)
+ * im E2E deterministisch prüfbar.
+ */
+export function backdateCleaning(machineCode: string, hours: number): void {
+  execSync('pnpm --filter @mietroyal/api exec tsx scripts/e2e-backdate-cleaning.ts', {
+    cwd: `${import.meta.dirname}/../../..`,
+    stdio: 'pipe',
+    env: {
+      ...process.env,
+      APP_ENV: 'development',
+      DATABASE_URL: TEST_DATABASE_URL,
+      LOG_LEVEL: 'warn',
+      MACHINE_CODE: machineCode,
+      HOURS: String(hours),
+    },
+  });
+}

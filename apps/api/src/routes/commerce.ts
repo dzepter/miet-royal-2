@@ -579,18 +579,26 @@ export function registerCommerceRoutes(app: FastifyInstance, options: CommerceRo
     const params = parseOrThrow(idParams, request.params, 'params');
     // Grundrecht VOR dem Laden – kein Existenz-Orakel über 404/403.
     const effective = await auth.effectivePermissions(context.user.id);
-    if (!effective.has('offer.view') && !effective.has('handover.view')) {
+    if (
+      !effective.has('offer.view') &&
+      !effective.has('handover.view') &&
+      !effective.has('return.view')
+    ) {
       if (!(await requirePermission(request, reply, auth, context, 'offer.view'))) return;
     }
     try {
       const document = await documentService.byId(params.id);
       // Phase 6 (Order §57): Lieferschein/Übergabeprotokoll dürfen auch mit
-      // handover.view geöffnet werden; alle anderen Dokumente bleiben an
-      // offer.view gebunden. Ohne passendes Recht: neutrales 403.
+      // handover.view geöffnet werden; Phase 7: Rückgabeprotokoll mit
+      // return.view; alle anderen Dokumente bleiben an offer.view gebunden.
+      // Ohne passendes Recht: neutrales 403.
       const handoverDocument =
         document.type === 'delivery_note' || document.type === 'handover_protocol';
+      const returnDocument = document.type === 'return_protocol';
       const allowed =
-        effective.has('offer.view') || (handoverDocument && effective.has('handover.view'));
+        effective.has('offer.view') ||
+        (handoverDocument && effective.has('handover.view')) ||
+        (returnDocument && effective.has('return.view'));
       if (!allowed) {
         if (
           !(await requirePermission(
@@ -598,7 +606,7 @@ export function registerCommerceRoutes(app: FastifyInstance, options: CommerceRo
             reply,
             auth,
             context,
-            handoverDocument ? 'handover.view' : 'offer.view',
+            handoverDocument ? 'handover.view' : returnDocument ? 'return.view' : 'offer.view',
           ))
         )
           return;

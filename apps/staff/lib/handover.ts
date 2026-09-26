@@ -207,6 +207,7 @@ export const PACKET_STATUS_LABELS: Record<string, string> = {
 export const DOCUMENT_TYPE_LABELS: Record<string, string> = {
   delivery_note: 'Lieferschein',
   handover_protocol: 'Übergabeprotokoll',
+  return_protocol: 'Rückgabeprotokoll',
 };
 
 export function formatBerlin(iso: string | null): string {

@@ -3,6 +3,7 @@ import {
   appointments,
   bookings,
   customers,
+  machineAssignments,
   processes,
   staffUsers,
   type Appointment,
@@ -617,6 +618,27 @@ export class SchedulingService {
           'CONFLICT',
           'Ausgabe- und Liefertermine werden über den Übergabeprozess abgeschlossen („Übergabe starten“ im Vorgang).',
         );
+      }
+      // Phase 7 (Order §59): der Rückgabetermin einer AUSGEGEBENEN Buchung
+      // wird ausschließlich durch die Rückgabe-Finalisierung abgeschlossen –
+      // der Kalender darf die Rückgabe nicht umgehen.
+      if (locked.source === 'booking' && locked.kind === 'return' && locked.bookingId !== null) {
+        const issued = await tx
+          .select({ id: machineAssignments.id })
+          .from(machineAssignments)
+          .where(
+            and(
+              eq(machineAssignments.bookingId, locked.bookingId),
+              eq(machineAssignments.status, 'issued'),
+            ),
+          )
+          .limit(1);
+        if (issued.length > 0) {
+          throw new AuthError(
+            'CONFLICT',
+            'Der Rückgabetermin einer ausgegebenen Buchung wird über den Rückgabeprozess abgeschlossen („Rückgabe starten“ im Vorgang).',
+          );
+        }
       }
       if (locked.assignedUserId === null) {
         throw new AuthError(

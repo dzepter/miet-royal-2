@@ -78,6 +78,20 @@ export const machines = pgTable(
      * Ersatz – Rechteprüfung bleibt immer serverseitig bestehen.
      */
     qrToken: text('qr_token').notNull(),
+    /**
+     * Phase 7 (Order §§51–53): Beginn der laufenden Reinigung (Rückgabe-
+     * Finalisierung) für die zeitabhängige 24-h-Warnung sowie der aktuelle
+     * administrative Reinigungsabschluss („Gereinigt & einsatzbereit“) –
+     * bewusst nur der letzte Datensatz, keine Reinigungshistorie.
+     */
+    cleaningSince: timestamp('cleaning_since', { withTimezone: true }),
+    cleanedAt: timestamp('cleaned_at', { withTimezone: true }),
+    /**
+     * Bewusst OHNE FK auf staff_users: Maschinen sind Stammdaten des
+     * Betriebs, kein Mitarbeiterdatensatz darf sie per Kaskade mitreißen
+     * (Test-/Seed-Resets truncaten staff_users CASCADE).
+     */
+    cleanedBy: uuid('cleaned_by'),
     /** Referenzfoto im privaten Storage (Order §9); NULL = Platzhalter. */
     referencePhotoKey: text('reference_photo_key'),
     referencePhotoMime: text('reference_photo_mime'),

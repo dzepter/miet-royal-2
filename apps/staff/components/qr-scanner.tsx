@@ -21,12 +21,17 @@ function extractToken(raw: string): string {
   return trimmed;
 }
 
-export function QrScanner({
+export function QrScanner<
+  T extends { machineCode: string } = { machineId: string; machineCode: string },
+>({
   onResolved,
   onClose,
+  resolvePath = '/staff/machines/qr/',
 }: {
-  onResolved: (machine: { machineId: string; machineCode: string }) => void;
+  onResolved: (machine: T) => void;
   onClose: () => void;
+  /** Resolver-Route (Phase 7: Rückgabe-Einstieg über den ausgegebenen Vorgang). */
+  resolvePath?: string;
 }) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -39,9 +44,7 @@ export function QrScanner({
     setBusy(true);
     setError(null);
     const token = extractToken(raw);
-    const result = await apiFetch<{ machineId: string; machineCode: string }>(
-      `/staff/machines/qr/${encodeURIComponent(token)}`,
-    );
+    const result = await apiFetch<T>(`${resolvePath}${encodeURIComponent(token)}`);
     setBusy(false);
     if (result.data === null) {
       setError(result.errorMessage ?? 'QR-Code nicht gültig.');

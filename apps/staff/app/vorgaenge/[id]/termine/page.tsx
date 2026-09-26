@@ -103,7 +103,7 @@ function PlanningView() {
                 )}{' '}
                 {entry.overdue && <span className="badge locked">Überfällig</span>}{' '}
                 {entry.status === 'completed' && (
-                  <span className="badge active">Intern abgeschlossen</span>
+                  <span className="badge active">Abgeschlossen</span>
                 )}
               </span>
             </button>

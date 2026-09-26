@@ -522,10 +522,10 @@ test('F: Danach: Maschine Vermietet beim Kunden, Dokumente final, Abholtermin ab
 
   await staff.goto(`/vorgaenge/${processA}/termine`);
   await expect(staff.locator('.entry-row', { hasText: 'Abholung / Ausgabe' })).toContainText(
-    'Intern abgeschlossen',
+    'Abgeschlossen',
   );
   await expect(staff.locator('.entry-row', { hasText: 'Rückgabe' })).not.toContainText(
-    'Intern abgeschlossen',
+    'Abgeschlossen',
   );
 
   // Vorgang: abgeschlossen, Dokumente privat über die Session abrufbar.

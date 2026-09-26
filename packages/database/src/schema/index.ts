@@ -5,3 +5,4 @@ export * from './commerce.ts';
 export * from './scheduling.ts';
 export * from './warehouse.ts';
 export * from './handover.ts';
+export * from './returns.ts';

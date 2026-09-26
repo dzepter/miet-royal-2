@@ -219,14 +219,39 @@ export class MachineService {
         '„Reserviert“ und „Vermietet“ werden durch die Fachprozesse späterer Phasen gesetzt und sind kein manueller Status.',
       );
     }
-    const updated = await this.db
-      .update(machines)
-      .set({ status, updatedAt: now })
-      .where(eq(machines.id, machineId))
-      .returning();
-    const row = updated[0];
-    if (row === undefined) throw new AuthError('NOT_FOUND', 'Maschine nicht gefunden.');
-    return row;
+    return this.db.transaction(async (tx) => {
+      const rows = await tx
+        .select()
+        .from(machines)
+        .where(eq(machines.id, machineId))
+        .for('no key update');
+      const current = rows[0];
+      if (current === undefined) throw new AuthError('NOT_FOUND', 'Maschine nicht gefunden.');
+      // Phase 7 (Order §52): Reinigung → Einsatzbereit nur über „Gereinigt &
+      // einsatzbereit“ (eigenes Recht, cleaned_by/cleaned_at) – kein stiller Bypass.
+      if (current.status === 'cleaning' && status === 'ready') {
+        throw new AuthError(
+          'CONFLICT',
+          'Von „Reinigung“ nach „Einsatzbereit“ nur über die Aktion „Gereinigt & einsatzbereit“.',
+        );
+      }
+      // Verlässt die Maschine die Reinigung anderweitig (Reparatur, außer Betrieb),
+      // endet die Reinigungsphase nach Rückgabe (Order §§37/38/53): kein
+      // Nachtragsfenster, keine 24-h-Warnung mehr. Ein manuell gesetzter Status
+      // „Reinigung“ startet KEINE Reinigungsphase nach Rückgabe.
+      const updated = await tx
+        .update(machines)
+        .set({
+          status,
+          ...(current.status === 'cleaning' && status !== 'cleaning'
+            ? { cleaningSince: null }
+            : {}),
+          updatedAt: now,
+        })
+        .where(eq(machines.id, machineId))
+        .returning();
+      return updated[0]!;
+    });
   }
 
   /**
@@ -249,11 +274,71 @@ export class MachineService {
         ...(location === undefined
           ? {}
           : { locationKind: location.locationKind, locationNote: location.locationNote }),
+        // Eine neue Ausgabe beendet die Reinigungsphase der vorherigen Rückgabe
+        // (Order §§37/38/53): kein Nachtragsfenster, keine 24-h-Warnung mehr.
+        ...(status === 'rented' ? { cleaningSince: null, cleanedAt: null, cleanedBy: null } : {}),
         updatedAt: now,
       })
       .where(eq(machines.id, machineId))
       .returning({ id: machines.id });
     if (updated.length === 0) throw new AuthError('NOT_FOUND', 'Maschine nicht gefunden.');
+  }
+
+  /**
+   * Phase 7 (Order §51): nach der Rückgabe-Finalisierung IMMER 🟡 Reinigung,
+   * Standort Lager, Beginn der Reinigung für die 24-h-Warnung – innerhalb
+   * der Finalisierungs-Transaktion.
+   */
+  async applyReturned(tx: DatabaseExecutor, machineId: string, now = new Date()): Promise<void> {
+    const updated = await tx
+      .update(machines)
+      .set({
+        status: 'cleaning',
+        locationKind: 'warehouse',
+        locationNote: null,
+        cleaningSince: now,
+        cleanedAt: null,
+        cleanedBy: null,
+        updatedAt: now,
+      })
+      .where(eq(machines.id, machineId))
+      .returning({ id: machines.id });
+    if (updated.length === 0) throw new AuthError('NOT_FOUND', 'Maschine nicht gefunden.');
+  }
+
+  /**
+   * „Gereinigt & einsatzbereit“ (Order §52): 🟡 Reinigung → 🟢 Einsatzbereit
+   * mit internem Metadatensatz (wer/wann) – kein Verlauf, nur der letzte
+   * Abschluss. Nur aus dem Status Reinigung heraus möglich.
+   */
+  async completeCleaning(actorId: string, machineId: string, now = new Date()): Promise<Machine> {
+    return this.db.transaction(async (tx) => {
+      const rows = await tx
+        .select()
+        .from(machines)
+        .where(eq(machines.id, machineId))
+        .for('no key update');
+      const machine = rows[0];
+      if (machine === undefined) throw new AuthError('NOT_FOUND', 'Maschine nicht gefunden.');
+      if (machine.status !== 'cleaning') {
+        throw new AuthError(
+          'CONFLICT',
+          'Die Maschine ist nicht in Reinigung – der Reinigungsabschluss ist nur aus „Reinigung“ heraus möglich.',
+        );
+      }
+      const updated = await tx
+        .update(machines)
+        .set({
+          status: 'ready',
+          cleaningSince: null,
+          cleanedAt: now,
+          cleanedBy: actorId,
+          updatedAt: now,
+        })
+        .where(eq(machines.id, machineId))
+        .returning();
+      return updated[0]!;
+    });
   }
 
   /** Zentrale Standortlogik (Order §8) – auch spätere Phasen nutzen SIE. */

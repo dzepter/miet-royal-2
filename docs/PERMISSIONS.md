@@ -41,6 +41,10 @@ Kontrollierte Phase-5-Ergänzungen (keine zweite Rechtearchitektur):
 `machine.change_location` (aktuellen Standort ändern),
 `machine.qr` (QR-Code anzeigen/drucken)
 
+Kontrollierte Phase-7-Ergänzung:
+`machine.clean_complete` (Reinigung abschließen: „Gereinigt & einsatzbereit“,
+🟡 Reinigung → 🟢 Einsatzbereit mit internem Reinigungs-Metadatensatz)
+
 ### Lager
 `inventory.view`, `inventory.add_stock`, `inventory.issue`,
 `inventory.return`, `inventory.count`, `inventory.approve_adjustment`,
@@ -63,9 +67,29 @@ Wiederverwendet: `machine.assign` (konkrete Maschine zuordnen/lösen),
 die Lagerausgabe des Übergabeprozesses ein), `machine.block`
 (Risiko-Incident „Geprüft“).
 
+Kontrollierte Phase-7-Ergänzungen (keine zweite Rechtearchitektur):
+`return.view` (Rückgabe-Bereich, Rückgabe-Detail und Rückgabeprotokoll
+ansehen), `return.complete` (Rückgabe final abschließen – schließt die
+Lagerrücknahme des Rückgabeprozesses ein; `inventory.return` bleibt für
+die manuelle Rücknahme außerhalb einer Rückgabe reserviert).
+Wiederverwendet: `return.perform` (Rückgabe starten und bearbeiten:
+Rückgabeperson, Maschinen bestätigen, Zubehör- und Sauberkeitskontrolle,
+Kommissionsrückgabe, Beweisfoto, Unterschriften), `return.mark_cleanup_issue`
+(Maschine als nicht ordnungsgemäß vorbereitet markieren → Reinigungsgebühr-
+Fakt), `return.correct_actual_time` (tatsächliche Rückgabezeit vor und nach
+der Finalisierung korrigieren), `machine.change_status` (technischen Defekt
+nach Rückgabe erfassen, Hinweis „ggf. in Reparatur setzen“).
+
 ### Schäden/Fehlteile
 `damage.document`, `damage.set_cost`, `damage.edit_cost_before_lexware`,
 `missing_item.create`, `missing_item.set_cost`, `missing_item.resolve`
+
+Kontrollierte Phase-7-Ergänzung (keine zweite Rechtearchitektur):
+`damage.resolve_current` (aktuellen Maschinenschaden als „nicht mehr
+aktuell“ markieren – historische Daten und Protokolle bleiben unverändert).
+Wiederverwendet: `damage.document` (Schaden bei Rückgabe und nachträgliche
+Feststellung inkl. Fotos/Markierungen), `missing_item.create` (Fehlteil
+anlegen), `missing_item.resolve` („Fehlteil erledigt“).
 
 ### Abrechnung
 `settlement.view`, `settlement.add_manual_charge`, `settlement.release`,

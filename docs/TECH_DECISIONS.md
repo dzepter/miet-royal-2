@@ -992,3 +992,240 @@ Keine spontanen Framework-/ORM-Wechsel (CLAUDE.md „Dependencies“).
   VOR `warehouse-flow`) und erfasst alle benötigten Lagerartikel selbst.
   Nachweis: Handover-Spec allein, Warehouse-Spec allein, Scheduling-Spec
   allein und die Gesamtsuite auf sauberem Seed grün.
+
+## Phase 7: Rückgabe, Schäden, Fehlteile, Kommissionsrückgabe, Reinigung & Rückgabeprotokoll
+
+- **Zentrale Rückgabegrenze**: `ReturnService` (apps/api/src/returns)
+  orchestriert Start, Rückgabeperson, Zubehör-/Sauberkeitskontrolle,
+  Kommissionsrückgabe, Unterschriften, Finalisierung, Rückgabe-Liste,
+  QR-Einstieg, Reinigungswarnungen und Fehlteil-Follow-ups; `DamageService`
+  kapselt Schäden (Markierungen, Fotos, aktuelle Schäden, nachträgliche
+  Feststellung, technische Defekte) und implementiert den Phase-6-
+  `ExistingDamageProvider`. Lager, Maschinen, Dokumente, Terminplanung und
+  Zuordnung werden nur wiederverwendet (`InventoryService.returnWithin`,
+  `MachineService.applyReturned/completeCleaning`, `DocumentService`,
+  `SchedulingService.completeWithin`) – keine Rückgabelogik in React, in
+  Routen oder in fremden Services.
+- **Rückgabeentität**: `rental_returns` genau einmal je Buchung (Unique),
+  Status draft/finalized, Rückgabeperson (Art, Name, ephemeres Telefon mit
+  `returner_phone_deleted_at`), Rückgabetermin-Referenz, Zeitfelder
+  (`draft_actual_return_at` vor, `actual_return_at`/`original_actual_return_at`
+  bei, `corrected_*` nach der Finalisierung), Protokoll-Dokument. Je
+  ausgegebener Zuordnung ein `return_machines`-Abschnitt (eigenes
+  `returned_at`, Order §7); Start nur mit ≥ 1 `issued`-Zuordnung – bestätigte
+  oder nur vorbereitete Buchungen werden serverseitig abgewiesen.
+- **Rückgabeperson**: Kunde selbst, hinterlegte Abholperson (Phase 6) oder
+  sonstige Person mit Vorname/Nachname/Telefon (alle drei Pflicht, Order §8).
+  Keine Ausweisdaten im Modell (Test 9 prüft die Spalten). Ein Wechsel
+  entwertet eine vorhandene Kundenunterschrift; die Kundenunterschrift ist
+  Pflicht, es gibt keinen Admin-Bypass (Blocker rechnet der Server).
+- **Zubehör/Fehlteile**: Sollwerte aus `products.container_count`
+  (1 → 1 Deckel + 1 Tropfschale, 2 → 2 + 2) werden je Abschnitt eingefroren;
+  „Zubehör vollständig“ ist ein einfacher Zustand ohne Einträge. Ein
+  Fehlteil-Fall entsteht nur durch bewusste Mitarbeiteraktion (nie aus einer
+  Abweichung automatisch, DOMAIN_RULES), ohne Foto, ohne Betrag, mit
+  `requires_financial_review` solange offen; die Menge ist auf den Sollwert
+  begrenzt. Follow-ups haben kein Fälligkeitsdatum (`follow_up_opened_at` bei
+  Finalisierung); „Fehlteil erledigt“ ist idempotent, ein Klick, kein Grund,
+  keine Lagerbewegung (Deckel/Tropfschalen sind kein Verbrauchslager).
+- **Sauberkeit/Reinigungsgebühr**: drei Kriterien je Maschine in EINER
+  Bestätigung; jedes fehlgeschlagene Kriterium setzt `cleanup_required`,
+  `cleanup_fee_snapshot_cents = 7500` und den Grund (DB-Check verhindert Fakt
+  ohne Betrag und Betrag ohne Fakt; der Client kann keinen Betrag senden).
+  Mängel erfassen verlangt `return.mark_cleanup_issue`. Kein Settlement, keine
+  Rechnung; kleine Restmengen entscheidet der Mitarbeiter (keine Bild-KI –
+  ein Foto ändert die Entscheidung nie). Bei Fakt ≥ 1 Beweisfoto Pflicht.
+- **Kommissionsrückgabe**: `return_inventory_items` je tatsächlich
+  ausgegebener Lieferscheinposition (inklusive/Kommission mit Lagerartikel;
+  Kaufartikel/Kanister haben keine Zeile). Eingabe nur der UNGEÖFFNET
+  zurückgegebenen Menge (Integer, 0 ≤ returned ≤ issued – Service, Route und
+  DB-Check); abrechenbar = ausgegeben − ungeöffnet zurück, Betrag = Menge ×
+  eingefrorenem Ausgabe-Einzelpreis (Snapshot aus dem Lieferschein, nie der
+  aktuelle Produktpreis). Inklusive Positionen erzeugen eine Lagerrücknahme,
+  aber nie eine Gutschrift. Werte sind VORLÄUFIG – keine Settlement-Position.
+  Hinweis: MASTER_SPEC/DOMAIN_RULES wenden „nur ungeöffnet“ auf alle
+  Kommissionsartikel an (Sirup, Becher-25, Strohhalme-25) – so umgesetzt; die
+  Phase-3-Produkttexte („nach tatsächlichem Verbrauch“) bleiben damit
+  konsistent (ungeöffnet zurück = nicht verbraucht).
+- **Schadensmodell**: `machine_damages` (Maschine, Rückgabe/Abschnitt,
+  origin return/post_return_finding, Schweregrad light/medium/severe – UI
+  leicht/mittel/schwer –, Pflichtbeschreibung, `requires_financial_review`,
+  `activated_at`, `resolved_at`), `damage_markers` (Ansicht vorne/hinten/
+  links/rechts, Typ Punkt/Fläche, normalisierte Koordinaten 0..1 mit
+  DB-Checks, Fläche innerhalb des Schemas), `damage_photos` (privat, SHA-256,
+  Schlüssel nur aus IDs). Kein Betrag, keine Kostenfelder (strikte
+  Request-Schemata weisen `costCents`/`amountCents` ab).
+- **Schadensdiagramm**: `components/damage-diagram.tsx` zeichnet ein
+  neutrales schematisches Schema je Ansicht (Umriss, Behälterbereich,
+  Sockel) und projiziert die normalisierten Marker; `MACHINE_SKETCH_ASSETS`
+  ist die Asset-Schnittstelle, über die echte Miet-Royal-Grafiken je
+  Maschinentyp später ohne Datenmigration eingehängt werden. Im PDF werden
+  die Schemata als Vektorgrafik gezeichnet (`drawDamageSketch`), ebenfalls
+  aus denselben Koordinaten.
+- **Bestehende Schäden bei der nächsten Übergabe**: `DamageService` ist als
+  `ExistingDamageProvider` verdrahtet (Routen und Testhelfer). Die Phase-6-
+  Finalisierung liest in Phase 1 die aktuellen Schäden, rendert Schema + Text
+  (keine Fotos) ins Übergabeprotokoll und friert denselben Stand in
+  `handover_machine_checks.existing_damages_snapshot` ein; spätere
+  Auflösungen ändern weder Snapshot noch PDF (Tests 69–74).
+- **Nachträgliche Feststellung**: nur solange die Maschine 🟡 Reinigung hat
+  und ein finalisierter Return existiert (Maschinenzeile gesperrt, damit
+  „Gereinigt & einsatzbereit“ serialisiert); Beschreibung, Schweregrad,
+  Markierung UND Foto in EINEM Aufruf Pflicht; origin `post_return_finding`,
+  sofort aktuell; das unterschriebene Rückgabeprotokoll wird nie neu
+  gerendert. Nach Einsatzbereit: 409.
+- **Technischer Defekt**: `technical_defects` intern mit dem letzten
+  finalisierten Return verknüpft, solange die Maschine seitdem nicht erneut
+  ausgegeben wurde (Advisory-Lock `machine-assign:<id>` wie Zuweisung/
+  Übergabe); Foto optional (JPEG/PNG/WebP, nicht im PDF);
+  `requires_financial_review = false`; Antwort trägt den Hinweis „Maschine
+  ggf. in Reparatur setzen“ – kein automatischer Statuswechsel, keine
+  Kundenbelastung. Recht: `machine.change_status` (Reparatur-Nähe).
+- **Reinigung**: Finalisierung setzt IMMER 🟡 Reinigung, Standort Lager,
+  `cleaning_since`; „Gereinigt & einsatzbereit“ (`machine.clean_complete`)
+  nur aus Reinigung, speichert `cleaned_by/cleaned_at` (nur administrative
+  Sicht, Maßstab `employee.manage`), keine Historientabelle. 24-h-Warnung
+  rein zeitabhängig aus `cleaning_since` (kein Job, kein Push) – ein manuell
+  gesetzter Reinigungsstatus ohne Rückgabe hat keinen Reinigungsbeginn und
+  löst keine Warnung aus (Order §53: „nach Rückgabe“). `machines.cleaned_by`
+  bewusst ohne FK auf staff_users (Test-/Seed-Resets truncaten staff_users
+  CASCADE – Stammdaten dürfen nicht mitgerissen werden).
+- **Rückgabeprotokoll**: `renderReturnProtocolPdf` serverseitig (Dokumentart,
+  Vorgang, Kunde, Rückgabeperson, tatsächliche Rückgabezeit, je Maschine
+  Zubehör/Rückgabevorbereitung/Reinigungs-Fakt + Beweisfotos/neue Schäden
+  mit Schema + Fotos/Fehlteile, Kommission als Tatsachen „ausgegeben /
+  ungeöffnet zurück / verbraucht bzw. abrechenbar“, Zusammenfassung oder
+  „Rückgabe ohne Beanstandung.“, beide Unterschriften, Integritätshinweis,
+  ausdrücklich „keine Rechnung“). Fotos, die ins PDF eingebettet werden
+  (Beweis-/Schadensfotos), sind auf JPEG/PNG beschränkt und werden VOR dem
+  Speichern strukturell geprüft (`pngLooksValid`/`jpegLooksValid` in
+  `handover/media.ts`), weil pdfkit PNGs asynchron dekomprimiert; nicht
+  einbettbare Bilder brechen als `PhotoImageError` → VALIDATION ab. Ein
+  Dokument je Return (Storage-Key mit Versuchs-Suffix, immutable, SHA-256).
+- **Finalisierung/Idempotenz**: zweiphasig wie Phase 6 (Bilder laden, PDF
+  rendern, hochladen OHNE Sperren; dann Transaktion mit Advisory-Lock
+  `return-finalize:<id>`, Zeilensperre der Rückgabe, Slot-Zeilen und
+  sortierte Maschinen-Advisory-Locks in derselben Reihenfolge wie Zuweisung/
+  Übergabe, erneute Vorbedingungen über `detailWithin(tx)` (A1: keine
+  Pool-Akquise unter Sperren), Fingerprint-Vergleich inkl. Signatur-Hashes).
+  Atomar: Dokument registrieren, return-Bewegungen je Artikel, Kommissions-
+  fakten einfrieren, Zuordnungen → returned (+ Override archivieren),
+  Maschinen → Reinigung/Lager, Rückgabetermin `completeWithin`, Follow-ups
+  aktivieren, Rückgabeschäden aktivieren, Return finalisieren + Telefon
+  löschen, Paket `return_completed` (partieller Unique `(return_id, kind)`).
+  Prozessinterne `KeyedMutex` + `status = 'finalized'`-Rückkehr unter Sperre
+  machen Doppelklick/Retry/parallele Instanzen idempotent; Storage-/PDF-
+  Fehler lassen keinen halben Zustand zurück (Tests 107–109). Der Vorgang
+  bleibt offen.
+- **Kalender**: `SchedulingService.complete` lehnt Rückgabetermine
+  AUSGEGEBENER Buchungen ab („… über den Rückgabeprozess“); nicht
+  ausgegebene Buchungen behalten den neutralen internen Abschluss.
+- **Rechte** (PERMISSIONS.md führend, kontrollierte Ergänzungen):
+  `return.view`, `return.complete`, `damage.resolve_current`,
+  `machine.clean_complete`; wiederverwendet `return.perform`,
+  `return.mark_cleanup_issue`, `return.correct_actual_time`,
+  `damage.document`, `missing_item.create`, `missing_item.resolve`,
+  `machine.change_status`; `inventory.return` bleibt für manuelle Rücknahmen
+  außerhalb einer Rückgabe reserviert (die Rückgabe bucht unter
+  `return.complete`, analog zu `handover.perform`). Alle Routen prüfen Recht
+  und Phase-2-Sichtbarkeit serverseitig; QR umgeht nichts (Recht +
+  Sichtbarkeit nach der Auflösung); Rückgabeprotokolle sind mit
+  `return.view` abrufbar, alles andere unverändert.
+- **UI**: `/rueckgabe` (überfällig → heute → kommende ±3 Tage → ohne
+  Termin, QR-Einstieg über `QrScanner` mit Rückgabe-Resolver),
+  `/vorgaenge/[id]/rueckgabe` (10 Schritte, eine dominante Hauptaktion je
+  Schritt, Server-Blocker), Maschinendetail (Reinigungskarte mit roter
+  24-h-Warnung und „Gereinigt & einsatzbereit“, aktuelle Schäden mit Schema/
+  Fotos/„Nicht mehr aktuell“, nachträgliche Feststellung, technischer Defekt,
+  offene Fehlteile), „Heute“ (rote Reinigungswarnung, offene Fehlteile –
+  überfällige Rückgaben bleiben ganz oben), Vorgang (Rückgabe-Karte, nächste
+  Aktion „Rückgabe starten/fortsetzen“).
+- **Adversarialer Review (Phase 7)**: 5-dimensionaler Workflow-Review
+  (Spec Rückgabe, Spec Schäden/Reinigung, Security, Nebenläufigkeit, Tests/UI)
+  mit Skeptiker-Pass; jedes Finding selbst gegen Vorgabe und Code verifiziert.
+  Behoben:
+  - Nachtragsfenster (§§37/38) hing nur am Status „Reinigung“: ein späterer
+    manueller Status „Reinigung“ (oder eine erneute Ausgabe mit altem
+    `cleaning_since`) hätte Kundenschäden zum alten Return erlaubt. Jetzt
+    `postReturnWindowOpen` = Status Reinigung UND von der Rückgabe gesetzter
+    Reinigungsbeginn; `setStatus` ist übergangsbewusst (Reinigung →
+    Einsatzbereit nur über „Gereinigt & einsatzbereit“, sonst 409; Verlassen
+    der Reinigung löscht `cleaning_since`; manuelles „Reinigung“ startet keine
+    Phase nach Rückgabe → keine falsche 24-h-Warnung); eine neue Ausgabe
+    (`applyProcessStatus('rented')`) beendet die Reinigungsphase; zusätzlich
+    `notReissuedSince`-Guard im Nachtrag. Tests R1, R2, 78b.
+  - Schadensfoto-Upload lief außerhalb der Entwurfssperre (Foto hätte NACH
+    dem Fingerprint-Recheck der Finalisierung committen können): `addPhoto`
+    sperrt zuerst die führende Zeile (Rückgabe bzw. Maschine, gleiche
+    Sperrreihenfolge wie Finalisierung/Reinigungsabschluss), dann den Schaden.
+  - Verwaiste Rückgabeprotokolle im Storage (Idempotenz-Rückkehr, CONFLICT,
+    DB-Fehler nach Upload): Finalisierung löscht das hochgeladene PDF, wenn es
+    nicht registriert wurde.
+  - §47 „alle issued Assignments enthalten“ war nicht serverseitig geprüft:
+    Finalisierung vergleicht unter den gehaltenen Sperren die ausgegebenen
+    Zuordnungen der Buchung mit den Rückgabeabschnitten (409 bei Abweichung,
+    Test R4).
+  - Kommissionsartikel ohne hinterlegten Lagerartikel (neu angelegte
+    Verbrauchsprodukte, Phase 5 seedet nur die Grundausstattung) wurden still
+    übergangen → Fakten (ausgegeben/ungeöffnet/abrechenbar, Preis-Snapshot,
+    PDF) wären für Phase 9 verloren gegangen. `return_inventory_items.
+    inventory_item_id` ist jetzt nullable; nur die Ledger-Bewegung entfällt
+    (wie bei der Ausgabe in Phase 6). Test R3.
+  - Rückgabe-Wizard erzwang die Kamera (`capture="environment"`) – §64 „kein
+    Kamerazwang“: entfernt, der Systemdialog bietet Kamera und Galerie.
+  - Asset-Schnittstelle (§30) war nur nominell: `productSlug` wird jetzt in
+    `DamageView`/`ReturnMachineView`/`machineCondition` geführt und an jedes
+    Schadensschema übergeben; PDF-Renderer erhalten `sketchImages` je Ansicht
+    (`sketch-assets.ts`, leer = neutraler Platzhalter). Keine Datenänderung.
+  - QR-Token des Rückgabe-Einstiegs (`/staff/returns/resolve-qr/:token`) wurde
+    unmaskiert geloggt → `maskLoggedPath` erweitert (Test 135).
+  - `/staff/missing-items` und die vorgangsbezogenen Teile von
+    `/staff/machines/:id/condition` (Fehlteile, Defekte) folgten nicht der
+    zentralen Sichtbarkeitsregel: jetzt `process.view_all` +
+    `visibleProcessesWhere`; ohne Vorgangsrecht liefert die Maschinenansicht
+    keine vorgangsbezogenen Einträge (Test R6).
+  - Nachtrag/Defekt schrieben an den letzten Rückgabevorgang ohne dessen
+    Sichtbarkeit zu prüfen → `postReturnTarget` + `requireVisibleProcess` vor
+    dem Schreiben (Test R6).
+  - Existenz-Orakel (404 vor 403): Grundrecht `process.view_all` wird in allen
+    ressourcenbezogenen Rückgabe-Routen VOR dem Laden geprüft (Test R5).
+  - DB-Backstops für Zustandsinvarianten (finalisiert ⇒ Zeitstempel/Protokoll
+    vorhanden, Telefon gelöscht; Nachtrag ⇒ aktiv; erledigt ⇒ erledigt von/am;
+    Schaden immer mit Rückgabebezug) als CHECK-Constraints in Migration 0014.
+  - Terminvorschau: veralteter Hinweistext („folgt in einer späteren Phase“)
+    ersetzt, Badge „Abgeschlossen“ statt „Intern abgeschlossen (kein
+    Rückgabeabschluss)“, Link „Rückgabe öffnen“ am Rückgabetermin (§6).
+  - Rückgabeliste (§5 „±3 Tage“): das „kommende Tage“-Fenster war ein
+    rollierendes 72-h-Fenster (uhrzeitabhängig, E2E A vor 11:00 Uhr rot) →
+    jetzt kalendertagbasiert (heute + 3 Berliner Kalendertage, DST-unabhängig;
+    Test R7 mit festem Aufrufzeitpunkt).
+  - Technischer Defekt: das optionale Foto (§39) war nur per API möglich →
+    Datei-Eingabe im Maschinendetail (Kamera oder Galerie).
+  - Wizard: „Weiter“ ist erst dann die primäre Aktion, wenn die
+    Schrittbedingung erfüllt ist (§62 „eine dominante Hauptaktion je Schritt“).
+  - Tests geschärft: 118 prüft die 24-h-Warnung als reine Ableitung (keine
+    neuen Datensätze, keine Maschinenänderung) statt einer tautologischen
+    Job-Zählung; 137 prüft relative, umgebungsneutrale Storage-Schlüssel ohne
+    Kundendaten (Isolation selbst bleibt Konfigurationssache, Test 136);
+    72 und E2E F/K zählen Bild-XObjects codec-unabhängig statt nur
+    `/DCTDecode`; E2E I prüft die rote 24-h-Warnung in Maschinenansicht und
+    „Heute“ über einen Test-Helfer (`e2e-backdate-cleaning.ts`); E2E J
+    prüft die serverseitige Ablehnung (409) eines weiteren Kundenschadens nach
+    der Reinigung – nicht nur das Verschwinden des Buttons.
+  - E2E-Spec: Schritt 1 verlangt die Rückgabeperson vor „Weiter“, Laden der
+    Seite wird abgewartet, Schema-Klick über den Locator (scrollt in den
+    sichtbaren Bereich), verbrauchte Kommission ist keine Beanstandung (§41).
+  Bewusst NICHT übernommen (verifiziert): die drei Sauberkeitskriterien als
+  einzeln zu bestätigende Toggles – §15 verlangt die aktive Prüfung je
+  Maschine, §41 „keine Checkbox-Orgie“: die Kriterien sind sichtbar
+  vorbelegt und werden mit EINER Bestätigung je Maschine aktiv attestiert,
+  Abweichungen werden vor der Bestätigung abgewählt (Fakt mit Grund).
+  Ebenfalls nicht übernommen: manuelle Statuswechsel ab „Vermietet“ generell
+  sperren (Phase-5-Statusregel bleibt; die Reinigungsphase wird stattdessen
+  bei erneuter Ausgabe beendet).
+- **Bewusst offen (Deferred, Phase 7)**: Versand des Rückgabe-Pakets
+  (Outbox-Worker/Mailadapter), Schadens-/Fehlteilbeträge, Endabrechnung,
+  Lexware, Schadenkosten-Mail/24-h-Frist (Phase 9+), echte Maschinengrafiken
+  (Asset-Schnittstelle vorhanden), Teilrückgaben, Offline (Phase 8), Push
+  (Phase 12), Kamera-Scan mit echter `BarcodeDetector`-API (E2E nutzt den
+  manuellen Fallback).

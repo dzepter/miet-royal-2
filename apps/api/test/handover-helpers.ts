@@ -6,6 +6,8 @@ import { ProductService } from '../src/commerce/product-service.ts';
 import { AssignmentService } from '../src/handover/assignment-service.ts';
 import { HandoverService } from '../src/handover/handover-service.ts';
 import { createRiskRefreshListener } from '../src/handover/risk-refresh-listener.ts';
+import { DamageService } from '../src/returns/damage-service.ts';
+import { ReturnService } from '../src/returns/return-service.ts';
 import { SchedulingService } from '../src/scheduling/scheduling-service.ts';
 import { InventoryService } from '../src/warehouse/inventory-service.ts';
 import { MachineService } from '../src/warehouse/machine-service.ts';
@@ -17,7 +19,10 @@ import { machineByCode } from './warehouse-helpers.ts';
 /** Phase-6-Tabellen leeren – VOR resetWarehouse (FK auf machines) aufrufen. */
 export async function truncateHandoverTables(pool: pg.Pool): Promise<void> {
   await pool.query(
-    `TRUNCATE delivery_packets, handover_signatures, handover_photos, handover_machine_checks,
+    `TRUNCATE return_signatures, technical_defects, missing_accessory_cases, damage_photos,
+     damage_markers, machine_damages, return_photos, return_inventory_items,
+     return_machines, rental_returns,
+     delivery_packets, handover_signatures, handover_photos, handover_machine_checks,
      handovers, delivery_note_items, delivery_notes, booking_additions,
      booking_pickup_representatives, machine_risk_incidents,
      machine_assignment_overrides, machine_assignments CASCADE`,
@@ -32,6 +37,8 @@ export interface HandoverServices {
   productService: ProductService;
   scheduling: SchedulingService;
   handover: HandoverService;
+  damages: DamageService;
+  returns: ReturnService;
 }
 
 export function handoverServicesFor(ctx: TestContext): HandoverServices {
@@ -42,6 +49,7 @@ export function handoverServicesFor(ctx: TestContext): HandoverServices {
   const productService = new ProductService(ctx.db);
   // Wie in der App-Komposition: Terminzeitänderungen refreshen Risikohinweise.
   const scheduling = new SchedulingService(ctx.db, [createRiskRefreshListener(assignments)]);
+  const damages = new DamageService(ctx.db, ctx.storage);
   const handover = new HandoverService(
     ctx.db,
     ctx.storage,
@@ -51,6 +59,17 @@ export function handoverServicesFor(ctx: TestContext): HandoverServices {
     documentService,
     productService,
     scheduling,
+    damages,
+  );
+  const returns = new ReturnService(
+    ctx.db,
+    ctx.storage,
+    inventory,
+    machineService,
+    documentService,
+    scheduling,
+    damages,
+    assignments,
   );
   return {
     machineService,
@@ -60,6 +79,8 @@ export function handoverServicesFor(ctx: TestContext): HandoverServices {
     productService,
     scheduling,
     handover,
+    damages,
+    returns,
   };
 }
 

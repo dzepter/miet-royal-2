@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { useCallback, useEffect, useState } from 'react';
 import { AuthGuard, useMe } from '../components/auth-guard';
+import type { CleaningWarning, MissingCaseView } from '../lib/returns';
 import { AppointmentPreview } from '../components/appointment-preview';
 import { apiFetch, hasPermission } from '../lib/api';
 import { customerName, formatEventDate, STATUS_LABELS, type ProcessRow } from '../lib/crm';
@@ -63,6 +64,9 @@ function Home() {
   const [myProcesses, setMyProcesses] = useState<ProcessRow[]>([]);
   const [warehouse, setWarehouse] = useState<WarehouseWarnings | null>(null);
   const [riskCount, setRiskCount] = useState(0);
+  const [cleaningWarnings, setCleaningWarnings] = useState<CleaningWarning[]>([]);
+  const [openMissing, setOpenMissing] = useState<MissingCaseView[]>([]);
+  const canReturns = hasPermission(me, 'return.view');
   const canCalendar = hasPermission(me, 'calendar.view');
   const canSeeProcesses = hasPermission(me, 'process.view_all');
   const canWarehouse = hasPermission(me, 'machine.view') || hasPermission(me, 'inventory.view');
@@ -106,16 +110,53 @@ function Home() {
     void apiFetch<{ incidents: unknown[] }>('/staff/machine-risk-incidents').then((result) => {
       if (result.data !== null) setRiskCount(result.data.incidents.length);
     });
-  }, [canWarehouse]);
+    // Phase 7 (Order §53): länger als 24 h in Reinigung – rote interne Warnung, kein Push.
+    if (hasPermission(me, 'machine.view')) {
+      void apiFetch<{ warnings: CleaningWarning[] }>('/staff/cleaning-warnings').then((result) => {
+        if (result.data !== null) setCleaningWarnings(result.data.warnings);
+      });
+    }
+  }, [canWarehouse, me]);
+
+  const canMissingItems = canReturns && hasPermission(me, 'process.view_all');
+  useEffect(() => {
+    if (!canMissingItems) return;
+    // Phase 7 (Order §13/§55): offene Fehlteil-Follow-ups ohne Fälligkeit
+    // (vorgangsbezogen → nur mit Vorgangsrecht, serverseitig gefiltert).
+    void apiFetch<{ cases: MissingCaseView[] }>('/staff/missing-items').then((result) => {
+      if (result.data !== null) setOpenMissing(result.data.cases);
+    });
+  }, [canMissingItems]);
 
   // Kompakte Maschinen-/Lagerwarnungen (Order §48/UX_RULES „Heute“ Nr. 4)
   // – die operative Startseite bleibt schlank, Details hinter dem Link.
   const lowStockCount = warehouse?.lowStock?.length ?? 0;
   const machineWarningCount = warehouse?.machineWarnings?.length ?? 0;
   const warehouseCard =
-    lowStockCount > 0 || machineWarningCount > 0 || riskCount > 0 ? (
+    lowStockCount > 0 ||
+    machineWarningCount > 0 ||
+    riskCount > 0 ||
+    cleaningWarnings.length > 0 ||
+    openMissing.length > 0 ? (
       <div className="card" data-testid="warehouse-warnings">
         <h2>Maschinen- &amp; Lagerwarnungen</h2>
+        {cleaningWarnings.length > 0 && (
+          <p className="warning-red" data-testid="cleaning-warning">
+            🧽{' '}
+            {cleaningWarnings.length === 1
+              ? `Maschine ${cleaningWarnings[0]!.machineCode} ist seit ${cleaningWarnings[0]!.hoursInCleaning} h in Reinigung (länger als 24 h)`
+              : `${cleaningWarnings.length} Maschinen sind länger als 24 h in Reinigung`}{' '}
+            <Link href={`/maschinen/${cleaningWarnings[0]!.machineId}`}>Maschine öffnen</Link>
+          </p>
+        )}
+        {openMissing.length > 0 && (
+          <p data-testid="missing-items-warning">
+            <Link href={`/maschinen/${openMissing[0]!.machineId}`}>
+              Offene Fehlteile: {openMissing.length} (
+              {openMissing.map((c) => c.machineCode).join(', ')})
+            </Link>
+          </p>
+        )}
         {riskCount > 0 && (
           <p>
             <Link href="/maschinen/risiken" data-testid="risk-incidents-link">

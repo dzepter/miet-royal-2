@@ -84,7 +84,7 @@ try {
   await pool.query(
     `UPDATE machines SET status = 'ready', location_kind = 'warehouse', location_note = NULL,
      purchase_date = NULL, weight_grams = NULL, reference_photo_key = NULL,
-     reference_photo_mime = NULL`,
+     reference_photo_mime = NULL, cleaning_since = NULL, cleaned_at = NULL, cleaned_by = NULL`,
   );
   await pool.query(`UPDATE inventory_items SET current_stock = NULL, min_stock = NULL`);
   // Synthetische QR-Basis-URL (Order §11 – dev/test dürfen das).

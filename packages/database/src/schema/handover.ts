@@ -412,6 +412,12 @@ export const handoverMachineChecks = pgTable(
       .notNull()
       .references(() => staffUsers.id),
     checkedAt: timestamp('checked_at', { withTimezone: true }).notNull().defaultNow(),
+    /**
+     * Phase 7 (Order §35): bei der Finalisierung eingefrorener Snapshot der
+     * damals aktuellen Maschinenschäden (Schweregrad, Beschreibung,
+     * Markierungen – keine Fotos). Spätere Auflösungen ändern ihn nicht.
+     */
+    existingDamagesSnapshot: jsonb('existing_damages_snapshot'),
   },
   (table) => [uniqueIndex('handover_machine_checks_assignment_unique').on(table.assignmentId)],
 );
@@ -498,6 +504,13 @@ export const deliveryPackets = pgTable(
       .notNull()
       .references(() => bookings.id),
     handoverId: uuid('handover_id').references(() => handovers.id),
+    /**
+     * Phase 7 (Order §57): Rückgabe-Paket (kind 'return_completed'). Ohne
+     * FK-Constraint, um eine zyklische Schema-Abhängigkeit zu vermeiden –
+     * die Zeile entsteht ausschließlich in der Finalisierungs-Transaktion
+     * der Rückgabe.
+     */
+    returnId: uuid('return_id'),
     recipient: text('recipient').notNull(),
     subject: text('subject').notNull(),
     body: text('body').notNull(),
@@ -510,6 +523,10 @@ export const deliveryPackets = pgTable(
   (table) => [
     /** Genau EIN Paket je Übergabe (idempotente Finalisierung). */
     uniqueIndex('delivery_packets_handover_kind_unique').on(table.handoverId, table.kind),
+    /** Genau EIN Paket je Rückgabe (idempotente Finalisierung, Phase 7). */
+    uniqueIndex('delivery_packets_return_kind_unique')
+      .on(table.returnId, table.kind)
+      .where(sql`"return_id" IS NOT NULL`),
     index('delivery_packets_process_idx').on(table.processId),
   ],
 );

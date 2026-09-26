@@ -21,6 +21,11 @@ import {
   type HandoverDetail,
   type HandoverDocument,
 } from '../../../lib/handover';
+import {
+  RETURN_NEXT_ACTION_LABELS,
+  type ReturnDetail,
+  type ReturnDocument,
+} from '../../../lib/returns';
 
 const SOURCE_LABELS: Record<string, string> = {
   website: 'Website',
@@ -98,6 +103,11 @@ function ProcessView() {
   const [handover, setHandover] = useState<HandoverDetail | null>(null);
   const [handoverDocs, setHandoverDocs] = useState<HandoverDocument[]>([]);
   const [packets, setPackets] = useState<DeliveryPacketView[]>([]);
+  const [returnInfo, setReturnInfo] = useState<{
+    detail: ReturnDetail | null;
+    canStart: boolean;
+    documents: ReturnDocument[];
+  } | null>(null);
 
   const load = useCallback(async () => {
     const result = await apiFetch<ProcessDetail>(`/staff/processes/${params.id}`);
@@ -171,6 +181,17 @@ function ProcessView() {
       },
     );
   }, [canHandover, params.id, commerce.confirmationStatus]);
+
+  const canReturn = hasPermission(me, 'return.view');
+  useEffect(() => {
+    if (!canReturn) return;
+    // Phase 7: Rückgabe-Stand des Vorgangs (nur nach Ausgabe fachlich relevant).
+    void apiFetch<{ detail: ReturnDetail | null; canStart: boolean; documents: ReturnDocument[] }>(
+      `/staff/processes/${params.id}/return`,
+    ).then((result) => {
+      if (result.data !== null) setReturnInfo(result.data);
+    });
+  }, [canReturn, params.id, handover?.handover.status]);
 
   async function runAction(path: string, body: unknown): Promise<void> {
     setBusy(true);
@@ -284,6 +305,23 @@ function ProcessView() {
                 <Link href={`/vorgaenge/${params.id}/uebergabe`}>Protokoll ansehen</Link>
               </p>
             )}
+            {returnInfo?.detail?.return.status === 'finalized' && (
+              <p>
+                <span className="badge ok">Rückgabe abgeschlossen</span>{' '}
+                <Link href={`/vorgaenge/${params.id}/rueckgabe`}>Rückgabeprotokoll ansehen</Link>
+              </p>
+            )}
+            {returnInfo !== null &&
+              returnInfo.detail?.return.status !== 'finalized' &&
+              (returnInfo.detail !== null || returnInfo.canStart) && (
+                <p>
+                  <Link href={`/vorgaenge/${params.id}/rueckgabe`} data-testid="return-action">
+                    <strong>
+                      {returnInfo.detail === null ? 'Rückgabe starten' : 'Rückgabe fortsetzen'}
+                    </strong>
+                  </Link>
+                </p>
+              )}
             {handover !== null && handover.nextAction === 'handover' && (
               <p>
                 <Link href={`/vorgaenge/${params.id}/uebergabe`}>
@@ -557,17 +595,91 @@ function ProcessView() {
                 {PACKET_STATUS_LABELS[packet.status] ?? packet.status}
               </span>{' '}
               an {packet.recipient !== '' ? packet.recipient : '– (keine E-Mail hinterlegt)'} ·{' '}
-              {packet.subject} · {packet.documentIds.length} Dokumente (Outbox, kein Versand in
-              Phase 6)
+              {packet.subject} · {packet.documentIds.length}{' '}
+              {packet.documentIds.length === 1 ? 'Dokument' : 'Dokumente'} (Outbox, kein echter
+              Versand ohne Mailadapter)
             </p>
           ))}
+        </div>
+      )}
+
+      {returnInfo !== null && (returnInfo.detail !== null || returnInfo.canStart) && (
+        <div className="card" data-testid="process-return">
+          <h2>Rückgabe</h2>
+          {returnInfo.detail === null ? (
+            <p>
+              Maschinen ausgegeben –{' '}
+              <Link href={`/vorgaenge/${params.id}/rueckgabe`}>Rückgabe starten</Link>
+            </p>
+          ) : (
+            <>
+              <ul>
+                {returnInfo.detail.machines.map((machine) => (
+                  <li key={machine.id}>
+                    <strong>{machine.machineCode}</strong>{' '}
+                    {machine.returnedAt !== null ? (
+                      <span className="badge ok">
+                        zurückgegeben am {formatBerlin(machine.returnedAt)}
+                      </span>
+                    ) : (
+                      <span className="badge">Rückgabe offen</span>
+                    )}
+                    {machine.damages.length > 0 && (
+                      <>
+                        {' '}
+                        <span className="badge locked">
+                          {machine.damages.length} Schaden
+                          {machine.damages.length === 1 ? '' : 'sfälle'}
+                        </span>
+                      </>
+                    )}
+                    {machine.missingCases.length > 0 && (
+                      <>
+                        {' '}
+                        <span className="badge locked">Fehlteil</span>
+                      </>
+                    )}
+                    {machine.cleanupRequired && (
+                      <>
+                        {' '}
+                        <span className="badge locked">Reinigungsgebühr-Fakt</span>
+                      </>
+                    )}
+                  </li>
+                ))}
+              </ul>
+              <p>
+                Rückgabestatus:{' '}
+                {returnInfo.detail.return.status === 'finalized' ? (
+                  <span className="badge ok">
+                    abgeschlossen am {formatBerlin(returnInfo.detail.return.finalizedAt)}
+                  </span>
+                ) : (
+                  <span className="badge">
+                    {RETURN_NEXT_ACTION_LABELS[returnInfo.detail.nextAction]}
+                  </span>
+                )}
+              </p>
+              <p>
+                <Link href={`/vorgaenge/${params.id}/rueckgabe`}>Rückgabe öffnen</Link>
+                {returnInfo.documents.map((doc) => (
+                  <span key={doc.id}>
+                    {' · '}
+                    <a href={`/api/staff/documents/${doc.id}`} target="_blank" rel="noreferrer">
+                      {DOCUMENT_TYPE_LABELS[doc.type] ?? doc.type}
+                    </a>
+                  </span>
+                ))}
+              </p>
+            </>
+          )}
         </div>
       )}
 
       {/* Vorbereitete Bereiche späterer Phasen – bewusst ohne Fake-Inhalte. */}
       <div className="card">
         <h2>Weitere Bereiche</h2>
-        <p className="muted">Lieferung/Tour, Rückgabe und Abrechnung folgen in späteren Phasen.</p>
+        <p className="muted">Lieferung/Tour und Abrechnung folgen in späteren Phasen.</p>
       </div>
     </main>
   );

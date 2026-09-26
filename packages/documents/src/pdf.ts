@@ -304,11 +304,38 @@ export interface DeliveryNotePdfData {
   isFinal: boolean;
 }
 
+/** Grafikunabhängige Schadensmarkierung (normalisierte Koordinaten 0..1). */
+export interface DamageMarkerShape {
+  view: 'front' | 'back' | 'left' | 'right';
+  markerType: 'point' | 'area';
+  x: number;
+  y: number;
+  width: number | null;
+  height: number | null;
+}
+
+/**
+ * Asset-Schnittstelle (Order §30): je Ansicht optional eine echte
+ * Maschinengrafik (PNG/JPEG). Fehlt sie, zeichnet der Renderer den neutralen
+ * schematischen Platzhalter – die Markierungsdaten bleiben identisch.
+ */
+export type DamageSketchImages = Partial<Record<DamageMarkerShape['view'], Uint8Array>>;
+
+/** Schaden für das Kundendokument: Schema/Markierungen + Text, keine internen Fotos. */
+export interface DamageSketchData {
+  severityLabel: string;
+  description: string;
+  markers: DamageMarkerShape[];
+  sketchImages?: DamageSketchImages | undefined;
+}
+
 export interface HandoverProtocolMachineSection {
   machineCode: string;
   typeName: string;
   checkedLabel: string;
   existingDamagesLines: string[];
+  /** Bestehende Schäden als eingefrorener Snapshot (Schema + Text, Phase 7). */
+  existingDamages?: DamageSketchData[] | undefined;
   notes: string[];
 }
 
@@ -435,6 +462,254 @@ export class SignatureImageError extends Error {
   }
 }
 
+const VIEW_LABELS: Record<DamageMarkerShape['view'], string> = {
+  front: 'Vorne',
+  back: 'Hinten',
+  left: 'Links',
+  right: 'Rechts',
+};
+
+/**
+ * Neutrales Maschinenschema (Order §30): schematischer Umriss je Ansicht,
+ * KEINE Explosionszeichnung, keine Herstellerbilder. Markierungen werden aus
+ * normalisierten Koordinaten in die Zeichenfläche projiziert – dieselbe
+ * Datenbasis, mit der später echte Grafiken hinterlegt werden.
+ */
+function drawDamageSketch(
+  doc: PDFKit.PDFDocument,
+  x: number,
+  y: number,
+  markers: DamageMarkerShape[],
+  images: DamageSketchImages = {},
+): number {
+  const views: DamageMarkerShape['view'][] = ['front', 'back', 'left', 'right'];
+  const boxW = 70;
+  const boxH = 90;
+  const gap = 12;
+  views.forEach((view, index) => {
+    const bx = x + index * (boxW + gap);
+    doc.save();
+    doc.lineWidth(0.8).strokeColor('#666666');
+    const image = images[view];
+    if (image !== undefined) {
+      // Echte Maschinengrafik als Asset (Order §30) – Markierungen werden in
+      // dieselbe Zeichenfläche projiziert.
+      doc.image(Buffer.from(image), bx, y, { width: boxW, height: boxH });
+      doc.rect(bx, y, boxW, boxH).stroke();
+    } else {
+      // Umriss: Gehäuse mit Behälterbereich (schematisch, neutral).
+      doc.rect(bx, y, boxW, boxH).stroke();
+      doc.rect(bx + boxW * 0.15, y + boxH * 0.08, boxW * 0.7, boxH * 0.42).stroke();
+      doc.rect(bx + boxW * 0.1, y + boxH * 0.6, boxW * 0.8, boxH * 0.3).stroke();
+    }
+    doc
+      .font('Helvetica')
+      .fontSize(7)
+      .fillColor('#555555')
+      .text(VIEW_LABELS[view], bx, y + boxH + 3, { width: boxW, align: 'center' });
+    for (const marker of markers.filter((m) => m.view === view)) {
+      const mx = bx + marker.x * boxW;
+      const my = y + marker.y * boxH;
+      doc.strokeColor('#b3261e').fillColor('#b3261e').lineWidth(1.2);
+      if (marker.markerType === 'area' && marker.width !== null && marker.height !== null) {
+        doc.rect(mx, my, marker.width * boxW, marker.height * boxH).stroke();
+      } else {
+        doc.circle(mx, my, 3).fill();
+      }
+    }
+    doc.restore();
+  });
+  return y + boxH + 14;
+}
+
+function damageSketchBlock(doc: PDFKit.PDFDocument, damage: DamageSketchData): void {
+  if (doc.y > doc.page.height - MARGIN - 150) doc.addPage();
+  doc
+    .font('Helvetica')
+    .fontSize(9)
+    .fillColor('#000000')
+    .text(`Schweregrad: ${damage.severityLabel}`, MARGIN + 10);
+  doc.text(`Beschreibung: ${damage.description}`, MARGIN + 10, doc.y, {
+    width: doc.page.width - 2 * MARGIN - 10,
+  });
+  const after = drawDamageSketch(doc, MARGIN + 10, doc.y + 4, damage.markers, damage.sketchImages);
+  doc.x = MARGIN;
+  doc.y = after;
+}
+
+export interface ReturnProtocolDamage extends DamageSketchData {
+  /** Neue Rückgabeschadensfotos DÜRFEN im Rückgabeprotokoll erscheinen (Order §32). */
+  photos: Uint8Array[];
+}
+
+export interface ReturnProtocolMachineSection {
+  machineCode: string;
+  typeName: string;
+  accessoryLabel: string;
+  cleanlinessLines: string[];
+  /** Reinigungsgebühr-Fakt (kein Rechnungsbetrag) oder null. */
+  cleanupFactLabel: string | null;
+  cleanupPhotos: Uint8Array[];
+  damages: ReturnProtocolDamage[];
+  missingLines: string[];
+}
+
+export interface ReturnProtocolCommissionLine {
+  description: string;
+  unit: string;
+  issued: number;
+  returnedUnopened: number;
+  chargeable: number;
+  kindLabel: string;
+}
+
+export interface ReturnProtocolPdfData {
+  processNumber: string;
+  customerName: string;
+  returnerLabel: string;
+  actualReturnAtLabel: string;
+  machines: ReturnProtocolMachineSection[];
+  commissionLines: ReturnProtocolCommissionLine[];
+  /** true = „Rückgabe ohne Beanstandung“ (Order §41). */
+  withoutComplaint: boolean;
+  summaryLines: string[];
+  customerSignature: HandoverSignatureBlock;
+  staffSignature: HandoverSignatureBlock;
+  finalizedAtLabel: string;
+  documentReference: string;
+}
+
+export class PhotoImageError extends Error {
+  constructor(context: string) {
+    super(`Ein Foto (${context}) konnte nicht in das Dokument eingebettet werden.`);
+    this.name = 'PhotoImageError';
+  }
+}
+
+function photoRow(doc: PDFKit.PDFDocument, photos: Uint8Array[], context: string): void {
+  if (photos.length === 0) return;
+  const w = 120;
+  const h = 90;
+  const perRow = Math.max(1, Math.floor((doc.page.width - 2 * MARGIN - 10) / (w + 8)));
+  let index = 0;
+  while (index < photos.length) {
+    if (doc.y > doc.page.height - MARGIN - h - 10) doc.addPage();
+    const rowY = doc.y;
+    for (let column = 0; column < perRow && index < photos.length; column += 1, index += 1) {
+      const px = MARGIN + 10 + column * (w + 8);
+      try {
+        doc.image(Buffer.from(photos[index]!), px, rowY, { fit: [w, h] });
+      } catch {
+        throw new PhotoImageError(context);
+      }
+    }
+    doc.x = MARGIN;
+    doc.y = rowY + h + 6;
+  }
+}
+
+/**
+ * Rückgabeprotokoll (Order §§44–46): Dokumentart, Vorgang, Kunde,
+ * Rückgabeperson, tatsächliche Rückgabezeit, je Maschine ein Abschnitt
+ * (Zubehör, Rückgabevorbereitung, neue Schäden mit Schema + Fotos,
+ * Fehlteile, Reinigungsgebühr-Fakt), Kommissionsrückgabe als Tatsachen
+ * (ausgegeben / ungeöffnet zurück / verbraucht bzw. abrechenbar) – KEINE
+ * Rechnung –, Zusammenfassung, beide Unterschriften, Integritätshinweis.
+ */
+export function renderReturnProtocolPdf(data: ReturnProtocolPdfData): Promise<Buffer> {
+  return renderDocument((doc) => {
+    header(doc, 'Rückgabeprotokoll', data.processNumber);
+    doc.font('Helvetica').fontSize(10);
+    doc.text(`Kunde: ${data.customerName}`);
+    doc.text(`Rückgabe durch: ${data.returnerLabel}`);
+    doc.text(`Tatsächliche Rückgabezeit: ${data.actualReturnAtLabel}`);
+    doc.text(`Rückgabe abgeschlossen am: ${data.finalizedAtLabel}`);
+    doc.moveDown(1);
+
+    for (const machine of data.machines) {
+      if (doc.y > doc.page.height - MARGIN - 140) doc.addPage();
+      doc
+        .font('Helvetica-Bold')
+        .fontSize(11)
+        .text(`Maschine ${machine.machineCode} – ${machine.typeName}`);
+      doc.font('Helvetica').fontSize(9);
+      doc.text(`Zubehörkontrolle: ${machine.accessoryLabel}`);
+      doc.text('Rückgabevorbereitung:');
+      for (const line of machine.cleanlinessLines) doc.text(`  • ${line}`);
+      if (machine.cleanupFactLabel !== null) {
+        doc.font('Helvetica-Bold').text(machine.cleanupFactLabel);
+        doc.font('Helvetica');
+        photoRow(doc, machine.cleanupPhotos, `Reinigung ${machine.machineCode}`);
+      }
+      doc.text(
+        machine.missingLines.length === 0
+          ? 'Fehlteile: keine'
+          : `Fehlteile: ${machine.missingLines.join('; ')}`,
+      );
+      if (machine.damages.length === 0) {
+        doc.text('Neue Schäden: keine');
+      } else {
+        doc.text(`Neue Schäden: ${machine.damages.length}`);
+        for (const damage of machine.damages) {
+          damageSketchBlock(doc, damage);
+          photoRow(doc, damage.photos, `Schaden ${machine.machineCode}`);
+        }
+      }
+      doc.moveDown(0.6);
+    }
+
+    doc.font('Helvetica-Bold').fontSize(11).text('Kommissions- und Inklusivartikel');
+    doc.font('Helvetica').fontSize(9);
+    if (data.commissionLines.length === 0) doc.text('Keine rückgabefähigen Artikel ausgegeben.');
+    for (const line of data.commissionLines) {
+      doc.text(
+        `  • ${line.description} (${line.kindLabel}): ausgegeben ${line.issued} ${line.unit}, ungeöffnet zurück ${line.returnedUnopened}, ` +
+          (line.kindLabel === 'Kommission'
+            ? `verbraucht/abrechenbar ${line.chargeable}`
+            : 'inklusive – keine Berechnung'),
+      );
+    }
+    doc.moveDown(0.8);
+
+    doc.font('Helvetica-Bold').fontSize(11).text('Zusammenfassung');
+    doc.font('Helvetica').fontSize(9);
+    if (data.withoutComplaint) {
+      doc.text('Rückgabe ohne Beanstandung.');
+    } else {
+      for (const line of data.summaryLines) doc.text(`  • ${line}`);
+    }
+    doc.moveDown(0.4);
+    doc
+      .fontSize(8)
+      .fillColor('#555555')
+      .text(
+        'Dieses Protokoll dokumentiert Tatsachen der Rückgabe. Es ist keine Rechnung; eine finanzielle Bewertung erfolgt gesondert.',
+      )
+      .fillColor('#000000');
+    doc.moveDown(1);
+
+    if (doc.y > doc.page.height - MARGIN - 200) doc.addPage();
+    const top = doc.y;
+    doc.x = MARGIN;
+    signatureBlock(doc, 'Unterschrift Kunde / Vertreter', data.customerSignature);
+    const afterCustomer = doc.y;
+    doc.x = MARGIN + 260;
+    doc.y = top;
+    signatureBlock(doc, 'Unterschrift Mitarbeiter', data.staffSignature);
+    doc.y = Math.max(doc.y, afterCustomer) + 12;
+    doc.x = MARGIN;
+
+    doc
+      .font('Helvetica')
+      .fontSize(8)
+      .fillColor('#555555')
+      .text(
+        `Dokumentkennung ${data.documentReference}. Dieses Dokument ist nach Unterzeichnung unveränderlich; die Integrität wird über einen serverseitig gespeicherten SHA-256-Hash gesichert.`,
+      )
+      .fillColor('#000000');
+  }, `Rückgabeprotokoll ${data.processNumber}`);
+}
+
 function signatureBlock(
   doc: PDFKit.PDFDocument,
   title: string,
@@ -483,6 +758,8 @@ export function renderHandoverProtocolPdf(data: HandoverProtocolPdfData): Promis
       doc.text(`Übergabeprüfung: ${machine.checkedLabel}`);
       doc.text('Bestehende Schäden:');
       for (const line of machine.existingDamagesLines) doc.text(`  • ${line}`);
+      // Eingefrorener Schaden-Snapshot: Schema + Text, KEINE alten Fotos (Order §35).
+      for (const damage of machine.existingDamages ?? []) damageSketchBlock(doc, damage);
       for (const note of machine.notes) doc.text(`  ${note}`);
       doc.moveDown(0.6);
     }

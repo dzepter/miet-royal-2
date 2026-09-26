@@ -13,6 +13,7 @@ import { getCompletedVisibilityDays } from '../crm/settings-service.ts';
 import { buildVisibilityContext } from '../crm/visibility.ts';
 import { AssignmentService } from '../handover/assignment-service.ts';
 import { HandoverService } from '../handover/handover-service.ts';
+import { DamageService } from '../returns/damage-service.ts';
 import { SchedulingService } from '../scheduling/scheduling-service.ts';
 import { InventoryService } from '../warehouse/inventory-service.ts';
 import { MachineService } from '../warehouse/machine-service.ts';
@@ -100,6 +101,8 @@ export function registerHandoverRoutes(app: FastifyInstance, options: HandoverRo
     documentService,
     productService,
     scheduling,
+    // Phase 7 (Order §35): aktuelle Maschinenschäden als eingefrorener Snapshot.
+    new DamageService(db, storage),
   );
   const processService = new ProcessService(db);
 
