@@ -13,6 +13,7 @@ import {
   products,
   staffUsers,
   type Database,
+  type DatabaseExecutor,
   type DatabaseTransaction,
   type Machine,
   type MachineAssignment,
@@ -223,8 +224,11 @@ export class AssignmentService {
   // ── Slots (Order §§3–5) ─────────────────────────────────────────────────
 
   /** Fachlicher Mietzeitraum aus den Phase-4-Terminen der Buchung. */
-  async rentalIntervalFor(bookingId: string): Promise<RentalInterval> {
-    const rows = await this.db
+  async rentalIntervalFor(
+    bookingId: string,
+    executor: DatabaseExecutor = this.db,
+  ): Promise<RentalInterval> {
+    const rows = await executor
       .select()
       .from(appointments)
       .where(and(eq(appointments.bookingId, bookingId), ne(appointments.status, 'cancelled')));
@@ -289,8 +293,12 @@ export class AssignmentService {
     return { created };
   }
 
-  async slotsForBooking(bookingId: string, now = new Date()): Promise<AssignmentView[]> {
-    const rows = await this.db
+  async slotsForBooking(
+    bookingId: string,
+    now = new Date(),
+    executor: DatabaseExecutor = this.db,
+  ): Promise<AssignmentView[]> {
+    const rows = await executor
       .select({ assignment: machineAssignments, productName: products.name })
       .from(machineAssignments)
       .innerJoin(products, eq(products.id, machineAssignments.productId))
@@ -298,13 +306,16 @@ export class AssignmentService {
       .orderBy(asc(machineAssignments.slotNo));
     const views: AssignmentView[] = [];
     for (const row of rows) {
-      views.push(await this.viewOf(row.assignment, row.productName, now));
+      views.push(await this.viewOf(row.assignment, row.productName, now, executor));
     }
     return views;
   }
 
-  async assignmentById(assignmentId: string): Promise<MachineAssignment> {
-    const rows = await this.db
+  async assignmentById(
+    assignmentId: string,
+    executor: DatabaseExecutor = this.db,
+  ): Promise<MachineAssignment> {
+    const rows = await executor
       .select()
       .from(machineAssignments)
       .where(eq(machineAssignments.id, assignmentId));
@@ -317,13 +328,14 @@ export class AssignmentService {
     assignment: MachineAssignment,
     productName: string,
     now: Date,
+    executor: DatabaseExecutor,
   ): Promise<AssignmentView> {
     let machineView: AssignmentView['machine'] = null;
     let currentProblems: MachineProblem[] = [];
     let overrideStale = false;
     let overrideView: AssignmentView['override'] = null;
     if (assignment.machineId !== null) {
-      const machineRows = await this.db
+      const machineRows = await executor
         .select()
         .from(machines)
         .where(eq(machines.id, assignment.machineId));
@@ -339,10 +351,10 @@ export class AssignmentService {
           locationNote: machine.locationNote,
         };
         if (assignment.status !== 'issued' && assignment.status !== 'returned') {
-          const evaluation = await this.evaluateMachine(machine.id, assignment, now);
+          const evaluation = await this.evaluateMachine(machine.id, assignment, now, executor);
           currentProblems = evaluation.problems;
           if (assignment.overrideId !== null) {
-            const overrideRows = await this.db
+            const overrideRows = await executor
               .select({
                 override: machineAssignmentOverrides,
                 firstName: staffUsers.firstName,
@@ -394,8 +406,12 @@ export class AssignmentService {
 
   // ── Problemlage einer Maschine (Order §§7/8) ────────────────────────────
 
-  private async openBlocksFor(machineId: string, now: Date): Promise<MachineBlock[]> {
-    return this.db
+  private async openBlocksFor(
+    machineId: string,
+    now: Date,
+    executor: DatabaseExecutor,
+  ): Promise<MachineBlock[]> {
+    return executor
       .select()
       .from(machineBlocks)
       .where(
@@ -421,14 +437,15 @@ export class AssignmentService {
       'id' | 'bookingId' | 'productId' | 'rentalFrom' | 'rentalTo'
     >,
     now = new Date(),
+    executor: DatabaseExecutor = this.db,
   ): Promise<MachineEvaluation> {
-    const machineRows = await this.db.select().from(machines).where(eq(machines.id, machineId));
+    const machineRows = await executor.select().from(machines).where(eq(machines.id, machineId));
     const machine = machineRows[0];
     if (machine === undefined) throw new AuthError('NOT_FOUND', 'Maschine nicht gefunden.');
     const problems: MachineProblem[] = [];
     // Immer der LIVE-Mietzeitraum aus den Phase-4-Terminen: die gespeicherten
     // rental_from/to sind nur ein Spiegel und veralten bei Terminverschiebung.
-    const interval = await this.rentalIntervalFor(assignment.bookingId);
+    const interval = await this.rentalIntervalFor(assignment.bookingId, executor);
     const intervalCache = new Map<string, RentalInterval>([[assignment.bookingId, interval]]);
 
     if (
@@ -449,7 +466,7 @@ export class AssignmentService {
     // Sperren im Mietzeitraum. Bekannter Beginn ohne Ende: Sperren, die vor
     // dem Beginn enden, sind irrelevant; ohne bekannten Beginn ist eine
     // Überlappung nicht bestimmbar → Warnung statt Override-Pflicht (Order §7).
-    for (const block of await this.openBlocksFor(machineId, now)) {
+    for (const block of await this.openBlocksFor(machineId, now, executor)) {
       const relevant =
         interval.from === null
           ? true
@@ -469,7 +486,7 @@ export class AssignmentService {
     }
 
     // Andere Zuordnungen derselben Maschine (nicht dieser Slot).
-    const others = await this.db
+    const others = await executor
       .select({ assignment: machineAssignments, processNumber: processes.processNumber })
       .from(machineAssignments)
       .innerJoin(processes, eq(processes.id, machineAssignments.processId))
@@ -487,7 +504,7 @@ export class AssignmentService {
     for (const other of others) {
       let otherInterval = intervalCache.get(other.assignment.bookingId);
       if (otherInterval === undefined) {
-        otherInterval = await this.rentalIntervalFor(other.assignment.bookingId);
+        otherInterval = await this.rentalIntervalFor(other.assignment.bookingId, executor);
         intervalCache.set(other.assignment.bookingId, otherInterval);
       }
       if (other.assignment.status === 'issued') {
@@ -738,9 +755,10 @@ export class AssignmentService {
           `Diese Maschine ist bereits Maschine ${sisters[0].slotNo} dieser Buchung zugeordnet – bitte je Slot eine eigene Maschine wählen.`,
         );
       }
-      const interval = await this.rentalIntervalFor(assignment.bookingId);
+      // A1: alle Reads unter der Sperre über DIESELBE Verbindung (tx).
+      const interval = await this.rentalIntervalFor(assignment.bookingId, tx);
       const candidate = { ...assignment, rentalFrom: interval.from, rentalTo: interval.to };
-      const evaluation = await this.evaluateMachine(machineId, candidate, now);
+      const evaluation = await this.evaluateMachine(machineId, candidate, now, tx);
       if (!evaluation.productMatches) {
         throw new AuthError(
           'VALIDATION',
@@ -943,7 +961,7 @@ export class AssignmentService {
         throw new AuthError('CONFLICT', 'Diese Zuordnung ist bereits ausgegeben.');
       }
       await this.lockMachines(tx, [assignment.machineId]);
-      const evaluation = await this.evaluateMachine(assignment.machineId, assignment, now);
+      const evaluation = await this.evaluateMachine(assignment.machineId, assignment, now, tx);
       if (evaluation.hardBlocked) {
         throw new AuthError(
           'CONFLICT',
@@ -1081,6 +1099,17 @@ export class AssignmentService {
           ),
         );
       const desired = new Map<string, { row: (typeof rows)[number]; problem: MachineProblem }>();
+      // Pass 1: Live-Mietzeitraum, Bewertung und Override-Abdeckung je
+      // Zuordnung – Kollisionen brauchen die Abdeckung BEIDER Seiten.
+      const evaluated = new Map<
+        string,
+        {
+          row: (typeof rows)[number];
+          from: Date | null;
+          problems: MachineProblem[];
+          accepted: Set<string>;
+        }
+      >();
       for (const row of rows) {
         const interval = await this.rentalIntervalFor(row.assignment.bookingId);
         if (interval.to !== null && interval.to.getTime() <= now.getTime()) continue;
@@ -1095,12 +1124,34 @@ export class AssignmentService {
           if (Array.isArray(codes))
             accepted = new Set(codes.filter((c): c is string => typeof c === 'string'));
         }
-        for (const problem of evaluation.problems) {
+        evaluated.set(row.assignment.id, {
+          row,
+          from: interval.from,
+          problems: evaluation.problems,
+          accepted,
+        });
+      }
+      // Pass 2: gewünschte offene Incidents. Kollisionen (Phase-6-
+      // Finalisierung A2) entstehen nur, wenn KEINE Seite sie per Override
+      // bewusst akzeptiert hat, und genau einmal je Paar: auf der Seite mit
+      // dem späteren Mietbeginn (Gleichstand/unbekannt: größere Zuordnungs-ID).
+      for (const [assignmentId, entry] of evaluated) {
+        for (const problem of entry.problems) {
           if (problem.warningOnly) continue;
-          if (problem.code === 'collision' || problem.code === 'issued_elsewhere') continue;
-          if (accepted.has(problem.descriptor)) continue;
-          const fingerprint = `risk:${row.assignment.id}:${row.machine.id}:${problem.descriptor}`;
-          desired.set(fingerprint, { row, problem });
+          if (problem.code === 'issued_elsewhere') continue;
+          if (entry.accepted.has(problem.descriptor)) continue;
+          if (problem.code === 'collision') {
+            const otherId = problem.descriptor.slice('collision:'.length);
+            const other = evaluated.get(otherId);
+            if (other?.accepted.has(`collision:${assignmentId}`) === true) continue;
+            const ownsIncident = this.collisionIncidentOwner(
+              { id: assignmentId, from: entry.from },
+              { id: otherId, from: other?.from ?? null },
+            );
+            if (!ownsIncident) continue;
+          }
+          const fingerprint = `risk:${assignmentId}:${entry.row.machine.id}:${problem.descriptor}`;
+          desired.set(fingerprint, { row: entry.row, problem });
         }
       }
       await this.db.transaction(async (tx) => {
@@ -1136,7 +1187,12 @@ export class AssignmentService {
               assignmentId: row.assignment.id,
               bookingId: row.assignment.bookingId,
               processId: row.assignment.processId,
-              reasonKind: problem.code === 'blocked' ? 'block' : 'status',
+              reasonKind:
+                problem.code === 'collision'
+                  ? 'collision'
+                  : problem.code === 'blocked'
+                    ? 'block'
+                    : 'status',
               reasonText: `${problem.label}: ${problem.detail}`,
               fingerprint,
               adminNotificationDueAt: now,
@@ -1174,6 +1230,17 @@ export class AssignmentService {
         }
       });
     });
+  }
+
+  /** Deterministische Seite eines Kollisionspaars, die den Incident trägt. */
+  private collisionIncidentOwner(
+    self: { id: string; from: Date | null },
+    other: { id: string; from: Date | null },
+  ): boolean {
+    if (self.from !== null && other.from !== null && self.from.getTime() !== other.from.getTime()) {
+      return self.from.getTime() > other.from.getTime();
+    }
+    return self.id > other.id;
   }
 
   /**

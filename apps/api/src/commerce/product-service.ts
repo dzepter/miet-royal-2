@@ -1,4 +1,10 @@
-import { productPrices, products, type Database, type Product } from '@mietroyal/database';
+import {
+  productPrices,
+  products,
+  type Database,
+  type DatabaseExecutor,
+  type Product,
+} from '@mietroyal/database';
 import type { PricingProduct } from '@mietroyal/domain';
 import { and, asc, desc, eq, gt, lte } from 'drizzle-orm';
 import { AuthError } from '../auth/service.ts';
@@ -48,15 +54,15 @@ export class ProductService {
     return result;
   }
 
-  async getProduct(productId: string): Promise<Product> {
-    const rows = await this.db.select().from(products).where(eq(products.id, productId));
+  async getProduct(productId: string, executor: DatabaseExecutor = this.db): Promise<Product> {
+    const rows = await executor.select().from(products).where(eq(products.id, productId));
     const product = rows[0];
     if (product === undefined) throw new AuthError('NOT_FOUND', 'Produkt nicht gefunden.');
     return product;
   }
 
-  async getProductBySlug(slug: string): Promise<Product> {
-    const rows = await this.db.select().from(products).where(eq(products.slug, slug));
+  async getProductBySlug(slug: string, executor: DatabaseExecutor = this.db): Promise<Product> {
+    const rows = await executor.select().from(products).where(eq(products.slug, slug));
     const product = rows[0];
     if (product === undefined) throw new AuthError('NOT_FOUND', `Produkt fehlt: ${slug}`);
     return product;
@@ -139,8 +145,12 @@ export class ProductService {
 
   // ── Preise ───────────────────────────────────────────────────────────────
 
-  async effectivePriceCents(productId: string, at = new Date()): Promise<number> {
-    const rows = await this.db
+  async effectivePriceCents(
+    productId: string,
+    at = new Date(),
+    executor: DatabaseExecutor = this.db,
+  ): Promise<number> {
+    const rows = await executor
       .select()
       .from(productPrices)
       .where(and(eq(productPrices.productId, productId), lte(productPrices.effectiveFrom, at)))
@@ -235,17 +245,29 @@ export class ProductService {
   // ── Preisengine-Anbindung ────────────────────────────────────────────────
 
   /** Produkt inkl. wirksamem Listenpreis für die zentrale Preisengine. */
-  async pricingProduct(productId: string, at = new Date()): Promise<PricingProduct> {
-    const product = await this.getProduct(productId);
-    return this.toPricingProduct(product, at);
+  async pricingProduct(
+    productId: string,
+    at = new Date(),
+    executor: DatabaseExecutor = this.db,
+  ): Promise<PricingProduct> {
+    const product = await this.getProduct(productId, executor);
+    return this.toPricingProduct(product, at, executor);
   }
 
-  async pricingProductBySlug(slug: string, at = new Date()): Promise<PricingProduct> {
-    const product = await this.getProductBySlug(slug);
-    return this.toPricingProduct(product, at);
+  async pricingProductBySlug(
+    slug: string,
+    at = new Date(),
+    executor: DatabaseExecutor = this.db,
+  ): Promise<PricingProduct> {
+    const product = await this.getProductBySlug(slug, executor);
+    return this.toPricingProduct(product, at, executor);
   }
 
-  private async toPricingProduct(product: Product, at: Date): Promise<PricingProduct> {
+  private async toPricingProduct(
+    product: Product,
+    at: Date,
+    executor: DatabaseExecutor,
+  ): Promise<PricingProduct> {
     return {
       id: product.id,
       slug: product.slug,
@@ -253,7 +275,7 @@ export class ProductService {
       category: product.category,
       saleUnit: product.saleUnit,
       defaultBillingMode: product.defaultBillingMode,
-      listPriceCents: await this.effectivePriceCents(product.id, at),
+      listPriceCents: await this.effectivePriceCents(product.id, at, executor),
       containerCount: product.containerCount,
       containerVolumeLiters: product.containerVolumeLiters,
       carryPersons: product.carryPersons,

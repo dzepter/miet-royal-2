@@ -16,7 +16,7 @@ interface IncidentRow {
   machineCode: string;
   processId: string;
   processNumber: string;
-  reasonKind: 'status' | 'block';
+  reasonKind: 'status' | 'block' | 'collision';
   reasonText: string;
   createdAt: string;
 }

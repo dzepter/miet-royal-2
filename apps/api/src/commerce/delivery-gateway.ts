@@ -1,4 +1,4 @@
-import { offerDeliveries, type Database } from '@mietroyal/database';
+import { offerDeliveries, type Database, type DatabaseExecutor } from '@mietroyal/database';
 import type { AppConfig } from '@mietroyal/config';
 import { AuthError } from '../auth/service.ts';
 
@@ -27,7 +27,12 @@ export interface OfferDeliveryRequest {
 export interface OfferDeliveryGateway {
   /** Wirft, wenn kein echter Versandweg existiert – VOR dem Einfrieren aufrufen. */
   assertConfigured(): void;
-  deliver(request: OfferDeliveryRequest): Promise<void>;
+  /**
+   * `executor`: laufende Transaktion des Aufrufers – die Outbox-Zeile wird
+   * dann über DIESELBE Verbindung geschrieben (keine verschachtelte
+   * Pool-Akquise unter gehaltenen Sperren, Phase-6-Finalisierung A1).
+   */
+  deliver(request: OfferDeliveryRequest, executor?: DatabaseExecutor): Promise<void>;
 }
 
 export class OutboxDeliveryGateway implements OfferDeliveryGateway {
@@ -37,13 +42,13 @@ export class OutboxDeliveryGateway implements OfferDeliveryGateway {
     // Outbox ist in Nicht-Production-Umgebungen immer verfügbar.
   }
 
-  async deliver(request: OfferDeliveryRequest): Promise<void> {
+  async deliver(request: OfferDeliveryRequest, executor?: DatabaseExecutor): Promise<void> {
     // Vorgabe Nr. 25: Das Zugriffstoken liegt in der DB NUR als Hash – auch
     // die Outbox-Kopie des Textes maskiert deshalb den Token im Link (der
     // echte Link erreicht den Kunden über den späteren Mail-Adapter; in
     // Dev/Test zeigt die Staff-UI den Link direkt nach dem Versand an).
     const maskedBody = request.body.replace(/(\/angebot\/)[A-Za-z0-9_-]+/g, '$1***');
-    await this.db.insert(offerDeliveries).values({
+    await (executor ?? this.db).insert(offerDeliveries).values({
       kind: request.kind,
       offerVersionId: request.offerVersionId ?? null,
       orderConfirmationId: request.orderConfirmationId ?? null,

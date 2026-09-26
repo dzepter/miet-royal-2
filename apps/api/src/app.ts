@@ -17,6 +17,9 @@ import { registerCrmRoutes } from './routes/crm.ts';
 import { registerSchedulingRoutes } from './routes/scheduling.ts';
 import { registerWarehouseRoutes } from './routes/warehouse.ts';
 import { registerHandoverRoutes } from './routes/handover.ts';
+import { AssignmentService } from './handover/assignment-service.ts';
+import { createRiskRefreshListener } from './handover/risk-refresh-listener.ts';
+import { MachineService } from './warehouse/machine-service.ts';
 import { registerStaffAdminRoutes } from './routes/staff-admin.ts';
 
 export const API_VERSION = '0.1.0';
@@ -248,7 +251,18 @@ export function buildApp({
         storage: storageProvider,
         rateLimitEnabled,
       });
-      registerSchedulingRoutes(instance, { db, auth: authService, config });
+      // Phase-6-Finalisierung A2: Terminzeitänderungen bewerten die
+      // Risikohinweise sofort neu – verdrahtet über die Listener-
+      // Schnittstelle der Terminplanung (keine zyklische Modulabhängigkeit).
+      const riskRefreshListener = createRiskRefreshListener(
+        new AssignmentService(db, new MachineService(db, storageProvider), storageProvider),
+      );
+      registerSchedulingRoutes(instance, {
+        db,
+        auth: authService,
+        config,
+        listeners: [riskRefreshListener],
+      });
       registerWarehouseRoutes(instance, {
         db,
         auth: authService,

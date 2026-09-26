@@ -928,13 +928,9 @@ Keine spontanen Framework-/ORM-Wechsel (CLAUDE.md „Dependencies“).
   Fehlschlag weiter; Gesamtfoto aus Kamera ODER Galerie; Transporthinweise
   im Wizard vollständig. Zusatztests R1–R18 sichern alle Fixes ab (Test 42
   nutzt jetzt getrennte Service-Instanzen, damit die DB-Sperren – nicht die
-  prozessinterne Mutex – die Parallelität entscheiden). Bewusst NICHT
-  geändert: `detail()` liest in Phase 2 weiterhin über den Pool (unter den
-  gehaltenen Sperren konsistent); die prozessinterne `KeyedMutex` je Buchung
-  verhindert, dass Doppeltipps Transaktionen und Pool-Verbindungen stapeln –
-  ≥ 10 gleichzeitige Finalisierungen VERSCHIEDENER Übergaben auf einer
-  Instanz mit Pool 10 bleiben ein dokumentiertes Restrisiko (Timeout → 409/
-  500 ohne Fachzustand, Retry sicher).
+  prozessinterne Mutex – die Parallelität entscheiden). Der zunächst
+  dokumentierte Rest (Phase-2-Lesezugriffe über den Pool unter gehaltenen
+  Sperren) ist mit der Phase-6-Finalisierung A1 beseitigt (siehe unten).
 - **Bewusst offen (Deferred, Phase 6)**: Versand des Dokumentpakets
   (Outbox-Worker), Admin-Benachrichtigung/Follow-up der Risikohinweise
   (Datenlage vorbereitet), Kundenportal für die 1-Stunden-Regel der
@@ -942,3 +938,57 @@ Keine spontanen Framework-/ORM-Wechsel (CLAUDE.md „Dependencies“).
   bestehende-Schäden-Provider (Schnittstelle vorhanden), Kamera-Scan in
   Browsern ohne `BarcodeDetector` (Fallback manuell), Mehrfach-Fotos je
   Maschine sind möglich, aber nur ein Foto ist Pflicht.
+
+## Phase-6-Finalisierung: Pool-Disziplin, Termin-Hooks, unabhängige E2E-Specs
+
+- **A1 – Kein verschachtelter Pool-Zugriff unter Transaktionen/Sperren**:
+  Alle Lesezugriffe, die innerhalb einer Transaktion gebraucht werden,
+  laufen über den `DatabaseExecutor` (Pool ODER Transaktion) derselben
+  Verbindung: `AssignmentService` (`rentalIntervalFor`, `slotsForBooking`,
+  `evaluateMachine`, `openBlocksFor`, `assignmentById`), `HandoverService`
+  (`detailWithin(tx, …)` für den Finalisierungs-Recheck, Buchung/Termin/
+  Positionen/Bestand), `getPickupExactAddress`/`getStringSetting`,
+  `ProductService.pricingProduct*`/`effectivePriceCents` (die Preisengine
+  las bisher innerhalb der Angebots-Transaktionen über den Pool) und der
+  `DeliveryGateway.deliver(request, tx)` der AB. Die AB-Freigabe ist wie die
+  Übergabe zweiphasig (PDF rendern/hochladen OHNE Sperre, danach kurze
+  Transaktion mit Statusprüfung). Sperr-Reihenfolgen bleiben unverändert
+  (Übergabe → Slots → sortierte Maschinen-Advisory-Locks); der Pool wurde
+  NICHT vergrößert. Nachweis: `createPool(url, { max })` + Testkontext mit
+  `poolMax`/`TEST_POOL_MAX` – mit EINER Verbindung wird jede verschachtelte
+  Akquise zum deterministischen Verbindungs-Timeout. Die gesamte
+  Integrationssuite (Phasen 1–6) läuft mit `TEST_POOL_MAX=1` grün;
+  `handover-pool` prüft fünf parallele Finalisierungen verschiedener
+  Übergaben mit Pool 2 (keine Timeouts, keine doppelten Bewegungen/
+  Dokumente, keine halben Zustände), die dreifache Finalisierung derselben
+  Übergabe über getrennte Instanzen und einen Ein-Verbindungs-Durchlauf aller
+  Mutationspfade (Zuweisen/Vorbereiten/Wechseln/Lösen/AB/Termin/Finalisierung/
+  Storno).
+- **A2 – Terminänderungen bewerten Risikohinweise sofort neu**: Die
+  Terminplanung kennt eine eigene Listener-Schnittstelle
+  (`scheduling/hooks.ts`: `AppointmentChangeListener.appointmentTimesChanged`)
+  und ruft sie NACH dem Commit von `reschedule`/`applyWeekendStandard` nur bei
+  tatsächlicher Zeitänderung (Versionssprung) auf – nie unter Sperren, nie in
+  der Transaktion; ein Listener-Fehler wird protokolliert, die committete
+  Änderung bleibt (der nächste Lazy-Refresh holt die Bewertung nach). Das
+  Handover-Modul liefert den Listener (`risk-refresh-listener.ts` →
+  `refreshRiskIncidents`), verdrahtet in `app.ts` – Scheduling importiert
+  nichts aus Handover (keine zyklische Abhängigkeit). Der Refresh erzeugt
+  jetzt auch **Kollisions-Incidents** (`reason_kind = 'collision'`, Migration
+  0013): genau einer je Paar (auf der Seite mit dem späteren Mietbeginn,
+  Gleichstand/unbekannt → größere Zuordnungs-ID) und nur, wenn KEINE Seite die
+  Kollision per Override bewusst akzeptiert hat; veraltete Incidents werden
+  automatisch gelöst, Duplikate durch den offenen Fingerprint verhindert,
+  kein Push (Phase 12). Tests: `handover-risk-refresh` (Sperre rein/raus,
+  neue Kollision, aufgelöste Kollision, wiederholte Verschiebungen, Override-
+  Abdeckung; Test 7 über die HTTP-Route als Nachweis der App-Verdrahtung).
+- **A3 – E2E-Specs unabhängig von der Dateireihenfolge**: Jede Spec setzt
+  die Testdatenbank in `beforeAll` synchron auf den unveränderlichen
+  Basis-Seed zurück (`tests/e2e/helpers/seed.ts` → `scripts/e2e-seed.ts`,
+  identisch zum Global-Setup) und legt ihre bestätigten Buchungen selbst an
+  (`helpers/booking.ts`, echte Staff-/Web-Wege). `scheduling-flow` erzeugt
+  Paula Partyfee/Willi Wechsel nun selbst statt die Commerce-Spec
+  vorauszusetzen; die Phase-6-Spec heißt `handover-flow` (läuft alphabetisch
+  VOR `warehouse-flow`) und erfasst alle benötigten Lagerartikel selbst.
+  Nachweis: Handover-Spec allein, Warehouse-Spec allein, Scheduling-Spec
+  allein und die Gesamtsuite auf sauberem Seed grün.

@@ -31,6 +31,7 @@ import {
 } from '../crm/settings-service.ts';
 import { createMachineCapacityProvider } from '../warehouse/capacity-conflict.ts';
 import { effectiveAssigneeForAppointment, loadSubstitutions } from './assignee.ts';
+import type { AppointmentChangeListener } from './hooks.ts';
 import {
   ConflictDetectionService,
   type ConflictAppointment,
@@ -106,7 +107,10 @@ interface EnrichmentContext {
 export class SchedulingService {
   readonly conflicts: ConflictDetectionService;
 
-  constructor(private readonly db: Database) {
+  constructor(
+    private readonly db: Database,
+    private readonly listeners: readonly AppointmentChangeListener[] = [],
+  ) {
     this.conflicts = new ConflictDetectionService(db);
     // Phase 5 (Order §18/§47): Kapazitätswarnungen laufen über die
     // BESTEHENDE Konfliktarchitektur – keine zweite Engine.
@@ -323,16 +327,35 @@ export class SchedulingService {
     }
     // ATOMAR (Order §41): beide Zeiten in EINER Transaktion, Locks in
     // deterministischer Reihenfolge – nie ein halb angewendeter Standard.
-    await this.db.transaction(async (tx) => {
+    const changedRows = await this.db.transaction(async (tx) => {
       const [firstId, secondId] =
         outbound.id < inbound.id ? [outbound.id, inbound.id] : [inbound.id, outbound.id];
       const lockedFirst = await this.lockAppointment(tx, firstId);
       const lockedSecond = await this.lockAppointment(tx, secondId);
       const lockedOutbound = lockedFirst.id === outbound.id ? lockedFirst : lockedSecond;
       const lockedInbound = lockedFirst.id === inbound.id ? lockedFirst : lockedSecond;
-      await this.rescheduleWithLock(tx, actorId, lockedOutbound, suggestion.pickupAt, null, now);
-      await this.rescheduleWithLock(tx, actorId, lockedInbound, suggestion.returnAt, null, now);
+      const updatedOutbound = await this.rescheduleWithLock(
+        tx,
+        actorId,
+        lockedOutbound,
+        suggestion.pickupAt,
+        null,
+        now,
+      );
+      const updatedInbound = await this.rescheduleWithLock(
+        tx,
+        actorId,
+        lockedInbound,
+        suggestion.returnAt,
+        null,
+        now,
+      );
+      return [
+        ...(updatedOutbound.version !== lockedOutbound.version ? [updatedOutbound] : []),
+        ...(updatedInbound.version !== lockedInbound.version ? [updatedInbound] : []),
+      ];
     });
+    if (changedRows.length > 0) await this.notifyTimesChanged(changedRows);
     return {
       pickupAt: suggestion.pickupAt.toISOString(),
       returnAt: suggestion.returnAt.toISOString(),
@@ -354,7 +377,7 @@ export class SchedulingService {
     input: { startAt: Date | null; endAt: Date | null; expectedVersion: number },
     now = new Date(),
   ): Promise<Appointment> {
-    return this.db.transaction(async (tx) => {
+    const { row, changed } = await this.db.transaction(async (tx) => {
       const locked = await this.lockAppointment(tx, appointmentId);
       if (locked.version !== input.expectedVersion) {
         throw new AuthError(
@@ -362,8 +385,42 @@ export class SchedulingService {
           'Der Termin wurde zwischenzeitlich geändert. Bitte neu laden und erneut prüfen.',
         );
       }
-      return this.rescheduleWithLock(tx, actorId, locked, input.startAt, input.endAt, now);
+      const updated = await this.rescheduleWithLock(
+        tx,
+        actorId,
+        locked,
+        input.startAt,
+        input.endAt,
+        now,
+      );
+      return { row: updated, changed: updated.version !== locked.version };
     });
+    if (changed) await this.notifyTimesChanged([row]);
+    return row;
+  }
+
+  /**
+   * Listener NACH dem Commit benachrichtigen (Phase-6-Finalisierung A2):
+   * nie unter gehaltenen Sperren, nie Teil der Transaktion. Ein Fehler im
+   * Listener macht die bereits committete Terminänderung nicht rückgängig
+   * und wird protokolliert – die Neubewertung holt der nächste Lazy-Refresh
+   * (Risikoliste/Heute-Seite/Status- oder Sperränderung) nach.
+   */
+  private async notifyTimesChanged(rows: readonly Appointment[]): Promise<void> {
+    for (const listener of this.listeners) {
+      for (const row of rows) {
+        try {
+          await listener.appointmentTimesChanged({
+            appointmentId: row.id,
+            processId: row.processId,
+            bookingId: row.bookingId,
+            kind: row.kind,
+          });
+        } catch (error) {
+          console.error('Termin-Listener fehlgeschlagen', error);
+        }
+      }
+    }
   }
 
   private async rescheduleWithLock(

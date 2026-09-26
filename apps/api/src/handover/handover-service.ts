@@ -21,6 +21,7 @@ import {
   staffUsers,
   type Booking,
   type Database,
+  type DatabaseExecutor,
   type DatabaseTransaction,
   type DeliveryNoteItem,
   type Handover,
@@ -344,8 +345,8 @@ export class HandoverService {
 
   // ── Laden / Anlegen (Order §18: Entwurf automatisch) ────────────────────
 
-  async bookingById(bookingId: string): Promise<Booking> {
-    const rows = await this.db.select().from(bookings).where(eq(bookings.id, bookingId));
+  async bookingById(bookingId: string, executor: DatabaseExecutor = this.db): Promise<Booking> {
+    const rows = await executor.select().from(bookings).where(eq(bookings.id, bookingId));
     const booking = rows[0];
     if (booking === undefined) throw new AuthError('NOT_FOUND', 'Buchung nicht gefunden.');
     return booking;
@@ -451,8 +452,11 @@ export class HandoverService {
     });
   }
 
-  private async handoverFor(bookingId: string): Promise<Handover> {
-    const rows = await this.db.select().from(handovers).where(eq(handovers.bookingId, bookingId));
+  private async handoverFor(
+    bookingId: string,
+    executor: DatabaseExecutor = this.db,
+  ): Promise<Handover> {
+    const rows = await executor.select().from(handovers).where(eq(handovers.bookingId, bookingId));
     const row = rows[0];
     if (row === undefined) throw new AuthError('NOT_FOUND', 'Übergabe nicht gefunden.');
     return row;
@@ -465,8 +469,8 @@ export class HandoverService {
     return row;
   }
 
-  private async outboundAppointment(bookingId: string) {
-    const rows = await this.db
+  private async outboundAppointment(bookingId: string, executor: DatabaseExecutor = this.db) {
+    const rows = await executor
       .select()
       .from(appointments)
       .where(
@@ -479,8 +483,11 @@ export class HandoverService {
     return rows[0] ?? null;
   }
 
-  private async noteItems(noteId: string): Promise<DeliveryNoteItemView[]> {
-    const rows = await this.db
+  private async noteItems(
+    noteId: string,
+    executor: DatabaseExecutor = this.db,
+  ): Promise<DeliveryNoteItemView[]> {
+    const rows = await executor
       .select()
       .from(deliveryNoteItems)
       .where(eq(deliveryNoteItems.deliveryNoteId, noteId))
@@ -502,7 +509,10 @@ export class HandoverService {
   }
 
   /** Bedarf je Lagerartikel vs. Systembestand (Order §23 – nie still negativ). */
-  private async stockCheck(items: DeliveryNoteItemView[]): Promise<StockCheckView[]> {
+  private async stockCheck(
+    items: DeliveryNoteItemView[],
+    executor: DatabaseExecutor = this.db,
+  ): Promise<StockCheckView[]> {
     const required = new Map<string, number>();
     for (const item of items) {
       if (item.inventoryItemId === null || item.actualQuantity <= 0) continue;
@@ -512,7 +522,7 @@ export class HandoverService {
       );
     }
     if (required.size === 0) return [];
-    const rows = await this.db
+    const rows = await executor
       .select({ item: inventoryItems, productName: products.name })
       .from(inventoryItems)
       .innerJoin(products, eq(products.id, inventoryItems.productId))
@@ -530,10 +540,24 @@ export class HandoverService {
   }
 
   async detail(bookingId: string, now = new Date()): Promise<HandoverDetailView> {
-    const booking = await this.bookingById(bookingId);
     await this.ensureForBooking(bookingId, null);
-    const handover = await this.handoverFor(bookingId);
-    const processRows = await this.db
+    return this.detailWithin(this.db, bookingId, now);
+  }
+
+  /**
+   * Detail-Sicht über einen expliziten Executor (Phase-6-Finalisierung A1):
+   * innerhalb der Finalisierungs-Transaktion wird sie mit `tx` aufgerufen –
+   * alle Reads laufen über DIESELBE Verbindung, es gibt keine zweite
+   * Pool-Akquise unter gehaltenen Sperren.
+   */
+  private async detailWithin(
+    executor: DatabaseExecutor,
+    bookingId: string,
+    now: Date,
+  ): Promise<HandoverDetailView> {
+    const booking = await this.bookingById(bookingId, executor);
+    const handover = await this.handoverFor(bookingId, executor);
+    const processRows = await executor
       .select({ processNumber: processes.processNumber, mainStatus: processes.mainStatus })
       .from(processes)
       .where(eq(processes.id, booking.processId));
@@ -544,41 +568,41 @@ export class HandoverService {
     const delivery = (booking.deliverySnapshot ?? {}) as Record<string, unknown>;
     const machine = this.machineItemOf(booking);
 
-    const slots = await this.assignments.slotsForBooking(bookingId, now);
-    const noteRows = await this.db
+    const slots = await this.assignments.slotsForBooking(bookingId, now, executor);
+    const noteRows = await executor
       .select()
       .from(deliveryNotes)
       .where(eq(deliveryNotes.bookingId, bookingId));
     const note = noteRows[0];
     if (note === undefined) throw new AuthError('NOT_FOUND', 'Lieferschein nicht gefunden.');
-    const items = await this.noteItems(note.id);
-    const additionRows = await this.db
+    const items = await this.noteItems(note.id, executor);
+    const additionRows = await executor
       .select()
       .from(bookingAdditions)
       .where(eq(bookingAdditions.bookingId, bookingId))
       .orderBy(asc(bookingAdditions.createdAt));
-    const representativeRows = await this.db
+    const representativeRows = await executor
       .select()
       .from(bookingPickupRepresentatives)
       .where(eq(bookingPickupRepresentatives.bookingId, bookingId));
     const representative = representativeRows[0] ?? null;
-    const appointment = await this.outboundAppointment(bookingId);
-    const checks = await this.db
+    const appointment = await this.outboundAppointment(bookingId, executor);
+    const checks = await executor
       .select()
       .from(handoverMachineChecks)
       .where(eq(handoverMachineChecks.handoverId, handover.id));
-    const photos = await this.db
+    const photos = await executor
       .select()
       .from(handoverPhotos)
       .where(eq(handoverPhotos.handoverId, handover.id))
       .orderBy(asc(handoverPhotos.takenAt));
-    const signatures = await this.db
+    const signatures = await executor
       .select()
       .from(handoverSignatures)
       .where(eq(handoverSignatures.handoverId, handover.id));
-    const stock = await this.stockCheck(items);
+    const stock = await this.stockCheck(items, executor);
     const pickupAddress =
-      booking.fulfillment === 'pickup' ? await getPickupExactAddress(this.db) : null;
+      booking.fulfillment === 'pickup' ? await getPickupExactAddress(executor) : null;
 
     const machineViews = slots.map((slot) => {
       const check = checks.find((row) => row.assignmentId === slot.id);
@@ -1638,8 +1662,9 @@ export class HandoverService {
         );
       }
 
-      // Vorbedingungen unter Sperre erneut prüfen (kein TOCTOU).
-      const fresh = await this.detail(bookingId, now);
+      // Vorbedingungen unter Sperre erneut prüfen (kein TOCTOU) – über tx,
+      // nie über den Pool (A1: keine verschachtelte Verbindungsakquise).
+      const fresh = await this.detailWithin(tx, bookingId, now);
       if (fresh.blockers.length > 0) {
         throw new AuthError(
           'CONFLICT',

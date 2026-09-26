@@ -4,9 +4,11 @@ import {
   processes,
   type Booking,
   type Database,
+  type DatabaseExecutor,
   type DatabaseTransaction,
   type OrderConfirmation,
 } from '@mietroyal/database';
+import { randomBytes } from 'node:crypto';
 import type { AppConfig } from '@mietroyal/config';
 import { renderOrderConfirmationPdf, type PdfLineItem } from '@mietroyal/documents';
 import { eq } from 'drizzle-orm';
@@ -113,8 +115,11 @@ export class OrderConfirmationService {
     return booking.processId;
   }
 
-  private async bookingById(bookingId: string): Promise<Booking> {
-    const rows = await this.db.select().from(bookings).where(eq(bookings.id, bookingId));
+  private async bookingById(
+    bookingId: string,
+    executor: DatabaseExecutor = this.db,
+  ): Promise<Booking> {
+    const rows = await executor.select().from(bookings).where(eq(bookings.id, bookingId));
     const booking = rows[0];
     if (booking === undefined) throw new AuthError('NOT_FOUND', 'Buchung nicht gefunden.');
     return booking;
@@ -247,32 +252,44 @@ export class OrderConfirmationService {
    * Freigaben (Doppelklick) erzeugen nie zwei finale AB-PDFs.
    */
   async approve(actorId: string, confirmationId: string, now = new Date()): Promise<void> {
+    // Phase 1 (ohne Sperre, Phase-6-Finalisierung A1: keine Pool-Zugriffe
+    // unter gehaltener Zeilensperre): Vorprüfung, PDF rendern und hochladen.
+    const preview = await this.byId(confirmationId);
+    if (preview.status !== 'prepared') {
+      throw new AuthError('CONFLICT', 'Diese Auftragsbestätigung ist bereits freigegeben.');
+    }
+    const booking = await this.bookingById(preview.bookingId);
+    let pickupAddress: string | null = null;
+    if (booking.fulfillment === 'pickup') {
+      pickupAddress = await getPickupExactAddress(this.db);
+      if (pickupAddress === null) {
+        // Keine Adresse erfinden – klare Konfigurationsblockade (Nr. 33).
+        throw new AuthError(
+          'CONFLICT',
+          'Freigabe nicht möglich: Die exakte Abholadresse (pickup_exact_address) ist nicht konfiguriert.',
+        );
+      }
+    }
+    const bytes = await this.renderPdf(preview, booking, pickupAddress, now);
+    const storageKey = `documents/order-confirmations/${preview.id}-${now.getTime()}-${randomBytes(4).toString('hex')}.pdf`;
+    const upload = await this.documentService.uploadBytes(storageKey, bytes);
+
+    // Phase 2: Status UNTER der Sperre prüfen und das Dokument in derselben
+    // Transaktion registrieren – parallele Freigaben (Doppelklick) erzeugen
+    // nie zwei finale AB-Dokumente (der Verlierer lässt nur ein
+    // unreferenziertes Storage-Objekt zurück).
     await this.db.transaction(async (tx) => {
       const confirmation = await this.lockConfirmation(tx, confirmationId);
       if (confirmation.status !== 'prepared') {
         throw new AuthError('CONFLICT', 'Diese Auftragsbestätigung ist bereits freigegeben.');
       }
-      const booking = await this.bookingById(confirmation.bookingId);
-
-      let pickupAddress: string | null = null;
-      if (booking.fulfillment === 'pickup') {
-        pickupAddress = await getPickupExactAddress(this.db);
-        if (pickupAddress === null) {
-          // Keine Adresse erfinden – klare Konfigurationsblockade (Nr. 33).
-          throw new AuthError(
-            'CONFLICT',
-            'Freigabe nicht möglich: Die exakte Abholadresse (pickup_exact_address) ist nicht konfiguriert.',
-          );
-        }
-      }
-
-      const bytes = await this.renderPdf(confirmation, booking, pickupAddress, now);
-      const document = await this.documentService.createFinalDocument({
+      const document = await this.documentService.registerUploaded(tx, {
         type: 'order_confirmation',
         processId: booking.processId,
         bookingId: booking.id,
-        storageKey: `documents/order-confirmations/${confirmation.id}-${now.getTime()}.pdf`,
-        bytes,
+        storageKey,
+        sha256: upload.sha256,
+        byteSize: bytes.length,
       });
 
       await tx
@@ -295,8 +312,9 @@ export class OrderConfirmationService {
       if (confirmation.status !== 'approved') {
         throw new AuthError('CONFLICT', 'Die Auftragsbestätigung muss zuerst freigegeben werden.');
       }
-      const booking = await this.bookingById(confirmation.bookingId);
-      const processRows = await this.db
+      // A1: Reads unter der Sperre über tx, Outbox-Zeile in derselben Transaktion.
+      const booking = await this.bookingById(confirmation.bookingId, tx);
+      const processRows = await tx
         .select({ processNumber: processes.processNumber })
         .from(processes)
         .where(eq(processes.id, booking.processId));
@@ -308,16 +326,19 @@ export class OrderConfirmationService {
       const processNumber = processRows[0]?.processNumber ?? '';
       // Kein „anbei“: Der Adapter transportiert derzeit keine Anhänge; der
       // echte Mail-Adapter (spätere Phase) hängt das finale AB-PDF an.
-      await this.gateway.deliver({
-        kind: 'order_confirmation',
-        orderConfirmationId: confirmation.id,
-        recipient,
-        subject: `Ihre Miet-Royal-Auftragsbestätigung ${processNumber}`,
-        body:
-          `Guten Tag ${String(customer.displayName ?? '')},\n\n` +
-          `Ihre Auftragsbestätigung für Vorgang ${processNumber} wurde freigegeben. ` +
-          `Sie erhalten das Dokument von Miet-Royal.\n`,
-      });
+      await this.gateway.deliver(
+        {
+          kind: 'order_confirmation',
+          orderConfirmationId: confirmation.id,
+          recipient,
+          subject: `Ihre Miet-Royal-Auftragsbestätigung ${processNumber}`,
+          body:
+            `Guten Tag ${String(customer.displayName ?? '')},\n\n` +
+            `Ihre Auftragsbestätigung für Vorgang ${processNumber} wurde freigegeben. ` +
+            `Sie erhalten das Dokument von Miet-Royal.\n`,
+        },
+        tx,
+      );
       await tx
         .update(orderConfirmations)
         .set({ status: 'sent', sentAt: now, updatedAt: now })

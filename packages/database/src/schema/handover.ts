@@ -160,6 +160,7 @@ export const machineAssignmentOverrides = pgTable(
 export const machineRiskIncidentReason = pgEnum('machine_risk_incident_reason', [
   'status',
   'block',
+  'collision',
 ]);
 
 /**

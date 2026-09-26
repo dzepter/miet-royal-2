@@ -1,0 +1,1 @@
+ALTER TYPE "public"."machine_risk_incident_reason" ADD VALUE 'collision';

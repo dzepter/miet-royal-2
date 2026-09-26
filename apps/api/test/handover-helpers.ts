@@ -5,6 +5,7 @@ import { DocumentService } from '../src/commerce/document-service.ts';
 import { ProductService } from '../src/commerce/product-service.ts';
 import { AssignmentService } from '../src/handover/assignment-service.ts';
 import { HandoverService } from '../src/handover/handover-service.ts';
+import { createRiskRefreshListener } from '../src/handover/risk-refresh-listener.ts';
 import { SchedulingService } from '../src/scheduling/scheduling-service.ts';
 import { InventoryService } from '../src/warehouse/inventory-service.ts';
 import { MachineService } from '../src/warehouse/machine-service.ts';
@@ -39,7 +40,8 @@ export function handoverServicesFor(ctx: TestContext): HandoverServices {
   const inventory = new InventoryService(ctx.db);
   const documentService = new DocumentService(ctx.db, ctx.storage);
   const productService = new ProductService(ctx.db);
-  const scheduling = new SchedulingService(ctx.db);
+  // Wie in der App-Komposition: Terminzeitänderungen refreshen Risikohinweise.
+  const scheduling = new SchedulingService(ctx.db, [createRiskRefreshListener(assignments)]);
   const handover = new HandoverService(
     ctx.db,
     ctx.storage,

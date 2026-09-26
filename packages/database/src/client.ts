@@ -9,10 +9,15 @@ export type DatabaseTransaction = Parameters<Parameters<Database['transaction']>
 /** Datenbank ODER laufende Transaktion – für transaktionsfähige Helfer. */
 export type DatabaseExecutor = Database | DatabaseTransaction;
 
-export function createPool(databaseUrl: string): pg.Pool {
+export interface PoolOptions {
+  /** Maximale Verbindungen (Default 10). Tests nutzen bewusst kleine Werte. */
+  max?: number;
+}
+
+export function createPool(databaseUrl: string, options: PoolOptions = {}): pg.Pool {
   const pool = new pg.Pool({
     connectionString: databaseUrl,
-    max: 10,
+    max: options.max ?? 10,
     idleTimeoutMillis: 30_000,
     connectionTimeoutMillis: 5_000,
   });

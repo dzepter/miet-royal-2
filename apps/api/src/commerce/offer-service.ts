@@ -440,20 +440,26 @@ export class OfferService {
       version.machineProductId === null
         ? null
         : {
-            product: await this.productService.pricingProduct(version.machineProductId, at),
+            product: await this.productService.pricingProduct(
+              version.machineProductId,
+              at,
+              executor,
+            ),
             quantity: version.machineQuantity,
           };
     const pricingSelections: PricingSelection[] = [];
     for (const selection of selections) {
       pricingSelections.push({
-        product: await this.productService.pricingProduct(selection.productId, at),
+        product: await this.productService.pricingProduct(selection.productId, at, executor),
         role: selection.role,
         quantity: selection.quantity,
       });
     }
-    const cups = await this.productService.pricingProductBySlug('becher-25', at).catch(() => null);
+    const cups = await this.productService
+      .pricingProductBySlug('becher-25', at, executor)
+      .catch(() => null);
     const straws = await this.productService
-      .pricingProductBySlug('strohhalme-25', at)
+      .pricingProductBySlug('strohhalme-25', at, executor)
       .catch(() => null);
 
     const specialPrices = (version.specialPrices ?? []) as SpecialPriceEntry[];

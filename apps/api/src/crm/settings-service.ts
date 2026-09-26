@@ -1,4 +1,4 @@
-import { systemSettings, type Database } from '@mietroyal/database';
+import { systemSettings, type Database, type DatabaseExecutor } from '@mietroyal/database';
 import { eq } from 'drizzle-orm';
 import { AuthError } from '../auth/service.ts';
 
@@ -45,7 +45,7 @@ export const PICKUP_PUBLIC_AREA_KEY = 'pickup_public_area';
 export const PICKUP_PUBLIC_AREA_DEFAULT = 'Mainz-Hechtsheim';
 export const PICKUP_EXACT_ADDRESS_KEY = 'pickup_exact_address';
 
-export async function getStringSetting(db: Database, key: string): Promise<string | null> {
+export async function getStringSetting(db: DatabaseExecutor, key: string): Promise<string | null> {
   const rows = await db.select().from(systemSettings).where(eq(systemSettings.key, key));
   const value = rows[0]?.value;
   if (typeof value === 'string' && value.trim() !== '') return value;
@@ -74,7 +74,7 @@ export async function getPickupPublicArea(db: Database): Promise<string> {
 }
 
 /** Exakte Abholadresse – NIE erfunden; null = nicht konfiguriert. */
-export async function getPickupExactAddress(db: Database): Promise<string | null> {
+export async function getPickupExactAddress(db: DatabaseExecutor): Promise<string | null> {
   return getStringSetting(db, PICKUP_EXACT_ADDRESS_KEY);
 }
 

@@ -5,6 +5,7 @@
  * Ausschließlich synthetische Testdaten (global-setup.ts).
  */
 import { expect, test, type Page } from '@playwright/test';
+import { resetE2eDatabase } from '../helpers/seed.ts';
 
 const ADMIN_EMAIL = 'admin@e2e.example';
 const ADMIN_PASSWORD = 'e2e-admin-passwort-1';
@@ -15,6 +16,7 @@ let page: Page;
 let processNumber = '';
 
 test.beforeAll(async ({ browser }) => {
+  resetE2eDatabase();
   page = await browser.newPage();
 });
 test.afterAll(async () => {

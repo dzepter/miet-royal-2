@@ -15,6 +15,7 @@
  * Ausschließlich synthetische Testdaten.
  */
 import { expect, test, type Page } from '@playwright/test';
+import { resetE2eDatabase } from '../helpers/seed.ts';
 
 const ADMIN_EMAIL = 'admin@e2e.example';
 const ADMIN_PASSWORD = 'e2e-admin-passwort-1';
@@ -32,6 +33,7 @@ let machineId = '';
 let capacityProcessId = '';
 
 test.beforeAll(async ({ browser }) => {
+  resetE2eDatabase();
   staff = await browser.newPage();
   viktor = await browser.newPage();
   customerPage = await browser.newPage();

@@ -14,12 +14,15 @@
  * G Same-Day-Umzuweisung → neuer Mitarbeiter meldet sich an → „Termin
  *   übernommen“ → Bestätigung sichtbar abgeschlossen.
  *
- * Nutzt die im Commerce-Spec angelegten, verbindlich angenommenen Buchungen
- * (Paula Partyfee, Willi Wechsel). Zeit-Eingaben der Staff-App gelten als
+ * Legt die verbindlich angenommenen Buchungen (Paula Partyfee, Willi
+ * Wechsel) SELBST an (Basis-Seed + helpers/booking.ts) und ist damit von
+ * anderen Specs unabhängig. Zeit-Eingaben der Staff-App gelten als
  * Europe-Berlin-Wanduhrzeit – die Erwartungen rechnen deshalb komplett in
  * Berliner Kalendertagen/Uhrzeiten. Ausschließlich synthetische Testdaten.
  */
 import { expect, test, type Page } from '@playwright/test';
+import { acceptedBooking } from '../helpers/booking.ts';
+import { resetE2eDatabase } from '../helpers/seed.ts';
 
 const ADMIN_EMAIL = 'admin@e2e.example';
 const ADMIN_PASSWORD = 'e2e-admin-passwort-1';
@@ -30,15 +33,19 @@ test.describe.configure({ mode: 'serial' });
 
 let staff: Page; // Erika (Admin)
 let viktor: Page; // Viktor (Verkauf, calendar.view)
+let customerPage: Page;
 let processIdPaula = '';
 
 test.beforeAll(async ({ browser }) => {
+  resetE2eDatabase();
   staff = await browser.newPage();
   viktor = await browser.newPage();
+  customerPage = await browser.newPage();
 });
 test.afterAll(async () => {
   await staff.close();
   await viktor.close();
+  await customerPage.close();
 });
 
 async function login(page: Page, email: string, password: string, firstName: string) {
@@ -131,10 +138,32 @@ async function saveTimeInPreview(
     .click();
 }
 
+// ── Vorbereitung: eigene bestätigte Buchungen (Basis-Seed) ───────────────
+
+test('Vorbereitung: Selbstabhol-Buchungen Paula Partyfee (AB versendet) und Willi Wechsel anlegen', async () => {
+  test.setTimeout(240_000);
+  await login(staff, ADMIN_EMAIL, ADMIN_PASSWORD, 'Erika');
+  await acceptedBooking(staff, customerPage, {
+    firstName: 'Paula',
+    lastName: 'Partyfee',
+    email: 'paula@e2e.example',
+    machineLabel: '2×10 L',
+    guestCount: 40,
+    freeSyrupLiters: 2,
+    confirmOrder: true,
+  });
+  await acceptedBooking(staff, customerPage, {
+    firstName: 'Willi',
+    lastName: 'Wechsel',
+    email: 'willi@e2e.example',
+    machineLabel: '2×10 L',
+    guestCount: 40,
+  });
+});
+
 // ── Szenario A: Buchung → Terminplanung → Zeiten → Kalender ──────────────
 
 test('A: Terminplanung zeigt Abholung + Rückgabe der bestätigten Buchung (ungeplant)', async () => {
-  await login(staff, ADMIN_EMAIL, ADMIN_PASSWORD, 'Erika');
   processIdPaula = await openProcessViaSearch(staff, 'Partyfee');
 
   // AB ist versendet → „Nächste Aktion“ führt direkt in die Terminplanung.

@@ -27,14 +27,19 @@ export interface TestContext {
 }
 
 export async function createTestContext(
-  options: { rateLimitEnabled?: boolean } = {},
+  options: { rateLimitEnabled?: boolean; poolMax?: number } = {},
 ): Promise<TestContext> {
   const config = loadConfig({
     APP_ENV: 'development',
     DATABASE_URL: TEST_DATABASE_URL,
     LOG_LEVEL: 'error',
   });
-  const pool = createPool(config.databaseUrl);
+  // TEST_POOL_MAX=1 macht jede verschachtelte Pool-Akquise unter einer
+  // Transaktion als Verbindungs-Timeout sichtbar (Phase-6-Finalisierung A1).
+  const envPoolMax = Number(process.env.TEST_POOL_MAX ?? '');
+  const poolMax =
+    options.poolMax ?? (Number.isInteger(envPoolMax) && envPoolMax > 0 ? envPoolMax : undefined);
+  const pool = createPool(config.databaseUrl, poolMax === undefined ? {} : { max: poolMax });
   const db = createDb(pool);
   await runMigrations(db);
   const mail = new InMemoryMailAdapter();

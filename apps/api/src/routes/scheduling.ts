@@ -7,6 +7,7 @@ import type { AuthenticatedContext, StaffAuthService } from '../auth/service.ts'
 import { ProcessService } from '../crm/process-service.ts';
 import { getCompletedVisibilityDays } from '../crm/settings-service.ts';
 import { buildVisibilityContext } from '../crm/visibility.ts';
+import type { AppointmentChangeListener } from '../scheduling/hooks.ts';
 import { SchedulingService } from '../scheduling/scheduling-service.ts';
 import { SubstitutionService } from '../scheduling/substitution-service.ts';
 import { UUID_PATTERN } from './auth.ts';
@@ -61,6 +62,8 @@ interface SchedulingRouteOptions {
   db: Database;
   auth: StaffAuthService;
   config: AppConfig;
+  /** Nach-Commit-Listener für Terminzeitänderungen (Phase-6-Finalisierung A2). */
+  listeners?: readonly AppointmentChangeListener[];
 }
 
 export function registerSchedulingRoutes(
@@ -68,7 +71,7 @@ export function registerSchedulingRoutes(
   options: SchedulingRouteOptions,
 ): void {
   const { db, auth, config } = options;
-  const scheduling = new SchedulingService(db);
+  const scheduling = new SchedulingService(db, options.listeners ?? []);
   const substitutions = new SubstitutionService(db);
   const processService = new ProcessService(db);
 

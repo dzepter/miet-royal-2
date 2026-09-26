@@ -19,18 +19,19 @@
  * I Unzureichender Bestand → verständlicher Blocker → Wareneingang → Abschluss;
  *   genau eine Ausgabe-Bewegung.
  *
- * Läuft bewusst NACH warehouse-flow (alphabetische Reihenfolge, geteilte
- * Testdatenbank): der Becher-Bestand aus Phase 5 wird weiterverwendet, alle
- * anderen Artikel werden hier initial erfasst. Ausschließlich synthetische
- * Testdaten; Unterschriften/Fotos sind Testpixel.
+ * Läuft unabhängig von anderen Specs (Phase-6-Finalisierung A3): Basis-Seed
+ * zu Beginn, eigene bestätigte Buchungen, alle benötigten Lagerartikel
+ * werden hier initial erfasst. Ausschließlich synthetische Testdaten;
+ * Unterschriften/Fotos sind Testpixel.
  */
 import { expect, test, type Locator, type Page } from '@playwright/test';
+import { acceptedBooking as acceptedBookingViaUi } from '../helpers/booking.ts';
+import { resetE2eDatabase } from '../helpers/seed.ts';
 
 const ADMIN_EMAIL = 'admin@e2e.example';
 const ADMIN_PASSWORD = 'e2e-admin-passwort-1';
 const SELLER_EMAIL = 'verkauf@e2e.example';
 const SELLER_PASSWORD = 'e2e-verkauf-passwort-1';
-const WEB_ORIGIN = 'http://127.0.0.1:3100';
 const STAFF_ORIGIN = 'http://127.0.0.1:3102';
 
 /** 1×1-PNG (Testpixel) für Gesamtfotos. */
@@ -49,6 +50,7 @@ let numberA = '';
 let qrToken03 = '';
 
 test.beforeAll(async ({ browser }) => {
+  resetE2eDatabase();
   staff = await browser.newPage();
   viktor = await browser.newPage();
   customerPage = await browser.newPage();
@@ -109,9 +111,8 @@ async function fetchPdf(href: string): Promise<string> {
 
 /**
  * Kunde + Vorgang + 1×10-Anfrage (1 L Gratis-Sirup Kirsche) + Angebot +
- * Online-Annahme + AB-Freigabe/-Versand – ausschließlich echte Wege. Die
- * Maschinenanzahl (>1) wird über den Angebots-Entwurf gesetzt (Staff-API,
- * gleiche Session), da die Angebotsmaske dafür kein Feld hat.
+ * Online-Annahme + AB-Freigabe/-Versand – ausschließlich echte Wege
+ * (gemeinsamer Baustein helpers/booking.ts).
  */
 async function acceptedBooking(
   firstName: string,
@@ -119,64 +120,16 @@ async function acceptedBooking(
   email: string,
   options: { machineQuantity?: number } = {},
 ): Promise<{ processId: string; processNumber: string }> {
-  await staff.goto('/kunden');
-  await staff.getByRole('button', { name: 'Kunde anlegen' }).click();
-  await staff.getByLabel('Vorname').fill(firstName);
-  await staff.getByLabel('Nachname').fill(lastName);
-  await staff.getByLabel('E-Mail (optional)').fill(email);
-  await staff.getByRole('button', { name: 'Kunde anlegen' }).click();
-  await expect(staff.getByRole('heading', { name: `${firstName} ${lastName}` })).toBeVisible();
-  await staff.getByRole('button', { name: 'Vorgang anlegen' }).click();
-  const numberHeading = staff.getByRole('heading', { name: /^MR-\d{4}-\d{4,}$/ });
-  await expect(numberHeading).toBeVisible();
-  const processNumber = (await numberHeading.innerText()).trim();
-  const processId = /\/vorgaenge\/([0-9a-f-]{36})/.exec(staff.url())![1]!;
-
-  await staff.goto(`/vorgaenge/${processId}/anfrage`);
-  const eventDate = new Date(Date.now() + 30 * 24 * 3_600_000).toISOString().slice(0, 10);
-  await staff.getByLabel('Eventdatum').fill(eventDate);
-  await staff.getByLabel('Gästezahl (exakt)').fill('30');
-  await staff.getByLabel('Anlass').selectOption({ label: 'Geburtstag' });
-  await staff.getByLabel('Gewünschter Maschinentyp').selectOption({ label: '1×10 L' });
-  await staff.getByLabel('Sirup Kirsche – gratis (L)').fill('1');
-  await staff.getByRole('button', { name: 'Anfrage speichern' }).click();
-  await expect(staff.getByText('Anfrage gespeichert.')).toBeVisible();
-
-  await staff.goto(`/vorgaenge/${processId}/angebot`);
-  await staff.getByRole('button', { name: 'Angebot erstellen (aus Anfrage)' }).click();
-  await expect(staff.getByRole('heading', { name: /Version 1/ })).toBeVisible();
-  if (options.machineQuantity !== undefined) {
-    const offer = (await (
-      await staff.request.get(`/api/staff/processes/${processId}/offer`)
-    ).json()) as {
-      offer: { versions: { id: string; status: string }[] } | null;
-    };
-    const draft = offer.offer?.versions.find((version) => version.status === 'draft');
-    expect(draft).toBeDefined();
-    const patched = await staff.request.patch(`/api/staff/offer-versions/${draft!.id}`, {
-      data: { machineQuantity: options.machineQuantity },
-    });
-    expect(patched.ok()).toBe(true);
-    await staff.reload();
-    await expect(staff.getByRole('heading', { name: /Version 1/ })).toBeVisible();
-  }
-  await staff.getByRole('button', { name: 'Angebot versenden' }).click();
-  const link = staff.getByTestId('public-offer-link');
-  await expect(link).toBeVisible();
-  const path = (await link.innerText()).trim();
-
-  await customerPage.goto(`${WEB_ORIGIN}${path}`);
-  await customerPage.getByRole('button', { name: 'Angebot verbindlich annehmen' }).click();
-  await expect(customerPage.getByRole('heading', { name: 'Vielen Dank!' })).toBeVisible();
-
-  // Auftragsbestätigung freigeben + versenden (echter Phase-3-Weg).
-  await staff.goto(`/vorgaenge/${processId}/angebot`);
-  await expect(staff.getByRole('heading', { name: 'Auftragsbestätigung' })).toBeVisible();
-  await staff.getByRole('button', { name: 'Auftragsbestätigung freigeben' }).click();
-  await expect(staff.getByText('Freigegeben')).toBeVisible();
-  await staff.getByRole('button', { name: 'Auftragsbestätigung versenden' }).click();
-  await expect(staff.getByText('Versendet', { exact: true })).toBeVisible();
-  return { processId, processNumber };
+  return acceptedBookingViaUi(staff, customerPage, {
+    firstName,
+    lastName,
+    email,
+    machineLabel: '1×10 L',
+    guestCount: 30,
+    freeSyrupLiters: 1,
+    confirmOrder: true,
+    ...(options.machineQuantity === undefined ? {} : { machineQuantity: options.machineQuantity }),
+  });
 }
 
 /** Terminzeit im Terminplanungs-Preview setzen (Berlin-Wanduhrzeit). */
