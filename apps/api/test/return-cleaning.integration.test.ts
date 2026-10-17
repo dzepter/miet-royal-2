@@ -34,6 +34,9 @@ beforeEach(async () => {
   await truncateHandoverTables(ctx.pool);
   await resetWarehouse(ctx.pool);
   await truncateSchedulingTables(ctx.pool);
+  // Phase 9: Finanz-Jobs anderer Suiten (Storno-Transfer) dürfen den
+  // „kein Job durch Reinigungsabfragen“-Nachweis nicht verfälschen.
+  await ctx.pool.query('TRUNCATE integration_jobs');
   await truncateCrmTables(ctx.pool);
   await truncateAuthTables(ctx.pool);
   await truncateCommerceTables(ctx.pool);

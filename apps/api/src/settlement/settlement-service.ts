@@ -2344,7 +2344,13 @@ export class SettlementService {
     });
     if (transferId === null) {
       // Übersprungen: ggf. neue Job-Generation, falls die Übertragung inzwischen zulässig ist.
-      await this.afterCommit(await this.byId(settlementId), now);
+      // Eine nicht (mehr) existierende Abrechnung ist kein Fehler – der Job endet still
+      // (kein Dauer-Retry bis „dead“).
+      const current = await this.db
+        .select()
+        .from(settlements)
+        .where(eq(settlements.id, settlementId));
+      if (current[0] !== undefined) await this.afterCommit(current[0], now);
       return { outcome: 'skipped' };
     }
     const result = await this.transfers.execute(transferId, this.executeHooks('auto', now), now);

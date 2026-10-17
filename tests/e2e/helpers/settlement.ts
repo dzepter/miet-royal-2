@@ -140,6 +140,9 @@ export async function ensureInitialStock(
 export async function cleanMachine(staff: Page, machineCode: string) {
   await staff.goto('/maschinen');
   await staff.getByTestId(`machine-${machineCode}`).getByRole('link').first().click();
+  // Erst die Detailseite abwarten – in der Liste tragen ggf. mehrere Maschinen
+  // das Badge „Reinigung“ (Strict-Mode).
+  await expect(staff.getByTestId('cleaning-card')).toBeVisible();
   await expect(staff.locator('.badge', { hasText: 'Reinigung' })).toBeVisible();
   await staff.getByTestId('clean-complete-button').click();
   await expect(staff.getByText('Maschine ist gereinigt und einsatzbereit.')).toBeVisible();

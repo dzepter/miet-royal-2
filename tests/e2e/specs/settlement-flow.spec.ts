@@ -554,10 +554,15 @@ test('I: Kostenloses Storno 15+ Tage: Vorschau 0 % → bestätigen → Termine/A
   await expect(staff.getByTestId(`issue-${numberI}`)).toHaveCount(0);
   await staff.goto('/maschinen');
   await expect(staff.getByTestId('machine-MR-10-01-03')).toContainText('Einsatzbereit');
-  // Suchbar und als Storniert gekennzeichnet.
+  // Suchbar und als Storniert gekennzeichnet: Die Standardsuche zeigt nur
+  // operativ offene Vorgänge (Phase 2); beendete (abgeschlossene/stornierte)
+  // über den Schalter – sichtbar nach der zentralen Sichtbarkeitsregel.
   await staff.getByRole('link', { name: 'Suche' }).click();
   await staff.getByRole('searchbox').fill('Immerfrei');
-  await expect(staff.getByRole('link', { name: numberI })).toBeVisible();
+  await staff.getByLabel('Auch abgeschlossene und stornierte Vorgänge durchsuchen').check();
+  const hit = staff.getByTestId(`search-process-${numberI}`);
+  await expect(hit.getByRole('link', { name: numberI })).toBeVisible();
+  await expect(hit).toContainText('Storniert');
 });
 
 // ── J: 50 % Storno (10 Tage) ─────────────────────────────────────────────
@@ -700,7 +705,8 @@ test('M: Folgevorgang aus Storno: neue Nummer, Kunde übernommen, Buchung frisch
   await expect(staff.getByText(/Kunde:/).first()).toContainText('Immerfrei');
   await expect(staff.getByText(/Event:\s*–/)).toBeVisible();
   await expect(staff.locator('.badge', { hasText: 'Offen' }).first()).toBeVisible();
-  await expect(staff.getByRole('link', { name: 'Anfrage erfassen' })).toBeVisible();
+  // Frischer Vorgang: „Anfrage erfassen“ erscheint als nächste Aktion UND in der Angebotskarte.
+  await expect(staff.getByRole('link', { name: 'Anfrage erfassen' }).first()).toBeVisible();
   await expect(staff.getByTestId('process-handover')).toHaveCount(0);
   await expect(staff.getByTestId('process-cancellation')).toHaveCount(0);
   const previous = staff.getByTestId('process-relation-previous');

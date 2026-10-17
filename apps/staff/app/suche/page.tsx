@@ -90,7 +90,7 @@ function SearchView() {
               checked={includeCompleted}
               onChange={(e) => setIncludeCompleted(e.target.checked)}
             />
-            <span>Auch abgeschlossene Vorgänge durchsuchen</span>
+            <span>Auch abgeschlossene und stornierte Vorgänge durchsuchen</span>
           </label>
         )}
       </div>
