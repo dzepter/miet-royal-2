@@ -44,6 +44,7 @@ import type {
   AccountingTransferService,
 } from '../accounting/transfer-service.ts';
 import { AuthError } from '../auth/service.ts';
+import { buildAccountingBlock, type AccountingBlockView } from '../lexware/transfer-readiness.ts';
 import type { ProcessService } from '../crm/process-service.ts';
 import { ACCESSORY_LABELS } from '../returns/return-service.ts';
 import { SEVERITY_LABELS } from '../returns/damage-service.ts';
@@ -344,6 +345,8 @@ export interface SettlementView {
     id: string;
     processId: string;
     processNumber: string;
+    /** Kunde des Vorgangs (Kontakt-Klärung bei CONTACT_REVIEW_REQUIRED). */
+    customerId: string;
     bookingId: string;
     returnId: string;
     status: SettlementStatus;
@@ -375,6 +378,10 @@ export interface SettlementView {
     paymentStatusLabel: string | null;
     lastTransferErrorCode: string | null;
     accountingBlocker: 'not_configured' | null;
+    /** Phase 10 (Vertrag §6): Provider, Blocker, Rechnungsdaten, Retry-Freigabe. */
+    accounting: AccountingBlockView;
+    /** Phase 10: Rechnungsversand – 'pending' bis Phase 12 versendet; nie automatisch 'sent'. */
+    invoiceDeliveryStatus: string | null;
     autoTransferPlannedAt: string | null;
     version: number;
     createdAt: string;
@@ -2265,6 +2272,8 @@ export class SettlementService {
   ): Promise<{
     outcome: 'succeeded' | 'already_succeeded' | 'skipped' | 'failed';
     errorCode?: string;
+    /** Phase 10: false ⇒ permanenter Blocker (kein Auto-Retry). */
+    transient?: boolean;
     settlement: SettlementRow;
   }> {
     if (!this.transfers.isConfigured()) {
@@ -2304,6 +2313,7 @@ export class SettlementService {
     return {
       outcome: result.outcome,
       ...(result.errorCode === undefined ? {} : { errorCode: result.errorCode }),
+      ...(result.transient === undefined ? {} : { transient: result.transient }),
       settlement,
     };
   }
@@ -2319,6 +2329,7 @@ export class SettlementService {
   ): Promise<{
     outcome: 'succeeded' | 'already_succeeded' | 'skipped' | 'failed';
     errorCode?: string;
+    transient?: boolean;
   }> {
     if (!this.transfers.isConfigured()) return { outcome: 'skipped' };
     const transferId = await this.db.transaction(async (tx) => {
@@ -2362,6 +2373,7 @@ export class SettlementService {
     return {
       outcome: result.outcome,
       ...(result.errorCode === undefined ? {} : { errorCode: result.errorCode }),
+      ...(result.transient === undefined ? {} : { transient: result.transient }),
     };
   }
 
@@ -2783,12 +2795,29 @@ export class SettlementService {
       dominantAction.hint =
         'Die letzte Übertragung ist fehlgeschlagen – bitte manuell erneut übertragen.';
     }
+    const accounting = await this.accountingBlock(
+      settlement,
+      process,
+      transferRow ?? null,
+      canViewReference,
+      now,
+    );
+    if (
+      accounting.provider === 'lexware' &&
+      accounting.blockers.length > 0 &&
+      settlement.lockedAt === null &&
+      (settlement.status === 'transfer_failed' || settlement.status === 'transferring')
+    ) {
+      dominantAction.label = 'Lexware-Übertragung prüfen';
+      dominantAction.hint = accounting.blockers.map((blocker) => blocker.label).join(' ');
+    }
     const notice = noticeRow === null ? null : this.noticeView(noticeRow);
     return {
       settlement: {
         id: settlement.id,
         processId: settlement.processId,
         processNumber: process.processNumber,
+        customerId: process.customerId,
         bookingId: settlement.bookingId,
         returnId: settlement.returnId,
         status: settlement.status,
@@ -2829,6 +2858,8 @@ export class SettlementService {
             : PAYMENT_STATUS_LABELS[settlement.paymentStatus],
         lastTransferErrorCode: settlement.lastTransferErrorCode,
         accountingBlocker: !configured && settlement.lockedAt === null ? 'not_configured' : null,
+        accounting,
+        invoiceDeliveryStatus: settlement.invoiceDeliveryStatus,
         autoTransferPlannedAt: autoPlanned ? pendingJob.runAt.toISOString() : null,
         version: settlement.version,
         createdAt: settlement.createdAt.toISOString(),
@@ -2889,9 +2920,61 @@ export class SettlementService {
       permissions,
       mock: {
         isMock: this.transfers.provider === 'mock',
-        controlsAvailable: this.transfers.provider === 'mock' && this.appEnv !== 'production',
+        // Phase 10: „fällige Jobs ausführen“ wird auch mit Lexware-Fake außerhalb von
+        // production gebraucht (E2E ohne Worker); Zahlungs-/Fehlersimulation nur bei isMock.
+        controlsAvailable: this.appEnv !== 'production' && configured,
       },
     };
+  }
+
+  /**
+   * Buchhaltungsblock (Phase 10, Vertrag §6): Blocker über dieselbe
+   * Readiness-Prüfung wie der Transferpfad (ohne externen Aufruf), Rechnungs-
+   * daten aus lexware_invoice_mappings, Referenz/Deeplink nur mit Recht.
+   */
+  private async accountingBlock(
+    settlement: SettlementRow,
+    process: Process,
+    transferRow: AccountingTransferRow | null,
+    canViewReference: boolean,
+    now: Date,
+  ): Promise<AccountingBlockView> {
+    const provider = this.transfers.provider;
+    let blockers: AccountingBlockView['blockers'] = [];
+    if (
+      provider === 'lexware' &&
+      settlement.lockedAt === null &&
+      transferRow?.status !== 'succeeded'
+    ) {
+      try {
+        const payload =
+          transferRow === null
+            ? await this.buildPayload(this.db, settlement, now)
+            : (transferRow.snapshot as AccountingPayload);
+        blockers = await this.transfers.readiness(payload, process.customerId);
+      } catch (error) {
+        this.logger.warn(
+          { settlementId: settlement.id, error: error instanceof Error ? error.name : 'unknown' },
+          'Buchhaltungs-Blocker konnten nicht ermittelt werden',
+        );
+      }
+    }
+    const mapping =
+      transferRow === null ? null : await this.transfers.invoiceMapping(transferRow.id);
+    return buildAccountingBlock({
+      provider,
+      blockers,
+      transfer: transferRow,
+      mapping,
+      localPaymentStatus: settlement.paymentStatus,
+      localDeliveryStatus: settlement.invoiceDeliveryStatus,
+      canViewReference,
+      deeplink:
+        mapping?.lexwareInvoiceId === undefined || mapping?.lexwareInvoiceId === null
+          ? null
+          : this.transfers.invoiceDeeplink(mapping.lexwareInvoiceId),
+      now,
+    });
   }
 
   private dominantAction(

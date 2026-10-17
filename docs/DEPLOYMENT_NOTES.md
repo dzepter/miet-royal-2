@@ -53,6 +53,38 @@ gewünscht ist, wird das als eigene Entscheidung in TECH_DECISIONS.md ergänzt.
 
 Claude Code deployt niemals eigenmächtig auf Produktion.
 
+## Lexware Office (Phase 10)
+
+- Variablen: `LEXWARE_API_KEY` (Pflicht für aktive Anbindung in production,
+  sonst bleibt die Buchhaltung „nicht konfiguriert“), `LEXWARE_ORGANIZATION_ID`
+  (gepinnt), `LEXWARE_WEBHOOK_CALLBACK_URL` (öffentliche HTTPS-URL der API,
+  Pfad `/webhooks/lexware`, Zertifikat „Grade A“), optional
+  `LEXWARE_API_KEY_REMINDER_DATE`. In demo darf KEIN Key gesetzt sein; in
+  development/staging nur mit `LEXWARE_ENABLED=true`. `LEXWARE_BASE_URL` ist
+  in production verboten (fester Host `https://api.lexware.io`).
+- Berechtigungen des Keys (Least Privilege, siehe docs/LEXWARE_API_NOTES.md):
+  Profil lesen; Kontakte lesen/schreiben; Rechnungen lesen/schreiben;
+  Zahlungen lesen; Belegliste lesen; Rechnungsdatei lesen;
+  Event-Subscriptions lesen/anlegen/löschen.
+- Key-Rotation (spätestens alle 24 Monate, Lexware-Ablauf): neuen Key in der
+  Lexware-Key-Verwaltung erzeugen → `LEXWARE_API_KEY` auf API und Worker
+  setzen → Prozesse neu starten → `pnpm lexware:setup` ausführen (Lexware
+  löscht beim Invalidieren des alten Keys dessen Subscriptions; der Befehl
+  legt fehlende Subscriptions idempotent neu an) → in Einstellungen → Lexware
+  „Verbindung prüfen“. Keine automatische Rotation; das Ablaufdatum liefert
+  Lexware nicht per API – ggf. `LEXWARE_API_KEY_REMINDER_DATE` pflegen.
+- Erstinbetriebnahme: Steuerkonfiguration (Einstellungen → Steuern) mit
+  Buchhaltung/Steuerberatung festlegen – ohne vollständige Konfiguration
+  blockiert production jede Rechnung; `pnpm lexware:setup`; Testlauf mit
+  `LEXWARE_SMOKE=1 pnpm lexware:smoke` (liest nur Profil und Subscriptions).
+- Betrieb: Webhooks sind der primäre Rückkanal; `pnpm lexware:reconcile`
+  bzw. „Zahlungsstatus abgleichen“ nur für Ausnahmefälle (kein Polling).
+  Bei `token.revoked`/401 zeigt die Adminansicht „Verbindung getrennt“ –
+  Key erneuern, Setup wiederholen.
+- Der Rechnungsversand per E-Mail ist NICHT Teil der Public API: Rechnungen
+  stehen in Lexware (Deeplink) und tragen in Miet-Royal „Versand ausstehend“
+  bis Phase 12 den zentralen Mailadapter liefert.
+
 ## Healthchecks
 
 - `/health`: Prozess lebt (ohne Abhängigkeiten) – für Prozessmanager/Uptime.
@@ -63,5 +95,7 @@ Claude Code deployt niemals eigenmächtig auf Produktion.
 - Konkreter Hoster/VPS (OPEN_ITEMS.md „Hosting“), TLS/Reverse Proxy,
   Firewall, Rate Limits.
 - S3-kompatibler Object Storage je Umgebung.
+- Rechnungsversand per Miet-Royal-Mailadapter (Phase 12) – bis dahin
+  `invoice_delivery_status = pending`.
 - Backup-Automatisierung + Restore-Test (ARCHITECTURE.md).
 - CI-Pipeline (Lint/Typecheck/Tests auf jedem Push).

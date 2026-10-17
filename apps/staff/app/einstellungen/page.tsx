@@ -1,8 +1,23 @@
 'use client';
 
+import Link from 'next/link';
 import { useCallback, useEffect, useState } from 'react';
 import { AuthGuard } from '../../components/auth-guard';
+import { ConfirmDialog } from '../../components/confirm-dialog';
 import { apiFetch } from '../../lib/api';
+import { formatBerlin } from '../../lib/handover';
+import {
+  checkConnection,
+  confirmOrganization,
+  fetchLexwareStatus,
+  LEXWARE_NOT_CONFIGURED_HINT,
+  LEXWARE_WEBHOOK_STATUS_LABELS,
+  lexwareErrorLabel,
+  lexwareStatusLabel,
+  reconcile,
+  setupWebhooks,
+  type LexwareStatus,
+} from '../../lib/lexware';
 
 function SettingsView() {
   const [days, setDays] = useState<string>('');
@@ -64,6 +79,7 @@ function SettingsView() {
       </div>
       <PickupSettings />
       <BaseUrlSettings />
+      <LexwareSettings />
       <TermsSettings />
     </main>
   );
@@ -275,6 +291,238 @@ function TermsSettings() {
           </button>
         </p>
       </form>
+    </div>
+  );
+}
+
+/**
+ * Phase 10 (Order §8): Einstellungen → Lexware. Zeigt Verbindungsstatus,
+ * Firma, gekürzte Organisations-ID, Steuer- und Webhook-Status sowie die
+ * letzte erfolgreiche Prüfung. Der API-Key wird nie geliefert oder gezeigt;
+ * Konfiguration erfolgt ausschließlich serverseitig. Kein Dashboard.
+ */
+function LexwareSettings() {
+  const [status, setStatus] = useState<LexwareStatus | null>(null);
+  const [loadFailed, setLoadFailed] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [confirmOrg, setConfirmOrg] = useState(false);
+
+  const load = useCallback(async () => {
+    const result = await fetchLexwareStatus();
+    if (result.data !== null) {
+      setStatus(result.data);
+      setLoadFailed(false);
+    } else {
+      setLoadFailed(true);
+    }
+  }, []);
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  async function run<T>(
+    action: () => Promise<{ ok: boolean; data: T | null; errorMessage: string | null }>,
+    okText: (data: T) => string,
+  ): Promise<void> {
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    const result = await action();
+    setBusy(false);
+    if (!result.ok || result.data === null) {
+      setError(result.errorMessage ?? 'Aktion fehlgeschlagen – bitte später erneut versuchen.');
+      await load();
+      return;
+    }
+    setNotice(okText(result.data));
+    await load();
+  }
+
+  const active = status !== null && status.configured && status.enabled;
+  const connectionStatus = status?.status ?? 'not_configured';
+  const webhookStatus = status?.webhooks?.status ?? null;
+  const errorText = lexwareErrorLabel(status?.lastErrorCode);
+  const reminder = status?.apiKeyReminderDate ?? null;
+
+  return (
+    <div className="card" data-testid="lexware-section">
+      <h2>Lexware (Buchhaltung)</h2>
+      <p className="muted">
+        Rechnungen werden nach der Abrechnung in Lexware Office erstellt. Der API-Key liegt
+        ausschließlich serverseitig und wird hier nie angezeigt. Rechnungen werden nicht automatisch
+        versendet – der Versand bleibt ausstehend.
+      </p>
+      {error !== null && <p className="error">{error}</p>}
+      {notice !== null && <p className="success">{notice}</p>}
+      {loadFailed && status === null && (
+        <p className="error">Lexware-Status konnte nicht geladen werden.</p>
+      )}
+      <p>
+        Status:{' '}
+        <span
+          className={`badge ${
+            connectionStatus === 'connected' && active
+              ? 'ok'
+              : active && connectionStatus !== 'incomplete'
+                ? 'locked'
+                : ''
+          }`}
+          data-testid="lexware-status"
+        >
+          {lexwareStatusLabel(status)}
+        </span>
+        {errorText !== null && active && <span className="muted"> – {errorText}</span>}
+      </p>
+      {!active && (
+        <p className="muted" data-testid="lexware-not-configured">
+          {LEXWARE_NOT_CONFIGURED_HINT}
+        </p>
+      )}
+      {active && (
+        <>
+          {connectionStatus === 'organization_mismatch' && (
+            <p className="warning-red" role="status">
+              Die Lexware-Organisation hat sich geändert. Übertragungen sind gestoppt, bis die neue
+              Organisation ausdrücklich bestätigt wird.
+            </p>
+          )}
+          <p>
+            Firma: <span data-testid="lexware-company">{status?.companyName ?? '–'}</span>
+            <span className="muted">
+              {' '}
+              · Organisation:{' '}
+              <span data-testid="lexware-org">{status?.organizationIdShort ?? '–'}</span>
+            </span>
+          </p>
+          <p>
+            Steuerkonfiguration:{' '}
+            <span
+              className={`badge ${status?.taxConfigComplete === true ? 'ok' : 'locked'}`}
+              data-testid="lexware-tax-status"
+            >
+              {status?.taxConfigComplete === true ? 'vollständig' : 'unvollständig'}
+            </span>{' '}
+            Webhooks:{' '}
+            <span
+              className={`badge ${webhookStatus === 'configured' ? 'ok' : ''}`}
+              data-testid="lexware-webhook-status"
+            >
+              {webhookStatus !== null
+                ? (LEXWARE_WEBHOOK_STATUS_LABELS[webhookStatus] ?? 'Nicht eingerichtet')
+                : 'Nicht eingerichtet'}
+            </span>
+          </p>
+          <p className="muted">
+            Letzte erfolgreiche Prüfung:{' '}
+            <span data-testid="lexware-last-check">
+              {formatBerlin(status?.lastSuccessAt ?? null)}
+            </span>
+            {status?.lastCheckedAt !== undefined &&
+            status.lastCheckedAt !== null &&
+            status.lastCheckedAt !== status.lastSuccessAt
+              ? ` (zuletzt geprüft ${formatBerlin(status.lastCheckedAt)})`
+              : ''}
+          </p>
+          {reminder !== null && (
+            <p className="muted" data-testid="lexware-key-reminder">
+              Erinnerung API-Key-Erneuerung: {new Date(reminder).toLocaleDateString('de-DE')}
+            </p>
+          )}
+          <p>
+            <button
+              type="button"
+              className="primary"
+              data-testid="lexware-check-connection"
+              disabled={busy}
+              onClick={() =>
+                void run(
+                  checkConnection,
+                  (next) => `Verbindung geprüft: ${lexwareStatusLabel(next)}.`,
+                )
+              }
+            >
+              Verbindung prüfen
+            </button>{' '}
+            <button
+              type="button"
+              data-testid="lexware-setup-webhooks"
+              disabled={busy}
+              onClick={() =>
+                void run(setupWebhooks, (r) => {
+                  const created = r.created?.length ?? 0;
+                  const existing = r.existing?.length ?? 0;
+                  const failed = r.failed?.length ?? 0;
+                  return `Webhooks geprüft: ${created} neu, ${existing} vorhanden${
+                    failed > 0 ? `, ${failed} fehlgeschlagen` : ''
+                  }.`;
+                })
+              }
+            >
+              Webhooks einrichten/prüfen
+            </button>{' '}
+            <button
+              type="button"
+              data-testid="lexware-reconcile"
+              disabled={busy}
+              onClick={() =>
+                void run(
+                  reconcile,
+                  (r) =>
+                    `Zahlungsstatus abgeglichen: ${r.checked ?? 0} geprüft, ${r.updated ?? 0} aktualisiert${
+                      (r.attention ?? 0) > 0 ? `, ${r.attention} mit Prüfbedarf` : ''
+                    }.`,
+                )
+              }
+            >
+              Zahlungsstatus abgleichen
+            </button>{' '}
+            <Link href="/einstellungen/steuern" data-testid="lexware-open-tax-config">
+              Steuerkonfiguration öffnen
+            </Link>
+          </p>
+          {connectionStatus === 'organization_mismatch' && (
+            <p>
+              <button
+                type="button"
+                className="danger"
+                data-testid="lexware-confirm-organization"
+                disabled={busy || (status?.pendingOrganizationId ?? null) === null}
+                onClick={() => setConfirmOrg(true)}
+              >
+                Organisation bestätigen
+              </button>
+            </p>
+          )}
+        </>
+      )}
+      {confirmOrg && status !== null && status.pendingOrganizationId !== undefined && (
+        <ConfirmDialog
+          testId="lexware-confirm-organization-dialog"
+          title="Neue Lexware-Organisation bestätigen?"
+          confirmLabel="Organisation bestätigen"
+          confirmTestId="lexware-confirm-organization-confirm"
+          busy={busy}
+          danger
+          onCancel={() => setConfirmOrg(false)}
+          onConfirm={() => {
+            const pending = status.pendingOrganizationId ?? null;
+            setConfirmOrg(false);
+            if (pending === null) return;
+            void run(
+              () => confirmOrganization(pending),
+              () => 'Organisation bestätigt – Übertragungen sind wieder möglich.',
+            );
+          }}
+        >
+          <p>
+            Künftige Rechnungen werden in der Organisation{' '}
+            <strong>{(status.pendingOrganizationId ?? '').slice(0, 8)}…</strong> erstellt. Bestätige
+            nur, wenn der API-Key bewusst auf diese Organisation umgestellt wurde.
+          </p>
+        </ConfirmDialog>
+      )}
     </div>
   );
 }

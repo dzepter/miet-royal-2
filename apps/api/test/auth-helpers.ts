@@ -6,12 +6,18 @@ import { createDb, createPool, runMigrations, type Database } from '@mietroyal/d
 import { FilesystemStorageProvider, JobRunner, PostgresJobQueue } from '@mietroyal/integrations';
 import type { FastifyInstance } from 'fastify';
 import type pg from 'pg';
-import { MockAccountingGateway } from '../src/accounting/gateway.ts';
+import { MockAccountingGateway, type AccountingGateway } from '../src/accounting/gateway.ts';
+import type { AccountingTransferService } from '../src/accounting/transfer-service.ts';
 import { buildApp } from '../src/app.ts';
 import { StaffAdminService } from '../src/auth/admin-service.ts';
 import { InMemoryMailAdapter } from '../src/auth/mail.ts';
 import { StaffAuthService } from '../src/auth/service.ts';
-import { createAccountingGatewayFor, registerFinanceJobHandlers } from '../src/jobs/finance.ts';
+import {
+  createAccountingGatewayFor,
+  createAccountingTransferService,
+  registerFinanceJobHandlers,
+} from '../src/jobs/finance.ts';
+import { LexwareConnectionService } from '../src/lexware/connection-service.ts';
 import { createLexwareContext, type LexwareContext } from '../src/lexware/context.ts';
 import { NoopLexwareThrottle } from '../src/lexware/rate-limiter.ts';
 import { FakeLexwareServer } from '../src/lexware/testing/fake-server.ts';
@@ -41,6 +47,12 @@ export interface TestContext {
   lexware: LexwareContext;
   /** Phase 10: Contract-Fake (nur mit `lexware: true`). */
   lexwareFake: FakeLexwareServer | null;
+  /** Phase 10: aktives Gateway der App (Mock oder Lexware). */
+  gateway: AccountingGateway;
+  /** Phase 10: Verbindungsprüfung (von App, Jobs und `transfersFor()` geteilt). */
+  lexwareConnection: LexwareConnectionService;
+  /** Phase 10: Transfer-Boundary wie in der App (inkl. Lexware-Zweiphasenpfad); `workerId` optional. */
+  transfersFor: (workerId?: string) => AccountingTransferService;
 }
 
 export async function createTestContext(
@@ -120,6 +132,7 @@ export async function createTestContext(
     lexwareOptions?.throttle === 'postgres' ? {} : { throttle: new NoopLexwareThrottle() },
   );
   const gateway = lexwareFake === null ? accounting : createAccountingGatewayFor(config, lexware);
+  const lexwareConnection = new LexwareConnectionService(lexware);
   const app = buildApp({
     config,
     pool,
@@ -130,6 +143,7 @@ export async function createTestContext(
     noticeGateway: notices,
     jobQueue: queue,
     lexwareContext: lexware,
+    lexwareConnection,
     ...(options.logDestination === undefined ? {} : { logDestination: options.logDestination }),
   });
   await app.ready();
@@ -143,7 +157,18 @@ export async function createTestContext(
     storage,
     accountingGateway: gateway,
     lexware,
+    lexwareConnection,
+    workerId: 'test-worker',
   });
+  const transfersFor = (workerId = 'test-direct') =>
+    createAccountingTransferService({
+      db,
+      queue,
+      accountingGateway: gateway,
+      lexware,
+      lexwareConnection,
+      workerId,
+    });
   return {
     pool,
     db,
@@ -159,6 +184,9 @@ export async function createTestContext(
     jobs,
     lexware,
     lexwareFake,
+    gateway,
+    lexwareConnection,
+    transfersFor,
   };
 }
 

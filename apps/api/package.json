@@ -15,7 +15,10 @@
     "bootstrap-admin": "tsx scripts/bootstrap-admin.ts",
     "offline:lease-key": "tsx scripts/print-offline-lease-key.ts",
     "scheduling:ensure-booking-appointments": "tsx scripts/ensure-booking-appointments.ts",
-    "settlement:ensure": "tsx scripts/ensure-settlements.ts"
+    "settlement:ensure": "tsx scripts/ensure-settlements.ts",
+    "lexware:setup": "tsx scripts/lexware-setup.ts",
+    "lexware:reconcile": "tsx scripts/lexware-reconcile.ts",
+    "lexware:smoke": "tsx scripts/lexware-smoke.ts"
   },
   "dependencies": {
     "@fastify/cookie": "11.1.2",

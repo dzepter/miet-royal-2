@@ -35,7 +35,10 @@
     "staff:bootstrap-admin": "pnpm --filter @mietroyal/api bootstrap-admin",
     "offline:lease-key": "pnpm --filter @mietroyal/api offline:lease-key",
     "settlement:ensure": "pnpm --filter @mietroyal/api settlement:ensure",
-    "scheduling:ensure-booking-appointments": "pnpm --filter @mietroyal/api scheduling:ensure-booking-appointments"
+    "scheduling:ensure-booking-appointments": "pnpm --filter @mietroyal/api scheduling:ensure-booking-appointments",
+    "lexware:setup": "pnpm --filter @mietroyal/api lexware:setup",
+    "lexware:reconcile": "pnpm --filter @mietroyal/api lexware:reconcile",
+    "lexware:smoke": "pnpm --filter @mietroyal/api lexware:smoke"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",

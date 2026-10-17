@@ -56,7 +56,11 @@ export function registerAccountingRoutes(
       provider: accountingGateway.provider,
       configured: accountingGateway.isConfigured(),
       mock: accountingGateway.provider === 'mock',
-      mockControlsAvailable: mockAllowed && accountingGateway instanceof MockAccountingGateway,
+      // Phase 10: „fällige Jobs ausführen“ steht außerhalb von production auch mit
+      // Lexware-Fake/Testaccount zur Verfügung; Zahlungs-/Fehlersimulation nur mit Mock.
+      mockControlsAvailable: mockAllowed,
+      mockPaymentControlsAvailable:
+        mockAllowed && accountingGateway instanceof MockAccountingGateway,
       environment: config.appEnv,
     };
   });

@@ -197,7 +197,12 @@ export interface IssueOptions {
   booking?: Partial<
     Pick<
       AcceptedBookingOptions,
-      'eventDate' | 'delivery' | 'discountPercent' | 'expectedDiscountEuro' | 'purchaseCanisters'
+      | 'eventDate'
+      | 'delivery'
+      | 'discountPercent'
+      | 'expectedDiscountEuro'
+      | 'purchaseCanisters'
+      | 'existingCustomerId'
     >
   >;
 }

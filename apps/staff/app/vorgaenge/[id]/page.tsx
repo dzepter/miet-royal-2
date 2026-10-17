@@ -3,9 +3,15 @@
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import { useCallback, useEffect, useState } from 'react';
+import {
+  AccountingBlockCard,
+  accountingBlockData,
+  CANCELLATION_ACCOUNTING_IDS,
+} from '../../../components/accounting-block';
 import { AuthGuard, useMe } from '../../../components/auth-guard';
 import { ConfirmDialog } from '../../../components/confirm-dialog';
 import { apiFetch, hasPermission, type ApiResult } from '../../../lib/api';
+import { RETRY_TRANSFER_LABEL_LEXWARE, TRANSFER_CHECK_TEXT } from '../../../lib/lexware';
 import {
   formatEventDate,
   STATUS_BADGE_CLASS,
@@ -500,6 +506,23 @@ function ProcessView() {
   }
 
   const { process, customer, notes, assignee } = detail;
+  // Phase 10: Buchhaltungsblock der Storno-Karte (Vertrag §6) – ersatzweise aus Phase-9-Feldern.
+  const cancellationAccounting = accountingBlockData({
+    accounting: cancellation?.accounting,
+    fallback: {
+      provider: cancellation?.accountingProvider ?? null,
+      isMock: cancellation?.accountingProvider === 'mock',
+      transferredAt: cancellation?.transferredAt ?? null,
+      reference: cancellation?.accountingReference ?? null,
+      referenceVisible: cancellation?.accountingReferenceVisible === true,
+      paymentStatus: cancellation?.paymentStatus ?? null,
+      paymentStatusLabel: cancellation?.paymentStatusLabel ?? null,
+      deliveryStatus: cancellation?.invoiceDeliveryStatus,
+      transferFailed:
+        cancellation?.financeStatus === 'accounting_pending' &&
+        cancellation.lastTransferErrorCode !== null,
+    },
+  });
   const customerLabel =
     customer === null
       ? 'Kunde nicht verfügbar'
@@ -1075,7 +1098,12 @@ function ProcessView() {
                 </p>
               )}
               {settlement.settlement.status === 'transfer_failed' && (
-                <p className="error">{TRANSFER_FAILED_TEXT}</p>
+                <p className="error">
+                  {(settlement.settlement.accounting?.provider ??
+                    settlement.settlement.accountingProvider) === 'lexware'
+                    ? TRANSFER_CHECK_TEXT
+                    : TRANSFER_FAILED_TEXT}
+                </p>
               )}
               {settlement.settlement.accountingBlocker === 'not_configured' && (
                 <p className="muted">{ACCOUNTING_NOT_CONFIGURED_HINT}</p>
@@ -1398,22 +1426,22 @@ function ProcessView() {
           )}
           {cancellation.financeStatus === 'accounting_pending' &&
             cancellation.lastTransferErrorCode !== null && (
-              <p className="error">{TRANSFER_FAILED_TEXT}</p>
+              <p className="error">
+                {cancellationAccounting.provider === 'lexware'
+                  ? TRANSFER_CHECK_TEXT
+                  : TRANSFER_FAILED_TEXT}
+              </p>
             )}
           {cancellation.accountingBlocker === 'not_configured' && (
             <p className="muted">{ACCOUNTING_NOT_CONFIGURED_HINT}</p>
           )}
-          {cancellation.paymentStatus !== null && cancellation.transferredAt !== null && (
-            <p className="muted">
-              Zahlungsstatus: {cancellation.paymentStatusLabel ?? cancellation.paymentStatus}
-            </p>
-          )}
-          {cancellation.accountingReferenceVisible && cancellation.accountingReference !== null && (
-            <p className="muted">
-              Buchhaltungsreferenz:{' '}
-              <span data-testid="cancellation-reference">{cancellation.accountingReference}</span>
-              {cancellation.accountingProvider === 'mock' ? ' (Mock)' : ''}
-            </p>
+          {cancellation.financeStatus !== 'no_invoice' && (
+            <AccountingBlockCard
+              ids={CANCELLATION_ACCOUNTING_IDS}
+              data={cancellationAccounting}
+              customerId={process.customerId}
+              title="Buchhaltung (Stornorechnung)"
+            />
           )}
           {cancellation.releasedResources !== null && (
             <p className="muted">
@@ -1434,7 +1462,11 @@ function ProcessView() {
           {cancellationNotice !== null && <p className="success">{cancellationNotice}</p>}
           {accountingStatus?.mockControlsAvailable === true && (
             <p data-testid="cancellation-mock-controls">
-              <span className="badge">MOCK</span>{' '}
+              <span className="badge">
+                {(accountingStatus.mockPaymentControlsAvailable ?? accountingStatus.mock)
+                  ? 'MOCK'
+                  : 'TEST'}
+              </span>{' '}
               <button
                 type="button"
                 data-testid="mock-run-jobs"
@@ -1445,27 +1477,30 @@ function ProcessView() {
               >
                 Fällige Jobs ausführen
               </button>{' '}
-              <button
-                type="button"
-                data-testid="mock-set-paid"
-                disabled={busy || cancellation.transfer === null}
-                onClick={() => {
-                  if (cancellation.transfer === null) return;
-                  const transferId = cancellation.transfer.id;
-                  void runCancellationAction(
-                    () => mockPaymentStatus(transferId, 'paid'),
-                    'Zahlungsstatus auf „Bezahlt“ gesetzt (Mock).',
-                  );
-                }}
-              >
-                Als bezahlt markieren
-              </button>
+              {(accountingStatus.mockPaymentControlsAvailable ?? accountingStatus.mock) && (
+                <button
+                  type="button"
+                  data-testid="mock-set-paid"
+                  disabled={busy || cancellation.transfer === null}
+                  onClick={() => {
+                    if (cancellation.transfer === null) return;
+                    const transferId = cancellation.transfer.id;
+                    void runCancellationAction(
+                      () => mockPaymentStatus(transferId, 'paid'),
+                      'Zahlungsstatus auf „Bezahlt“ gesetzt (Mock).',
+                    );
+                  }}
+                >
+                  Als bezahlt markieren
+                </button>
+              )}
             </p>
           )}
           <p>
-            {cancellation.financeStatus === 'accounting_pending' &&
-              cancellation.permissions.canManualTransfer &&
-              cancellation.accountingBlocker === null && (
+            {cancellation.permissions.canManualTransfer &&
+              ((cancellation.financeStatus === 'accounting_pending' &&
+                cancellation.accountingBlocker === null) ||
+                cancellationAccounting.canRetry) && (
                 <>
                   <button
                     type="button"
@@ -1474,7 +1509,12 @@ function ProcessView() {
                     disabled={busy}
                     onClick={() => setConfirmCancellationTransfer(true)}
                   >
-                    Jetzt an Buchhaltung übertragen
+                    {cancellation.lastTransferErrorCode !== null || cancellationAccounting.canRetry
+                      ? (cancellationAccounting.retryLabel ??
+                        (cancellationAccounting.provider === 'lexware'
+                          ? RETRY_TRANSFER_LABEL_LEXWARE
+                          : 'Übertragung erneut versuchen'))
+                      : 'Jetzt an Buchhaltung übertragen'}
                   </button>{' '}
                 </>
               )}
@@ -1614,6 +1654,9 @@ function ProcessView() {
             Buchhaltung übertragen.
             {cancellation.accountingProvider === 'mock'
               ? ' Mock-Buchhaltung – kein echter Transfer.'
+              : ''}
+            {cancellationAccounting.provider === 'lexware'
+              ? ' In Lexware wird genau eine finale Stornokosten-Rechnung erstellt; ein Versand erfolgt nicht automatisch.'
               : ''}
           </p>
         </ConfirmDialog>

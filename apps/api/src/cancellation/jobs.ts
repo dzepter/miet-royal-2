@@ -39,7 +39,8 @@ export function createCancellationAccountingTransferHandler(deps: FinanceHandler
       return;
     }
     const result = await service.executeTransfer(parsed.data.cancellationId);
-    if (result.outcome === 'failed') {
+    // Phase 10: nur transiente Fehler werfen (Queue-Backoff) – permanente Blocker nicht endlos wiederholen.
+    if (result.outcome === 'failed' && result.transient !== false) {
       throw new Error(
         `cancellation.accounting_transfer fehlgeschlagen: ${result.errorCode ?? 'UNKNOWN'}`,
       );

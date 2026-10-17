@@ -8,6 +8,7 @@
 
 import { apiFetch, type ApiResult } from './api';
 import { euro } from './commerce';
+import { ACCOUNTING_BLOCKER_LABELS, type AccountingBlock } from './lexware';
 
 // ── Beträge ──────────────────────────────────────────────────────────────
 
@@ -235,13 +236,14 @@ export const DEPOSIT_STATUS_LABELS: Record<SecurityDepositView['status'], string
 
 export interface TransferView {
   id: string;
-  status: 'pending' | 'succeeded' | 'failed' | string;
+  status:
+    'pending' | 'succeeded' | 'failed' | 'in_progress' | 'outcome_unknown' | 'attention' | string;
   attempts: number;
   lastErrorCode: string | null;
   externalReference: string | null;
   paymentStatus: PaymentStatus | null;
   transferredAt: string | null;
-  provider: 'mock' | 'disabled' | null;
+  provider: 'mock' | 'disabled' | 'lexware' | null;
   mock: boolean;
 }
 
@@ -265,6 +267,8 @@ export interface SettlementView {
     id: string;
     processId: string;
     processNumber: string;
+    /** Phase 10: Kunde des Vorgangs (für die Kontakt-Klärung) – optional. */
+    customerId?: string | null;
     bookingId: string;
     returnId: string;
     status: SettlementStatus;
@@ -289,13 +293,17 @@ export interface SettlementView {
     lockedAt: string | null;
     transferredAt: string | null;
     locked: boolean;
-    accountingProvider: 'mock' | 'disabled' | null;
+    accountingProvider: 'mock' | 'disabled' | 'lexware' | null;
     accountingReference: string | null;
     accountingReferenceVisible: boolean;
     paymentStatus: PaymentStatus | null;
     paymentStatusLabel: string | null;
     lastTransferErrorCode: string | null;
     accountingBlocker: 'not_configured' | null;
+    /** Phase 10 (Vertrag §6): Buchhaltungsblock – optional, bis die API ihn liefert. */
+    accounting?: AccountingBlock | null;
+    /** Phase 10: Versandstatus der Rechnung – nie „sent“ (Order §40). */
+    invoiceDeliveryStatus?: 'pending' | string | null;
     autoTransferPlannedAt: string | null;
     version: number;
     createdAt: string;
@@ -356,25 +364,32 @@ export function transferOutcomeMessage(
         ok: false,
         text: 'Übertragung derzeit nicht möglich – Voraussetzungen nicht erfüllt.',
       };
-    case 'failed':
+    case 'failed': {
+      // Phase 10: bekannte Blocker verständlich benennen, sonst neutraler Hinweis ohne Rohfehler.
+      const blockerText =
+        errorCode !== undefined && errorCode !== null && errorCode !== ''
+          ? (ACCOUNTING_BLOCKER_LABELS[errorCode as keyof typeof ACCOUNTING_BLOCKER_LABELS] ?? null)
+          : null;
       return {
         ok: false,
-        text: `Übertragung an Buchhaltung fehlgeschlagen – bitte später erneut versuchen.${
-          errorCode !== undefined && errorCode !== null && errorCode !== ''
-            ? ` (Code: ${errorCode})`
-            : ''
-        }`,
+        text:
+          blockerText !== null
+            ? `Übertragung nicht möglich: ${blockerText}`
+            : 'Übertragung an Buchhaltung fehlgeschlagen – bitte später erneut versuchen.',
       };
+    }
     default:
       return { ok: true, text: 'Übertragung ausgeführt.' };
   }
 }
 
 export interface AccountingStatus {
-  provider: 'mock' | 'disabled' | string;
+  provider: 'mock' | 'disabled' | 'lexware' | string;
   configured: boolean;
   mock: boolean;
   mockControlsAvailable: boolean;
+  /** Phase 10: Zahlungs-/Fehlersimulation nur mit Mock-Gateway (optional geliefert). */
+  mockPaymentControlsAvailable?: boolean;
   environment: string;
 }
 
@@ -419,7 +434,7 @@ export interface CancellationView {
   roundingMethod: string;
   financeStatus: CancellationFinanceStatus;
   financeStatusLabel: string;
-  accountingProvider: 'mock' | 'disabled' | null;
+  accountingProvider: 'mock' | 'disabled' | 'lexware' | null;
   accountingReference: string | null;
   accountingReferenceVisible: boolean;
   paymentStatus: PaymentStatus | null;
@@ -427,6 +442,10 @@ export interface CancellationView {
   transferredAt: string | null;
   lastTransferErrorCode: string | null;
   accountingBlocker: 'not_configured' | null;
+  /** Phase 10 (Vertrag §6): Buchhaltungsblock – optional, bis die API ihn liefert. */
+  accounting?: AccountingBlock | null;
+  /** Phase 10: Versandstatus der Stornorechnung – nie „sent“ (Order §40). */
+  invoiceDeliveryStatus?: 'pending' | string | null;
   releasedResources: {
     appointments: number;
     assignments: number;

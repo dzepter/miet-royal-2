@@ -56,6 +56,23 @@ Es gibt genau eine Grenze zwischen Abrechnung/Storno und Buchhaltung:
   production (system.settings). Miet-Royal ist nicht Source of Truth, kein
   Mahnwesen.
 
+### Umsetzung Phase 10: Provider „lexware“
+Siehe `docs/LEXWARE_API_NOTES.md` (verifizierte Endpunkte, Berechtigungen,
+Einschränkungen). Kernpunkte: ein zentraler `LexwareClient`
+(`apps/api/src/lexware/client.ts`), gemeinsamer 2-Requests/Sekunde-
+Rate-Limiter über PostgreSQL für API und Worker, zweiphasiger Transfer ohne
+DB-Sperre während des HTTP-Aufrufs mit Unknown-Outcome-Recovery über die
+Belegliste und einen stabilen Transfermarker im Beleg-Remark, Kontakt-
+Mapping (`lexware_contact_mappings`), Rechnungs-Mapping
+(`lexware_invoice_mappings`), signierte Webhooks (`X-Lxo-Signature`,
+RSA-SHA512) als primärer Rückkanal für Zahlungs-/Rechnungsstatus, Event-
+Subscriptions per `pnpm lexware:setup`, Reconciliation per
+`pnpm lexware:reconcile`. Kein Rechnungs-PDF in Miet-Royal, kein
+E-Mail-Versand (Public API hat keinen), kein Mahnwesen. Production bucht nur
+mit vollständiger Steuerkonfiguration und eindeutigem Kontakt; Anzahlungen/
+Kautionen auf der Rechnung sind fail-closed blockiert (Down-Payment-Invoices
+sind in der Public API read-only).
+
 ## E-Mail
 Umsetzung Phase 9 (Vorstufe): `SettlementNoticeGateway` für die kombinierte
 Kundeninformation vor Schaden-/Fehlteilbelastung und die Storno-Bestätigung –

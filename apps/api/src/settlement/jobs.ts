@@ -36,7 +36,10 @@ export function createSettlementAccountingTransferHandler(deps: FinanceHandlerDe
       { jobId: job.id, settlementId, outcome: result.outcome, attempt: job.attempts },
       'settlement.accounting_transfer verarbeitet',
     );
-    if (result.outcome === 'failed') {
+    // Phase 10: nur transiente Fehler werfen (Queue-Backoff); permanente
+    // Blocker (Steuerkonfiguration, Kontakt, Berechtigung, Prüfstatus)
+    // werden nicht endlos wiederholt – sie sind in der Abrechnung sichtbar.
+    if (result.outcome === 'failed' && result.transient !== false) {
       throw new Error(`Buchhaltungsübertragung fehlgeschlagen (${result.errorCode ?? 'UNKNOWN'})`);
     }
   };

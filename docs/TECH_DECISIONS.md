@@ -1861,3 +1861,66 @@ Shell cwd was reset to /home/user/Sparkoffer.de
   auslösbar), Admin-Information bei wiederholtem Transferfehler
   (DOMAIN_RULES „Admin informieren“ – Dead-Jobs sind in `integration_jobs`
   diagnostizierbar).
+
+## Phase 10: Echte Lexware-Office-Integration
+
+- **Quelle der Wahrheit**: Alle API-Annahmen stehen verifiziert in
+  `docs/LEXWARE_API_NOTES.md` (Verifikationsdatum, Endpunkte, Berechtigungen,
+  Einschränkungen). Lexware ist veränderlich – vor jedem Release erneut
+  prüfen. Die alte lexoffice-Domain kommt im Code nicht vor; production
+  verwendet fest `https://api.lexware.io`, `LEXWARE_BASE_URL` ist dort
+  verboten (Tests/Fake nur außerhalb).
+- **Providerwahl fail-closed** (`createAccountingGateway(config, lexware)`):
+  production ⇒ `lexware` nur mit Key und aktivem Kontext, sonst `disabled`
+  (nie Mock); demo ⇒ immer Mock (ein gesetzter Key ist ein
+  Konfigurationsfehler); development/staging ⇒ Mock, Lexware nur per
+  explizitem Opt-in (`LEXWARE_ENABLED=true`). `assertConfigsIsolated` lehnt
+  denselben Lexware-Key in zwei Umgebungen ab. Der Key existiert nur in
+  `config.lexware.apiKey` (nie DB, nie Antwort, Pino-Redaction für
+  `apiKey`/`authorization`).
+- **Ein Client, ein Limit**: `LexwareClient` ist der einzige fetch()-Ort
+  (Bearer, JSON, Timeout, zod-validierte Antworten, neutrale Fehlerklassen
+  `validation|unauthorized|forbidden|not_found|conflict|rate_limited|server|
+  timeout|network|invalid_response`, Retry-After, Correlation-ID, Pfade mit
+  maskierten IDs im Log). Retries entscheidet die Queue anhand `transient`.
+  Das Lexware-Limit von 2 Requests/Sekunde gilt prozessübergreifend:
+  `PostgresLexwareThrottle` reserviert in einer kurzen Transaktion
+  (`lexware_rate_limit` FOR UPDATE) den nächsten Slot (≥ 500 ms Abstand) und
+  wartet AUSSERHALB jeder Transaktion – API und Worker teilen sich so dieselbe
+  Grenze ohne offene Business-Sperren.
+- **Geld**: Lexware erwartet Dezimalbeträge; `money.ts` konvertiert
+  Integer-Cent ⇄ Dezimalstring ohne Float-Arithmetik (JSON-Zahlen mit ≤ 2
+  Nachkommastellen sind verlustfrei serialisierbar, gerechnet wird nie damit),
+  lehnt mehr als zwei Nachkommastellen ab und rundet Steuer je Position
+  kaufmännisch in Integer-Arithmetik. Summen werden vor dem Create lokal
+  erwartet und nach dem Create gegen die Lexware-Antwort geprüft; Abweichung
+  ⇒ `attention` (TOTAL_MISMATCH), nie stille Cent-Anpassung.
+- **Steuern werden nicht erfunden**: `accounting_tax_config` je Kategorie
+  (Behandlung, Satz in Basispunkten, `synthetic`-Kennzeichen) + globale
+  Lexware-Steuerart in `system_settings`. Production blockiert jede Rechnung,
+  solange eine Kategorie fehlt oder synthetisch ist; dev/test/demo dürfen
+  klar markierte synthetische Werte setzen. Profil (`taxType`,
+  `smallBusiness`) dient nur der Plausibilität.
+- **Schema (Migration 0019)**: `lexware_integration_state` (eine Zeile je
+  Umgebung: gepinnte organizationId, Status, Profilfelder ohne
+  Personendaten, Webhook-Stand), `lexware_contact_mappings` (ein aktives
+  Mapping je Kunde, ein Kunde je Lexware-Kontakt), `lexware_invoice_mappings`
+  (je accounting_transfer: Rechnungs-ID, Nummer, Status, Fälligkeit, offener
+  Betrag, Zahlungsstatus, `delivery_status` pending, stabiler
+  `transfer_marker`), `lexware_webhook_events` (Fingerprint-Dedup),
+  `lexware_rate_limit`, `accounting_tax_config`; `accounting_transfers`
+  erhält `in_progress|outcome_unknown|attention`, Claim-Felder und einen
+  versionierten Provider-Snapshot (v2), der den Phase-9-Snapshot nie ersetzt.
+- **Webhook-Signatur**: offizieller Lexware-Public-Key (RSA-4096, PEM) im
+  Code (`webhook-public-key.ts`, Quelle + Datum dokumentiert, per
+  `LEXWARE_WEBHOOK_PUBLIC_KEY_PEM` für den Contract-Fake übersteuerbar);
+  Verifikation RSA-SHA512 über die Rohbytes und – weil die Doku „ohne
+  Whitespaces“ nennt – zusätzlich über die kompakt serialisierte Form; nie
+  Vertrauen ohne gültige Signatur, danach organizationId-Abgleich, Allowlist,
+  Dedup (SHA-256 aus organizationId|eventType|resourceId|eventDate), Job.
+- **Contract-Fake statt echtem Account**: `FakeLexwareServer` simuliert die
+  genutzten Endpunkte mit Pflichtfeldprüfung, read-only-Ablehnung,
+  Draft-/Finalize-Semantik, voucherlist-`overdue` (transient), Payments,
+  Event-Subscriptions (409 Duplikat, 406 unsichere Callback-URL), 2-Req/s-
+  Limit, Fehlerinjektion und „Timeout nach erfolgreichem Create“. Der
+  Quality-Gate läuft nie gegen einen echten Lexware-Account.

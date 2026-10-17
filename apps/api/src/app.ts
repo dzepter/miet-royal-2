@@ -26,10 +26,18 @@ import { registerHandoverRoutes } from './routes/handover.ts';
 import { registerReturnRoutes } from './routes/returns.ts';
 import { registerOfflineRoutes } from './routes/offline.ts';
 import type { AccountingGateway } from './accounting/gateway.ts';
-import { AccountingTransferService } from './accounting/transfer-service.ts';
-import { createAccountingGatewayFor, registerFinanceJobHandlers } from './jobs/finance.ts';
+import {
+  createAccountingGatewayFor,
+  createAccountingTransferService,
+  registerFinanceJobHandlers,
+} from './jobs/finance.ts';
+import { LexwareConnectionService } from './lexware/connection-service.ts';
 import { createLexwareContext, type LexwareContext } from './lexware/context.ts';
+import { createLexwareTransferDeps } from './lexware/lexware-gateway.ts';
+import { TaxConfigService } from './lexware/tax-config-service.ts';
 import { registerAccountingRoutes } from './routes/accounting.ts';
+import { registerAccountingTaxRoutes } from './routes/accounting-tax.ts';
+import { registerLexwareContactRoutes } from './routes/lexware-contacts.ts';
 import { registerCancellationRoutes } from './routes/cancellation.ts';
 import { createCancellationService } from './cancellation/cancellation-service.ts';
 import { registerSettlementRoutes } from './routes/settlement.ts';
@@ -44,6 +52,8 @@ import { AssignmentService } from './handover/assignment-service.ts';
 import { createRiskRefreshListener } from './handover/risk-refresh-listener.ts';
 import { MachineService } from './warehouse/machine-service.ts';
 import { registerStaffAdminRoutes } from './routes/staff-admin.ts';
+import { registerLexwareAdminRoutes } from './routes/lexware-admin.ts';
+import { registerLexwareWebhookRoutes } from './routes/lexware-webhooks.ts';
 
 export const API_VERSION = '0.1.0';
 
@@ -91,6 +101,8 @@ export interface AppOptions {
   jobQueue?: JobQueue;
   /** Phase 10: Test-Injection des Lexware-Kontexts (Default: aus config.lexware). */
   lexwareContext?: LexwareContext;
+  /** Phase 10: Test-Injection der Verbindungsprüfung (Default: LexwareConnectionService). */
+  lexwareConnection?: LexwareConnectionService;
 }
 
 /**
@@ -117,6 +129,7 @@ export function buildApp({
   noticeGateway,
   jobQueue,
   lexwareContext,
+  lexwareConnection,
 }: AppOptions): FastifyInstance {
   const app = Fastify({
     logger: {
@@ -319,7 +332,14 @@ export function buildApp({
       const accounting = accountingGateway ?? createAccountingGatewayFor(config, lexware);
       const notices = noticeGateway ?? createSettlementNoticeGateway(config);
       const queue = jobQueue ?? new PostgresJobQueue(pool);
-      const transfers = new AccountingTransferService(db, accounting, queue);
+      const connection = lexwareConnection ?? new LexwareConnectionService(lexware);
+      const transfers = createAccountingTransferService({
+        db,
+        queue,
+        accountingGateway: accounting,
+        lexware,
+        lexwareConnection: connection,
+      });
       // Eine Storno-Instanz für die Storno-Routen UND die Legacy-Storno-Route
       // (Vorgänge mit bestätigter Buchung werden nur über diesen Pfad storniert).
       const cancellationService = createCancellationService({
@@ -400,6 +420,7 @@ export function buildApp({
         storage: storageProvider,
         accountingGateway: accounting,
         lexware,
+        lexwareConnection: connection,
         logger: app.log,
       });
       registerSettlementRoutes(instance, {
@@ -430,6 +451,23 @@ export function buildApp({
         transfers,
         jobRunner: financeRunner,
       });
+      // Phase 10: Lexware-Integrationsstatus/-aktionen (system.settings) und
+      // der öffentliche, signaturgeprüfte Webhook-Endpunkt (Order §§8/44).
+      registerLexwareAdminRoutes(instance, { db, auth: authService, config, lexware, transfers });
+      // Phase 10 (Agent B): Steuerkonfiguration und Kunde ↔ Lexware-Kontakt.
+      registerAccountingTaxRoutes(instance, {
+        auth: authService,
+        config,
+        taxConfig: transfers.lexwareDeps?.taxConfig ?? new TaxConfigService(db, config.appEnv),
+      });
+      registerLexwareContactRoutes(instance, {
+        db,
+        auth: authService,
+        config,
+        connection,
+        contacts: transfers.lexwareDeps?.contacts ?? createLexwareTransferDeps(lexware).contacts,
+      });
+      registerLexwareWebhookRoutes(instance, { db, config, lexware, queue });
     });
   }
 
