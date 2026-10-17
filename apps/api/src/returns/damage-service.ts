@@ -197,6 +197,8 @@ export class DamageService implements ExistingDamageProvider {
       origin: MachineDamage['origin'];
       activatedAt: Date | null;
       now: Date;
+      /** Phase 8: erzeugende Offline-Mutations-ID (Wiederaufnahme nach Abbruch). */
+      clientMutationId?: string | null;
     },
   ): Promise<string> {
     const description = input.description.trim();
@@ -220,6 +222,7 @@ export class DamageService implements ExistingDamageProvider {
         createdBy: input.actorId,
         createdAt: input.now,
         activatedAt: input.activatedAt,
+        clientMutationId: input.clientMutationId ?? null,
       })
       .returning({ id: machineDamages.id });
     const damageId = inserted[0]!.id;
@@ -260,14 +263,16 @@ export class DamageService implements ExistingDamageProvider {
     damageId: string,
     input: { bytes: Uint8Array; mimeType: ImageMimeType },
     now = new Date(),
+    operationId?: string,
   ): Promise<{ photoId: string }> {
     const damage = await this.byId(damageId);
     this.assertEmbeddablePhoto(input.bytes, input.mimeType);
     const key = `damages/${damage.id}/${randomBytes(8).toString('hex')}.${imageExtension(input.mimeType)}`;
     const sha256 = createHash('sha256').update(input.bytes).digest('hex');
     await this.storage.put(key, input.bytes, { contentType: input.mimeType });
+    let result: { photoId: string; reused: boolean };
     try {
-      return await this.db.transaction(async (tx) => {
+      result = await this.db.transaction(async (tx) => {
         // Sperrreihenfolge wie Entwurfs-Mutationen/Finalisierung bzw. Nachtrag/
         // Reinigungsabschluss: erst die führende Zeile (Rückgabe bzw. Maschine),
         // dann der Schaden – ein Foto kann so nicht mehr NACH dem Fingerprint-
@@ -286,6 +291,14 @@ export class DamageService implements ExistingDamageProvider {
             .for('no key update');
         }
         const locked = await this.lockDamage(tx, damageId);
+        if (operationId !== undefined) {
+          // Replay derselben Offline-Mutation (Phase 8): bestehendes Foto zurückgeben.
+          const prior = await tx
+            .select({ id: damagePhotos.id })
+            .from(damagePhotos)
+            .where(eq(damagePhotos.clientMutationId, operationId));
+          if (prior[0] !== undefined) return { photoId: prior[0].id, reused: true };
+        }
         await this.assertEditable(tx, locked);
         const inserted = await tx
           .insert(damagePhotos)
@@ -298,14 +311,17 @@ export class DamageService implements ExistingDamageProvider {
             sha256,
             takenBy: actorId,
             takenAt: now,
+            clientMutationId: operationId ?? null,
           })
           .returning({ id: damagePhotos.id });
-        return { photoId: inserted[0]!.id };
+        return { photoId: inserted[0]!.id, reused: false };
       });
     } catch (error) {
       await this.deleteKeys([key]);
       throw error;
     }
+    if (result.reused) await this.deleteKeys([key]);
+    return { photoId: result.photoId };
   }
 
   /** Schaden (nur im Rückgabe-Entwurf) samt Markierungen/Fotos entfernen. */

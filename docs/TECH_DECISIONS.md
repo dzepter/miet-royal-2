@@ -549,7 +549,9 @@ Keine spontanen Framework-/ORM-Wechsel (CLAUDE.md „Dependencies“).
   Klartext gespeichert, aber bewusst KEIN Bearer: Auflösung nur nach
   Staff-Login + `machine.view`, Anzeige/Druck nur mit `machine.qr`, der
   Token erscheint weder in Logs (Request-Logger maskiert
-  `/staff/machines/qr/…` wie die öffentlichen Angebots-Links) noch in
+  `/staff/machines/qr/…` wie die öffentlichen Angebots-Links; seit der
+  Phase-8-Finalisierung reist der Token ohnehin nur noch im Body von
+  `POST /staff/machines/qr/resolve`) noch in
   normalen Antworten – auch Mutationsantworten liefern eine Projektion
   ohne qrToken/Storage-Keys. Druckbare QR-URL nur mit konfiguriertem
   Setting `staff_app_base_url` (adminpflegbar unter „Einstellungen“ mit
@@ -770,7 +772,8 @@ Keine spontanen Framework-/ORM-Wechsel (CLAUDE.md „Dependencies“).
   Browser-`BarcodeDetector`-API, wenn vorhanden – sonst/immer auch
   manuelle Eingabe des Identifiers oder der gescannten Adresse. Die
   Auflösung läuft AUTHENTIFIZIERT über den Phase-5-Resolver
-  (`/staff/machines/qr/:token`, `machine.view`); ein Scan macht nie
+  (heute `POST /staff/machines/qr/resolve`, Token im Body, `machine.view`);
+  ein Scan macht nie
   Rechte weiter. Im Wizard bestätigt der Scan die zugewiesene Maschine
   (falsche Maschine ⇒ klare Fehlermeldung, keine stille Umbuchung).
 - **Ausgabeartikel getrennt vom Snapshot**: `delivery_notes` (1 je
@@ -1177,8 +1180,9 @@ Keine spontanen Framework-/ORM-Wechsel (CLAUDE.md „Dependencies“).
     `DamageView`/`ReturnMachineView`/`machineCondition` geführt und an jedes
     Schadensschema übergeben; PDF-Renderer erhalten `sketchImages` je Ansicht
     (`sketch-assets.ts`, leer = neutraler Platzhalter). Keine Datenänderung.
-  - QR-Token des Rückgabe-Einstiegs (`/staff/returns/resolve-qr/:token`) wurde
-    unmaskiert geloggt → `maskLoggedPath` erweitert (Test 135).
+  - QR-Token des Rückgabe-Einstiegs (damals `/staff/returns/resolve-qr/:token`,
+    seit der Phase-8-Finalisierung `POST /staff/returns/resolve-qr` mit Token
+    im Body) wurde unmaskiert geloggt → `maskLoggedPath` erweitert (Test 135).
   - `/staff/missing-items` und die vorgangsbezogenen Teile von
     `/staff/machines/:id/condition` (Fehlteile, Defekte) folgten nicht der
     zentralen Sichtbarkeitsregel: jetzt `process.view_all` +
@@ -1285,26 +1289,73 @@ Keine spontanen Framework-/ORM-Wechsel (CLAUDE.md „Dependencies“).
   Ausgabe/Verlängerung/Widerruf als Security-Events. Ausstellung nur über
   eine entsperrte Session und nur für Konten mit operativen Rechten
   (`handover.view`/`return.view`/`machine.view`); jede Verlängerung erzeugt
-  ein neues Secret (Client wickelt den DEK neu ein). Lokal liegt der Lease-
-  Datensatz (Ablauf, Rechte-Snapshot, Name) mit HMAC-SHA-256 (HKDF aus dem
-  DEK) – eine Manipulation der Ablaufzeit im Store wird erkannt. Nach
-  Ablauf ist der Offline-Arbeitsbereich gesperrt, bis das Gerät online neu
-  autorisiert. Gegen eine zurückgestellte Geräteuhr gilt eine monotone
-  Untergrenze (höchste je gesehene Server-/Gerätezeit, persistiert in `meta`;
-  lokale Zeit wird nur übernommen, wenn sie nicht mehr als 72 h 15 min vor
-  der bisherigen Grenze liegt – eine grob vorgehende, später korrigierte Uhr
-  sperrt sonst das Gerät). Meldet der Server beim Secret-Abruf 404/403
+  ein neues Secret (Client wickelt den DEK neu ein). **Client-Lease-
+  Verifikation (Finalisierung §1, `packages/offline/src/lease-claim.ts`,
+  `workspace.ts`)**: Der Client prüft den signierten Claim mit WebCrypto
+  (`importKey('raw', pub, { name: 'Ed25519' })` / `verify('Ed25519', …)`)
+  vollständig offline – Signatur, Struktur (`parseOfflineLeaseClaim`,
+  Laufzeit ≤ 72 h), Identitätsbindung (userId × deviceId × environment der
+  Workspace-Identität) und Ablauf gegen die monotone Uhr. `authorizeOnline`
+  übernimmt leaseId/issuedAt/expiresAt NUR aus dem verifizierten Claim
+  (ungültig ⇒ `LeaseInvalidError`, Grant wird nicht übernommen, bestehender
+  Zustand bleibt); JEDE Entsperrung (Passwort, Lease-Secret, flüchtiger
+  Service-Worker-Schlüssel) und `leaseState()` verifizieren erneut, und der
+  lokale Datensatz muss exakt dem Claim entsprechen – ungültige Signatur/
+  Abweichung ⇒ `lease_tampered`, abgelaufen ⇒ `lease_expired`, fehlendes
+  Ed25519 in der Engine ⇒ ungültig (nie „durchgewinkt“). Der HMAC-SHA-256
+  (HKDF aus dem DEK) über den Lease-Datensatz bleibt als Integritätsschutz
+  für Rechte-Snapshot/Name und als Bindung des flüchtigen Schlüssels an
+  genau diesen Arbeitsbereich, ist aber nicht mehr die Autorisierungsgrenze.
+  Optional lässt sich der öffentliche Serverschlüssel zur Build-Zeit pinnen
+  (`NEXT_PUBLIC_OFFLINE_LEASE_VERIFICATION_KEY`, Base64url, kein Secret;
+  `WorkspaceOptions.trustedVerificationKey`); ohne Pinning gilt der im Grant
+  gelieferte Schlüssel. Nach Ablauf ist der Offline-Arbeitsbereich gesperrt,
+  bis das Gerät online neu autorisiert. **Monotone Uhr (präzisierte Regel,
+  `runtime.ts`)**: `meta.clock.serverMs` = höchste Serverzeit (Lease, Paket,
+  Status), `meta.clock.maxSeenMs` = Untergrenze für `now()`. Serverzeit
+  aktualisiert beide; lokale Zeit nur `maxSeen = max(maxSeen, min(local,
+  serverMs + 72 h))` und nur, wenn schon eine Serverzeit bekannt ist;
+  `now() = max(Date.now(), maxSeen)`. Eine zurückgestellte Uhr verlängert
+  kein Lease (Gerät offline, Uhr +73 h ⇒ abgelaufen; Uhr zurück, Reload
+  offline ⇒ bleibt abgelaufen), eine grob vorgehende Uhr sperrt höchstens bis
+  Serverzeit + 72 h – eine neue Online-Autorisierung (expiresAt = Server-
+  Jetzt + 72 h > maxSeen) öffnet wieder. Die frühere 72-h-15-min-
+  Plausibilitätsregel ist entfernt. Meldet der Server beim Secret-Abruf 404/403
   (Lease abgelaufen/widerrufen), wird Wrap B lokal entfernt; es bleibt nur
   Wrap A (Passwort) bzw. eine neue Online-Autorisierung. Die lokale
   Passwort-Entsperrung ist nach 5 Fehlversuchen gesperrt (Zähler in `meta`,
   Reset nur durch erfolgreiche Entsperrung/Online-Autorisierung) – gegen
   Ausprobieren auf einem gestohlenen Gerät zusätzlich zu PBKDF2.
-  Dokumentiertes Restrisiko: Wer Passwort UND Gerät besitzt, kann den
-  Client-Code verändern und – weil der Lease-HMAC aus dem DEK abgeleitet ist –
-  den lokalen Lease-Datensatz neu signieren; ein physisch offline
-  befindliches Gerät kann nicht sofort widerrufen werden. Das Lease begrenzt
-  also ehrliche Clients und Angreifer OHNE Passwort; gegen den Passwort-
-  inhaber schützt nur der Server (Widerruf beim nächsten Onlinekontakt).
+  **Serversignierter Lease-Claim (Phase-8-Finalisierung §1)**: Jede
+  Ausstellung/Verlängerung liefert neben dem Secret einen Claim
+  `{ v: 1, leaseId, userId, deviceId, environment, issuedAt, expiresAt,
+  nonce }` (JSON-Text in exakt dieser Feldreihenfolge, Nonce = 16 Zufalls-
+  bytes Base64url) plus `signature` (Ed25519 über die UTF-8-Bytes des
+  Claim-Texts, Base64url) und `verificationKey` (rohe 32 Byte des
+  öffentlichen Schlüssels, Base64url). Der private Schlüssel existiert nur
+  serverseitig: Seed = HKDF-SHA256(`AUTH_SECRET_KEY`, Salt
+  `mietroyal/offline-lease-signing/salt/v1`, Info
+  `mietroyal/offline-lease-signing/v1`, 32 Byte) → PKCS#8-DER (RFC-8410-
+  Präfix + Seed) → `crypto.createPrivateKey`; ausschließlich node:crypto,
+  keine eigene Kryptografie, nichts zusätzlich zu persistieren
+  (`OfflineLeaseSigner` in `apps/api/src/offline/lease-signing.ts`).
+  Weil `AUTH_SECRET_KEY` je Umgebung verschieden sein MUSS (Env-Isolation),
+  sind Demo-/Production-Signaturen nicht austauschbar; zusätzlich steht
+  `environment` im Claim. Der Client verifiziert Claim und Signatur
+  vollständig offline (WebCrypto Ed25519) und übernimmt Laufzeit und
+  Identität NUR aus dem verifizierten Claim; `expiresAt − issuedAt` ist
+  immer exakt 72 h (`OFFLINE_LEASE_MS`, kein Client-Parameter, DB-Check
+  `≤ issued_at + 72 h` bleibt). Claim/Signatur werden nicht in der DB
+  gespeichert (Server-Autorität sind die Spalten `issued_at`/`expires_at`,
+  über die signiert wird); `GET /staff/offline/lease/secret` ist unverändert.
+  Dokumentiertes Restrisiko (angepasst): Der Client kann ein Lease weder
+  selbst verlängern noch neu erzeugen – ohne den serverseitigen Schlüssel
+  gibt es keinen gültigen Claim, und ein veränderter Ablauf bricht die
+  Signatur. Verbleibend ist allein manipulierter Client-Code auf einem
+  Gerät, dessen Besitzer auch das Passwort kennt (er könnte die lokale
+  Prüfung umgehen, nicht aber ein Lease fälschen); ein physisch offline
+  befindliches Gerät kann nicht sofort widerrufen werden – gegen den
+  Passwortinhaber schützt der Server beim nächsten Onlinekontakt.
   Serverseitiger Widerruf greift beim nächsten Onlinekontakt: Session-
   Widerruf oder Benutzersperre blockieren Secret, Paket UND Sync (jeder
   Offline-Endpunkt verlangt eine gültige Session, Rechte werden je Mutation
@@ -1347,6 +1398,11 @@ Keine spontanen Framework-/ORM-Wechsel (CLAUDE.md „Dependencies“).
 - **Offline-QR (Order §13/§14)**: Der bestehende `QrScanner` erhält einen
   `resolve`-Hook; offline wird `SHA-256(token.toLowerCase())` gegen den
   lokalen Maschinen-Store verglichen (Token nie im Klartext gespeichert).
+  Finalisierung: Client und Offline-Router übertragen den Token nur noch als
+  POST-Body (`POST /staff/machines/qr/resolve`, `POST /staff/returns/
+  resolve-qr`, Body `{ token }`), nie in einer URL oder in `console.*`; der
+  Deep-Link `/qr/<token>` liest den Token einmal aus der Route, entfernt ihn
+  sofort per `history.replaceState` aus der Adressleiste und löst per POST auf.
   Treffer nur für Maschinen des berechtigten Pakets; unbekannt/fremd ⇒
   neutrale Meldung „Dieser QR-Code ist nicht gültig.“; das Ergebnis führt
   in den passenden operativen Kontext (Ausgabe/Rückgabe/Maschine/Reinigung),
@@ -1395,6 +1451,37 @@ Keine spontanen Framework-/ORM-Wechsel (CLAUDE.md „Dependencies“).
   bewussten Entscheidung erhalten; „Erneut anwenden“ läuft über die normalen
   Domainservices, „Verwerfen“ nur mit Rückfrage. Es gibt keinen Force-
   Update-Endpunkt.
+- **Konfliktdetails (Finalisierung §4)**: Jede Konflikt-/Ablehnungsantwort
+  trägt `details: { offline, server, action }` – kurze deutsche Sätze mit nur
+  den relevanten Feldern, serverseitig im Sync-Orchestrator erzeugt (der
+  Client zeigt sie, interpretiert sie nicht). Erlaubt sind Maschinencodes,
+  Mengen, Termin-Art + neue Zeit (Berliner Zeit), neutrale Problemlabels der
+  Assignment-Bewertung („Zeitliche Kollision“, „Gesperrt“ …); ausgeschlossen
+  sind Kundendaten, Vorgangsnummern anderer Kunden, Rechte-Keys und
+  JSON-Dumps. `offline` ist null, wenn nur der Client die Offline-Grundlage
+  kennt (Terminänderung: alte Zeit steht im Snapshot). Beispiele:
+  MACHINE_REASSIGNED „Offline gewählt: MR-10-01-01; Grundlage: keine
+  Maschine“ / „Der Slot ist inzwischen Maschine MR-10-01-02 zugeordnet.“;
+  MACHINE_UNAVAILABLE „Maschine MR-… ist inzwischen an einen anderen Vorgang
+  ausgegeben.“; SITUATION_CHANGED „Die Problemlage von MR-… hat sich
+  geändert: Gesperrt.“; APPOINTMENT_CHANGED „Ausgabe inzwischen auf
+  17.10.2026 14:30 geändert.“; QUANTITY_CHANGED „Offline erfasst: Menge 2
+  (Grundlage: Menge 3)“ / „Serverseitig inzwischen Menge 5.“;
+  CLOCK_IMPLAUSIBLE „Gerätezeit weicht um ca. 180 Minuten ab.“;
+  PERMISSION_REVOKED „Dafür fehlt dir inzwischen die Berechtigung.“ (ohne
+  Key). Codes ohne fachlich konkretere Gegenüberstellung erhalten
+  Standarddetails (Aktionsbezeichnung aus `MUTATION_LABELS`, neutrale
+  Ursache, Handlungsempfehlung). Client: Die frühere Entscheidung „keine
+  Gegenüberstellung in der Liste“ ist aufgehoben. `details` wird im
+  verschlüsselten Konflikt-Payload (`{ message, serverState, details }`)
+  gespeichert; „Synchronisierung prüfen“ zeigt je Konflikt drei Zeilen
+  „Offline erfasst“ / „Serverstand“ / „Was jetzt zu tun ist“. Fehlt
+  `details.offline`, fällt die Anzeige auf den lokalen Snapshot/Payload
+  zurück – bei `APPOINTMENT_CHANGED` „Offline-Grundlage: <Terminart>
+  <dd.mm.yyyy HH:MM Uhr>“ aus dem Terminstand des Snapshots (Termin-ID aus
+  dem Basisstand), sonst Aktionsbezeichnung + Detail; fehlen `server`/
+  `action`, gelten Code-Label bzw. Standardtext. Keine JSON-Dumps, keine
+  Kundendaten; die drei Handlungen bleiben.
 - **Bereinigung (Order §§36–38)**: Synchronisierte Mutationen und
   ausschließlich von ihnen referenzierte Medien werden erst nach Ablauf einer
   Frist (1 h) entfernt; ausstehende/konfliktierte Daten nie automatisch.
@@ -1446,9 +1533,37 @@ Keine spontanen Framework-/ORM-Wechsel (CLAUDE.md „Dependencies“).
   - *Zweiphasige Quittung* (Migration 0016, Status `processing`): die Quittung
     wird VOR der Fachmutation reserviert. Ein Abbruch zwischen Fachmutation
     und Abschluss hinterlässt „processing“; eine Wiederholung derselben ID
-    liefert dann 503 + `Retry-After` (Verarbeitung läuft, < 2 min) bzw. einen
-    Konflikt „Ergebnis der vorherigen Übertragung unklar – Serverstand prüfen“
-    (älter als 2 min) – nie eine stille zweite Ausführung (§28).
+    liefert dann 503 + `Retry-After` (Verarbeitung läuft, < 2 min) – nie eine
+    stille zweite Ausführung (§28).
+  - *Crash-Recovery* (Finalisierung §3, Migration 0017): Ist die
+    „processing“-Quittung älter als 2 Minuten, prüft `OfflineSyncService.
+    recover` operation-spezifisch, ob die Fachwirkung bereits existiert, und
+    quittiert dann `applied` (dedupliziert, resultRef der bestehenden Wirkung,
+    Hinweis „Bereits übernommen (Wiederaufnahme nach Unterbrechung)“); ist
+    die Wirkung nicht nachweisbar, läuft die Mutation normal (reserve/execute/
+    finish) – genau einmal. Nachweis je Typ: neu erzeugte Fachobjekte tragen
+    die erzeugende Mutations-ID in `client_mutation_id` (partieller UNIQUE-
+    Index auf `machine_damages`, `missing_accessory_cases`, `handover_photos`,
+    `return_photos`, `damage_photos`, `handover_signatures`,
+    `return_signatures`; die Domainservices nehmen dafür einen optionalen
+    `operationId` entgegen, schreiben ihn und geben bei Replay die bestehende
+    Zeile zurück, Online-Routen bleiben unverändert). Zustandsänderungen werden
+    am Zielzustand erkannt (`handover.assign`: Slot trägt die Maschine;
+    `prepare`: Slot vorbereitet; `check_machine`: geprüft; `item_quantity`:
+    Ist == Erfassung; `recipient`/`returner`: Felder gleich; `return.accessory`/
+    `cleanliness`/`actual_time`: Werte gleich). Finalisierungen und
+    Reinigungsabschluss gelten nur dann als Wirkung dieser Mutation, wenn der
+    Abschluss NACH der Reservierung der Quittung und durch denselben
+    Benutzer erfolgte (`finalized_by`/`cleaned_by`, `finalized_at`/
+    `cleaned_at`) – ein Abschluss durch eine andere Person läuft in die
+    normale Bewertung (ALREADY_FINALIZED/NOT_IN_CLEANING). Lagerbewegungen
+    entstehen so genau einmal, weil eine erkannte Finalisierung nie erneut
+    finalisiert. Medien: Replays derselben Bytes werden schon vor dem Upload
+    per SHA-256 je Kontext dedupliziert (kein zweites Fachobjekt, kein
+    zweiter Storage-Upload); greift nur die `client_mutation_id`-Recovery im
+    Domainservice, wird das bereits hochgeladene Duplikat sofort wieder
+    gelöscht – ein verwaistes Storage-Objekt ist in jedem Fall harmlos
+    (kein Fachbezug, keine Kundendaten im Schlüssel).
   - *Serialisierung je Kontext*: zwei Geräte, die denselben Vorgang gleichzeitig
     abschließen, laufen im Prozess nacheinander – das zweite sieht
     ALREADY_FINALIZED statt eines scheinbaren Erfolgs (§67). Mehrere API-
@@ -1511,9 +1626,31 @@ Keine spontanen Framework-/ORM-Wechsel (CLAUDE.md „Dependencies“).
     QR im Tabletmodus bietet auch den Ausgabe-Kontext an (§51); Speicher-
     warnung im Kopfbereich und nach jedem gespeicherten Medium (§43);
     Statusbezeichnungen SYNCHRONISIERUNG … / SYNCHRONISIERT (§40).
-- **Bewusst akzeptierte Restrisiken (dokumentiert, nicht gebaut)**: (1) Ein
-  offline geöffnetes PDF liegt in einem Browser-Tab außerhalb der App-Sperre
-  (wie online); (2) das Paket enthält die Preis-Snapshots der Lieferschein-
+- **Phase-8-Finalisierung §2 – QR-Token nie im URL-Pfad**: Die QR-Auflösung
+  läuft nur noch über `POST /staff/machines/qr/resolve` (Body `{ token }`,
+  `machine.view`, neutrales 404 „Dieser QR-Code ist nicht gültig.“) und
+  `POST /staff/returns/resolve-qr` (Body `{ token }`, `return.view` +
+  `process.view_all` + Sichtbarkeit wie bisher). Die alten GET-Routen mit
+  Token im Pfad sind entfernt – ein Rohtoken landet damit weder in Server-/
+  Proxy-Zugriffslogs noch im Browserverlauf. Der Fastify-Request-Serializer
+  gibt ausschließlich Methode + maskierten Pfad aus (nie Query, Header-
+  Werte oder Bodies; `maskLoggedPath` bleibt als Schutz gegen Altpfade,
+  der statische Routenname `resolve` bleibt lesbar); der Error-Handler
+  loggt Datenbankfehler nur mit technischen Metadaten. Für Tests nimmt
+  `buildApp` eine optionale `logDestination` (pino-Stream) entgegen; die
+  Integrationstests fangen das Log auf Level `trace` auf und belegen, dass
+  weder QR-Tokens noch Telefonnummern noch Unterschrift-/Fotobytes (roh,
+  hex, base64) im Log erscheinen (`offline-hardening.integration.test.ts`).
+- **Bewusst akzeptierte Restrisiken (dokumentiert, nicht gebaut)**: (0) Ein
+  Abbruch zwischen Fach-Commit und Quittung erzeugt dank Crash-Recovery kein
+  Duplikat mehr; verbleibende Unschärfe: zwei veraltete „processing“-
+  Mutationen DESSELBEN Benutzers für denselben Abschluss (zwei Geräte) werden
+  beide als „übernommen“ quittiert, weil der Abschluss nach beiden
+  Reservierungen und durch denselben Benutzer erfolgte – fachlich korrekt
+  (genau eine Finalisierung), nur die Zuordnung „welches Gerät hat
+  gewonnen“ ist nicht mehr unterscheidbar. (1) entfällt seit der
+  Finalisierung – offline geöffnete PDFs laufen im geschützten Viewer
+  innerhalb der App-Sperre (siehe unten); (2) das Paket enthält die Preis-Snapshots der Lieferschein-
   positionen und die vorläufigen Kommissions-/Reinigungsbeträge, weil die
   bestehenden Wizards/Editoren sie anzeigen (§22 erlaubt die Anzeige, kein
   Client übermittelt Beträge als autoritativ; keine Settlement-, Kautions-,
@@ -1523,16 +1660,53 @@ Keine spontanen Framework-/ORM-Wechsel (CLAUDE.md „Dependencies“).
   das andere Gerät sieht den Konflikt, lokale Beweise bleiben); (4) die
   Update-Sperre ist je Tab, ein zweiter Tab desselben Geräts kann den neuen
   Worker aktivieren (IndexedDB-Migrationen sind additiv, Daten bleiben);
-  (5) die Konfliktansicht zeigt je Konflikt Aktion, Erfassungszeit, Ursache
-  und die drei Handlungen „Serverstand laden & prüfen / Erneut anwenden /
-  Verwerfen“ (Order §73) – keine Feld-für-Feld-Gegenüberstellung lokaler und
-  Server-Werte (UX_RULES „Werte gegenüberstellen“ wird durch „Serverstand
-  laden & prüfen“ im Wizard erfüllt, nicht in der Liste); (6) die Fehlteil-
+  (5) die Konfliktansicht zeigt je Konflikt Aktion, Erfassungszeit, die
+  Gegenüberstellung „Offline erfasst / Serverstand / Was jetzt zu tun ist“
+  (Finalisierung §4: nur die konfliktrelevanten Felder als Sätze, keine
+  vollständige Feld-für-Feld-Tabelle) und die drei Handlungen „Serverstand
+  laden & prüfen / Erneut anwenden / Verwerfen“ (Order §73); (6) die Fehlteil-
   Obergrenze (Soll-Deckel/-Tropfschalen) wird offline als UX-Vorprüfung aus
   dem Paket gespiegelt, die verbindliche Prüfung bleibt im `ReturnService`
   beim Sync.
 
 
+- **Geschützter Offline-Dokument-Viewer (Finalisierung §5)**: `/dokumente/<id>`
+  (optional `?booking=<bookingId>` für den Rücksprung) liegt wie alle Seiten
+  im `AuthGuard`, entschlüsselt die Dokument-Bytes über die Laufzeit, zeigt
+  sie als Blob-URL in einem `<iframe>` und widerruft die URL sofort beim
+  Verlassen, bei `APP_LOCKED_EVENT` und bei gesperrter Laufzeit (gesperrt
+  rendert der AuthGuard nur den Sperrbildschirm, die Seite unmountet, das
+  Effekt-Cleanup revoziert). Keine Kopie der Klartextbytes in Cache/
+  IndexedDB/localStorage, kein Download-Trigger, kein fremder Tab;
+  `DocumentLink` navigiert offline per Router dorthin, online bleibt der
+  Server-Link. Die HTML-Shells der Viewer-Routen werden mit dem Paket vorab
+  gecacht (nur HTML, keine Bytes).
+- **Offline-Suche (Finalisierung §6)**: `GET /staff/search` wird nur offline
+  lokal beantwortet (online immer der Server): rein im Speicher über die
+  entschlüsselten Buchungs-Snapshots und Maschinen des Pakets –
+  Vorgangsnummer, Kundenname (`customer.name`) und Maschinencode, contains/
+  case-insensitive; kein Suchindex, nichts persistiert (keine Klartext-
+  Indizes, §5). Antwortform wie `SearchResults` des Servers plus
+  `machines: [{ id, machineCode, status }]` und `offline: true`; die Seite
+  zeigt Maschinentreffer und den Hinweis „Offline: Suche nur im geladenen
+  Arbeitspaket“.
+- **Abmelden mit Pending (Finalisierung §7)**: `window.confirm` ist durch
+  einen zweistufigen In-App-Dialog ersetzt (Stufe 1 mit Zählern „X
+  Erfassungen, Y Fotos/Unterschriften“ und „Zuerst synchronisieren
+  (empfohlen)“ → `/sync`, „Abbrechen“, „Lokale Erfassungen verwerfen …“;
+  Stufe 2 „Wirklich verwerfen? …“ mit „Ja, unwiderruflich verwerfen und
+  abmelden“). Erst nach Stufe 2: Lease widerrufen, `wipe()`, `/auth/logout`.
+  Ohne Pending direkter Logout; kein Timeout-Wipe. Der `rekey-refused`-Pfad
+  des Sperrbildschirms nutzt dieselbe Stufe-2-Bestätigung. Zähler: offene +
+  zu prüfende Mutationen und nicht hochgeladene Medien (Klartext-Metadaten,
+  auch im gesperrten Zustand lesbar).
+- **Offline-Override (Finalisierung §8)**: Die Assign-Route des Offline-
+  Routers erlaubt einen Override nur, wenn der lokale Rechte-Snapshot
+  `machine.override_block` enthält (sonst `FORBIDDEN` „Dafür fehlt dir die
+  Berechtigung – online mit berechtigter Person klären.“), Grund bleibt
+  Pflicht, `hardBlocked` nie; der Server prüft beim Sync erneut. Die
+  Ausgabeseite zeigt offline dieselbe Override-Box wie online (Evaluate-
+  Route liefert `overrideRequired`/`problems`).
 - **E2E-Harness**: Die Staff-App läuft im E2E als Produktions-Build (`next
   build && next start`), weil der Turbopack-Dev-Server ohne HMR-Verbindung
   offline nicht hydratisiert. Playwright startet API, Web und Staff immer
@@ -1543,7 +1717,8 @@ Keine spontanen Framework-/ORM-Wechsel (CLAUDE.md „Dependencies“).
   opportunistisch, nicht verlässlich), WebAuthn/Face ID-Entsperrung
   (Schlüsselmodell vorbereitet: zusätzlicher Wrap), Delta-Sync/Paket-Diffs,
   Offline-Zusatzpositionen/Abholperson, Offline-Löschen serverseitiger
-  Schäden/Fehlteile, Konflikt-Vorschau mit Serverwerten nebeneinander
-  (aktuell Serverstand-Link + neutraler Grund), RSC-Payload-Prefetch für
+  Schäden/Fehlteile, vollständige Feld-für-Feld-Konfliktvorschau (aktuell
+  Gegenüberstellung der konfliktrelevanten Felder als Sätze + Serverstand-
+  Link), RSC-Payload-Prefetch für
   nie besuchte Routen (Shell-Prefetch deckt die Paket-Vorgänge ab).
 Shell cwd was reset to /home/user/Sparkoffer.de

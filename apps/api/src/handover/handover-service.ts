@@ -1193,12 +1193,19 @@ export class HandoverService {
     });
   }
 
+  /**
+   * `operationId` (Phase 8): Offline-Mutations-ID, die dieses Foto erzeugt. Sie wird
+   * am Fachobjekt gespeichert; ein Replay derselben ID (Wiederaufnahme nach einem
+   * Abbruch zwischen Fach-Commit und Quittung) liefert das bestehende Foto zurück
+   * statt ein zweites anzulegen. Online-Aufrufe lassen sie weg.
+   */
   async addPhoto(
     actorId: string,
     bookingId: string,
     assignmentId: string,
     input: { bytes: Uint8Array; mimeType: 'image/jpeg' | 'image/png' | 'image/webp' },
     now = new Date(),
+    operationId?: string,
   ): Promise<{ photoId: string }> {
     const handover = await this.assertDraft(bookingId);
     const { assignment, machineId } = await this.assignedSlot(bookingId, assignmentId);
@@ -1216,8 +1223,17 @@ export class HandoverService {
     const key = `handovers/${handover.id}/photos/${assignment.id}-${randomBytes(8).toString('hex')}.${extension}`;
     const sha256 = createHash('sha256').update(input.bytes).digest('hex');
     await this.storage.put(key, input.bytes, { contentType: input.mimeType });
+    let result: { photoId: string; reused: boolean };
     try {
-      return await this.withDraftLock(bookingId, async (tx) => {
+      result = await this.withDraftLock(bookingId, async (tx) => {
+        if (operationId !== undefined) {
+          // Replay unter der Zeilensperre: dieselbe Mutation hat das Foto bereits angelegt.
+          const prior = await tx
+            .select({ id: handoverPhotos.id })
+            .from(handoverPhotos)
+            .where(eq(handoverPhotos.clientMutationId, operationId));
+          if (prior[0] !== undefined) return { photoId: prior[0].id, reused: true };
+        }
         const inserted = await tx
           .insert(handoverPhotos)
           .values({
@@ -1230,9 +1246,10 @@ export class HandoverService {
             sha256,
             takenBy: actorId,
             takenAt: now,
+            clientMutationId: operationId ?? null,
           })
           .returning({ id: handoverPhotos.id });
-        return { photoId: inserted[0]!.id };
+        return { photoId: inserted[0]!.id, reused: false };
       });
     } catch (error) {
       try {
@@ -1242,6 +1259,8 @@ export class HandoverService {
       }
       throw error;
     }
+    if (result.reused) await this.deleteStorageKeys([key]);
+    return { photoId: result.photoId };
   }
 
   /** Nur Metadaten (für die Sichtbarkeitsprüfung VOR jedem Storage-Zugriff). */
@@ -1276,12 +1295,14 @@ export class HandoverService {
 
   // ── Unterschriften (Order §§33–35) ──────────────────────────────────────
 
+  /** `operationId` (Phase 8): siehe `addPhoto` – Replay derselben Mutation ersetzt nicht erneut. */
   async sign(
     actorId: string,
     bookingId: string,
     role: 'customer' | 'staff',
     png: Uint8Array,
     now = new Date(),
+    operationId?: string,
   ): Promise<void> {
     const handover = await this.assertDraft(bookingId);
     if (!signaturePngLooksValid(png)) {
@@ -1313,54 +1334,76 @@ export class HandoverService {
     // Ersetzen unter Zeilensperre der Übergabe: serialisiert mit der
     // Finalisierung (Phase 2 hält dieselbe Sperre) und mit parallelen
     // Unterschriften derselben Rolle – nie zwei Zeilen, nie nach Abschluss.
-    const replacedKeys = await this.db.transaction(async (tx) => {
-      const locked = await tx
-        .select({
-          status: handovers.status,
-          recipientKind: handovers.recipientKind,
-          recipientName: handovers.recipientName,
-        })
-        .from(handovers)
-        .where(eq(handovers.id, handover.id))
-        .for('no key update');
-      if (locked[0]?.status !== 'draft') {
-        throw new AuthError(
-          'CONFLICT',
-          'Die Übergabe ist bereits abgeschlossen und unveränderlich.',
-        );
-      }
-      // Der Kundenname stammt aus der GESPERRTEN Zeile – nie aus einem
-      // ungesperrten Vorab-Read (Empfängerwechsel parallel zur Unterschrift).
-      const signerName =
-        staffSignerName ??
-        (locked[0].recipientKind === null || (locked[0].recipientName ?? '') === ''
-          ? null
-          : (locked[0].recipientName ?? ''));
-      if (signerName === null) {
-        throw new AuthError(
-          'VALIDATION',
-          'Bitte zuerst Kunde oder Vertreter für die Übergabe bestimmen.',
-        );
-      }
-      const old = await tx
-        .delete(handoverSignatures)
-        .where(
-          and(eq(handoverSignatures.handoverId, handover.id), eq(handoverSignatures.role, role)),
-        )
-        .returning({ storageKey: handoverSignatures.storageKey });
-      await tx.insert(handoverSignatures).values({
-        handoverId: handover.id,
-        role,
-        signerName,
-        signerUserId,
-        storageKey: key,
-        mimeType: 'image/png',
-        byteSize: png.length,
-        sha256,
-        signedAt: now,
+    let replacedKeys: string[];
+    try {
+      replacedKeys = await this.db.transaction(async (tx) => {
+        const locked = await tx
+          .select({
+            status: handovers.status,
+            recipientKind: handovers.recipientKind,
+            recipientName: handovers.recipientName,
+          })
+          .from(handovers)
+          .where(eq(handovers.id, handover.id))
+          .for('no key update');
+        if (locked[0]?.status !== 'draft') {
+          throw new AuthError(
+            'CONFLICT',
+            'Die Übergabe ist bereits abgeschlossen und unveränderlich.',
+          );
+        }
+        // Der Kundenname stammt aus der GESPERRTEN Zeile – nie aus einem
+        // ungesperrten Vorab-Read (Empfängerwechsel parallel zur Unterschrift).
+        const signerName =
+          staffSignerName ??
+          (locked[0].recipientKind === null || (locked[0].recipientName ?? '') === ''
+            ? null
+            : (locked[0].recipientName ?? ''));
+        if (signerName === null) {
+          throw new AuthError(
+            'VALIDATION',
+            'Bitte zuerst Kunde oder Vertreter für die Übergabe bestimmen.',
+          );
+        }
+        if (operationId !== undefined) {
+          // Replay derselben Mutation: die Unterschrift liegt bereits vor – nicht erneut
+          // ersetzen, nur das frisch hochgeladene Duplikat verwerfen.
+          const prior = await tx
+            .select({ id: handoverSignatures.id })
+            .from(handoverSignatures)
+            .where(
+              and(
+                eq(handoverSignatures.handoverId, handover.id),
+                eq(handoverSignatures.role, role),
+                eq(handoverSignatures.clientMutationId, operationId),
+              ),
+            );
+          if (prior[0] !== undefined) return [key];
+        }
+        const old = await tx
+          .delete(handoverSignatures)
+          .where(
+            and(eq(handoverSignatures.handoverId, handover.id), eq(handoverSignatures.role, role)),
+          )
+          .returning({ storageKey: handoverSignatures.storageKey });
+        await tx.insert(handoverSignatures).values({
+          handoverId: handover.id,
+          role,
+          signerName,
+          signerUserId,
+          storageKey: key,
+          mimeType: 'image/png',
+          byteSize: png.length,
+          sha256,
+          signedAt: now,
+          clientMutationId: operationId ?? null,
+        });
+        return old.map((row) => row.storageKey);
       });
-      return old.map((row) => row.storageKey);
-    });
+    } catch (error) {
+      await this.deleteStorageKeys([key]);
+      throw error;
+    }
     for (const replaced of replacedKeys) {
       try {
         await this.storage.delete(replaced);

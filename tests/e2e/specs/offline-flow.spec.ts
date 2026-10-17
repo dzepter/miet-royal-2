@@ -921,13 +921,13 @@ test('G: 15-Minuten-Sperre auch offline → sichere Offline-Entsperrung → Pend
   );
   // Abmelden mit ausstehenden Daten: Warnung, kein stilles Löschen (Test 114).
   const mutationsBeforeLogout = await storeCount(staff, 'mutations');
-  let logoutWarning = '';
-  staff.once('dialog', (dialog) => {
-    logoutWarning = dialog.message();
-    void dialog.dismiss();
-  });
   await staff.getByRole('button', { name: 'Abmelden' }).click();
-  await expect.poll(() => logoutWarning).toContain('nicht synchronisierte Daten');
+  const logoutDialog = staff.getByTestId('logout-dialog');
+  await expect(logoutDialog).toBeVisible();
+  await expect(logoutDialog).toContainText('nicht synchronisierte Erfassungen');
+  await expect(logoutDialog).toContainText('unwiderruflich');
+  await logoutDialog.getByTestId('logout-cancel').click();
+  await expect(logoutDialog).toHaveCount(0);
   await expect(staff.getByRole('heading', { name: 'Reinigung', exact: true })).toBeVisible();
   expect(await storeCount(staff, 'mutations')).toBe(mutationsBeforeLogout);
 

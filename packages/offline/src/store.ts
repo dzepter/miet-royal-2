@@ -10,6 +10,7 @@
 import { decryptBytes, decryptJson, encryptBytes, encryptJson } from './crypto.ts';
 import type { OfflineDb, StoreName } from './db.ts';
 import type {
+  ConflictDetails,
   ContextKind,
   MediaPurpose,
   MutationSummary,
@@ -104,12 +105,16 @@ export interface ConflictInput {
   status: 'conflict' | 'rejected';
   message: string | null;
   serverState: unknown;
+  /** Fachliche Gegenüberstellung des Servers (Phase-8-Finalisierung §4) – null, wenn nicht geliefert. */
+  details: ConflictDetails | null;
   processedAt: string;
 }
 
+/** Verschlüsselter Konflikt-Payload: { message, serverState, details }. */
 export interface ConflictPayload {
   message: string | null;
   serverState: unknown;
+  details: ConflictDetails | null;
 }
 
 export type MutationPatch = Partial<
@@ -513,10 +518,20 @@ export class OfflineStore {
     return records.map(({ payload: _encrypted, ...rest }) => rest);
   }
 
+  /** Noch nicht hochgeladene Fotos/Unterschriften (Logout-Warnung, §38) – nur Klartext-Metadaten. */
+  async countPendingMedia(): Promise<number> {
+    const records = await this.db.getAll<MediaRecord>('media');
+    return records.filter((m) => m.status === 'pending').length;
+  }
+
   // ── Konflikte / Receipts ─────────────────────────────────────────────────
 
   async putConflict(clientMutationId: string, input: ConflictInput): Promise<void> {
-    const payload: ConflictPayload = { message: input.message, serverState: input.serverState };
+    const payload: ConflictPayload = {
+      message: input.message,
+      serverState: input.serverState,
+      details: input.details,
+    };
     await this.db.put<ConflictRecord>('conflicts', {
       clientMutationId,
       code: input.code,

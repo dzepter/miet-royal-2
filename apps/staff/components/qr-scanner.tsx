@@ -12,6 +12,8 @@ import { apiFetch } from '../lib/api';
  * Phase 8: Über `resolve` kann der Aufrufer die Auflösung selbst übernehmen
  * (z. B. Tabletmodus: Maschine + passender Ausgabe-/Rückgabe-Kontext); offline
  * beantwortet der Offline-Router die Resolver-Route über den QR-Hash.
+ * Der Token wird ausschließlich als POST-Body (`{ token }`) übertragen – nie
+ * in der URL, nie in `console.*` (Phase-8-Finalisierung).
  */
 interface BarcodeDetectorLike {
   detect(source: HTMLVideoElement): Promise<{ rawValue: string }[]>;
@@ -29,13 +31,13 @@ export function QrScanner<
 >({
   onResolved,
   onClose,
-  resolvePath = '/staff/machines/qr/',
+  resolveEndpoint = '/staff/machines/qr/resolve',
   resolve: customResolve,
 }: {
   onResolved: (machine: T) => void;
   onClose: () => void;
-  /** Resolver-Route (Phase 7: Rückgabe-Einstieg über den ausgegebenen Vorgang). */
-  resolvePath?: string;
+  /** Resolver-Route (POST, Body `{ token }`; Phase 7: Rückgabe-Einstieg über den ausgegebenen Vorgang). */
+  resolveEndpoint?: string;
   /** Eigene Auflösung des Tokens (Phase 8) – ersetzt den Aufruf der Resolver-Route. */
   resolve?: (token: string) => Promise<{ data: T | null; errorMessage: string | null }>;
 }) {
@@ -53,7 +55,7 @@ export function QrScanner<
     const result =
       customResolve !== undefined
         ? await customResolve(token)
-        : await apiFetch<T>(`${resolvePath}${encodeURIComponent(token)}`);
+        : await apiFetch<T>(resolveEndpoint, { method: 'POST', body: { token } });
     setBusy(false);
     if (result.data === null) {
       setError(result.errorMessage ?? 'Dieser QR-Code ist nicht gültig.');

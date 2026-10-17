@@ -69,6 +69,8 @@ interface RouterContext {
   runtime: OfflineRuntime;
   offline: boolean;
   staff: { firstName: string; lastName: string };
+  /** Rechte-Snapshot der Lease (nur Darstellung/UX-Vorprüfung – der Server prüft beim Sync erneut). */
+  permissions: readonly string[];
   machines: () => Promise<OfflineMachineSnapshot[]>;
 }
 
@@ -84,6 +86,37 @@ interface Route {
 }
 
 // ── Helfer ──────────────────────────────────────────────────────────────────
+
+/** QR-Token aus dem POST-Body (`{ token }`) – nie protokollieren, nie in die URL. */
+function qrTokenFrom(body: unknown): string {
+  const input = body as { token?: unknown } | null;
+  return typeof input?.token === 'string' ? input.token : '';
+}
+
+const MAIN_STATUSES = ['open', 'completed', 'reopened', 'cancelled'] as const;
+type MainStatus = (typeof MAIN_STATUSES)[number];
+function isMainStatus(value: string): value is MainStatus {
+  return (MAIN_STATUSES as readonly string[]).includes(value);
+}
+
+/**
+ * Antwort der Offline-Suche (Finalisierung §6): Form der Server-`SearchResults`
+ * plus Maschinentreffer und `offline: true`. Rein im Speicher aus den
+ * entschlüsselten Snapshots – kein Index, nichts persistiert.
+ */
+export interface OfflineSearchResults {
+  customers: { id: string; displayName: string; email: string | null; phone: string | null }[];
+  processes: {
+    id: string;
+    processNumber: string;
+    mainStatus: MainStatus;
+    eventDate: string | null;
+    customerDisplayName: string;
+  }[];
+  machines: { id: string; machineCode: string; status: string }[];
+  canViewCompleted: boolean;
+  offline: true;
+}
 
 function berlinDayOf(iso: string): string {
   return new Date(iso).toLocaleDateString('en-CA', { timeZone: 'Europe/Berlin' });
@@ -515,6 +548,17 @@ const routes: Route[] = [
           'OVERRIDE_REQUIRED',
           'Diese Zuweisung erfordert eine bewusste Bestätigung mit Begründung.',
         );
+      // Override offline nur mit dem Recht im lokalen Rechte-Snapshot (Finalisierung §8);
+      // der Server prüft beim Sync erneut gegen die Datenbank.
+      if (
+        (candidate.overrideRequired || reason !== '') &&
+        !ctx.permissions.includes('machine.override_block')
+      )
+        return fail(
+          'FORBIDDEN',
+          'Dafür fehlt dir die Berechtigung – online mit berechtigter Person klären.',
+          403,
+        );
       const serverSlot = snapshot.handover?.slots.find((s) => s.id === assignmentId) ?? null;
       await enqueueBooking(
         ctx,
@@ -773,10 +817,10 @@ const routes: Route[] = [
     },
   },
   {
-    method: 'GET',
-    pattern: new RegExp(`^/staff/returns/resolve-qr/${ANY}$`),
-    async handle(ctx, [token]) {
-      const machine = await ctx.runtime.findMachineByQrToken(decodeURIComponent(token ?? ''));
+    method: 'POST',
+    pattern: /^\/staff\/returns\/resolve-qr$/,
+    async handle(ctx, _params, _query, body) {
+      const machine = await ctx.runtime.findMachineByQrToken(qrTokenFrom(body));
       if (machine === null) return fail('NOT_FOUND', 'Dieser QR-Code ist nicht gültig.', 404);
       const snapshot = await returnContextForMachine(ctx, machine.machineId);
       if (snapshot === null)
@@ -1298,12 +1342,60 @@ const routes: Route[] = [
     },
   },
   {
-    method: 'GET',
-    pattern: new RegExp(`^/staff/machines/qr/${ANY}$`),
-    async handle(ctx, [token]) {
-      const machine = await ctx.runtime.findMachineByQrToken(decodeURIComponent(token ?? ''));
+    method: 'POST',
+    pattern: /^\/staff\/machines\/qr\/resolve$/,
+    async handle(ctx, _params, _query, body) {
+      const machine = await ctx.runtime.findMachineByQrToken(qrTokenFrom(body));
       if (machine === null) return fail('NOT_FOUND', 'Dieser QR-Code ist nicht gültig.', 404);
       return ok({ machineId: machine.machineId, machineCode: machine.machineCode });
+    },
+  },
+
+  // ── Suche (Finalisierung §6): nur offline, im Speicher über die entschlüsselten Snapshots ──
+  {
+    method: 'GET',
+    pattern: /^\/staff\/search$/,
+    async handle(ctx, _params, query) {
+      if (!ctx.offline) return ONLINE_REQUIRED;
+      const needle = (query.get('q') ?? '').trim().toLowerCase();
+      const processes: OfflineSearchResults['processes'] = [];
+      const machines: OfflineSearchResults['machines'] = [];
+      if (needle.length >= 2) {
+        const matches = (value: string | null | undefined) =>
+          typeof value === 'string' && value.toLowerCase().includes(needle);
+        for (const snapshot of await ctx.runtime.listBookings()) {
+          if (!matches(snapshot.processNumber) && !matches(snapshot.customer.name)) continue;
+          const status =
+            snapshot.handover?.booking.processStatus ??
+            snapshot.return?.booking.processStatus ??
+            'open';
+          processes.push({
+            id: snapshot.processId,
+            processNumber: snapshot.processNumber,
+            mainStatus: isMainStatus(status) ? status : 'open',
+            eventDate: snapshot.handover?.booking.eventDate ?? null,
+            customerDisplayName: snapshot.customer.name,
+          });
+        }
+        for (const machine of await ctx.machines()) {
+          if (!matches(machine.machineCode)) continue;
+          machines.push({
+            id: machine.machineId,
+            machineCode: machine.machineCode,
+            status: machine.status,
+          });
+        }
+        processes.sort((a, b) => a.processNumber.localeCompare(b.processNumber));
+        machines.sort((a, b) => a.machineCode.localeCompare(b.machineCode));
+      }
+      const results: OfflineSearchResults = {
+        customers: [],
+        processes,
+        machines,
+        canViewCompleted: false,
+        offline: true,
+      };
+      return ok(results);
     },
   },
   {
@@ -1485,6 +1577,7 @@ export async function routeOffline(
     runtime,
     offline,
     staff: { firstName: identity.firstName, lastName: identity.lastName },
+    permissions: state.permissions,
     machines: () => {
       if (machinesCache === null) machinesCache = runtime.listMachines();
       return machinesCache;

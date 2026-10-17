@@ -9,6 +9,7 @@ import {
   documents,
   machineAssignmentOverrides,
   machineAssignments,
+  machineDamages,
   machines,
   missingAccessoryCases,
   processes,
@@ -943,12 +944,21 @@ export class ReturnService {
       description?: string | null | undefined;
     },
     now = new Date(),
+    operationId?: string,
   ): Promise<{ caseId: string }> {
     if (!Number.isInteger(input.missingQuantity) || input.missingQuantity < 1) {
       throw new AuthError('VALIDATION', 'Die fehlende Menge muss eine ganze Zahl ab 1 sein.');
     }
     return this.withDraftLock(bookingId, async (tx, ret) => {
       const rm = await this.returnMachineOf(tx, ret.id, returnMachineId);
+      if (operationId !== undefined) {
+        // Replay derselben Offline-Mutation (Phase 8): bestehenden Fall zurückgeben.
+        const prior = await tx
+          .select({ id: missingAccessoryCases.id })
+          .from(missingAccessoryCases)
+          .where(eq(missingAccessoryCases.clientMutationId, operationId));
+        if (prior[0] !== undefined) return { caseId: prior[0].id };
+      }
       const expected = input.accessoryType === 'lid' ? rm.expectedLids : rm.expectedDripTrays;
       const existing = await tx
         .select({ quantity: missingAccessoryCases.missingQuantity })
@@ -980,6 +990,7 @@ export class ReturnService {
           requiresFinancialReview: true,
           createdBy: actorId,
           createdAt: now,
+          clientMutationId: operationId ?? null,
         })
         .returning({ id: missingAccessoryCases.id });
       await tx
@@ -1076,6 +1087,7 @@ export class ReturnService {
     returnMachineId: string,
     input: { bytes: Uint8Array; mimeType: ImageMimeType },
     now = new Date(),
+    operationId?: string,
   ): Promise<{ photoId: string }> {
     if (!embeddablePhotoLooksValid(input.bytes, input.mimeType, PHOTO_MAX_BYTES)) {
       throw new AuthError(
@@ -1088,9 +1100,18 @@ export class ReturnService {
     const key = `returns/${ret.id}/photos/${returnMachineId}-${randomBytes(8).toString('hex')}.${imageExtension(input.mimeType)}`;
     const sha256 = createHash('sha256').update(input.bytes).digest('hex');
     await this.storage.put(key, input.bytes, { contentType: input.mimeType });
+    let result: { photoId: string; reused: boolean };
     try {
-      return await this.withDraftLock(bookingId, async (tx, locked) => {
+      result = await this.withDraftLock(bookingId, async (tx, locked) => {
         const rm = await this.returnMachineOf(tx, locked.id, returnMachineId);
+        if (operationId !== undefined) {
+          // Replay derselben Offline-Mutation (Phase 8): bestehendes Foto zurückgeben.
+          const prior = await tx
+            .select({ id: returnPhotos.id })
+            .from(returnPhotos)
+            .where(eq(returnPhotos.clientMutationId, operationId));
+          if (prior[0] !== undefined) return { photoId: prior[0].id, reused: true };
+        }
         const inserted = await tx
           .insert(returnPhotos)
           .values({
@@ -1103,14 +1124,17 @@ export class ReturnService {
             sha256,
             takenBy: actorId,
             takenAt: now,
+            clientMutationId: operationId ?? null,
           })
           .returning({ id: returnPhotos.id });
-        return { photoId: inserted[0]!.id };
+        return { photoId: inserted[0]!.id, reused: false };
       });
     } catch (error) {
       await this.deleteKeys([key]);
       throw error;
     }
+    if (result.reused) await this.deleteKeys([key]);
+    return { photoId: result.photoId };
   }
 
   async photoMeta(photoId: string): Promise<{ processId: string; mimeType: string }> {
@@ -1184,9 +1208,18 @@ export class ReturnService {
       markers: readonly DamageMarkerInput[];
     },
     now = new Date(),
+    operationId?: string,
   ): Promise<{ damageId: string }> {
     return this.withDraftLock(bookingId, async (tx, ret) => {
       const rm = await this.returnMachineOf(tx, ret.id, returnMachineId);
+      if (operationId !== undefined) {
+        // Replay derselben Offline-Mutation (Phase 8): bestehenden Schaden zurückgeben.
+        const prior = await tx
+          .select({ id: machineDamages.id })
+          .from(machineDamages)
+          .where(eq(machineDamages.clientMutationId, operationId));
+        if (prior[0] !== undefined) return { damageId: prior[0].id };
+      }
       const damageId = await this.damages.insertWithin(tx, {
         actorId,
         machineId: rm.machineId,
@@ -1198,6 +1231,7 @@ export class ReturnService {
         origin: 'return',
         activatedAt: null,
         now,
+        clientMutationId: operationId ?? null,
       });
       return { damageId };
     });
@@ -1219,6 +1253,7 @@ export class ReturnService {
     role: 'customer' | 'staff',
     png: Uint8Array,
     now = new Date(),
+    operationId?: string,
   ): Promise<void> {
     if (!signaturePngLooksValid(png)) {
       throw new AuthError(
@@ -1256,6 +1291,21 @@ export class ReturnService {
             'Bitte zuerst die anwesende Rückgabeperson (Kunde oder Vertreter) bestimmen.',
           );
         }
+        if (operationId !== undefined) {
+          // Replay derselben Offline-Mutation (Phase 8): Unterschrift liegt bereits vor –
+          // nicht erneut ersetzen, nur das frisch hochgeladene Duplikat verwerfen.
+          const prior = await tx
+            .select({ id: returnSignatures.id })
+            .from(returnSignatures)
+            .where(
+              and(
+                eq(returnSignatures.returnId, locked.id),
+                eq(returnSignatures.role, role),
+                eq(returnSignatures.clientMutationId, operationId),
+              ),
+            );
+          if (prior[0] !== undefined) return [key];
+        }
         const old = await tx
           .delete(returnSignatures)
           .where(and(eq(returnSignatures.returnId, locked.id), eq(returnSignatures.role, role)))
@@ -1270,6 +1320,7 @@ export class ReturnService {
           byteSize: png.length,
           sha256,
           signedAt: now,
+          clientMutationId: operationId ?? null,
         });
         return old.map((row) => row.storageKey);
       });

@@ -308,8 +308,9 @@ describe('19.–22. QR-Identifier', () => {
     const { admin } = await adminSession();
     const machine = await machineByCode(ctx.db, 'MR-10-01-04');
     const anonymous = await ctx.app.inject({
-      method: 'GET',
-      url: `/staff/machines/qr/${machine.qrToken}`,
+      method: 'POST',
+      url: '/staff/machines/qr/resolve',
+      payload: { token: machine.qrToken },
     });
     expect(anonymous.statusCode).toBe(401);
     const outsider = await createStaffWithPermissions(ctx, admin.id, {
@@ -320,8 +321,9 @@ describe('19.–22. QR-Identifier', () => {
       permissionKeys: ['customer.view'],
     });
     const forbidden = await ctx.app.inject({
-      method: 'GET',
-      url: `/staff/machines/qr/${machine.qrToken}`,
+      method: 'POST',
+      url: '/staff/machines/qr/resolve',
+      payload: { token: machine.qrToken },
       headers: { cookie: outsider.cookie },
     });
     expect(forbidden.statusCode).toBe(403);
@@ -333,8 +335,9 @@ describe('19.–22. QR-Identifier', () => {
     const { cookie } = await adminSession();
     for (const token of ['0'.repeat(48), 'nicht-hex-token-123', 'a'.repeat(9)]) {
       const response = await ctx.app.inject({
-        method: 'GET',
-        url: `/staff/machines/qr/${token}`,
+        method: 'POST',
+        url: '/staff/machines/qr/resolve',
+        payload: { token: token },
         headers: { cookie },
       });
       expect(response.statusCode, token).toBe(404);

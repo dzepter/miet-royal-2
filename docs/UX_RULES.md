@@ -65,7 +65,11 @@ Ausgabe, Rückgabe, QR scannen, Reinigung.
 ## Offline
 Klarer Banner:
 „Offline – X Änderungen warten auf Synchronisierung“.
-Konflikt: Werte gegenüberstellen, Nutzer entscheidet.
+Konflikt: Werte gegenüberstellen („Offline erfasst / Serverstand /
+Was jetzt zu tun ist“), Nutzer entscheidet.
+Offline-Suche nur im geladenen Arbeitspaket, mit sichtbarem Hinweis.
+Abmelden mit nicht synchronisierten Erfassungen: zweistufige Rückfrage,
+„Zuerst synchronisieren (empfohlen)“ als Hauptaktion – nie stiller Verlust.
 
 ## Suche
 Teiltreffer/Tippfehler, Suche nach MR-Nummer, Kunde, Telefon,

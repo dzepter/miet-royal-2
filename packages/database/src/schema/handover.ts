@@ -450,8 +450,19 @@ export const handoverPhotos = pgTable(
       .notNull()
       .references(() => staffUsers.id),
     takenAt: timestamp('taken_at', { withTimezone: true }).notNull().defaultNow(),
+    /**
+     * Phase 8: Offline-Mutations-ID, die dieses Foto erzeugt hat – macht die
+     * Wiederaufnahme nach einem Abbruch zwischen Fach-Commit und Quittung
+     * nachweisbar (genau ein Fachobjekt je Mutation). NULL bei Online-Erfassung.
+     */
+    clientMutationId: uuid('client_mutation_id'),
   },
-  (table) => [index('handover_photos_handover_idx').on(table.handoverId)],
+  (table) => [
+    index('handover_photos_handover_idx').on(table.handoverId),
+    uniqueIndex('handover_photos_client_mutation_unique')
+      .on(table.clientMutationId)
+      .where(sql`${table.clientMutationId} IS NOT NULL`),
+  ],
 );
 
 export const handoverSignatureRole = pgEnum('handover_signature_role', ['customer', 'staff']);
@@ -477,8 +488,15 @@ export const handoverSignatures = pgTable(
     byteSize: integer('byte_size').notNull(),
     sha256: text('sha256').notNull(),
     signedAt: timestamp('signed_at', { withTimezone: true }).notNull().defaultNow(),
+    /** Phase 8: erzeugende Offline-Mutations-ID (Wiederaufnahme nach Abbruch); NULL online. */
+    clientMutationId: uuid('client_mutation_id'),
   },
-  (table) => [uniqueIndex('handover_signatures_role_unique').on(table.handoverId, table.role)],
+  (table) => [
+    uniqueIndex('handover_signatures_role_unique').on(table.handoverId, table.role),
+    uniqueIndex('handover_signatures_client_mutation_unique')
+      .on(table.clientMutationId)
+      .where(sql`${table.clientMutationId} IS NOT NULL`),
+  ],
 );
 
 // ── Dokumentpaket / Outbox-Grundlage (Order §39) ──────────────────────────

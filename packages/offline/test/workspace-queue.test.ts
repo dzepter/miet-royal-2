@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { generateDek, randomBytes, toBase64Url } from '../src/crypto.ts';
 import { OfflineDb, deleteOfflineDatabase, offlineDbName, openOfflineDatabase } from '../src/db.ts';
 import {
@@ -12,6 +12,7 @@ import {
 } from '../src/queue.ts';
 import { OfflineStore } from '../src/store.ts';
 import { OfflineWorkspace, WorkspaceRekeyRefusedError, type LeaseGrant } from '../src/workspace.ts';
+import { createTestSigner, type TestSigner } from './lease-signer.ts';
 
 const names: string[] = [];
 async function fresh(): Promise<{ db: OfflineDb; store: OfflineStore }> {
@@ -25,21 +26,13 @@ afterEach(async () => {
 });
 
 const IDENTITY = { userId: 'user-1', environment: 'development' as const, deviceId: 'device-1' };
-function grant(overrides: Partial<LeaseGrant> = {}): LeaseGrant {
-  const issuedAt = new Date('2026-09-28T08:00:00.000Z');
-  return {
-    leaseId: 'lease-1',
-    userId: 'user-1',
-    environment: 'development',
-    deviceId: 'device-1',
-    issuedAt: issuedAt.toISOString(),
-    expiresAt: new Date(issuedAt.getTime() + 72 * 3_600_000).toISOString(),
-    leaseSecret: toBase64Url(randomBytes(32)),
-    permissions: ['return.perform', 'handover.perform'],
-    firstName: 'Erika',
-    lastName: 'E2E',
-    ...overrides,
-  };
+/** Server-Signer (Ed25519) der Tests – jeder Grant trägt einen gültig signierten Claim (§1). */
+let signer: TestSigner;
+beforeAll(async () => {
+  signer = await createTestSigner();
+});
+function grant(overrides: Partial<LeaseGrant> = {}): Promise<LeaseGrant> {
+  return signer.grant(overrides);
 }
 
 describe('Offline-Workspace: Entsperrung und Lease (§§7/8, Tests 9–13, 103)', () => {
@@ -47,7 +40,7 @@ describe('Offline-Workspace: Entsperrung und Lease (§§7/8, Tests 9–13, 103)'
     const { store } = await fresh();
     let now = new Date('2026-09-28T09:00:00.000Z');
     const ws = new OfflineWorkspace(store, IDENTITY, () => now);
-    await ws.authorizeOnline(grant(), 'geheimes-passwort-1');
+    await ws.authorizeOnline(await grant(), 'geheimes-passwort-1');
     await store.putBooking(
       { bookingId: 'b', processId: 'p', packageId: 'k', relevantDay: null, updatedAt: 'v' },
       { name: 'Kunde' },
@@ -68,8 +61,8 @@ describe('Offline-Workspace: Entsperrung und Lease (§§7/8, Tests 9–13, 103)'
 
   it('14. der Workspace-Datensatz enthält weder Passwort noch Passworthash noch TOTP-Secrets', async () => {
     const { store, db } = await fresh();
-    const ws = new OfflineWorkspace(store, IDENTITY, () => new Date());
-    const g = grant();
+    const ws = new OfflineWorkspace(store, IDENTITY, () => new Date('2026-09-28T09:00:00.000Z'));
+    const g = await grant();
     await ws.authorizeOnline(g, 'geheimes-passwort-1');
     const raw = JSON.stringify(await db.getAll('workspace'), (_k, v) =>
       v instanceof Uint8Array ? `<${v.length} bytes>` : v,
@@ -85,7 +78,7 @@ describe('Offline-Workspace: Entsperrung und Lease (§§7/8, Tests 9–13, 103)'
     const { store } = await fresh();
     let now = new Date('2026-09-28T09:00:00.000Z');
     const ws = new OfflineWorkspace(store, IDENTITY, () => now);
-    await ws.authorizeOnline(grant(), 'geheimes-passwort-1');
+    await ws.authorizeOnline(await grant(), 'geheimes-passwort-1');
     await store.putBooking(
       { bookingId: 'b', processId: 'p', packageId: 'k', relevantDay: null, updatedAt: 'v' },
       { name: 'Kunde' },
@@ -103,13 +96,19 @@ describe('Offline-Workspace: Entsperrung und Lease (§§7/8, Tests 9–13, 103)'
     expect((await ws.leaseState()).kind).toBe('expired');
     // Ohne Passwort und ohne Schlüssel darf der bestehende Arbeitsbereich nicht
     // still neu verschlüsselt werden (Pending-Daten wären verloren).
+    const freshLease = {
+      issuedAt: now.toISOString(),
+      expiresAt: new Date(now.getTime() + 72 * 3_600_000).toISOString(),
+    };
     await expect(
-      ws.authorizeOnline(grant({ leaseId: 'lease-x' }), null, { allowNewDek: false }),
+      ws.authorizeOnline(await grant({ leaseId: 'lease-x', ...freshLease }), null, {
+        allowNewDek: false,
+      }),
     ).rejects.toBeInstanceOf(WorkspaceRekeyRefusedError);
     // Online erneut autorisiert: neue Lease, gleicher DEK (bestehende Daten lesbar).
     store.setKey(null);
     await ws.authorizeOnline(
-      grant({
+      await grant({
         leaseId: 'lease-2',
         issuedAt: now.toISOString(),
         expiresAt: new Date(now.getTime() + 72 * 3_600_000).toISOString(),
@@ -135,7 +134,7 @@ describe('Offline-Workspace: Entsperrung und Lease (§§7/8, Tests 9–13, 103)'
     const { store } = await fresh();
     let now = new Date('2026-09-28T09:00:00.000Z');
     const ws = new OfflineWorkspace(store, IDENTITY, () => now);
-    await ws.authorizeOnline(grant(), 'geheimes-passwort-1');
+    await ws.authorizeOnline(await grant(), 'geheimes-passwort-1');
     const key = ws.currentKey();
     expect(key).not.toBeNull();
     ws.lock();
@@ -159,7 +158,7 @@ describe('Offline-Workspace: Entsperrung und Lease (§§7/8, Tests 9–13, 103)'
     const { store } = await fresh();
     const now = new Date('2026-09-28T09:00:00.000Z');
     const ws = new OfflineWorkspace(store, IDENTITY, () => now);
-    await ws.authorizeOnline(grant(), 'geheimes-passwort-1');
+    await ws.authorizeOnline(await grant(), 'geheimes-passwort-1');
     ws.lock();
     const record = (await store.getWorkspace())!;
     await store.putWorkspace({
@@ -185,7 +184,7 @@ describe('Offline-Workspace: Entsperrung und Lease (§§7/8, Tests 9–13, 103)'
   it('Stille Online-Entsperrung nur mit dem passenden Lease-Secret; Widerruf entwertet die Lease lokal ohne Datenverlust', async () => {
     const { store } = await fresh();
     const ws = new OfflineWorkspace(store, IDENTITY, () => new Date('2026-09-28T09:00:00.000Z'));
-    const g = grant();
+    const g = await grant();
     await ws.authorizeOnline(g, null);
     await store.putBooking(
       { bookingId: 'b', processId: 'p', packageId: 'k', relevantDay: null, updatedAt: 'v' },
@@ -207,7 +206,7 @@ describe('Offline-Workspace: Entsperrung und Lease (§§7/8, Tests 9–13, 103)'
     // Daten sind nicht vernichtet: nach erneuter Online-Autorisierung (mit Passwort) lesbar.
     expect((await store.getWorkspace())?.wrappedByLease).toBeNull();
     await ws
-      .authorizeOnline(grant({ leaseId: 'lease-2' }), 'geheimes-passwort-1', {
+      .authorizeOnline(await grant({ leaseId: 'lease-2' }), 'geheimes-passwort-1', {
         allowNewDek: false,
       })
       .catch((error: unknown) => {

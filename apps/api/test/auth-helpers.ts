@@ -27,12 +27,18 @@ export interface TestContext {
 }
 
 export async function createTestContext(
-  options: { rateLimitEnabled?: boolean; poolMax?: number } = {},
+  options: {
+    rateLimitEnabled?: boolean;
+    poolMax?: number;
+    /** Log-Ziel zum Auffangen des Serverlogs (Default: stdout, Level error). */
+    logDestination?: NodeJS.WritableStream;
+    logLevel?: 'fatal' | 'error' | 'warn' | 'info' | 'debug' | 'trace';
+  } = {},
 ): Promise<TestContext> {
   const config = loadConfig({
     APP_ENV: 'development',
     DATABASE_URL: TEST_DATABASE_URL,
-    LOG_LEVEL: 'error',
+    LOG_LEVEL: options.logLevel ?? 'error',
   });
   // TEST_POOL_MAX=1 macht jede verschachtelte Pool-Akquise unter einer
   // Transaktion als Verbindungs-Timeout sichtbar (Phase-6-Finalisierung A1).
@@ -51,6 +57,7 @@ export async function createTestContext(
     mailAdapter: mail,
     rateLimitEnabled: options.rateLimitEnabled ?? false,
     storage,
+    ...(options.logDestination === undefined ? {} : { logDestination: options.logDestination }),
   });
   await app.ready();
   const auth = new StaffAuthService(db, config, mail);

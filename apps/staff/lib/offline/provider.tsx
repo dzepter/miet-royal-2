@@ -160,6 +160,7 @@ async function prefetchShells(runtime: OfflineRuntime): Promise<void> {
     '/reinigung',
     '/sync',
     '/maschinen',
+    '/suche',
   ]);
   for (const booking of await runtime.listBookings()) {
     if (booking.handover !== null) {
@@ -168,6 +169,8 @@ async function prefetchShells(runtime: OfflineRuntime): Promise<void> {
     }
     if (booking.return !== null || booking.returnStartable)
       urls.add(`/vorgaenge/${booking.processId}/rueckgabe`);
+    // Geschützter Offline-Dokument-Viewer (Finalisierung §5) – nur die HTML-Shell, keine Bytes.
+    for (const document of booking.documents) urls.add(`/dokumente/${document.id}`);
   }
   for (const machine of await runtime.listMachines()) urls.add(`/maschinen/${machine.machineId}`);
   await prefetchPages([...urls]);

@@ -3,6 +3,7 @@
 import {
   SessionInvalidError,
   TransientSyncError,
+  type ConflictDetails,
   type OfflineEnvironment,
   type SyncMutationInput,
   type SyncOutcome,
@@ -95,12 +96,15 @@ function mapOutcome(body: Partial<SyncOutcomeResponse> | null, fallbackAt: strin
   if (body?.status === 'applied') {
     return { status: 'applied', resultRef: body.resultRef ?? null, processedAt };
   }
+  // Fachliche Gegenüberstellung (§4) – nur kurze Sätze, wird verschlüsselt gespeichert.
+  const details = conflictDetails(body?.details);
   if (body?.status === 'conflict') {
     return {
       status: 'conflict',
       code: body.code ?? 'SERVER_STATE_CHANGED',
       message: body.message ?? 'Der Serverstand hat sich geändert – bitte prüfen.',
       serverState: null,
+      details,
       processedAt,
     };
   }
@@ -108,6 +112,20 @@ function mapOutcome(body: Partial<SyncOutcomeResponse> | null, fallbackAt: strin
     status: 'rejected',
     code: body?.code ?? 'VALIDATION',
     message: body?.message ?? 'Die Übertragung wurde abgelehnt.',
+    details,
     processedAt,
   };
+}
+
+function conflictDetails(value: unknown): ConflictDetails | null {
+  if (typeof value !== 'object' || value === null) return null;
+  const raw = value as Record<string, unknown>;
+  const text = (key: string): string | null =>
+    typeof raw[key] === 'string' && (raw[key] as string).trim() !== ''
+      ? (raw[key] as string)
+      : null;
+  const details = { offline: text('offline'), server: text('server'), action: text('action') };
+  return details.offline === null && details.server === null && details.action === null
+    ? null
+    : details;
 }

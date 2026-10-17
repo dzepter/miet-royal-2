@@ -307,28 +307,32 @@ describe('122.–130. IDOR und Rechte', () => {
     const machine = await machineByCode(ctx.db, 'MR-10-01-01');
     const noRight = await staffWith(admin.id, ['machine.view', 'process.view_all'], 'Qr');
     const denied = await ctx.app.inject({
-      method: 'GET',
-      url: `/staff/returns/resolve-qr/${machine.qrToken}`,
+      method: 'POST',
+      url: '/staff/returns/resolve-qr',
+      payload: { token: machine.qrToken },
       headers: { cookie: noRight.cookie },
     });
     expect(denied.statusCode).toBe(403);
     const blind = await staffWith(admin.id, ['return.view'], 'Qrblind');
     const invisible = await ctx.app.inject({
-      method: 'GET',
-      url: `/staff/returns/resolve-qr/${machine.qrToken}`,
+      method: 'POST',
+      url: '/staff/returns/resolve-qr',
+      payload: { token: machine.qrToken },
       headers: { cookie: blind.cookie },
     });
     expect(invisible.statusCode).toBe(403);
     const ok = await staffWith(admin.id, ['return.view', 'process.view_all'], 'Qrok');
     const allowed = await ctx.app.inject({
-      method: 'GET',
-      url: `/staff/returns/resolve-qr/${machine.qrToken}`,
+      method: 'POST',
+      url: '/staff/returns/resolve-qr',
+      payload: { token: machine.qrToken },
       headers: { cookie: ok.cookie },
     });
     expect(allowed.statusCode).toBe(200);
     const anonymous = await ctx.app.inject({
-      method: 'GET',
-      url: `/staff/returns/resolve-qr/${machine.qrToken}`,
+      method: 'POST',
+      url: '/staff/returns/resolve-qr',
+      payload: { token: machine.qrToken },
     });
     expect(anonymous.statusCode).toBe(401);
   });
@@ -529,7 +533,6 @@ describe('Review-Härtungen (Order §§66/79/81): Sichtbarkeit und Existenz-Orak
       `/staff/returns/photos/${UNKNOWN}`,
       `/staff/damages/photos/${UNKNOWN}`,
       `/staff/technical-defects/${UNKNOWN}/photo`,
-      '/staff/returns/resolve-qr/0123456789abcdef0123456789abcdef0123456789abcdef',
       '/staff/missing-items',
     ]) {
       const response = await ctx.app.inject({
@@ -539,6 +542,14 @@ describe('Review-Härtungen (Order §§66/79/81): Sichtbarkeit und Existenz-Orak
       });
       expect(response.statusCode, url).toBe(403);
     }
+    // QR-Einstieg (Token im Body, Phase-8-Finalisierung §2): ebenfalls 403 ohne Vorgangsrecht.
+    const qr = await ctx.app.inject({
+      method: 'POST',
+      url: '/staff/returns/resolve-qr',
+      headers: { cookie: blind.cookie },
+      payload: { token: '0123456789abcdef0123456789abcdef0123456789abcdef' },
+    });
+    expect(qr.statusCode).toBe(403);
     for (const url of [
       `/staff/damages/${UNKNOWN}/resolve`,
       `/staff/missing-items/${UNKNOWN}/resolve`,

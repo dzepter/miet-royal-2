@@ -16,7 +16,12 @@
  * ihnen referenzierte Medien nach der Aufräumfrist; pending/conflict nie.
  */
 import { toBase64 } from './crypto.ts';
-import type { OfflineMutationType, SyncMediaInput, SyncMutationInput } from './mutations.ts';
+import type {
+  ConflictDetails,
+  OfflineMutationType,
+  SyncMediaInput,
+  SyncMutationInput,
+} from './mutations.ts';
 import type { MutationRecord } from './records.ts';
 import type { DecryptedMutation, OfflineStore } from './store.ts';
 
@@ -30,6 +35,8 @@ export type SyncOutcome =
       code: string;
       message: string | null;
       serverState: unknown;
+      /** Fachliche Gegenüberstellung des Servers (§4) – wird verschlüsselt mitgespeichert. */
+      details?: ConflictDetails | null;
       processedAt: string;
     }
   | {
@@ -37,6 +44,7 @@ export type SyncOutcome =
       code: string;
       message: string | null;
       serverState?: unknown;
+      details?: ConflictDetails | null;
       processedAt: string;
     };
 
@@ -261,6 +269,7 @@ export class SyncEngine {
               status: 'conflict',
               message: outcome.message,
               serverState: outcome.serverState,
+              details: outcome.details ?? null,
               processedAt: outcome.processedAt,
             });
             await this.store.putReceipt({
@@ -283,6 +292,7 @@ export class SyncEngine {
               status: 'rejected',
               message: outcome.message,
               serverState: outcome.serverState ?? null,
+              details: outcome.details ?? null,
               processedAt: outcome.processedAt,
             });
             await this.store.putReceipt({

@@ -225,8 +225,19 @@ export const returnPhotos = pgTable(
       .notNull()
       .references(() => staffUsers.id),
     takenAt: timestamp('taken_at', { withTimezone: true }).notNull().defaultNow(),
+    /**
+     * Phase 8: Offline-Mutations-ID, die dieses Fachobjekt erzeugt hat – macht
+     * die Wiederaufnahme nach einem Abbruch zwischen Fach-Commit und Quittung
+     * nachweisbar (genau ein Fachobjekt je Mutation). NULL bei Online-Erfassung.
+     */
+    clientMutationId: uuid('client_mutation_id'),
   },
-  (table) => [index('return_photos_return_machine_idx').on(table.returnMachineId)],
+  (table) => [
+    index('return_photos_return_machine_idx').on(table.returnMachineId),
+    uniqueIndex('return_photos_client_mutation_unique')
+      .on(table.clientMutationId)
+      .where(sql`${table.clientMutationId} IS NOT NULL`),
+  ],
 );
 
 // ── Schäden (Order §§26–38) ────────────────────────────────────────────────
@@ -270,8 +281,13 @@ export const machineDamages = pgTable(
     activatedAt: timestamp('activated_at', { withTimezone: true }),
     resolvedAt: timestamp('resolved_at', { withTimezone: true }),
     resolvedBy: uuid('resolved_by').references(() => staffUsers.id),
+    /** Phase 8: erzeugende Offline-Mutations-ID (Wiederaufnahme nach Abbruch); NULL online. */
+    clientMutationId: uuid('client_mutation_id'),
   },
   (table) => [
+    uniqueIndex('machine_damages_client_mutation_unique')
+      .on(table.clientMutationId)
+      .where(sql`${table.clientMutationId} IS NOT NULL`),
     index('machine_damages_machine_idx').on(table.machineId),
     index('machine_damages_return_idx').on(table.returnId),
     check('machine_damages_description_check', sql`length(trim("description")) > 0`),
@@ -337,8 +353,15 @@ export const damagePhotos = pgTable(
       .notNull()
       .references(() => staffUsers.id),
     takenAt: timestamp('taken_at', { withTimezone: true }).notNull().defaultNow(),
+    /** Phase 8: erzeugende Offline-Mutations-ID (Wiederaufnahme nach Abbruch); NULL online. */
+    clientMutationId: uuid('client_mutation_id'),
   },
-  (table) => [index('damage_photos_damage_idx').on(table.damageId)],
+  (table) => [
+    index('damage_photos_damage_idx').on(table.damageId),
+    uniqueIndex('damage_photos_client_mutation_unique')
+      .on(table.clientMutationId)
+      .where(sql`${table.clientMutationId} IS NOT NULL`),
+  ],
 );
 
 // ── Fehlteile (Order §§12–14, 55) ──────────────────────────────────────────
@@ -379,8 +402,13 @@ export const missingAccessoryCases = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     resolvedBy: uuid('resolved_by').references(() => staffUsers.id),
     resolvedAt: timestamp('resolved_at', { withTimezone: true }),
+    /** Phase 8: erzeugende Offline-Mutations-ID (Wiederaufnahme nach Abbruch); NULL online. */
+    clientMutationId: uuid('client_mutation_id'),
   },
   (table) => [
+    uniqueIndex('missing_accessory_cases_client_mutation_unique')
+      .on(table.clientMutationId)
+      .where(sql`${table.clientMutationId} IS NOT NULL`),
     index('missing_accessory_cases_return_idx').on(table.returnId),
     index('missing_accessory_cases_machine_idx').on(table.machineId),
     check('missing_accessory_cases_quantity_check', sql`"missing_quantity" >= 1`),
@@ -450,8 +478,15 @@ export const returnSignatures = pgTable(
     byteSize: integer('byte_size').notNull(),
     sha256: text('sha256').notNull(),
     signedAt: timestamp('signed_at', { withTimezone: true }).notNull().defaultNow(),
+    /** Phase 8: erzeugende Offline-Mutations-ID (Wiederaufnahme nach Abbruch); NULL online. */
+    clientMutationId: uuid('client_mutation_id'),
   },
-  (table) => [uniqueIndex('return_signatures_role_unique').on(table.returnId, table.role)],
+  (table) => [
+    uniqueIndex('return_signatures_role_unique').on(table.returnId, table.role),
+    uniqueIndex('return_signatures_client_mutation_unique')
+      .on(table.clientMutationId)
+      .where(sql`${table.clientMutationId} IS NOT NULL`),
+  ],
 );
 
 export type RentalReturn = typeof rentalReturns.$inferSelect;

@@ -230,6 +230,7 @@ describe('Verschlüsselnder Store (§§8/12/92)', () => {
       status: 'conflict',
       message: 'Serverstand: Empfänger Klara Kommerz',
       serverState: { recipient: 'Klara Kommerz' },
+      details: null,
       processedAt: 'p',
     });
 
