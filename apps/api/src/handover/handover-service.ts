@@ -32,7 +32,7 @@ import {
   renderHandoverProtocolPdf,
   SignatureImageError,
 } from '@mietroyal/documents';
-import { CANISTER_SLUG, CANISTERS_PER_CONTAINER_LIMIT } from '@mietroyal/domain';
+import { CANISTER_SLUG, CANISTERS_PER_CONTAINER_LIMIT, handoverBlockers } from '@mietroyal/domain';
 import type { StorageProvider } from '@mietroyal/integrations';
 import { and, asc, eq, inArray, ne, sql } from 'drizzle-orm';
 import { AuthError } from '../auth/service.ts';
@@ -710,7 +710,11 @@ export class HandoverService {
     };
   }
 
-  /** Serverseitige Vorbedingungen der Finalisierung (Order §40). */
+  /**
+   * Serverseitige Vorbedingungen der Finalisierung (Order §40). Die Regel
+   * selbst lebt in @mietroyal/domain (`handoverBlockers`) – dieselbe
+   * Implementierung nutzt die Offline-Projektion der Staff-PWA (Phase 8).
+   */
   private computeBlockers(input: {
     processStatus: string;
     handover: Handover;
@@ -722,82 +726,34 @@ export class HandoverService {
     staffSignature: HandoverSignature | null;
     containersTotal: number;
   }): string[] {
-    const blockers: string[] = [];
-    if (input.handover.status === 'finalized') return blockers;
-    if (input.processStatus === 'cancelled') blockers.push('Der Vorgang ist storniert.');
-    if (input.processStatus === 'completed') {
-      blockers.push('Der Vorgang ist bereits abgeschlossen – bitte zuerst wieder öffnen.');
-    }
-    for (const item of input.items) {
-      if (item.kind === 'included' && item.actualQuantity > item.plannedQuantity) {
-        blockers.push(
-          `${item.description}: inklusive nur bis ${item.plannedQuantity} ${item.unit} – mehr als Zusatzposition erfassen.`,
-        );
-      }
-    }
-    if (input.slots.length === 0) blockers.push('Die Buchung enthält keine Maschine.');
-    for (const slot of input.slots) {
-      if (slot.machine === null) {
-        blockers.push(
-          `Maschine ${slot.slotNo} (${slot.productName}): noch keine konkrete Maschine zugewiesen.`,
-        );
-        continue;
-      }
-      if (slot.status !== 'prepared' && slot.status !== 'issued') {
-        blockers.push(
-          `Maschine ${slot.machine.machineCode}: noch nicht als vorbereitet markiert (Order §10 – Vorbereitung → Reserviert).`,
-        );
-      }
-      const hard = slot.currentProblems.find(
-        (p) => p.code === 'issued_elsewhere' || p.code === 'status_rented',
-      );
-      if (hard !== undefined) {
-        blockers.push(`Maschine ${slot.machine.machineCode}: ${hard.detail}`);
-      } else if (slot.overrideStale) {
-        blockers.push(
-          `Maschine ${slot.machine.machineCode}: Die Problemlage hat sich seit der Zuweisung geändert – bitte erneut prüfen und bewusst bestätigen.`,
-        );
-      }
-      const machineView = input.machineViews.find((m) => m.assignmentId === slot.id);
-      if (machineView === undefined || !machineView.checked) {
-        blockers.push(
-          `Maschine ${slot.machine.machineCode}: Übergabeprüfung noch nicht bestätigt.`,
-        );
-      }
-      if (machineView === undefined || machineView.photos.length === 0) {
-        blockers.push(`Maschine ${slot.machine.machineCode}: Gesamtfoto fehlt.`);
-      }
-    }
-    const machineIds = input.slots
-      .map((slot) => slot.machine?.id)
-      .filter((id): id is string => id !== undefined);
-    if (new Set(machineIds).size !== machineIds.length) {
-      blockers.push(
-        'Dieselbe Maschine ist mehreren Slots dieser Buchung zugeordnet – bitte je Slot eine eigene Maschine wählen.',
-      );
-    }
-    const canisterActual = input.items
-      .filter((item) => item.kind === 'purchase')
-      .reduce((sum, item) => sum + item.actualQuantity, 0);
-    const canisterLimit = input.containersTotal * CANISTERS_PER_CONTAINER_LIMIT;
-    if (canisterActual > canisterLimit) {
-      blockers.push(
-        `Maximal ${canisterLimit} Mischkanister möglich (${CANISTERS_PER_CONTAINER_LIMIT} je gebuchtem Behälter).`,
-      );
-    }
-    for (const entry of input.stock) {
-      if (!entry.sufficient) {
-        blockers.push(
-          `Lagerbestand prüfen: ${entry.productName} – System ${entry.systemStock === null ? 'nicht erfasst' : entry.systemStock}, benötigt ${entry.required}.`,
-        );
-      }
-    }
-    if (input.handover.recipientKind === null || (input.handover.recipientName ?? '') === '') {
-      blockers.push('Kunde oder Vertreter für die Übergabe noch nicht bestimmt.');
-    }
-    if (input.customerSignature === null) blockers.push('Unterschrift Kunde/Vertreter fehlt.');
-    if (input.staffSignature === null) blockers.push('Unterschrift Mitarbeiter fehlt.');
-    return blockers;
+    return handoverBlockers({
+      processStatus: input.processStatus,
+      handoverStatus: input.handover.status,
+      recipientKind: input.handover.recipientKind,
+      recipientName: input.handover.recipientName,
+      slots: input.slots.map((slot) => ({
+        id: slot.id,
+        slotNo: slot.slotNo,
+        productName: slot.productName,
+        status: slot.status,
+        machine:
+          slot.machine === null
+            ? null
+            : { id: slot.machine.id, machineCode: slot.machine.machineCode },
+        currentProblems: slot.currentProblems,
+        overrideStale: slot.overrideStale,
+      })),
+      machines: input.machineViews.map((machine) => ({
+        assignmentId: machine.assignmentId,
+        checked: machine.checked,
+        photoCount: machine.photos.length,
+      })),
+      items: input.items,
+      stock: input.stock,
+      customerSigned: input.customerSignature !== null,
+      staffSigned: input.staffSignature !== null,
+      containersTotal: input.containersTotal,
+    });
   }
 
   private async assertDraft(bookingId: string): Promise<Handover> {

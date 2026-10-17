@@ -1,0 +1,3 @@
+ALTER TYPE "public"."offline_receipt_status" ADD VALUE 'processing';--> statement-breakpoint
+ALTER TABLE "offline_mutation_receipts" DROP CONSTRAINT "offline_mutation_receipts_error_check";--> statement-breakpoint
+ALTER TABLE "offline_mutation_receipts" ADD CONSTRAINT "offline_mutation_receipts_error_check" CHECK (("offline_mutation_receipts"."status"::text IN ('applied', 'processing') AND "offline_mutation_receipts"."error_code" IS NULL) OR ("offline_mutation_receipts"."status"::text NOT IN ('applied', 'processing') AND "offline_mutation_receipts"."error_code" IS NOT NULL));

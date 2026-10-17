@@ -68,6 +68,8 @@ export function clearSessionCookie(reply: FastifyReply, config: AppConfig): void
  * Authentifiziert die Anfrage über das Session-Cookie.
  * Bei aktiver 15-Minuten-App-Sperre werden nur Endpunkte mit
  * allowLocked=true bedient (Entsperren, Logout, /auth/me).
+ * touchActivity=false (Phase 8): Status-/Health-Checks verlängern die
+ * Aktivität – und damit die App-Sperre – nicht.
  * Antwortet selbst mit 401 und gibt dann null zurück.
  */
 export async function requireAuth(
@@ -75,14 +77,17 @@ export async function requireAuth(
   reply: FastifyReply,
   auth: StaffAuthService,
   config: AppConfig,
-  options: { allowLocked?: boolean } = {},
+  options: { allowLocked?: boolean; touchActivity?: boolean } = {},
 ): Promise<AuthenticatedContext | null> {
   const token = request.cookies?.[SESSION_COOKIE_NAME];
   if (token === undefined || token === '') {
     sendError(request, reply, 401, 'UNAUTHENTICATED', 'Bitte anmelden.');
     return null;
   }
-  const context = await auth.authenticate(token);
+  const context = await auth.authenticate(
+    token,
+    options.touchActivity === undefined ? {} : { touchActivity: options.touchActivity },
+  );
   if (context === null) {
     clearSessionCookie(reply, config);
     sendError(request, reply, 401, 'UNAUTHENTICATED', 'Bitte anmelden.');
