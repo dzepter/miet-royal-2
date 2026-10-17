@@ -209,6 +209,11 @@ self.addEventListener('message', (event) => {
     sessionKey = null;
     sessionKeyAt = 0;
   }
+  if (data.type === 'CLEAR_PAGES') {
+    // Abmeldung/Wipe: vorab gecachte Seiten-Shells (ihre URLs verraten Vorgangs-/
+    // Maschinen-IDs) für den nächsten Nutzer des Geräts entfernen.
+    event.waitUntil(caches.delete(PAGES_CACHE));
+  }
   if (data.type === 'GET_KEY' && event.ports && event.ports[0]) {
     if (sessionKey !== null && Date.now() - sessionKeyAt > SESSION_KEY_TTL_MS) {
       sessionKey = null;

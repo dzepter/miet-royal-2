@@ -48,6 +48,8 @@ const OFFLINE_UNLOCK_MESSAGES: Record<string, string> = {
   lease_tampered: 'Der Offline-Arbeitsbereich ist beschädigt. Bitte online anmelden.',
   no_workspace:
     'Auf diesem Gerät ist kein Offline-Arbeitsbereich eingerichtet. Bitte online anmelden.',
+  too_many_attempts:
+    'Zu viele Fehlversuche – die Offline-Entsperrung ist auf diesem Gerät gesperrt. Bitte mit Verbindung anmelden.',
 };
 
 function LockScreen({
@@ -55,16 +57,32 @@ function LockScreen({
   offline,
   onUnlockedOnline,
   onUnlockedOffline,
+  onDiscardWorkspace,
 }: {
   name: string;
   offline: boolean;
-  onUnlockedOnline: (password: string) => Promise<void>;
+  onUnlockedOnline: (password: string) => Promise<'ok' | 'rekey_refused'>;
   onUnlockedOffline: () => Promise<void>;
+  onDiscardWorkspace: (password: string) => Promise<void>;
 }) {
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [rekeyRefused, setRekeyRefused] = useState(false);
+  const acceptedPasswordRef = useRef('');
   const router = useRouter();
+
+  async function discardWorkspace() {
+    // Order §38: nie still vernichten – bewusste Entscheidung des Mitarbeiters.
+    const confirmed = window.confirm(
+      'Die lokalen Offline-Erfassungen dieses Geräts (inkl. Fotos/Unterschriften) werden unwiderruflich verworfen und der Offline-Arbeitsbereich neu eingerichtet. Fortfahren?',
+    );
+    if (!confirmed) return;
+    setBusy(true);
+    await onDiscardWorkspace(acceptedPasswordRef.current);
+    acceptedPasswordRef.current = '';
+    setBusy(false);
+  }
 
   async function unlock(event: React.FormEvent) {
     event.preventDefault();
@@ -79,8 +97,14 @@ function LockScreen({
       : null;
     if (result !== null && result.ok) {
       setPassword('');
+      const outcome = await onUnlockedOnline(password);
       setBusy(false);
-      await onUnlockedOnline(password);
+      if (outcome === 'rekey_refused') {
+        // Server akzeptiert das Passwort, der lokale Arbeitsbereich (altes Passwort, Lease
+        // abgelaufen) nicht – mit ausstehenden Daten wird nicht still neu verschlüsselt.
+        acceptedPasswordRef.current = password;
+        setRekeyRefused(true);
+      }
       return;
     }
     if (result !== null && result.errorCode === 'UNAUTHENTICATED') {
@@ -134,6 +158,23 @@ function LockScreen({
             Entsperren
           </button>
         </form>
+        {rekeyRefused && (
+          <div className="conflict-box" data-testid="rekey-refused">
+            <p>
+              Das Passwort wurde vom Server akzeptiert, aber der lokale Offline-Arbeitsbereich
+              dieses Geräts lässt sich damit nicht öffnen (z. B. nach einer Passwortänderung) und
+              enthält noch nicht synchronisierte Erfassungen. Sie bleiben erhalten, bis du sie
+              bewusst verwirfst.
+            </p>
+            <p className="muted">
+              Ohne Verbindung kannst du den Arbeitsbereich mit dem bisherigen Passwort entsperren
+              und anschließend synchronisieren.
+            </p>
+            <button type="button" disabled={busy} onClick={() => void discardWorkspace()}>
+              Lokale Offline-Erfassungen verwerfen und neu einrichten
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -336,10 +377,31 @@ export function AuthGuard({ children }: { children: ReactNode }) {
         offline={state === 'offline-locked'}
         onUnlockedOnline={async (password) => {
           lastActivityRef.current = Date.now();
-          await refresh();
-          // Online-Re-Auth: Lease erneuern und Passwort-Wrap aktualisieren (§7).
+          // Online-Re-Auth: erst Lease erneuern und Passwort-Wrap aktualisieren (§7), dann
+          // die Seiten freigeben – ein nicht wiederherstellbarer Schlüssel (Passwort geändert,
+          // Lease abgelaufen, Daten ausstehend) darf nicht in eine Sperrschleife führen.
           const runtime = offlineRuntime();
-          if (runtime.snapshot.initialized) await runtime.authorizeOnline(password);
+          if (runtime.snapshot.initialized) {
+            const outcome = await runtime.authorizeOnlineDetailed(password);
+            if (
+              !outcome.ok &&
+              outcome.reason === 'rekey_refused' &&
+              !runtime.unlocked &&
+              (await runtime.hasWorkspace())
+            ) {
+              return 'rekey_refused';
+            }
+          }
+          await refresh();
+          return 'ok';
+        }}
+        onDiscardWorkspace={async (password) => {
+          const runtime = offlineRuntime();
+          await runtime.revokeLeaseOnline();
+          await runtime.wipe();
+          if (password !== '') await runtime.authorizeOnline(password);
+          lastActivityRef.current = Date.now();
+          await refresh();
         }}
         onUnlockedOffline={async () => {
           lastActivityRef.current = Date.now();

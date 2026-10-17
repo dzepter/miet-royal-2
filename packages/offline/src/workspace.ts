@@ -53,7 +53,7 @@ export type LeaseState =
   | { kind: 'tampered' };
 
 export type UnlockFailureReason =
-  'no_workspace' | 'wrong_password' | 'lease_expired' | 'lease_tampered';
+  'no_workspace' | 'wrong_password' | 'lease_expired' | 'lease_tampered' | 'too_many_attempts';
 
 export type UnlockResult = { ok: true } | { ok: false; reason: UnlockFailureReason };
 

@@ -848,12 +848,14 @@ describe('Sync: Offline-Ausgabe (Order §§15–17, 20–21, 28, 32–33; Tests 
       });
       expect(signature.json.status).toBe('applied');
     }
+    // Erfasst vor 30 Minuten (offline), Mutation im selben Moment erstellt – so wie der Client es tut.
     const capturedAt = new Date(Date.now() - 30 * 60_000).toISOString();
     const finalizeInput: MutationInput = {
       id: randomUUID(),
       type: 'handover.finalize',
       contextId: bookingId,
       base,
+      createdAt: capturedAt,
       payload: {
         capturedAt,
         expectedSlots: [{ assignmentId: slotId, machineId: candidate.machineId }],
@@ -1756,6 +1758,19 @@ describe('Sync-Sicherheit (Order §§21, 62, 74, 75; Tests 86, 99, 104–108)', 
       expect(result.json.status).toBe('conflict');
       expect(result.json.code).toBe('CLOCK_IMPLAUSIBLE');
     }
+    // Rückdatierte Erfassungszeit (innerhalb des 72-h-Fensters, aber abweichend von der
+    // Erstellzeit) ist eine Zeitkorrektur und verlangt wie online `handover.correct_actual_time`.
+    const backdated = await sync(staff.cookie, {
+      type: 'handover.finalize',
+      contextId: world.bookingId,
+      base,
+      payload: {
+        capturedAt: new Date(Date.now() - 6 * 3_600_000).toISOString(),
+        expectedSlots: [],
+      },
+    });
+    expect(backdated.json.status).toBe('rejected');
+    expect(backdated.json.code).toBe('PERMISSION_REVOKED');
     // Erstellzeit der Mutation außerhalb der Toleranz ebenfalls.
     const createdLate = await sync(staff.cookie, {
       type: 'handover.finalize',

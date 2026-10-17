@@ -1289,12 +1289,31 @@ Keine spontanen Framework-/ORM-Wechsel (CLAUDE.md „Dependencies“).
   Datensatz (Ablauf, Rechte-Snapshot, Name) mit HMAC-SHA-256 (HKDF aus dem
   DEK) – eine Manipulation der Ablaufzeit im Store wird erkannt. Nach
   Ablauf ist der Offline-Arbeitsbereich gesperrt, bis das Gerät online neu
-  autorisiert. Dokumentiertes Restrisiko: Wer Passwort UND Gerät besitzt,
-  kann den Client-Code verändern; ein physisch offline befindliches Gerät
-  kann nicht sofort widerrufen werden – die kurze Lease begrenzt das.
-  Serverseitiger Widerruf (Session/Benutzer gesperrt, Lease widerrufen)
-  greift beim nächsten Onlinekontakt: kein Secret, kein Paket, kein Sync;
-  lokale Daten werden dabei nicht heimlich vernichtet (§39).
+  autorisiert. Gegen eine zurückgestellte Geräteuhr gilt eine monotone
+  Untergrenze (höchste je gesehene Server-/Gerätezeit, persistiert in `meta`;
+  lokale Zeit wird nur übernommen, wenn sie nicht mehr als 72 h 15 min vor
+  der bisherigen Grenze liegt – eine grob vorgehende, später korrigierte Uhr
+  sperrt sonst das Gerät). Meldet der Server beim Secret-Abruf 404/403
+  (Lease abgelaufen/widerrufen), wird Wrap B lokal entfernt; es bleibt nur
+  Wrap A (Passwort) bzw. eine neue Online-Autorisierung. Die lokale
+  Passwort-Entsperrung ist nach 5 Fehlversuchen gesperrt (Zähler in `meta`,
+  Reset nur durch erfolgreiche Entsperrung/Online-Autorisierung) – gegen
+  Ausprobieren auf einem gestohlenen Gerät zusätzlich zu PBKDF2.
+  Dokumentiertes Restrisiko: Wer Passwort UND Gerät besitzt, kann den
+  Client-Code verändern und – weil der Lease-HMAC aus dem DEK abgeleitet ist –
+  den lokalen Lease-Datensatz neu signieren; ein physisch offline
+  befindliches Gerät kann nicht sofort widerrufen werden. Das Lease begrenzt
+  also ehrliche Clients und Angreifer OHNE Passwort; gegen den Passwort-
+  inhaber schützt nur der Server (Widerruf beim nächsten Onlinekontakt).
+  Serverseitiger Widerruf greift beim nächsten Onlinekontakt: Session-
+  Widerruf oder Benutzersperre blockieren Secret, Paket UND Sync (jeder
+  Offline-Endpunkt verlangt eine gültige Session, Rechte werden je Mutation
+  frisch geprüft). Der Lease-Widerruf selbst (nur beim Abmelden, zusammen mit
+  der Session) blockiert Secret-Abruf und Paket; der Sync prüft bewusst kein
+  Lease, damit noch ausstehende Änderungen eines Geräts mit abgelaufenem
+  Lease nach erneuter Autorisierung nicht verloren gehen – die Sicherheit
+  hängt an der Session, nicht am Lease. Lokale Daten werden dabei nicht
+  heimlich vernichtet (§39).
 - **Arbeitspaket (Order §§9–12, 54)**: `OfflinePackageService` wendet Rechte
   und Phase-2-Sichtbarkeit serverseitig an (`buildVisibilityContext`),
   sammelt Kandidaten aus den bestehenden Listen (`HandoverService.listForDay`
@@ -1410,8 +1429,9 @@ Keine spontanen Framework-/ORM-Wechsel (CLAUDE.md „Dependencies“).
   diesem Schlüssel stimmt (fremder/alter Schlüssel ⇒ Sperrbildschirm). Der
   Worker verwirft ihn nach 15 Minuten ohne Aktivitätssignal (gleiche Frist
   wie die App-Sperre; `AuthGuard` meldet Aktivität gedrosselt weiter),
-  bei `lock()`/Logout/Wipe sofort, und beim Beenden des Workers durch den
-  Browser ohnehin. Alternative „Schlüssel in sessionStorage/IndexedDB“ wurde
+  bei `lock()`/Logout/Wipe sofort (Wipe leert zusätzlich den Seiten-Shell-
+  Cache `mr-pages-*`, dessen URLs Vorgangs-/Maschinen-IDs enthalten), und
+  beim Beenden des Workers durch den Browser ohnehin. Alternative „Schlüssel in sessionStorage/IndexedDB“ wurde
   verworfen: das wäre eine Klartext-Ablage des DEK auf dem Datenträger. Ohne
   aktiven Worker (erster Start, private Fenster) gilt schlicht die
   Passwort-Entsperrung.
@@ -1437,8 +1457,14 @@ Keine spontanen Framework-/ORM-Wechsel (CLAUDE.md „Dependencies“).
     (die Konfliktprüfungen §33 sind nicht abschaltbar); die getragene
     Erfassungszeit (`capturedAt`/`actualReturnAt`) unterliegt derselben
     Plausibilität wie Gerätezeit und Erstellzeit (nicht in der Zukunft,
-    nicht älter als 72 h + Toleranz); eine Mutations-ID darf nicht für einen
-    anderen Typ/Kontext wiederverwendet werden (§63).
+    nicht älter als 72 h + Toleranz); beim Abschluss wird sie zur
+    tatsächlichen Ausgabe-/Rückgabezeit. Weicht sie mehr als 15 Minuten von
+    der Erstellzeit der Mutation ab (ein echter Client setzt beide im selben
+    Moment), gilt das wie online als Zeitkorrektur und verlangt
+    `handover.correct_actual_time` bzw. `return.correct_actual_time`
+    (sonst `PERMISSION_REVOKED`) – ein manipulierter Client kann die Zeit
+    nicht rückdatieren; eine Mutations-ID darf nicht für einen anderen
+    Typ/Kontext wiederverwendet werden (§63).
   - *Session-Widerruf*: 401 beim Onlinekontakt (Health-Check, beliebiger
     API-Aufruf, Sync) sperrt den Offline-Arbeitsbereich sofort (§39) – Daten
     bleiben verschlüsselt erhalten. Der Sperrbildschirm nutzt bei erreichbarem
@@ -1446,7 +1472,14 @@ Keine spontanen Framework-/ORM-Wechsel (CLAUDE.md „Dependencies“).
   - *Passwortwechsel*: Wrap A wird nach `/auth/password/change` sofort erneuert;
     bei einer Online-Anmeldung mit neuem Passwort wird der bestehende DEK vor
     der Lease-Erneuerung über das noch gültige Lease-Secret wiederhergestellt
-    (keine Sperrschleife, keine Neuverschlüsselung mit Pending-Daten).
+    (keine Sperrschleife, keine Neuverschlüsselung mit Pending-Daten). Ist
+    auch das Lease abgelaufen/widerrufen (Passwort-Reset während einer langen
+    Offline-Phase) und liegen Pending-Daten vor, bleibt der Arbeitsbereich
+    bewusst verschlossen: Der Sperrbildschirm erklärt das und bietet – nach
+    serverseitig akzeptiertem Passwort und expliziter Bestätigung – „Lokale
+    Offline-Erfassungen verwerfen und neu einrichten“ an (Order §38: nie
+    still vernichten, aber auch keine Sackgasse). Ohne Verbindung öffnet
+    weiterhin das bisherige Passwort (Wrap A).
   - *Client-Reihenfolge*: der Offline-Router ist ab Modulstart registriert und
     wartet auf eine laufende Initialisierung; der AuthGuard öffnet und
     entsperrt die Laufzeit VOR dem Rendern der Seiten (erster Datenabruf sieht
@@ -1488,7 +1521,15 @@ Keine spontanen Framework-/ORM-Wechsel (CLAUDE.md „Dependencies“).
   angewendet – die Endkonsistenz entsteht an der Finalisierung (genau eine,
   das andere Gerät sieht den Konflikt, lokale Beweise bleiben); (4) die
   Update-Sperre ist je Tab, ein zweiter Tab desselben Geräts kann den neuen
-  Worker aktivieren (IndexedDB-Migrationen sind additiv, Daten bleiben).
+  Worker aktivieren (IndexedDB-Migrationen sind additiv, Daten bleiben);
+  (5) die Konfliktansicht zeigt je Konflikt Aktion, Erfassungszeit, Ursache
+  und die drei Handlungen „Serverstand laden & prüfen / Erneut anwenden /
+  Verwerfen“ (Order §73) – keine Feld-für-Feld-Gegenüberstellung lokaler und
+  Server-Werte (UX_RULES „Werte gegenüberstellen“ wird durch „Serverstand
+  laden & prüfen“ im Wizard erfüllt, nicht in der Liste); (6) die Fehlteil-
+  Obergrenze (Soll-Deckel/-Tropfschalen) wird offline als UX-Vorprüfung aus
+  dem Paket gespiegelt, die verbindliche Prüfung bleibt im `ReturnService`
+  beim Sync.
 
 
 - **E2E-Harness**: Die Staff-App läuft im E2E als Produktions-Build (`next

@@ -924,6 +924,18 @@ const routes: Route[] = [
         quantity > 10
       )
         return fail('VALIDATION', 'Die Anzahl muss zwischen 1 und 10 liegen.');
+      // Vorprüfung gegen das Soll aus dem Paket – die verbindliche Regel läuft beim Sync
+      // (ReturnService); hier nur, damit die Erfassung nicht erst beim Sync scheitert.
+      const expected =
+        input.accessoryType === 'lid' ? machine.expectedLids : machine.expectedDripTrays;
+      const already = machine.missingCases
+        .filter((c) => c.accessoryType === input.accessoryType)
+        .reduce((sum, c) => sum + c.missingQuantity, 0);
+      if (already + quantity > expected)
+        return fail(
+          'VALIDATION',
+          `Für diese Maschine sind ${expected} × ${input.accessoryType === 'lid' ? 'Deckel' : 'Tropfschale'} vorgesehen – mehr kann nicht fehlen.`,
+        );
       await enqueueBooking(
         ctx,
         snapshot,
@@ -1433,8 +1445,17 @@ export async function routeOffline(
   const runtime = offlineRuntime();
   const inFlight = runtime.initInFlight();
   if (inFlight !== null) await inFlight.catch(() => undefined);
-  const state = runtime.snapshot;
+  let state = runtime.snapshot;
   if (!state.initialized || !runtime.unlocked || state.identity === null) return null;
+  if (state.connectivity === 'unknown') {
+    // Direkt nach dem Seitenstart ist die Erreichbarkeit noch nicht geprüft: erst prüfen,
+    // dann entscheiden – sonst würde ein online erreichbarer Server mit dem (ggf. veralteten
+    // oder unvollständigen) lokalen Stand beantwortet.
+    await runtime.checkConnectivity(false).catch(() => undefined);
+    state = runtime.snapshot;
+    if (!runtime.unlocked || state.identity === null) return null;
+  }
+  const identity = state.identity;
   const [pathname, queryString] = path.split('?', 2);
   const route = routes.find((r) => r.method === method && r.pattern.test(pathname ?? ''));
   const offline = state.connectivity !== 'online';
@@ -1463,7 +1484,7 @@ export async function routeOffline(
   const ctx: RouterContext = {
     runtime,
     offline,
-    staff: { firstName: state.identity.firstName, lastName: state.identity.lastName },
+    staff: { firstName: identity.firstName, lastName: identity.lastName },
     machines: () => {
       if (machinesCache === null) machinesCache = runtime.listMachines();
       return machinesCache;

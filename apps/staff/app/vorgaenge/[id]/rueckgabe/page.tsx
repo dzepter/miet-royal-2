@@ -210,6 +210,11 @@ function ReturnWizard() {
         </p>
         <h1>Rückgabe</h1>
         {error !== null && <p className="error">{error}</p>}
+        {offline !== null && offline.state.connectivity === 'offline' && (
+          <div className="offline-banner" data-testid="wizard-offline-banner">
+            Offline – Erfassungen werden lokal verschlüsselt gespeichert und später synchronisiert.
+          </div>
+        )}
         {canStart && bookingId !== null ? (
           <div className="card">
             <p>Für diesen Vorgang sind Maschinen ausgegeben. Die Rückgabe kann jetzt beginnen.</p>

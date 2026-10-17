@@ -78,6 +78,26 @@ export const PACKAGE_REFRESHED_EVENT = 'mr-package-refreshed';
 export const OFFLINE_SESSION_INVALID_EVENT = 'mr-offline-session-invalid';
 
 const STATUS_TIMEOUT_MS = 6_000;
+
+interface ConnectivityResult {
+  online: boolean;
+  appLocked: boolean;
+  unauthenticated: boolean;
+}
+
+export type AuthorizeOutcome =
+  | { ok: true }
+  | { ok: false; reason: 'unavailable' | 'network' | 'rejected' | 'locked' | 'rekey_refused' };
+
+/** Lokale Offline-Entsperrung: nach so vielen Fehlversuchen nur noch online (gestohlenes Gerät). */
+const OFFLINE_UNLOCK_MAX_ATTEMPTS = 5;
+const META_UNLOCK_FAILURES = 'unlock.failures';
+/** Höchste bisher gesehene Zeit (Server oder lokal): eine zurückgestellte Uhr verlängert kein Lease. */
+const META_CLOCK_MAX_SEEN = 'clock.maxSeenMs';
+/** Lokale Zeit wird nur als Untergrenze übernommen, wenn sie nicht weiter als eine maximale
+ *  Offline-Phase vor der bisherigen Grenze liegt – eine grob vorgehende Uhr sperrt sonst nach
+ *  ihrer Korrektur das Gerät bis zum Ablauf der falschen Zeit. */
+const CLOCK_LOCAL_PLAUSIBLE_MS = 72 * 3_600_000 + 15 * 60_000;
 const CONNECTIVITY_INTERVAL_MS = 60_000;
 /** Aktivitätsmeldung an den Service Worker höchstens alle 30 s. */
 const KEY_TOUCH_THROTTLE_MS = 30_000;
@@ -176,6 +196,8 @@ export class OfflineRuntime {
   private persistenceRequested = false;
   private initPromise: { key: string; promise: Promise<void> } | null = null;
   private packageRefresh: Promise<boolean> | null = null;
+  private connectivityCheck: Promise<ConnectivityResult> | null = null;
+  private clockMaxSeenMs = 0;
   private syncRequested = false;
   private state: OfflineRuntimeState = {
     initialized: false,
@@ -266,11 +288,19 @@ export class OfflineRuntime {
     );
     this.db = new OfflineDb(raw);
     this.store = new OfflineStore(this.db);
-    this.workspace = new OfflineWorkspace(this.store, {
-      userId: identity.userId,
-      environment: identity.environment,
-      deviceId: deviceId(),
-    });
+    this.workspace = new OfflineWorkspace(
+      this.store,
+      {
+        userId: identity.userId,
+        environment: identity.environment,
+        deviceId: deviceId(),
+      },
+      // Monotone Zeit: Lease-Ablauf gegen die höchste je gesehene Zeit prüfen (§103).
+      () => new Date(Math.max(Date.now(), this.clockMaxSeenMs)),
+    );
+    const seen = await this.store.getMeta(META_CLOCK_MAX_SEEN);
+    this.clockMaxSeenMs = typeof seen === 'number' ? seen : 0;
+    await this.noteClock(Date.now(), 'local');
     this.engine = new SyncEngine(
       this.store,
       createSyncTransport({ deviceId: deviceId(), environment: identity.environment }),
@@ -310,19 +340,27 @@ export class OfflineRuntime {
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'visible') void this.checkConnectivity(true);
     });
-    this.connectivityTimer = window.setInterval(
-      () => void this.checkConnectivity(false),
-      CONNECTIVITY_INTERVAL_MS,
-    );
+    this.connectivityTimer = window.setInterval(() => {
+      void this.noteClock(Date.now(), 'local');
+      void this.checkConnectivity(false);
+    }, CONNECTIVITY_INTERVAL_MS);
   }
 
   /**
    * Echte Erreichbarkeit über den authentifizierten Statusendpunkt (verlängert
    * die Aktivität NICHT). navigator.onLine ist nur ein Hinweis.
    */
-  async checkConnectivity(
-    triggerSync = false,
-  ): Promise<{ online: boolean; appLocked: boolean; unauthenticated: boolean }> {
+  async checkConnectivity(triggerSync = false): Promise<ConnectivityResult> {
+    // Gleichzeitige Prüfungen (Provider, Offline-Router, Timer) teilen sich EINEN Aufruf.
+    if (this.connectivityCheck !== null) return this.connectivityCheck;
+    const check = this.runConnectivityCheck(triggerSync).finally(() => {
+      this.connectivityCheck = null;
+    });
+    this.connectivityCheck = check;
+    return check;
+  }
+
+  private async runConnectivityCheck(triggerSync: boolean): Promise<ConnectivityResult> {
     if (typeof navigator !== 'undefined' && navigator.onLine === false) {
       this.emit({ connectivity: 'offline' });
       return { online: false, appLocked: false, unauthenticated: false };
@@ -348,8 +386,9 @@ export class OfflineRuntime {
       const unauthenticated = response.status === 401;
       let appLocked = false;
       if (response.ok) {
-        const body = (await response.json()) as { appLocked?: boolean };
+        const body = (await response.json()) as { appLocked?: boolean; serverTime?: string };
         appLocked = body.appLocked === true;
+        if (typeof body.serverTime === 'string') await this.noteClock(Date.parse(body.serverTime));
       } else if (unauthenticated) {
         const body = (await response.json().catch(() => null)) as {
           error?: { code?: string };
@@ -393,8 +432,13 @@ export class OfflineRuntime {
 
   /** Online autorisierte Einrichtung/Erneuerung: Lease vom Server, Schlüssel-Wraps lokal. */
   async authorizeOnline(password: string | null): Promise<boolean> {
+    return (await this.authorizeOnlineDetailed(password)).ok;
+  }
+
+  /** Wie `authorizeOnline`, mit Grund – der Sperrbildschirm unterscheidet Netz/Rekey. */
+  async authorizeOnlineDetailed(password: string | null): Promise<AuthorizeOutcome> {
     const identity = this.state.identity;
-    if (identity === null || this.workspace === null) return false;
+    if (identity === null || this.workspace === null) return { ok: false, reason: 'unavailable' };
     if (!this.unlocked && password !== null && (await this.workspace.record()) !== undefined) {
       // Bestehenden DEK zuerst über das noch gültige Lease-Secret (Wrap B) wiederherstellen –
       // die Lease-Erneuerung unten rotiert das Secret. So bleibt der Schlüssel auch nach einem
@@ -411,16 +455,17 @@ export class OfflineRuntime {
         body: JSON.stringify({ deviceId: deviceId(), environment: identity.environment }),
       });
     } catch {
-      return false;
+      return { ok: false, reason: 'network' };
     }
-    if (!response.ok) return false;
+    if (!response.ok) return { ok: false, reason: 'rejected' };
     const grant = (await response.json()) as LeaseGrant;
+    await this.noteClock(Date.parse(grant.issuedAt));
     const existing = await this.workspace.record();
     if (!this.unlocked && existing !== undefined && password === null) {
       // Gesperrter, bereits eingerichteter Arbeitsbereich ohne Passwort: NIE still
       // neu verschlüsseln (alte Fachdaten/Pending-Daten würden unlesbar) – die
       // Entsperrung läuft über den Sperrbildschirm (Passwort → Wrap A).
-      return false;
+      return { ok: false, reason: 'locked' };
     }
     try {
       await this.workspace.authorizeOnline(grant, password, {
@@ -429,8 +474,9 @@ export class OfflineRuntime {
     } catch {
       // Schlüssel nicht wiederherstellbar (z. B. geändertes Passwort) bei
       // ausstehenden Daten: keine Neuverschlüsselung, Daten bleiben erhalten.
-      return false;
+      return { ok: false, reason: 'rekey_refused' };
     }
+    await this.setUnlockFailures(0);
     const named = { ...identity, firstName: grant.firstName, lastName: grant.lastName };
     writeOfflineIdentity(named);
     this.shareKeyVolatile();
@@ -442,7 +488,7 @@ export class OfflineRuntime {
       identity: named,
     });
     await this.refreshCounts();
-    return true;
+    return { ok: true };
   }
 
   /** Nach Passwortänderung: Wrap A mit dem neuen Passwort erneuern (nur entsperrt). */
@@ -452,6 +498,38 @@ export class OfflineRuntime {
       await this.workspace.rewrapWithPassword(password);
     } catch {
       // Ohne Erneuerung greift die nächste Online-Anmeldung (Wrap B → neues Wrap A).
+    }
+  }
+
+  /** Höchste gesehene Zeit festhalten (Serverzeit aus Paket/Status, lokale Uhr). */
+  async noteClock(ms: number, source: 'server' | 'local' = 'server'): Promise<void> {
+    if (!Number.isFinite(ms) || ms <= this.clockMaxSeenMs) return;
+    if (
+      source === 'local' &&
+      this.clockMaxSeenMs > 0 &&
+      ms > this.clockMaxSeenMs + CLOCK_LOCAL_PLAUSIBLE_MS
+    )
+      return;
+    this.clockMaxSeenMs = ms;
+    if (this.store === null) return;
+    try {
+      await this.store.setMeta(META_CLOCK_MAX_SEEN, ms, new Date().toISOString());
+    } catch {
+      // Meta nicht persistierbar: die In-Memory-Grenze gilt bis zum Neuladen.
+    }
+  }
+
+  private async unlockFailures(): Promise<number> {
+    const value = await this.store?.getMeta(META_UNLOCK_FAILURES);
+    return typeof value === 'number' ? value : 0;
+  }
+
+  private async setUnlockFailures(count: number): Promise<void> {
+    if (this.store === null) return;
+    try {
+      await this.store.setMeta(META_UNLOCK_FAILURES, count, new Date().toISOString());
+    } catch {
+      // Zähler nicht persistierbar – Entsperrung bleibt möglich.
     }
   }
 
@@ -471,6 +549,13 @@ export class OfflineRuntime {
     } catch {
       return false;
     }
+    if (response.status === 404 || response.status === 403) {
+      // Lease serverseitig abgelaufen/widerrufen: Wrap B lokal entfernen – ab jetzt öffnet
+      // nur noch das Passwort (Wrap A) oder eine neue Online-Autorisierung (§39).
+      await this.workspace.invalidateLease();
+      this.emit({ lease: null, leaseExpiresAt: null });
+      return false;
+    }
     if (!response.ok) return false;
     const secret = (await response.json()) as { leaseId: string; leaseSecret: string };
     const result = await this.workspace.unlockWithLeaseSecret(secret.leaseId, secret.leaseSecret);
@@ -482,8 +567,17 @@ export class OfflineRuntime {
   /** Lokale Offline-Entsperrung mit dem Passwort (Wrap A, PBKDF2) – ohne Server (§7). */
   async unlockOffline(password: string): Promise<UnlockResult> {
     if (this.workspace === null) return { ok: false, reason: 'no_workspace' } as UnlockResult;
+    const failures = await this.unlockFailures();
+    if (failures >= OFFLINE_UNLOCK_MAX_ATTEMPTS) {
+      return { ok: false, reason: 'too_many_attempts' };
+    }
     const result = await this.workspace.unlockWithPassword(password);
-    if (result.ok) await this.afterUnlock();
+    if (result.ok) {
+      await this.setUnlockFailures(0);
+      await this.afterUnlock();
+      return result;
+    }
+    if (result.reason === 'wrong_password') await this.setUnlockFailures(failures + 1);
     return result;
   }
 
@@ -599,6 +693,7 @@ export class OfflineRuntime {
     if (!response.ok) return false;
     const pkg = (await response.json()) as OfflinePackage<HandoverDetail, ReturnDetail>;
     if (pkg.environment !== identity.environment) return false;
+    await this.noteClock(Date.parse(pkg.serverTime));
     await this.ingest(pkg);
     await this.requestPersistence();
     await this.checkStorage();
@@ -1019,6 +1114,7 @@ export class OfflineRuntime {
     if (this.store !== null) await this.store.wipeAll();
     this.workspace?.lock();
     serviceWorkerPost({ type: 'CLEAR_KEY' });
+    serviceWorkerPost({ type: 'CLEAR_PAGES' });
     writeOfflineIdentity(null);
     this.emit({
       unlocked: false,

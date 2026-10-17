@@ -405,6 +405,25 @@ export class OfflineSyncService {
       }
     }
 
+    // Die getragene Erfassungszeit wird beim Abschluss zur tatsächlichen Ausgabe-/Rückgabezeit.
+    // Ein echter Client setzt sie im Moment der Erfassung (= Erstellzeit der Mutation). Weicht
+    // sie darüber hinaus ab, ist das fachlich eine Zeitkorrektur und verlangt – wie online –
+    // das Korrekturrecht; sonst könnte ein manipulierter Client die Zeit rückdatieren.
+    if (type === 'handover.finalize' || type === 'return.finalize') {
+      const carried = payloadParse.data as { capturedAt: string };
+      const drift = Math.abs(Date.parse(carried.capturedAt) - Date.parse(mutation.createdAt));
+      const correctionKey =
+        type === 'handover.finalize'
+          ? 'handover.correct_actual_time'
+          : 'return.correct_actual_time';
+      if (drift > CLOCK_TOLERANCE_MS && !effective.has(correctionKey)) {
+        throw new SyncRejected(
+          'PERMISSION_REVOKED',
+          'Die erfasste Zeit weicht von der Erfassung ab – für eine Zeitkorrektur fehlt das Recht.',
+        );
+      }
+    }
+
     const media = this.decodeMedia(input);
     const actorId = context.user.id;
     const payload = payloadParse.data;
