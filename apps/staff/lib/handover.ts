@@ -171,6 +171,26 @@ export interface HandoverDetail {
   canisterLimit: number;
   blockers: string[];
   nextAction: 'assign' | 'prepare' | 'handover' | 'done';
+  /** Phase 8: nur gesetzt, wenn die Sicht lokal aus dem Offline-Arbeitsbereich projiziert wurde. */
+  offline?: OfflineViewFlags;
+}
+
+/**
+ * Phase 8: Kennzeichen einer lokal projizierten Übergabe-/Rückgabesicht –
+ * der Offline-Router hängt sie an, die Wizards zeigen daraus „offline
+ * erfasst – Synchronisierung ausstehend“, offline gewählte Maschinen und die
+ * Bestandswarnung (§24).
+ */
+export interface OfflineViewFlags {
+  /** true = lokal abgeschlossen, Synchronisierung ausstehend (§15/§18). */
+  pendingFinalize: boolean;
+  capturedAt: string | null;
+  /** Slots (Zuordnungs-IDs) mit offline gewählter Maschine (§16). */
+  offlineChosenSlots: string[];
+  pendingCount: number;
+  conflictCount: number;
+  /** Artikel, für die der letzte lokale Snapshot keinen ausreichenden Bestand kennt (§24). */
+  stockRisk: string[];
 }
 
 export interface HandoverDocument {

@@ -10,6 +10,8 @@ const apiOrigin = process.env.STAFF_API_ORIGIN ?? 'http://127.0.0.1:3001';
 const nextConfig: NextConfig = {
   reactStrictMode: true,
   poweredByHeader: false,
+  // Phase 8: Offline-Kern und Fachregeln als Workspace-Pakete (reines TS) bündeln.
+  transpilePackages: ['@mietroyal/offline', '@mietroyal/domain'],
   allowedDevOrigins: ['127.0.0.1'],
   async rewrites() {
     return [{ source: '/api/:path*', destination: `${apiOrigin}/:path*` }];

@@ -9,6 +9,9 @@ import { apiFetch } from '../lib/api';
  * erkannte Wert (QR-URL oder Identifier) wird AUTHENTIFIZIERT über den
  * Phase-5-Resolver aufgelöst; kein Hardwarezwang – der Identifier kann
  * immer auch manuell eingegeben werden.
+ * Phase 8: Über `resolve` kann der Aufrufer die Auflösung selbst übernehmen
+ * (z. B. Tabletmodus: Maschine + passender Ausgabe-/Rückgabe-Kontext); offline
+ * beantwortet der Offline-Router die Resolver-Route über den QR-Hash.
  */
 interface BarcodeDetectorLike {
   detect(source: HTMLVideoElement): Promise<{ rawValue: string }[]>;
@@ -27,11 +30,14 @@ export function QrScanner<
   onResolved,
   onClose,
   resolvePath = '/staff/machines/qr/',
+  resolve: customResolve,
 }: {
   onResolved: (machine: T) => void;
   onClose: () => void;
   /** Resolver-Route (Phase 7: Rückgabe-Einstieg über den ausgegebenen Vorgang). */
   resolvePath?: string;
+  /** Eigene Auflösung des Tokens (Phase 8) – ersetzt den Aufruf der Resolver-Route. */
+  resolve?: (token: string) => Promise<{ data: T | null; errorMessage: string | null }>;
 }) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -44,10 +50,13 @@ export function QrScanner<
     setBusy(true);
     setError(null);
     const token = extractToken(raw);
-    const result = await apiFetch<T>(`${resolvePath}${encodeURIComponent(token)}`);
+    const result =
+      customResolve !== undefined
+        ? await customResolve(token)
+        : await apiFetch<T>(`${resolvePath}${encodeURIComponent(token)}`);
     setBusy(false);
     if (result.data === null) {
-      setError(result.errorMessage ?? 'QR-Code nicht gültig.');
+      setError(result.errorMessage ?? 'Dieser QR-Code ist nicht gültig.');
       return false;
     }
     onResolved(result.data);
