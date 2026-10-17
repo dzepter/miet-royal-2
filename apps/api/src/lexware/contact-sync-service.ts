@@ -153,6 +153,66 @@ export function contactBodyHash(body: Record<string, unknown>): string {
   return createHash('sha256').update(JSON.stringify(body)).digest('hex');
 }
 
+/**
+ * PUT als Merge (Order §19): Der Remote-Kontakt ist die Basis; Miet-Royal
+ * überschreibt nur die selbst gepflegten Felder (person bzw. company.name,
+ * vatRegistrationId nur bei vorhandener USt-ID, billing-Adresse nur wenn
+ * vollständig, emailAddresses.business, phoneNumbers.business, Kundenrolle).
+ * note/taxNumber/shipping/andere E-Mail-/Telefontypen bleiben erhalten;
+ * Read-only-Felder werden nicht gesendet.
+ */
+export function mergeContactBody(
+  current: LexwareContact,
+  body: Record<string, unknown>,
+): Record<string, unknown> {
+  const {
+    id: _id,
+    organizationId: _organizationId,
+    version,
+    roles,
+    person,
+    company,
+    addresses,
+    emailAddresses,
+    phoneNumbers,
+    archived: _archived,
+    ...rest
+  } = current;
+  const out: Record<string, unknown> = { ...rest, version };
+  delete out.createdDate;
+  delete out.updatedDate;
+  out.roles = { ...(roles ?? {}), customer: {} };
+  if (body.person !== undefined) {
+    out.person = { ...(person ?? {}), ...(body.person as Record<string, unknown>) };
+  } else if (body.company !== undefined) {
+    out.company = { ...(company ?? {}), ...(body.company as Record<string, unknown>) };
+  }
+  const billing = (body.addresses as { billing?: unknown } | undefined)?.billing;
+  const mergedAddresses = { ...(addresses ?? {}), ...(billing === undefined ? {} : { billing }) };
+  if (Object.keys(mergedAddresses).length > 0) out.addresses = mergedAddresses;
+  const mergedEmails = {
+    ...(emailAddresses ?? {}),
+    ...((body.emailAddresses as Record<string, unknown> | undefined) ?? {}),
+  };
+  if (Object.keys(mergedEmails).length > 0) out.emailAddresses = mergedEmails;
+  const mergedPhones = {
+    ...(phoneNumbers ?? {}),
+    ...((body.phoneNumbers as Record<string, unknown> | undefined) ?? {}),
+  };
+  if (Object.keys(mergedPhones).length > 0) out.phoneNumbers = mergedPhones;
+  return out;
+}
+
+function pendingClaimActive(
+  mapping: Pick<LexwareContactMappingRow, 'pendingIdentity'> | null,
+  now: Date,
+): boolean {
+  const pending = (mapping?.pendingIdentity ?? {}) as { claimedAt?: unknown };
+  const claimedAt =
+    typeof pending.claimedAt === 'string' ? Date.parse(pending.claimedAt) : Number.NaN;
+  return Number.isFinite(claimedAt) && now.getTime() - claimedAt < CONTACT_CREATE_CLAIM_MS;
+}
+
 function contactEmails(contact: LexwareContact): string[] {
   const out: string[] = [];
   for (const list of Object.values(contact.emailAddresses ?? {})) {
@@ -319,15 +379,9 @@ export class ContactSyncService {
               ? (mapping.candidates as ContactCandidate[])
               : [],
           };
-        case 'create_unknown': {
-          const pending = (mapping.pendingIdentity ?? {}) as { claimedAt?: unknown };
-          const claimedAt =
-            typeof pending.claimedAt === 'string' ? Date.parse(pending.claimedAt) : Number.NaN;
-          if (Number.isFinite(claimedAt) && now.getTime() - claimedAt < CONTACT_CREATE_CLAIM_MS) {
-            return { kind: 'in_progress' };
-          }
+        case 'create_unknown':
+          if (pendingClaimActive(mapping, now)) return { kind: 'in_progress' };
           return { kind: 'search', mapping, customer };
-        }
         default:
           return { kind: 'review', candidates: [] };
       }
@@ -338,7 +392,65 @@ export class ContactSyncService {
     if (plan.kind === 'update') {
       return this.updateLinked(plan.mapping, plan.customer, organizationId, now);
     }
-    return this.searchOrCreate(plan.customer, organizationId, now);
+    return this.searchOrCreate(plan.customer, organizationId, now, plan.mapping !== null);
+  }
+
+  /**
+   * Claim für Suche + Anlage (B4): nur wenn kein aktiver Claim eines anderen
+   * Aufrufers besteht und der Kunde nicht inzwischen verknüpft wurde – unter
+   * dem Kunden-Lock, daher atomar gegenüber parallelen Aufrufern.
+   */
+  private async claimCreate(
+    customerId: string,
+    organizationId: string,
+    pendingIdentity: Record<string, unknown>,
+    now: Date,
+  ): Promise<'claimed' | 'in_progress' | 'linked'> {
+    return this.locked(customerId, async (tx) => {
+      const mapping = await this.getMapping(customerId, tx);
+      if (mapping?.syncStatus === 'linked') return 'linked';
+      if (mapping !== null && pendingClaimActive(mapping, now)) return 'in_progress';
+      await tx
+        .insert(lexwareContactMappings)
+        .values({
+          customerId,
+          organizationId,
+          lexwareContactId: null,
+          syncStatus: 'create_unknown',
+          candidates: null,
+          pendingIdentity,
+          updatedAt: now,
+        })
+        .onConflictDoUpdate({
+          target: lexwareContactMappings.customerId,
+          set: {
+            organizationId,
+            lexwareContactId: null,
+            syncStatus: 'create_unknown',
+            candidates: null,
+            pendingIdentity,
+            updatedAt: now,
+          },
+        });
+      return 'claimed';
+    });
+  }
+
+  private async releaseClaim(customerId: string, now: Date): Promise<void> {
+    await this.locked(customerId, async (tx) => {
+      const mapping = await this.getMapping(customerId, tx);
+      if (mapping === null || mapping.syncStatus !== 'create_unknown') return;
+      await tx
+        .update(lexwareContactMappings)
+        .set({
+          pendingIdentity: {
+            ...((mapping.pendingIdentity as object | null) ?? {}),
+            claimedAt: null,
+          },
+          updatedAt: now,
+        })
+        .where(eq(lexwareContactMappings.customerId, customerId));
+    });
   }
 
   // ── Mapping vorhanden: Kontakt aus aktuellem Kundenstamm aktualisieren ──
@@ -399,12 +511,8 @@ export class ContactSyncService {
     remote: LexwareContact,
     body: Record<string, unknown>,
   ): Promise<number> {
-    const merged = (current: LexwareContact): Record<string, unknown> => ({
-      ...body,
-      // Vorhandene Rollen (z. B. vendor) nie entfernen, Kundenrolle sicherstellen.
-      roles: { ...(current.roles ?? {}), customer: {} },
-      version: current.version,
-    });
+    const merged = (current: LexwareContact): Record<string, unknown> =>
+      mergeContactBody(current, body);
     try {
       const result = (await this.client.updateContact(contactId, merged(remote))).data;
       return result.version ?? remote.version + 1;
@@ -439,12 +547,35 @@ export class ContactSyncService {
     customer: Customer,
     organizationId: string,
     now: Date,
+    recovering: boolean,
   ): Promise<ContactResolution> {
     const identity = contactIdentityFromCustomer(customer);
-    const found = (await this.searchCandidates(identity)).filter(
-      (contact) =>
-        contact.organizationId === undefined || contact.organizationId === organizationId,
-    );
+    const name = identity.kind === 'company' ? identity.companyName : identity.lastName;
+    const searchable =
+      (identity.email !== null && identity.email.length >= 3) ||
+      (name !== null && name.trim().length >= 3);
+    if (recovering && !searchable) {
+      // Unbeantworteter Create ohne durchführbare exakte Suche ⇒ nie blind erneut anlegen (B8).
+      return this.markReview(customer.id, organizationId, now, []);
+    }
+    const pendingIdentity = { email: identity.email, name, claimedAt: now.toISOString() };
+    const claim = await this.claimCreate(customer.id, organizationId, pendingIdentity, now);
+    if (claim === 'in_progress') return { status: 'in_progress' };
+    if (claim === 'linked') {
+      const mapping = await this.getMapping(customer.id);
+      if (mapping !== null) return this.updateLinked(mapping, customer, organizationId, now);
+      return { status: 'in_progress' };
+    }
+    let found: LexwareContact[];
+    try {
+      found = (await this.searchCandidates(identity)).filter(
+        (contact) =>
+          contact.organizationId === undefined || contact.organizationId === organizationId,
+      );
+    } catch (error) {
+      await this.releaseClaim(customer.id, now);
+      throw error;
+    }
     const strong = found.filter((contact) => isStrongMatch(identity, contact));
     if (strong.length === 1 && strong[0] !== undefined) {
       const contact = strong[0];
@@ -467,7 +598,7 @@ export class ContactSyncService {
         found.slice(0, 20).map((contact) => candidateOf(identity, contact)),
       );
     }
-    return this.create(customer, identity, organizationId, now);
+    return this.create(customer, identity, now);
   }
 
   private async markReview(
@@ -557,41 +688,11 @@ export class ContactSyncService {
   private async create(
     customer: Customer,
     identity: ContactIdentity,
-    organizationId: string,
     now: Date,
   ): Promise<ContactResolution> {
     const body = contactBodyFromIdentity(identity);
     const hash = contactBodyHash(body);
-    const pendingIdentity = {
-      email: identity.email,
-      name: identity.kind === 'company' ? identity.companyName : identity.lastName,
-      claimedAt: now.toISOString(),
-    };
-    // Claim VOR dem Create (Unknown-Outcome-Recovery, Order §33/§58).
-    await this.locked(customer.id, async (tx) => {
-      await tx
-        .insert(lexwareContactMappings)
-        .values({
-          customerId: customer.id,
-          organizationId,
-          lexwareContactId: null,
-          syncStatus: 'create_unknown',
-          candidates: null,
-          pendingIdentity,
-          updatedAt: now,
-        })
-        .onConflictDoUpdate({
-          target: lexwareContactMappings.customerId,
-          set: {
-            organizationId,
-            lexwareContactId: null,
-            syncStatus: 'create_unknown',
-            candidates: null,
-            pendingIdentity,
-            updatedAt: now,
-          },
-        });
-    });
+    // Der Claim (create_unknown + pendingIdentity.claimedAt) wurde vorher gesetzt (claimCreate).
     let created;
     try {
       created = (await this.client.createContact({ ...body, version: 0 })).data;
@@ -601,12 +702,7 @@ export class ContactSyncService {
         (error.kind === 'timeout' || error.kind === 'network')
       ) {
         // Ergebnis unbekannt: Claim freigeben, Status bleibt create_unknown.
-        await this.locked(customer.id, async (tx) => {
-          await tx
-            .update(lexwareContactMappings)
-            .set({ pendingIdentity: { ...pendingIdentity, claimedAt: null }, updatedAt: now })
-            .where(eq(lexwareContactMappings.customerId, customer.id));
-        });
+        await this.releaseClaim(customer.id, now);
         this.lexware.logger.warn(
           { lexware: { action: 'contact_create', customerId: customer.id, code: error.code } },
           'Lexware-Kontaktanlage ohne Antwort – Recovery beim nächsten Lauf',
@@ -707,12 +803,26 @@ export class ContactSyncService {
         'Für diesen Kunden ist bereits ein Lexware-Kontakt verknüpft.',
       );
     }
-    const result = await this.create(
-      customer,
-      contactIdentityFromCustomer(customer),
+    const identity = contactIdentityFromCustomer(customer);
+    const claim = await this.claimCreate(
+      customerId,
       organizationId,
+      {
+        email: identity.email,
+        name: identity.kind === 'company' ? identity.companyName : identity.lastName,
+        claimedAt: now.toISOString(),
+      },
       now,
     );
+    if (claim !== 'claimed') {
+      throw new ContactSyncError(
+        claim === 'linked' ? 'CONTACT_ALREADY_LINKED' : 'CONTACT_CREATE_UNKNOWN',
+        claim === 'linked'
+          ? 'Für diesen Kunden ist bereits ein Lexware-Kontakt verknüpft.'
+          : 'Für diesen Kunden läuft gerade eine Kontaktanlage – bitte kurz warten.',
+      );
+    }
+    const result = await this.create(customer, identity, now);
     if (result.status === 'create_unknown') {
       throw new ContactSyncError(
         'CONTACT_CREATE_UNKNOWN',

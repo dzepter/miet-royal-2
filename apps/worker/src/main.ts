@@ -16,7 +16,14 @@ import {
 import { pino } from 'pino';
 
 const config = loadConfig();
-const logger = pino({ level: config.logLevel });
+// Phase 10: dieselbe Redaction wie die API – der Lexware-Key landet unter keinem Pfad im Log.
+const logger = pino({
+  level: config.logLevel,
+  redact: {
+    paths: ['apiKey', '*.apiKey', '*.*.apiKey', 'config.lexware.apiKey', '*.config.lexware.apiKey'],
+    censor: '[REDACTED]',
+  },
+});
 const pool = createPool(config.databaseUrl);
 const queue = new PostgresJobQueue(pool);
 const workerId = `${hostname()}:${process.pid}`;

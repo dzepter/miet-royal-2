@@ -14,8 +14,11 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { AccountingTransferService } from '../src/accounting/transfer-service.ts';
 import { LexwareConnectionService } from '../src/lexware/connection-service.ts';
 import { createLexwareContext } from '../src/lexware/context.ts';
-import { PostgresLexwareThrottle } from '../src/lexware/rate-limiter.ts';
-import { LexwareReconcileService } from '../src/lexware/reconcile-service.ts';
+import { NoopLexwareThrottle, PostgresLexwareThrottle } from '../src/lexware/rate-limiter.ts';
+import {
+  LEXWARE_RECONCILE_ADMIN_LIMIT,
+  LexwareReconcileService,
+} from '../src/lexware/reconcile-service.ts';
 import {
   LEXWARE_REQUIRED_EVENT_TYPES,
   LexwareSubscriptionService,
@@ -302,10 +305,10 @@ describe('Reconciliation – pnpm lexware:reconcile / Adminaktion (§53, Tests 1
       attentionCode: 'INVOICE_MISSING',
     });
 
-    // Zweiter Lauf: bezahlte Rechnung ist kein Kandidat mehr; überfällig und
-    // „offen mit Prüfbedarf“ bleiben Kandidaten (paymentStatus open/overdue).
+    // Zweiter Lauf: bezahlt ist kein Kandidat mehr, INVOICE_MISSING ebenfalls
+    // nicht (manuelle Prüfung) – nur die überfällige Rechnung wird erneut geprüft.
     const again = await reconcile().run();
-    expect(again).toEqual({ checked: 2, updated: 0, attention: 1, failed: 0 });
+    expect(again).toEqual({ checked: 1, updated: 0, attention: 0, failed: 0 });
   });
 
   it('144b. Adminaktion POST /staff/lexware/reconcile liefert {checked, updated, attention}; ohne Verbindung 409', async () => {
@@ -320,6 +323,28 @@ describe('Reconciliation – pnpm lexware:reconcile / Adminaktion (§53, Tests 1
     });
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual({ checked: 1, updated: 1, attention: 0, failed: 0 });
+    // Paralleler Lauf: Advisory-Lock ⇒ 409 RECONCILE_RUNNING, danach wieder frei.
+    const holder = await ctx.pool.connect();
+    try {
+      await holder.query('BEGIN');
+      await holder.query("SELECT pg_advisory_xact_lock(hashtext('lexware-reconcile'))");
+      const busy = await ctx.app.inject({
+        method: 'POST',
+        url: '/staff/lexware/reconcile',
+        headers: { cookie },
+      });
+      expect(busy.statusCode).toBe(409);
+      expect(busy.json().error.code).toBe('RECONCILE_RUNNING');
+      await holder.query('ROLLBACK');
+    } finally {
+      holder.release();
+    }
+    const free = await ctx.app.inject({
+      method: 'POST',
+      url: '/staff/lexware/reconcile',
+      headers: { cookie },
+    });
+    expect(free.statusCode).toBe(200);
     await connection().markDisconnected('TOKEN_REVOKED');
     const blocked = await ctx.app.inject({
       method: 'POST',
@@ -329,6 +354,45 @@ describe('Reconciliation – pnpm lexware:reconcile / Adminaktion (§53, Tests 1
     expect(blocked.statusCode).toBe(409);
     expect(blocked.json().error.code).toBe('LEXWARE_NOT_CONNECTED');
     expect(blocked.body).not.toContain(fake.apiKey);
+  });
+
+  it('142b. Mappings mit INVOICE_VOIDED/INVOICE_MISSING bleiben dauerhaft außerhalb des Batches; Adminbatch max. 25', async () => {
+    const { admin } = await adminSession(ctx);
+    const voided = await createMappedTransfer(ctx, admin.id, await createFakeInvoice(ctx), {
+      attentionCode: 'INVOICE_VOIDED',
+      voucherStatus: 'voided',
+    });
+    const missing = await createMappedTransfer(ctx, admin.id, await createFakeInvoice(ctx), {
+      attentionCode: 'INVOICE_MISSING',
+    });
+    const open = await createMappedTransfer(ctx, admin.id, await createFakeInvoice(ctx));
+    const candidates = await reconcile().candidates();
+    expect(candidates).toEqual([open.mapping.id]);
+    expect(candidates).not.toContain(voided.mapping.id);
+    expect(candidates).not.toContain(missing.mapping.id);
+    expect(LEXWARE_RECONCILE_ADMIN_LIMIT).toBe(25);
+  });
+
+  it('Setup ohne Callback-URL verwirft die gespeicherten eigenen Subscription-IDs nicht', async () => {
+    await subscriptions().setup();
+    const before = await subscriptions().stored();
+    expect(before).toHaveLength(5);
+    const noCallback = createLexwareContext(
+      { ...ctx.config, lexware: { ...ctx.config.lexware, webhookCallbackUrl: null } },
+      ctx.db,
+      ctx.lexware.logger,
+      { throttle: new NoopLexwareThrottle() },
+    );
+    const service = new LexwareSubscriptionService(
+      noCallback,
+      new LexwareConnectionService(noCallback),
+    );
+    const result = await service.setup();
+    expect(result.webhookStatus).toBe('incomplete');
+    expect(result.failed).toHaveLength(5);
+    expect(await service.stored()).toEqual(before);
+    const [state] = await ctx.db.select().from(lexwareIntegrationState);
+    expect(state!.webhookStatus).toBe('incomplete');
   });
 
   it('145. Kein Polling-/Cron-Job: weder Handler noch Jobs für einen Lexware-Abgleich existieren', async () => {

@@ -2,7 +2,7 @@
   "name": "mietroyal",
   "private": true,
   "version": "0.1.0",
-  "description": "Miet-Royal 2.0 \u2013 Vermietungssystem (Monorepo)",
+  "description": "Miet-Royal 2.0 – Vermietungssystem (Monorepo)",
   "engines": {
     "node": ">=22.12.0",
     "pnpm": ">=10.0.0"
@@ -38,7 +38,8 @@
     "scheduling:ensure-booking-appointments": "pnpm --filter @mietroyal/api scheduling:ensure-booking-appointments",
     "lexware:setup": "pnpm --filter @mietroyal/api lexware:setup",
     "lexware:reconcile": "pnpm --filter @mietroyal/api lexware:reconcile",
-    "lexware:smoke": "pnpm --filter @mietroyal/api lexware:smoke"
+    "lexware:smoke": "pnpm --filter @mietroyal/api lexware:smoke",
+    "lexware:fake": "pnpm --filter @mietroyal/api lexware:fake"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",

@@ -3,6 +3,7 @@ import type { AppConfig } from '@mietroyal/config';
 import { lexwareWebhookEvents, type Database } from '@mietroyal/database';
 import type { JobQueue } from '@mietroyal/integrations';
 import { z } from '@mietroyal/validation';
+import { eq } from 'drizzle-orm';
 import type { LexwareConnectionService } from './connection-service.ts';
 import type { LexwareContext, LexwareLogger } from './context.ts';
 import { LEXWARE_REQUIRED_EVENT_TYPES } from './subscription-service.ts';
@@ -151,6 +152,21 @@ export class LexwareWebhookService {
       .returning({ id: lexwareWebhookEvents.id });
     const event = inserted[0];
     if (event === undefined) {
+      // Insert und Enqueue sind nicht atomar: ein Crash dazwischen wird durch
+      // Lexwares erneute Zustellung geheilt – der Job wird mit demselben
+      // Idempotenzschlüssel erneut eingereiht (die Queue dedupliziert).
+      const known = await this.deps.db
+        .select({ id: lexwareWebhookEvents.id })
+        .from(lexwareWebhookEvents)
+        .where(eq(lexwareWebhookEvents.fingerprint, fingerprint));
+      const existing = known[0];
+      if (existing !== undefined) {
+        await this.deps.queue.enqueue(
+          LEXWARE_EVENT_PROCESS_JOB_TYPE,
+          { eventId: existing.id },
+          { idempotencyKey: lexwareEventIdempotencyKey(fingerprint) },
+        );
+      }
       logger.info(
         { lexware: { webhook: 'duplicate', eventType: parsed.eventType }, correlationId },
         'Lexware-Webhook bereits bekannt',

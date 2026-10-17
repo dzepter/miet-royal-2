@@ -18,7 +18,8 @@
     "settlement:ensure": "tsx scripts/ensure-settlements.ts",
     "lexware:setup": "tsx scripts/lexware-setup.ts",
     "lexware:reconcile": "tsx scripts/lexware-reconcile.ts",
-    "lexware:smoke": "tsx scripts/lexware-smoke.ts"
+    "lexware:smoke": "tsx scripts/lexware-smoke.ts",
+    "lexware:fake": "tsx scripts/lexware-fake-server.ts"
   },
   "dependencies": {
     "@fastify/cookie": "11.1.2",

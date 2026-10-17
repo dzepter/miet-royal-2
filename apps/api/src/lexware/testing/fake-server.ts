@@ -994,14 +994,17 @@ function validateInvoice(
   return null;
 }
 
-/** Summen wie Lexware: je Position Netto × Menge (2 Dezimalstellen), Steuer je Position gerundet. */
+/**
+ * Summen wie eine Belegrechnung: Netto je Position (2 Dezimalstellen),
+ * Steuer je Steuersatz-Gruppe auf die Nettosumme (kaufmännisch gerundet,
+ * Integer-Arithmetik). Die reale Lexware-Rundung ist nicht dokumentiert.
+ */
 function computeTotals(
   lineItems: Record<string, unknown>[],
   taxType: string,
 ): { totalNetAmount: number; totalGrossAmount: number; totalTaxAmount: number } {
-  let netCents = 0;
-  let taxCents = 0;
-  let grossCents = 0;
+  const netByRate = new Map<number, number>();
+  let grossInput = 0;
   for (const item of lineItems) {
     if (item.type !== 'custom') continue;
     const unitPrice = item.unitPrice as Record<string, number>;
@@ -1009,21 +1012,31 @@ function computeTotals(
     const rate = Number(unitPrice.taxRatePercentage);
     if (taxType === 'gross') {
       const lineGross = Math.round(Number(unitPrice.grossAmount) * 100 * quantity);
-      const lineNet = Math.round(lineGross / (1 + rate / 100));
-      grossCents += lineGross;
-      netCents += lineNet;
-      taxCents += lineGross - lineNet;
+      const lineNet = halfUp(lineGross * 100, 100 + rate);
+      grossInput += lineGross;
+      netByRate.set(rate, (netByRate.get(rate) ?? 0) + lineNet);
     } else {
       const lineNet = Math.round(Number(unitPrice.netAmount) * 100 * quantity);
-      const lineTax = Math.round((lineNet * rate) / 100);
-      netCents += lineNet;
-      taxCents += lineTax;
-      grossCents += lineNet + lineTax;
+      netByRate.set(rate, (netByRate.get(rate) ?? 0) + lineNet);
     }
   }
+  let netCents = 0;
+  let taxCents = 0;
+  for (const [rate, groupNet] of netByRate) {
+    netCents += groupNet;
+    taxCents += halfUp(groupNet * rate, 100);
+  }
+  const grossCents = taxType === 'gross' ? grossInput : netCents + taxCents;
+  if (taxType === 'gross') taxCents = grossCents - netCents;
   return {
     totalNetAmount: netCents / 100,
     totalGrossAmount: grossCents / 100,
     totalTaxAmount: taxCents / 100,
   };
+}
+
+/** Kaufmännische Rundung (symmetrisch) von numerator/denominator in Integer-Arithmetik. */
+function halfUp(numerator: number, denominator: number): number {
+  const sign = numerator < 0 ? -1 : 1;
+  return sign * Math.floor((Math.abs(numerator) + Math.floor(denominator / 2)) / denominator);
 }

@@ -261,6 +261,20 @@ export function buildProviderSnapshot(input: BuildProviderSnapshotInput): Provid
   if (lines.length === 0) {
     throw new InvoiceBuildError('PAYLOAD_TOTAL_MISMATCH', 'Keine übertragbaren Positionen.');
   }
+  // Steuer je Steuersatz-Gruppe auf die SUMME der Nettobeträge (übliche
+  // Belegrechnung; vermeidet Rundungsdrift bei negativen Rabattpositionen).
+  // Die exakte Lexware-Rundung ist nicht dokumentiert – Abweichungen führen
+  // zur Summenprüfung (attention), nie zu stiller Anpassung.
+  if (taxType !== 'gross') {
+    const netByRate = new Map<number, number>();
+    for (const line of lines) {
+      netByRate.set(line.taxRateBp, (netByRate.get(line.taxRateBp) ?? 0) + line.netCents);
+    }
+    expectedGrossCents = 0;
+    for (const [rateBp, groupNet] of netByRate) {
+      expectedGrossCents += grossFromNetCents(groupNet, rateBp);
+    }
+  }
   const customer = payload.customer;
   const shippingIsoDate =
     payload.kind === 'cancellation' ? berlinDateOf(new Date(payload.createdAt)) : payload.eventDate;

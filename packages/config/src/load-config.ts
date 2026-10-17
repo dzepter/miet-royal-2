@@ -232,6 +232,11 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     ) {
       problems.push('LEXWARE_WEBHOOK_CALLBACK_URL: in production keine localhost-Adresse');
     }
+    if (raw.LEXWARE_WEBHOOK_PUBLIC_KEY_PEM !== undefined) {
+      problems.push(
+        'LEXWARE_WEBHOOK_PUBLIC_KEY_PEM: in production nicht zulässig (nur der offizielle Lexware-Schlüssel)',
+      );
+    }
   } else if (raw.APP_ENV === 'demo') {
     if (lexwareKey !== undefined && lexwareKey !== '') {
       problems.push('LEXWARE_API_KEY: in demo nicht zulässig (Demo bucht niemals in Lexware)');

@@ -1,5 +1,6 @@
 import type { JobHandler } from '@mietroyal/integrations';
 import { z } from '@mietroyal/validation';
+import { cancellationTransferIdempotencyKey } from '../accounting/gateway.ts';
 import type { FinanceHandlerDeps } from '../jobs/finance.ts';
 import { createCancellationService } from './cancellation-service.ts';
 
@@ -39,6 +40,19 @@ export function createCancellationAccountingTransferHandler(deps: FinanceHandler
       return;
     }
     const result = await service.executeTransfer(parsed.data.cancellationId);
+    if (result.outcome === 'skipped' && result.retryAt !== undefined) {
+      // Ein anderer Worker hält den Claim: nach dessen Ablauf erneut prüfen (kein Fehler).
+      await deps.transfers.enqueue(
+        {
+          kind: 'cancellation',
+          settlementId: null,
+          cancellationId: parsed.data.cancellationId,
+          idempotencyKey: cancellationTransferIdempotencyKey(parsed.data.cancellationId),
+        },
+        { reason: 'retry', runAt: result.retryAt },
+      );
+      return;
+    }
     // Phase 10: nur transiente Fehler werfen (Queue-Backoff) – permanente Blocker nicht endlos wiederholen.
     if (result.outcome === 'failed' && result.transient !== false) {
       throw new Error(

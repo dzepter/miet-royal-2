@@ -159,7 +159,7 @@ export async function assessTransferReadiness(
     codes.push('LEXWARE_NOT_CONFIGURED');
   } else {
     try {
-      const ready = await input.connection.assertReady();
+      const ready = await input.connection.assertReady(executor);
       organizationId = ready.organizationId;
       profileTaxType = ready.state.taxType;
       profileSmallBusiness = ready.state.smallBusiness;

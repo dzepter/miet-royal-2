@@ -797,6 +797,8 @@ export class CancellationService {
     errorCode?: string;
     /** Phase 10: false ⇒ permanenter Blocker (kein Auto-Retry). */
     transient?: boolean;
+    /** Phase 10: übersprungen wegen aktivem Claim eines anderen Workers. */
+    retryAt?: Date;
   }> {
     const current = await this.byId(cancellationId);
     if (current === null) throw new AuthError('NOT_FOUND', 'Stornierung nicht gefunden.');
@@ -865,6 +867,7 @@ export class CancellationService {
       outcome: result.outcome,
       ...(result.errorCode === undefined ? {} : { errorCode: result.errorCode }),
       ...(result.transient === undefined ? {} : { transient: result.transient }),
+      ...(result.retryAt === undefined ? {} : { retryAt: result.retryAt }),
     };
   }
 
@@ -1057,7 +1060,11 @@ export class CancellationService {
       paymentStatusLabel:
         row.paymentStatus === null ? null : PAYMENT_STATUS_LABELS[row.paymentStatus],
       transferredAt: iso(row.transferredAt),
-      lastTransferErrorCode: row.lastTransferErrorCode,
+      lastTransferErrorCode:
+        row.lastTransferErrorCode ??
+        (pending && transfer !== null && transfer.status !== 'pending'
+          ? (transfer.attentionCode ?? transfer.lastErrorCode ?? 'LEXWARE_OUTCOME_UNKNOWN')
+          : null),
       accountingBlocker: pending && !configured ? 'not_configured' : null,
       accounting,
       invoiceDeliveryStatus: row.invoiceDeliveryStatus,

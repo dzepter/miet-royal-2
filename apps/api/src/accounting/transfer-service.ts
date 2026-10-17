@@ -58,7 +58,9 @@ export interface LexwareTransferDeps {
 }
 
 /** Beanspruchung einer Transferzeile (Phase 1) – nach Ablauf darf ein anderer Worker übernehmen (mit Recovery). */
-export const TRANSFER_CLAIM_MS = 2 * 60 * 1000;
+export const TRANSFER_CLAIM_MS = 10 * 60 * 1000;
+/** Obergrenze geprüfter Recovery-Kandidaten (Belegliste ist bereits nach Kontakt/Datum gefiltert). */
+export const RECOVERY_CANDIDATE_LIMIT = 50;
 
 export interface ExecuteTransferResult {
   outcome: 'succeeded' | 'already_succeeded' | 'skipped' | 'failed';
@@ -70,6 +72,8 @@ export interface ExecuteTransferResult {
    * Mock-/Disabled-Pfad: immer true (Phase-9-Verhalten unverändert).
    */
   transient?: boolean;
+  /** Nur bei `skipped` wegen aktivem Claim eines anderen Workers: Zeitpunkt für einen erneuten Job. */
+  retryAt?: Date;
 }
 
 export interface TransferHooks {
@@ -101,7 +105,14 @@ type Phase2 =
       payment: LexwarePayment | null;
       contactId: string;
     }
-  | { kind: 'failed'; code: string; transient: boolean; contactId: string | null }
+  | {
+      kind: 'failed';
+      code: string;
+      transient: boolean;
+      contactId: string | null;
+      /** true ⇒ eine Recovery hat „kein Treffer“ ergeben (outcome_unknown darf verlassen werden). */
+      recoveryResolved: boolean;
+    }
   | { kind: 'unknown'; code: string; invoiceId: string | null; contactId: string | null }
   | {
       kind: 'attention';
@@ -399,7 +410,13 @@ export class AccountingTransferService {
       return this.commitResult(
         deps,
         phase1,
-        { kind: 'failed', code: 'LEXWARE_NOT_CONFIGURED', transient: false, contactId: null },
+        {
+          kind: 'failed',
+          code: 'LEXWARE_NOT_CONFIGURED',
+          transient: false,
+          contactId: null,
+          recoveryResolved: false,
+        },
         hooks,
         now,
       );
@@ -478,9 +495,9 @@ export class AccountingTransferService {
         row.status === 'in_progress' &&
         row.claimExpiresAt !== null &&
         row.claimExpiresAt.getTime() > now.getTime();
-      if (claimActive) {
+      if (claimActive && row.claimExpiresAt !== null) {
         // Ein anderer Aufrufer (Doppelklick/Worker) ist gerade dabei – nichts doppelt anstoßen.
-        return { kind: 'done', result: { outcome: 'skipped', row } };
+        return { kind: 'done', result: { outcome: 'skipped', row, retryAt: row.claimExpiresAt } };
       }
       if (!(await hooks.recheck(tx, row))) {
         return { kind: 'done', result: { outcome: 'skipped', row } };
@@ -490,7 +507,9 @@ export class AccountingTransferService {
       const attempts = row.attempts + 1;
 
       const fail = async (code: string, status: 'failed' | 'attention' = 'failed') => {
-        const keepUnknown = row.status === 'outcome_unknown' && status === 'failed';
+        // Recovery-Pflicht geht nie verloren: outcome_unknown und abgelaufene
+        // in_progress-Claims bleiben „unbekannt“, bis eine Recovery abgeschlossen ist.
+        const keepUnknown = needsRecovery && status === 'failed';
         const updated = await tx
           .update(accountingTransfers)
           .set({
@@ -632,6 +651,8 @@ export class AccountingTransferService {
   ): Promise<Phase2> {
     const { payload, snapshot, mapping } = phase1;
     let contactId: string | null = null;
+    let createdInvoiceId: string | null = null;
+    let recoveryResolved = false;
     try {
       const contact = await deps.contacts.resolveForTransfer(
         payload.customer.customerId,
@@ -649,6 +670,7 @@ export class AccountingTransferService {
             code: 'CONTACT_REVIEW_REQUIRED',
             transient: false,
             contactId: null,
+            recoveryResolved: false,
           };
         case 'in_progress':
           return {
@@ -656,15 +678,23 @@ export class AccountingTransferService {
             code: 'CONTACT_SYNC_IN_PROGRESS',
             transient: true,
             contactId: null,
+            recoveryResolved: false,
           };
         case 'create_unknown':
-          return { kind: 'failed', code: 'LEXWARE_TIMEOUT', transient: true, contactId: null };
+          return {
+            kind: 'failed',
+            code: 'LEXWARE_TIMEOUT',
+            transient: true,
+            contactId: null,
+            recoveryResolved: false,
+          };
         default:
           return {
             kind: 'failed',
             code: 'CONTACT_REVIEW_REQUIRED',
             transient: false,
             contactId: null,
+            recoveryResolved: false,
           };
       }
 
@@ -681,6 +711,7 @@ export class AccountingTransferService {
           };
         }
         if (recovered.kind === 'found') invoiceId = recovered.invoiceId;
+        recoveryResolved = true;
       }
 
       if (invoiceId === null) {
@@ -698,16 +729,23 @@ export class AccountingTransferService {
           throw error;
         }
       }
+      // Ab hier existiert die Rechnung: JEDER Fehler ⇒ outcome_unknown mit bekannter ID.
+      createdInvoiceId = invoiceId;
 
-      let invoice: LexwareInvoice;
-      try {
-        invoice = (await client.getInvoice(invoiceId)).data;
-      } catch (error) {
-        if (error instanceof LexwareApiError && error.transient) {
-          // Rechnung existiert – nur das Nachlesen fehlte: Recovery über die bekannte ID.
-          return { kind: 'unknown', code: error.code, invoiceId, contactId };
-        }
-        throw error;
+      const invoice: LexwareInvoice = (await client.getInvoice(invoiceId)).data;
+      if (
+        (invoice.voucherStatus !== 'open' && invoice.voucherStatus !== 'paid') ||
+        invoice.voucherNumber === undefined ||
+        invoice.voucherNumber === ''
+      ) {
+        // Draft trotz finalize / unerwarteter Status ⇒ manuelle Prüfung, nie „succeeded“.
+        return {
+          kind: 'attention',
+          code: 'INVOICE_UNEXPECTED_STATUS',
+          invoice,
+          payment: null,
+          contactId,
+        };
       }
       const gross = invoiceGrossCents(invoice);
       const net = invoiceNetCents(invoice);
@@ -738,11 +776,27 @@ export class AccountingTransferService {
       }
       return { kind: 'success', invoice, payment, contactId };
     } catch (error) {
+      const code =
+        error instanceof LexwareApiError
+          ? error.code
+          : error instanceof AuthError
+            ? error.code
+            : 'UNKNOWN';
+      if (createdInvoiceId !== null) {
+        // Rechnung wurde angelegt – Nachlesen scheiterte (auch 401/403/404): nie neu anlegen.
+        return { kind: 'unknown', code, invoiceId: createdInvoiceId, contactId };
+      }
       if (error instanceof LexwareApiError) {
-        return { kind: 'failed', code: error.code, transient: error.transient, contactId };
+        return {
+          kind: 'failed',
+          code,
+          transient: error.transient,
+          contactId,
+          recoveryResolved,
+        };
       }
       if (error instanceof AuthError) {
-        return { kind: 'failed', code: error.code, transient: false, contactId };
+        return { kind: 'failed', code, transient: false, contactId, recoveryResolved };
       }
       deps.context.logger.error(
         {
@@ -751,7 +805,7 @@ export class AccountingTransferService {
         },
         'Unerwarteter Fehler im Lexware-Transfer',
       );
-      return { kind: 'failed', code: 'UNKNOWN', transient: true, contactId };
+      return { kind: 'failed', code: 'UNKNOWN', transient: true, contactId, recoveryResolved };
     }
   }
 
@@ -793,6 +847,7 @@ export class AccountingTransferService {
       })
     ).data;
     const found: string[] = [];
+    if (page.content.length > RECOVERY_CANDIDATE_LIMIT) return { kind: 'ambiguous' };
     for (const entry of page.content) {
       if (entry.voucherType !== 'invoice') continue;
       const invoice = (await client.getInvoice(entry.id)).data;
@@ -807,15 +862,52 @@ export class AccountingTransferService {
   private async commitResult(
     deps: LexwareTransferDeps,
     phase1: Extract<Phase1, { kind: 'proceed' }>,
-    phase2: Phase2,
+    phase2Input: Phase2,
     hooks: TransferHooks,
     now: Date,
   ): Promise<ExecuteTransferResult> {
     return this.db.transaction(async (tx): Promise<ExecuteTransferResult> => {
+      let phase2 = phase2Input;
       const row = await this.lockRow(tx, phase1.row.id);
       if (row.status === 'succeeded') return { outcome: 'already_succeeded', row };
       const clearClaim = { claimedAt: null, claimedBy: null, claimExpiresAt: null };
       const contactPatch = phase2.contactId === null ? {} : { lexwareContactId: phase2.contactId };
+      const mappingRows = await tx
+        .select()
+        .from(lexwareInvoiceMappings)
+        .where(eq(lexwareInvoiceMappings.id, phase1.mapping.id));
+      const currentMapping = mappingRows[0] ?? phase1.mapping;
+      // Claim-Fencing: hat ein anderer Worker die Zeile inzwischen beansprucht
+      // (abgelaufener Claim), darf ein eigener Erfolg nicht still verworfen werden.
+      const claimLost =
+        row.claimedBy !== phase1.row.claimedBy ||
+        (row.claimedAt?.getTime() ?? null) !== (phase1.row.claimedAt?.getTime() ?? null);
+      if (phase2.kind === 'success') {
+        const knownInvoiceId = currentMapping.lexwareInvoiceId;
+        const conflicting = knownInvoiceId !== null && knownInvoiceId !== phase2.invoice.id;
+        if (claimLost || conflicting) {
+          deps.context.logger.warn(
+            {
+              lexware: {
+                action: 'transfer_claim_conflict',
+                transferId: row.id,
+                invoiceId: phase2.invoice.id,
+                knownInvoiceId,
+                claimedBy: row.claimedBy,
+                workerId: deps.workerId,
+              },
+            },
+            'Lexware-Transfer: Claim-Konflikt – manueller Abgleich erforderlich',
+          );
+          phase2 = {
+            kind: 'attention',
+            code: 'RECOVERY_AMBIGUOUS',
+            invoice: conflicting ? null : phase2.invoice,
+            payment: null,
+            contactId: phase2.contactId,
+          };
+        }
+      }
 
       if (phase2.kind === 'success') {
         const { invoice, payment } = phase2;
@@ -940,7 +1032,8 @@ export class AccountingTransferService {
           .set({ ...contactPatch, updatedAt: now })
           .where(eq(lexwareInvoiceMappings.id, phase1.mapping.id));
       }
-      const keepUnknown = phase1.needsRecovery && phase1.mapping.lexwareInvoiceId !== null;
+      // Recovery-Pflicht bleibt bestehen, bis eine Recovery „kein Treffer“/„verbunden“ ergab.
+      const keepUnknown = phase1.needsRecovery && !phase2.recoveryResolved;
       const updated = await tx
         .update(accountingTransfers)
         .set({

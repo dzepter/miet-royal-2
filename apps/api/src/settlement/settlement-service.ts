@@ -2330,6 +2330,8 @@ export class SettlementService {
     outcome: 'succeeded' | 'already_succeeded' | 'skipped' | 'failed';
     errorCode?: string;
     transient?: boolean;
+    /** Phase 10: übersprungen wegen aktivem Claim eines anderen Workers – Job zu diesem Zeitpunkt erneut einreihen. */
+    retryAt?: Date;
   }> {
     if (!this.transfers.isConfigured()) return { outcome: 'skipped' };
     const transferId = await this.db.transaction(async (tx) => {
@@ -2374,6 +2376,7 @@ export class SettlementService {
       outcome: result.outcome,
       ...(result.errorCode === undefined ? {} : { errorCode: result.errorCode }),
       ...(result.transient === undefined ? {} : { transient: result.transient }),
+      ...(result.retryAt === undefined ? {} : { retryAt: result.retryAt }),
     };
   }
 
@@ -2811,6 +2814,54 @@ export class SettlementService {
       dominantAction.label = 'Lexware-Übertragung prüfen';
       dominantAction.hint = accounting.blockers.map((blocker) => blocker.label).join(' ');
     }
+    // Phase 10: Transferzeile in outcome_unknown / in_progress (Claim abgelaufen) /
+    // attention / failed ⇒ für die Anzeige immer „Übertragung prüfen“ (nie „Bereit“).
+    const lexwareProblem =
+      accounting.provider === 'lexware' &&
+      settlement.lockedAt === null &&
+      transferRow !== undefined &&
+      (transferRow.status === 'outcome_unknown' ||
+        transferRow.status === 'attention' ||
+        transferRow.status === 'failed' ||
+        (transferRow.status === 'in_progress' &&
+          (transferRow.claimExpiresAt === null ||
+            transferRow.claimExpiresAt.getTime() <= now.getTime())));
+    const effectiveStatus: SettlementStatus = lexwareProblem
+      ? 'transfer_failed'
+      : settlement.status;
+    const effectiveErrorCode =
+      settlement.lastTransferErrorCode ??
+      (lexwareProblem
+        ? (transferRow.attentionCode ??
+          transferRow.lastErrorCode ??
+          (transferRow.status === 'attention' ? 'ATTENTION' : 'LEXWARE_OUTCOME_UNKNOWN'))
+        : null);
+    const effectiveStatusLabel =
+      lexwareProblem && transferRow.status === 'attention'
+        ? 'Buchhaltungsprüfung erforderlich'
+        : lexwareProblem
+          ? 'Lexware-Übertragung prüfen'
+          : settlement.status === 'transfer_failed' && pendingJob === null
+            ? TRANSFER_FAILED_MANUAL_LABEL
+            : SETTLEMENT_STATUS_LABELS[settlement.status];
+    if (lexwareProblem) {
+      if (transferRow.status === 'attention') {
+        dominantAction.key = 'locked';
+        dominantAction.label = 'Buchhaltungsprüfung erforderlich';
+        dominantAction.hint =
+          accounting.invoice.attentionLabel ??
+          'Die Übertragung erfordert eine manuelle Prüfung durch die Buchhaltung.';
+      } else {
+        dominantAction.key = 'retry_transfer';
+        if (accounting.blockers.length === 0) {
+          dominantAction.label = accounting.retryLabel;
+          dominantAction.hint =
+            transferRow.status === 'outcome_unknown' || transferRow.status === 'in_progress'
+              ? 'Lexware hat nicht geantwortet – vor einem erneuten Versuch wird automatisch geprüft, ob die Rechnung bereits entstanden ist.'
+              : 'Die letzte Übertragung ist fehlgeschlagen – bitte erneut versuchen.';
+        }
+      }
+    }
     const notice = noticeRow === null ? null : this.noticeView(noticeRow);
     return {
       settlement: {
@@ -2820,11 +2871,8 @@ export class SettlementService {
         customerId: process.customerId,
         bookingId: settlement.bookingId,
         returnId: settlement.returnId,
-        status: settlement.status,
-        statusLabel:
-          settlement.status === 'transfer_failed' && pendingJob === null
-            ? TRANSFER_FAILED_MANUAL_LABEL
-            : SETTLEMENT_STATUS_LABELS[settlement.status],
+        status: effectiveStatus,
+        statusLabel: effectiveStatusLabel,
         fixedTotalCents: settlement.fixedTotalCents,
         variableTotalCents: settlement.variableTotalCents,
         chargesTotalCents: settlement.chargesTotalCents,
@@ -2856,7 +2904,7 @@ export class SettlementService {
           settlement.paymentStatus === null
             ? null
             : PAYMENT_STATUS_LABELS[settlement.paymentStatus],
-        lastTransferErrorCode: settlement.lastTransferErrorCode,
+        lastTransferErrorCode: effectiveErrorCode,
         accountingBlocker: !configured && settlement.lockedAt === null ? 'not_configured' : null,
         accounting,
         invoiceDeliveryStatus: settlement.invoiceDeliveryStatus,

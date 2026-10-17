@@ -203,7 +203,7 @@ export function AccountingBlockCard({
       )}
       {data.invoiceCreated && isLexware && (
         <p className="muted">
-          Rechnungen werden nicht automatisch versendet – der Versand bleibt ausstehend, bis er
+          Rechnungen verschickt Miet-Royal nicht automatisch – der Versand bleibt ausstehend, bis er
           ausdrücklich erfolgt.
         </p>
       )}

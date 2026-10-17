@@ -1,4 +1,8 @@
-import { lexwareIntegrationState, type LexwareIntegrationStateRow } from '@mietroyal/database';
+import {
+  lexwareIntegrationState,
+  type DatabaseExecutor,
+  type LexwareIntegrationStateRow,
+} from '@mietroyal/database';
 import { eq } from 'drizzle-orm';
 import { AuthError } from '../auth/service.ts';
 import type { LexwareContext } from './context.ts';
@@ -68,8 +72,10 @@ export class LexwareConnectionService {
   }
 
   /** Aktueller Zustand der Umgebung (ohne Secrets); null, wenn nie geprüft. */
-  async getState(): Promise<LexwareIntegrationStateRow | null> {
-    const rows = await this.lexware.db
+  async getState(
+    executor: DatabaseExecutor = this.lexware.db,
+  ): Promise<LexwareIntegrationStateRow | null> {
+    const rows = await executor
       .select()
       .from(lexwareIntegrationState)
       .where(eq(lexwareIntegrationState.environment, this.environment));
@@ -260,11 +266,13 @@ export class LexwareConnectionService {
   }
 
   /** Wirft LexwareBlockedError, wenn kein Transfer erlaubt ist (enabled ∧ connected ∧ organizationId gepinnt). */
-  async assertReady(): Promise<{ organizationId: string; state: LexwareIntegrationStateRow }> {
+  async assertReady(
+    executor: DatabaseExecutor = this.lexware.db,
+  ): Promise<{ organizationId: string; state: LexwareIntegrationStateRow }> {
     if (!this.lexware.config.lexware.enabled || this.lexware.client === null) {
       throw blocked('LEXWARE_NOT_CONFIGURED');
     }
-    const state = await this.getState();
+    const state = await this.getState(executor);
     if (state === null) throw blocked('LEXWARE_NOT_CONNECTED');
     switch (state.status) {
       case 'organization_mismatch':

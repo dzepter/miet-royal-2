@@ -60,7 +60,9 @@ export class LexwareSubscriptionService {
     const callbackUrl = this.lexware.config.lexware.webhookCallbackUrl;
     const now = new Date();
     if (callbackUrl === null) {
-      await this.persist([], 'incomplete', now);
+      // Gespeicherte eigene Subscription-IDs bleiben erhalten (sonst gälten
+      // sie später als „fremd“ und würden nie ersetzt) – nur Status setzen.
+      await this.persistStatus('incomplete', now);
       return {
         created: [],
         existing: [],
@@ -175,6 +177,24 @@ export class LexwareSubscriptionService {
       .update(lexwareIntegrationState)
       .set({ webhookStatus: 'error', webhooksCheckedAt: now, updatedAt: now })
       .where(eq(lexwareIntegrationState.environment, this.lexware.config.appEnv));
+  }
+
+  private async persistStatus(
+    webhookStatus: 'configured' | 'incomplete' | 'error',
+    now: Date,
+  ): Promise<void> {
+    await this.lexware.db
+      .insert(lexwareIntegrationState)
+      .values({
+        environment: this.lexware.config.appEnv,
+        webhookStatus,
+        webhooksCheckedAt: now,
+        updatedAt: now,
+      })
+      .onConflictDoUpdate({
+        target: lexwareIntegrationState.environment,
+        set: { webhookStatus, webhooksCheckedAt: now, updatedAt: now },
+      });
   }
 
   private async persist(

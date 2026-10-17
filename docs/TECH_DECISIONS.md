@@ -1924,3 +1924,56 @@ Shell cwd was reset to /home/user/Sparkoffer.de
   Event-Subscriptions (409 Duplikat, 406 unsichere Callback-URL), 2-Req/s-
   Limit, Fehlerinjektion und „Timeout nach erfolgreichem Create“. Der
   Quality-Gate läuft nie gegen einen echten Lexware-Account.
+- **Zweiphasiger Transfer (Order §§32/59/60)**: `AccountingTransferService.execute()`
+  delegiert beim Provider `lexware` an einen dreistufigen Pfad: Phase 1
+  (kurze Transaktion, Transferzeile FOR UPDATE) prüft Hooks/Readiness
+  (Verbindung gepinnt, Steuerkonfiguration vollständig und plausibel zum
+  Profil, keine Anzahlungs-/Kautions-Credits, Kontakt eindeutig), friert den
+  Provider-Snapshot v2 ein, beansprucht die Zeile (`in_progress`, Claim mit
+  Ablauf) und legt das Rechnungs-Mapping mit stabilem Transfermarker an;
+  Phase 2 läuft OHNE Datenbanksperre (Kontakt-Sync, Recovery, `POST
+  /v1/invoices?finalize=true`, `GET invoice`, `GET payment`); Phase 3 commitet
+  mit Claim-Fencing. Jeder Fehler nach dem abgesetzten Create ⇒
+  `outcome_unknown` (Rechnungs-ID, falls bekannt, wird gemerkt); vor jedem
+  erneuten Create läuft die Recovery (GET by ID bzw. Belegliste je Kontakt und
+  Belegdatum ±1 Tag, Treffer nur bei Marker UND Bruttosumme; genau einer ⇒
+  verbinden, keiner ⇒ Create, mehrere ⇒ `attention RECOVERY_AMBIGUOUS`).
+  `outcome_unknown` wird erst verlassen, wenn eine Recovery abgeschlossen ist –
+  auch bei gescheiterter Recovery, Blockern oder abgelaufenem Claim bleibt die
+  Recovery-Pflicht erhalten (Review-Befund). Summen-Mismatch, Draft trotz
+  finalize und Fremd-Claim ⇒ `attention` mit verbundener Rechnung, nie ein
+  zweiter Create. Phase-9-Zeilen mit Provider `disabled` werden ohne zweite
+  Zeile übernommen (externalReference leer, Schlüssel unverändert).
+- **Kontakt-Sync**: ein aktives Mapping je Kunde, ein Kunde je
+  Lexware-Kontakt (Unique je Organisation). Ohne Mapping: Suche über exakt
+  normalisierte E-Mail und Name; nur bei E-Mail UND Person/Firma gleich wird
+  automatisch verknüpft, sonst „Lexware-Kontakt prüfen“ (Admin wählt oder legt
+  neu an). Create mit Claim vor dem HTTP-Aufruf (parallele Transfers erzeugen
+  keinen Doppelkontakt), Unknown-Outcome-Recovery über die exakte Identität,
+  ohne durchführbare Suche ⇒ Prüfung statt erneutem Create. PUT ist ein
+  Merge über den aktuellen Remote-Kontakt (nur gepflegte Felder werden
+  überschrieben), Basis ist immer der heutige Kundenstamm, nie ein
+  Buchungs-Snapshot; die Rechnungsadresse im Beleg stammt ausschließlich aus
+  dem eingefrorenen Accounting-Snapshot.
+- **Webhooks/Reconcile**: Dedup und Job-Einreihung sind nicht in einer
+  Transaktion (Queue auf eigener Verbindung); deshalb reiht eine erneute
+  Zustellung desselben Events den Job mit demselben Idempotenzschlüssel
+  nach. Reconcile prüft nur relevante Mappings (offen/überfällig, ohne
+  dauerhafte Attention-Codes), Admin-Aktion mit kleinem Batch und
+  Advisory-Lock, CLI bis 100 – kein Polling. Setup ohne Callback-URL
+  verwirft keine eigenen Subscription-IDs.
+- **Preisbasis (offener Punkt)**: Die Phase-9-Beträge werden als
+  NETTO-Beträge an Lexware übergeben (Steuerart net ⇒ `netAmount`, vatfree ⇒
+  Satz 0, gross ⇒ `grossAmount`). MASTER_SPEC legt nicht fest, ob die
+  Mietpreise netto oder brutto gelten – vor Produktivbetrieb mit der
+  Buchhaltung entscheiden; die Steuerkonfiguration (`taxType`) bildet beides
+  ab. Steuer wird je Steuersatz-Gruppe auf die Nettosumme gerechnet; die
+  reale Lexware-Rundung ist nicht dokumentiert (Summenprüfung fail-closed).
+- **Bewusst offen (Deferred, Phase 10)**: Anzahlungen/Kautionen auf der
+  Lexware-Rechnung (Public API: Down-Payment-Invoices read-only ⇒
+  fail-closed), Auflösung von Attention-Zeilen (nur manuell durch die
+  Buchhaltung; keine Fachregel), Rechnungsversand (Phase 12), echte
+  Key-Ablaufüberwachung (Lexware liefert kein Ablaufdatum), IP-Rate-Limit
+  am Webhook-Endpunkt (Signaturprüfung vor jedem DB-Zugriff genügt vorerst),
+  Nutzung von `Retry-After` im Queue-Backoff (Lexware dokumentiert den Header
+  nicht), Live-Verifikation von Steuerrundung und Scope-Namen am Testaccount.

@@ -142,6 +142,8 @@ export function buildApp({
           'apiKey',
           '*.apiKey',
           'config.lexware.apiKey',
+          '*.config.lexware.apiKey',
+          '*.*.apiKey',
           'lexware.apiKey',
           'headers.authorization',
           '*.headers.authorization',

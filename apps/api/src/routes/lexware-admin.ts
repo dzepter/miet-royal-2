@@ -18,7 +18,11 @@ import {
 } from '../lexware/connection-service.ts';
 import type { LexwareContext } from '../lexware/context.ts';
 import { LexwareApiError } from '../lexware/errors.ts';
-import { LexwareReconcileService } from '../lexware/reconcile-service.ts';
+import {
+  LEXWARE_RECONCILE_ADMIN_LIMIT,
+  LexwareReconcileRunningError,
+  LexwareReconcileService,
+} from '../lexware/reconcile-service.ts';
 import { LexwareSubscriptionService, parseStored } from '../lexware/subscription-service.ts';
 
 export interface LexwareAdminRouteOptions {
@@ -126,7 +130,7 @@ export function registerLexwareAdminRoutes(
     reply: FastifyReply,
     error: unknown,
   ): boolean => {
-    if (error instanceof LexwareBlockedError) {
+    if (error instanceof LexwareBlockedError || error instanceof LexwareReconcileRunningError) {
       sendError(request, reply, 409, error.code, error.message);
       return true;
     }
@@ -177,7 +181,9 @@ export function registerLexwareAdminRoutes(
   app.post('/staff/lexware/reconcile', async (request, reply) => {
     if ((await requireSettings(request, reply)) === null) return;
     try {
-      const result = await reconcile.run(new Date());
+      const result = await reconcile.run(new Date(), LEXWARE_RECONCILE_ADMIN_LIMIT, {
+        exclusive: true,
+      });
       return {
         checked: result.checked,
         updated: result.updated,

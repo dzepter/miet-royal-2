@@ -170,6 +170,25 @@ describe('POST /webhooks/lexware – Annahme (§44–47, Tests 123–131, 137)',
     expect(await events()).toHaveLength(2);
   });
 
+  it('129b. Event-Zeile ohne Job (Crash zwischen Insert und Enqueue) ⇒ erneute Zustellung reiht den Job nach', async () => {
+    const signed = fake.signWebhook({ eventType: 'payment.changed', resourceId: resourceId() });
+    const first = await postWebhook(ctx, signed.body, signed.signature);
+    expect(first.json().status).toBe('queued');
+    await ctx.pool.query('DELETE FROM integration_jobs');
+    expect(await jobs()).toHaveLength(0);
+    const second = await postWebhook(ctx, signed.body, signed.signature);
+    expect(second.statusCode).toBe(202);
+    expect(second.json().status).toBe('duplicate');
+    const [event] = await events();
+    const queued = await jobs();
+    expect(queued).toHaveLength(1);
+    expect(queued[0]!.idempotency_key).toBe(`lexware-event:${event!.fingerprint}`);
+    // Dritte Zustellung: Queue dedupliziert, kein zweiter Job.
+    await postWebhook(ctx, signed.body, signed.signature);
+    expect(await jobs()).toHaveLength(1);
+    expect(await events()).toHaveLength(1);
+  });
+
   it('130. Antwort in < 100 ms ohne Lexware-Aufruf; ungültiges Schema ⇒ 400; Limit 64 KB', async () => {
     const before = fake.requestLog.length;
     const signed = fake.signWebhook({ eventType: 'payment.changed', resourceId: resourceId() });

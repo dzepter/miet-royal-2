@@ -228,6 +228,10 @@ describe('Lexware-Konfiguration (Phase 10)', () => {
         LEXWARE_WEBHOOK_CALLBACK_URL: 'http://localhost:3001/webhooks/lexware',
       }),
     ).toThrow(/LEXWARE_WEBHOOK_CALLBACK_URL/);
+    // 160. Kein Ersatz-Public-Key in production (Signatur nur mit dem offiziellen Lexware-Schlüssel).
+    expect(() =>
+      loadConfig({ ...production, LEXWARE_WEBHOOK_PUBLIC_KEY_PEM: '-----BEGIN PUBLIC KEY-----x' }),
+    ).toThrow(/LEXWARE_WEBHOOK_PUBLIC_KEY_PEM/);
   });
 
   it('3./165. demo ist niemals aktiv – ein Key ist dort ein Konfigurationsfehler', () => {

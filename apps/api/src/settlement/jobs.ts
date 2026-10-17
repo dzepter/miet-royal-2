@@ -1,4 +1,5 @@
 import type { JobHandler } from '@mietroyal/integrations';
+import { settlementTransferIdempotencyKey } from '../accounting/gateway.ts';
 import { ProcessService } from '../crm/process-service.ts';
 import type { FinanceHandlerDeps } from '../jobs/finance.ts';
 import { createSettlementNoticeGateway } from './notice-gateway.ts';
@@ -39,6 +40,19 @@ export function createSettlementAccountingTransferHandler(deps: FinanceHandlerDe
     // Phase 10: nur transiente Fehler werfen (Queue-Backoff); permanente
     // Blocker (Steuerkonfiguration, Kontakt, Berechtigung, Prüfstatus)
     // werden nicht endlos wiederholt – sie sind in der Abrechnung sichtbar.
+    if (result.outcome === 'skipped' && result.retryAt !== undefined) {
+      // Ein anderer Worker hält den Claim: nach dessen Ablauf erneut prüfen (kein Fehler).
+      await deps.transfers.enqueue(
+        {
+          kind: 'settlement',
+          settlementId,
+          cancellationId: null,
+          idempotencyKey: settlementTransferIdempotencyKey(settlementId),
+        },
+        { reason: 'retry', runAt: result.retryAt },
+      );
+      return;
+    }
     if (result.outcome === 'failed' && result.transient !== false) {
       throw new Error(`Buchhaltungsübertragung fehlgeschlagen (${result.errorCode ?? 'UNKNOWN'})`);
     }

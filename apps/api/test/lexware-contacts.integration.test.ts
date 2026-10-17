@@ -261,6 +261,84 @@ describe('Kontakt anlegen/verknüpfen (Tests 25–37)', () => {
     expect((await other.resolveForTransfer(customer.id, orgId)).status).toBe('linked');
   });
 
+  it('B4. Paralleles Create mit PostgreSQL-Drossel (echtes Slot-Warten) ⇒ genau ein Kontakt', async () => {
+    const throttled = await createTestContext({ lexware: { throttle: 'postgres' } });
+    try {
+      await throttled.pool.query('TRUNCATE lexware_contact_mappings, customers CASCADE');
+      const { admin } = await adminSession(throttled);
+      const customer = await createTestCustomer(throttled, admin.id, {
+        firstName: 'Slot',
+        lastName: 'Parallel',
+        email: 'slot.parallel@test.example',
+      });
+      const org = throttled.lexwareFake!.organizationId;
+      const a = throttled.transfersFor('w-a').lexwareDeps!.contacts;
+      const b = throttled.transfersFor('w-b').lexwareDeps!.contacts;
+      const results = await Promise.all([
+        a.resolveForTransfer(customer.id, org),
+        b.resolveForTransfer(customer.id, org),
+      ]);
+      expect(throttled.lexwareFake!.contacts.size).toBe(1);
+      expect(results.filter((r) => r.status === 'created')).toHaveLength(1);
+      expect(results.some((r) => r.status === 'in_progress' || r.status === 'linked')).toBe(true);
+    } finally {
+      await destroyTestContext(throttled);
+    }
+  });
+
+  it('B6. Kontakt-PUT ist ein Merge: note, taxNumber, Lieferadresse und fremde E-Mail-Typen bleiben erhalten', async () => {
+    const { admin } = await adminSession(ctx);
+    const seeded = ctx.lexwareFake!.seedContact({
+      person: { salutation: 'Frau', firstName: 'Klara', lastName: 'Kommerz' },
+      emailAddresses: {
+        business: ['klara.kommerz@test.example'],
+        private: ['privat@test.example'],
+      },
+      addresses: {
+        billing: [{ street: 'Alt 1', zip: '55116', city: 'Mainz', countryCode: 'DE' }],
+        shipping: [{ street: 'Lager 2', zip: '55120', city: 'Mainz', countryCode: 'DE' }],
+      } as never,
+    });
+    seeded.note = 'Stammkundin seit 2019';
+    const customer = await createTestCustomer(ctx, admin.id, {
+      firstName: 'Klara',
+      lastName: 'Kommerz',
+      email: 'klara.kommerz@test.example',
+      phone: '06131 1111',
+    });
+    await new CustomerService(ctx.db).updateCustomer(admin.id, customer.id, {
+      type: 'private',
+      firstName: 'Klara',
+      lastName: 'Kommerz',
+      email: 'klara.kommerz@test.example',
+      phone: '06131 1111',
+      billingStreet: 'Neu 9',
+      billingPostalCode: '55116',
+      billingCity: 'Mainz',
+    });
+    const result = await contacts.resolveForTransfer(customer.id, orgId);
+    expect(result.status).toBe('linked');
+    const remote = ctx.lexwareFake!.contacts.get(seeded.id)! as unknown as Record<string, unknown>;
+    expect(remote.note).toBe('Stammkundin seit 2019');
+    expect(remote.person).toMatchObject({
+      salutation: 'Frau',
+      firstName: 'Klara',
+      lastName: 'Kommerz',
+    });
+    expect(remote.emailAddresses).toEqual({
+      business: ['klara.kommerz@test.example'],
+      private: ['privat@test.example'],
+    });
+    expect(remote.phoneNumbers).toEqual({ business: ['06131 1111'] });
+    expect(remote.addresses).toEqual({
+      billing: [{ street: 'Neu 9', zip: '55116', city: 'Mainz', countryCode: 'DE' }],
+      shipping: [{ street: 'Lager 2', zip: '55120', city: 'Mainz', countryCode: 'DE' }],
+    });
+    // Optimistic Locking: PUT mit version 1 ⇒ Remote-Version 2, Mapping folgt.
+    expect(remote.version).toBe(2);
+    expect(fakeRequests(ctx, 'PUT', '/v1/contacts')).toHaveLength(1);
+  });
+
   it('36. Timeout nach dem Contact-Create ⇒ create_unknown; nächster Lauf findet den Kontakt exakt und verbindet (kein Duplikat)', async () => {
     const { admin } = await adminSession(ctx);
     const customer = await createTestCustomer(ctx, admin.id, {

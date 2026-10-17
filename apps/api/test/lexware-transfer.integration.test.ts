@@ -21,6 +21,7 @@ import {
   makeJobsDue,
   readyLexware,
   resetLexwareWorld,
+  syntheticTax,
   transferRowForSettlement,
   transferSettlement,
 } from './lexware-test-helpers.ts';
@@ -328,6 +329,117 @@ describe('Idempotenz und Unknown-Outcome (Tests 88–98)', () => {
     current = await settlementViewFor(ctx.app, cookie, world.processId);
     expect(current.settlement.accountingProvider).toBe('lexware');
     expect(current.settlement.status).toBe('transferred');
+  });
+
+  it('B1. Recovery-Lauf scheitert transient ⇒ Status bleibt outcome_unknown; nächster Lauf: kein zweiter POST; View zeigt „Lexware-Übertragung prüfen“ + Retry', async () => {
+    const { admin, cookie } = await adminSession(ctx);
+    await readyLexware(ctx, admin.id);
+    const { view, world } = await settledReturn(ctx, admin.id, cookie);
+    await failNext(ctx, { match: '^POST /v1/invoices$', mode: 'after_create' });
+    expect(await ctx.jobs.runOnce()).toBe('failed');
+    let current = await settlementViewFor(ctx.app, cookie, world.processId);
+    expect(current.settlement.status).toBe('transfer_failed');
+    expect(current.settlement.statusLabel).toBe('Lexware-Übertragung prüfen');
+    expect(current.dominantAction).toMatchObject({
+      key: 'retry_transfer',
+      label: 'Lexware-Übertragung erneut versuchen',
+    });
+    expect(current.settlement.lastTransferErrorCode).toBe('LEXWARE_TIMEOUT');
+    // Recovery (Belegliste) scheitert transient ⇒ bleibt outcome_unknown.
+    await failNext(ctx, { match: '^GET /v1/voucherlist$', status: 500 });
+    await makeJobsDue(ctx);
+    expect(await ctx.jobs.runOnce()).toBe('failed');
+    let row = (await transferRowForSettlement(ctx, view.settlement.id))!;
+    expect(row.status).toBe('outcome_unknown');
+    expect(row.lastErrorCode).toBe('LEXWARE_SERVER');
+    expect(fakeRequests(ctx, 'POST', '/v1/invoices')).toHaveLength(0);
+    // Abgelaufener in_progress-Claim ⇒ ebenfalls Recovery-Pflicht, auch bei Blockern.
+    await ctx.pool.query(
+      `UPDATE accounting_transfers SET status = 'in_progress', claimed_by = 'tot', claimed_at = now() - interval '1 hour', claim_expires_at = now() - interval '30 minutes'`,
+    );
+    await ctx.pool.query(`DELETE FROM accounting_tax_config WHERE category = 'delivery'`);
+    await makeJobsDue(ctx);
+    expect(await ctx.jobs.runOnce()).toBe('processed');
+    row = (await transferRowForSettlement(ctx, view.settlement.id))!;
+    expect(row.status).toBe('outcome_unknown');
+    expect(row.lastErrorCode).toBe('TAX_CONFIG_INCOMPLETE');
+    await syntheticTax(ctx, admin.id);
+    // Nächster Lauf: Recovery findet die Rechnung ⇒ verbunden, kein POST.
+    current = await settlementViewFor(ctx.app, cookie, world.processId);
+    const retry = await transferSettlement(
+      ctx.app,
+      cookie,
+      view.settlement.id,
+      current.settlement.version,
+    );
+    expect(retry.body.outcome).toBe('succeeded');
+    expect(fakeInvoices(ctx)).toHaveLength(1);
+    expect(fakeRequests(ctx, 'POST', '/v1/invoices')).toHaveLength(0);
+  });
+
+  it('B2. Fehler NACH dem Create (403 auf GET invoice) ⇒ outcome_unknown mit bekannter Invoice-ID; Retry verbindet dieselbe Rechnung per GET', async () => {
+    const { admin, cookie } = await adminSession(ctx);
+    await readyLexware(ctx, admin.id);
+    const { view, world } = await settledReturn(ctx, admin.id, cookie);
+    await failNext(ctx, { match: '^GET /v1/invoices/', status: 403 });
+    expect(await ctx.jobs.runOnce()).toBe('failed');
+    const row = (await transferRowForSettlement(ctx, view.settlement.id))!;
+    expect(row.status).toBe('outcome_unknown');
+    expect(row.lastErrorCode).toBe('LEXWARE_FORBIDDEN');
+    const invoice = fakeInvoices(ctx)[0]!;
+    expect((await invoiceMappingFor(ctx, row.id))!.lexwareInvoiceId).toBe(invoice.id);
+    const current = await settlementViewFor(ctx.app, cookie, world.processId);
+    expect(current.settlement.status).toBe('transfer_failed');
+    const retry = await transferSettlement(
+      ctx.app,
+      cookie,
+      view.settlement.id,
+      current.settlement.version,
+    );
+    expect(retry.body.outcome).toBe('succeeded');
+    expect(fakeRequests(ctx, 'GET', '/v1/voucherlist')).toHaveLength(0);
+    expect(fakeRequests(ctx, 'POST', '/v1/invoices')).toHaveLength(1);
+    expect(fakeInvoices(ctx)).toHaveLength(1);
+    expect((await transferRowForSettlement(ctx, view.settlement.id))!.externalReference).toBe(
+      invoice.voucherNumber,
+    );
+  });
+
+  it('B9. Aktiver Claim eines anderen Workers ⇒ Job übersprungen und zum Claim-Ablauf neu eingereiht (kein Fehler, kein Create); View „Übertragung geplant“', async () => {
+    const { admin, cookie } = await adminSession(ctx);
+    await readyLexware(ctx, admin.id);
+    const { view, world } = await settledReturn(ctx, admin.id, cookie);
+    // Zeile vorbereiten (Blocker ⇒ failed), dann fremden aktiven Claim simulieren.
+    await ctx.pool.query(`DELETE FROM accounting_tax_config WHERE category = 'delivery'`);
+    expect(await ctx.jobs.runOnce()).toBe('processed');
+    await syntheticTax(ctx, admin.id);
+    const expires = new Date(Date.now() + 5 * 60 * 1000);
+    await ctx.pool.query(
+      `UPDATE accounting_transfers SET status = 'in_progress', claimed_by = 'anderer-worker', claimed_at = now(), claim_expires_at = $1`,
+      [expires],
+    );
+    const current = await settlementViewFor(ctx.app, cookie, world.processId);
+    expect(current.settlement.accounting.canRetry).toBe(false);
+    const manual = await transferSettlement(
+      ctx.app,
+      cookie,
+      view.settlement.id,
+      current.settlement.version,
+    );
+    expect(manual.body.outcome).toBe('skipped');
+    await ctx.pool.query(`UPDATE integration_jobs SET status = 'succeeded'`);
+    await ctx.queue.enqueue(
+      'settlement.accounting_transfer',
+      { settlementId: view.settlement.id, reason: 'retry' },
+      { idempotencyKey: `b9:${view.settlement.id}` },
+    );
+    expect(await ctx.jobs.runOnce()).toBe('processed');
+    const jobs = await ctx.pool.query<{ status: string; run_at: Date }>(
+      `SELECT status, run_at FROM integration_jobs WHERE status = 'pending' AND type = 'settlement.accounting_transfer'`,
+    );
+    expect(jobs.rows).toHaveLength(1);
+    expect(Math.abs(jobs.rows[0]!.run_at.getTime() - expires.getTime())).toBeLessThan(1000);
+    expect(fakeRequests(ctx, 'POST', '/v1/invoices')).toHaveLength(0);
   });
 
   it('98. Erfolgreich per Mock übertragene Zeile wird nicht erneut an Lexware übertragen (already_succeeded)', async () => {

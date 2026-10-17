@@ -1,5 +1,5 @@
 import { lexwareInvoiceMappings, type Database } from '@mietroyal/database';
-import { and, asc, inArray, isNotNull, isNull, ne, or, sql } from 'drizzle-orm';
+import { and, asc, inArray, isNotNull, isNull, ne, notInArray, or, sql } from 'drizzle-orm';
 import type { AccountingTransferService } from '../accounting/transfer-service.ts';
 import type { LexwareConnectionService } from './connection-service.ts';
 import type { LexwareContext } from './context.ts';
@@ -14,6 +14,19 @@ import { syncLexwareInvoice } from './invoice-sync.ts';
  * Aufruf nur per `pnpm lexware:reconcile` oder Adminaktion.
  */
 export const LEXWARE_RECONCILE_BATCH_LIMIT = 100;
+/** Adminaktion: kleiner Batch, damit die Anfrage kurz bleibt (CLI darf 100). */
+export const LEXWARE_RECONCILE_ADMIN_LIMIT = 25;
+/** Attention-Codes, die ein Mapping dauerhaft aus dem Abgleich nehmen (manuelle Prüfung). */
+const EXCLUDED_ATTENTION_CODES = ['INVOICE_VOIDED', 'INVOICE_MISSING'];
+const RECONCILE_LOCK_KEY = 'lexware-reconcile';
+
+export class LexwareReconcileRunningError extends Error {
+  readonly code = 'RECONCILE_RUNNING';
+  constructor() {
+    super('Ein Lexware-Abgleich läuft bereits.');
+    this.name = 'LexwareReconcileRunningError';
+  }
+}
 
 export interface LexwareReconcileResult {
   checked: number;
@@ -40,6 +53,10 @@ export class LexwareReconcileService {
         and(
           isNotNull(lexwareInvoiceMappings.lexwareInvoiceId),
           or(
+            isNull(lexwareInvoiceMappings.attentionCode),
+            notInArray(lexwareInvoiceMappings.attentionCode, EXCLUDED_ATTENTION_CODES),
+          ),
+          or(
             inArray(lexwareInvoiceMappings.paymentStatus, ['open', 'overdue']),
             and(
               isNull(lexwareInvoiceMappings.attentionCode),
@@ -59,10 +76,28 @@ export class LexwareReconcileService {
     return rows.map((r) => r.id);
   }
 
+  /**
+   * `exclusive`: parallele Läufe (z. B. Doppelklick in der Adminansicht) werden
+   * über einen Advisory-Lock abgelehnt (LexwareReconcileRunningError). Der Lock
+   * hält nur eine eigene Verbindung – keine Business-Zeile ist gesperrt.
+   */
   async run(
     now = new Date(),
     limit = LEXWARE_RECONCILE_BATCH_LIMIT,
+    options: { exclusive?: boolean } = {},
   ): Promise<LexwareReconcileResult> {
+    if (options.exclusive !== true) return this.runBatch(now, limit);
+    return this.db.transaction(async (tx) => {
+      const locked = await tx.execute(
+        sql`SELECT pg_try_advisory_xact_lock(hashtext(${RECONCILE_LOCK_KEY})) AS locked`,
+      );
+      const row = locked.rows[0] as { locked?: unknown } | undefined;
+      if (row?.locked !== true) throw new LexwareReconcileRunningError();
+      return this.runBatch(now, limit);
+    });
+  }
+
+  private async runBatch(now: Date, limit: number): Promise<LexwareReconcileResult> {
     await this.connection.assertReady();
     const ids = await this.candidates(limit);
     const result: LexwareReconcileResult = { checked: 0, updated: 0, attention: 0, failed: 0 };

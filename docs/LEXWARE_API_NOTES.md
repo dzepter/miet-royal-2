@@ -148,3 +148,9 @@ optionales serverseitiges Streaming der Rechnungsdatei.
   der Voucherlist (transient) ⇒ Miet-Royal leitet „überfällig“ aus
   voucherStatus `open` + `dueDate < heute (Europe/Berlin)` ab.
 - Keine Sandbox-Domain; Live-Smoke nur mit bewusst eingerichtetem Testaccount.
+- Die Rundung der Steuerbeträge (je Position oder je Steuersatz-Gruppe) ist
+  nicht dokumentiert. Miet-Royal erwartet Steuer je Steuersatz-Gruppe auf die
+  Nettosumme (kaufmännisch gerundet) und prüft die Lexware-Summe nach dem
+  Create; eine Abweichung führt zu „Buchhaltungsprüfung erforderlich“
+  (TOTAL_MISMATCH) – nie zu einer stillen Cent-Anpassung. Am Live-Testaccount
+  zu verifizieren (Phase-10-Risiko).
