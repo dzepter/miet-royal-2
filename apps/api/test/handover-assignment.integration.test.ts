@@ -14,6 +14,7 @@ import {
   truncateAuthTables,
   type TestContext,
 } from './auth-helpers.ts';
+import { cancelBooking } from './cancellation-helpers.ts';
 import {
   adminVisibilityCtx,
   createStaffWithPermissions,
@@ -436,7 +437,7 @@ describe('R. Review-Regressionen (Zuweisung)', () => {
     await assignments.assign(admin.id, effective, slotX.id, machine.id, null);
     await assignments.prepare(admin.id, slotX.id);
     expect((await machineByCode(ctx.db, 'MR-10-01-01')).status).toBe('reserved');
-    await processServiceFor(ctx).cancel(x.processId, adminVisibilityCtx());
+    await cancelBooking(ctx, admin.id, x.processId);
     // Buchung Y im selben Zeitraum: keine Kollision mit dem stornierten Vorgang.
     const y = await scheduledBooking(ctx, admin.id, {
       from: new Date(Date.now() + 1 * DAYS),
@@ -593,7 +594,7 @@ describe('R12. Vorgangsstatus und ephemere Daten', () => {
       name: 'Vertreter V',
       phone: '+49 6131 99999',
     });
-    await processService.cancel(other.processId, adminVisibilityCtx());
+    await cancelBooking(ctx, admin.id, other.processId);
     const detail = await handover.detail(other.bookingId);
     expect(detail.representative?.phone).toBeNull();
     expect(detail.representative?.firstName).toBe('Anna');

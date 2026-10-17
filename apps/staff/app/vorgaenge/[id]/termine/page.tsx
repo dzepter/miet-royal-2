@@ -60,6 +60,11 @@ function PlanningView() {
     await load();
   }
 
+  // Phase 9: Stornierte Termine (§56) sind keine aktiven Termine mehr – nur
+  // abgesetzt sichtbar, nicht bearbeitbar.
+  const activeEntries = entries?.filter((entry) => entry.status !== 'cancelled') ?? [];
+  const cancelledEntries = entries?.filter((entry) => entry.status === 'cancelled') ?? [];
+
   return (
     <main className="page">
       <p>
@@ -78,19 +83,25 @@ function PlanningView() {
         </div>
       )}
 
-      {entries !== null && entries.length > 0 && (
+      {entries !== null && entries.length > 0 && activeEntries.length === 0 && (
+        <div className="card">
+          <p className="muted">Keine aktiven Termine – die Buchung wurde storniert.</p>
+        </div>
+      )}
+
+      {activeEntries.length > 0 && (
         <div className="card">
           {/* Wochenend-Standard ist eine SELBSTABHOLUNGS-Regel – bei
               Lieferbuchungen bleibt das vereinbarte Fenster führend. */}
           {hasPermission(me, 'calendar.drag_drop') &&
-            !entries.some((entry) => entry.kind === 'delivery') && (
+            !activeEntries.some((entry) => entry.kind === 'delivery') && (
               <p>
                 <button disabled={busy} onClick={() => void applyWeekendStandard()}>
                   Wochenend-Standard übernehmen (Fr 18:00 / So 11:00)
                 </button>
               </p>
             )}
-          {entries.map((entry) => (
+          {activeEntries.map((entry) => (
             <button key={entry.id} className="entry-row" onClick={() => setSelected(entry)}>
               <span>
                 <strong>{KIND_LABELS[entry.kind]}</strong> · {timeLabel(entry)}
@@ -109,6 +120,23 @@ function PlanningView() {
             </button>
           ))}
         </div>
+      )}
+
+      {cancelledEntries.length > 0 && (
+        <details className="card">
+          <summary>
+            Stornierte Termine ({cancelledEntries.length}) – nicht mehr aktiv, keine Bearbeitung
+          </summary>
+          {cancelledEntries.map((entry) => (
+            <div className="list-row" key={entry.id} data-testid="appointment-cancelled">
+              <span className="muted">
+                <strong>{KIND_LABELS[entry.kind]}</strong> · {timeLabel(entry)} ·{' '}
+                {entry.locationLabel}
+              </span>
+              <span className="badge locked">Storniert</span>
+            </div>
+          ))}
+        </details>
       )}
 
       {selected !== null && (

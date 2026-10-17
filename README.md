@@ -115,6 +115,7 @@ sein, sonst bricht der Start ab (siehe `docs/ENVIRONMENTS.md`). Danach:
 | `pnpm infra:up` / `infra:down`         | Lokale Infrastruktur (PostgreSQL) starten/stoppen                                |
 | `pnpm check:env-isolation a.env b.env` | Prüft, dass zwei Umgebungen DB/Storage/Secrets nicht teilen                      |
 | `pnpm offline:lease-key`               | Öffentlichen Offline-Lease-Verifikationsschlüssel der Umgebung ausgeben (Staff)  |
+| `pnpm settlement:ensure`               | Abrechnungen für finalisierte Rückgaben idempotent nachziehen (Phase 9)          |
 
 Hinweis E2E: In Umgebungen mit vorinstalliertem Chromium
 `CHROMIUM_PATH=/pfad/zur/chromium pnpm test:e2e`; sonst einmalig

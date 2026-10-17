@@ -34,6 +34,9 @@ beforeEach(async () => {
   await truncateHandoverTables(ctx.pool);
   await resetWarehouse(ctx.pool);
   await truncateSchedulingTables(ctx.pool);
+  // Phase 9: Finanz-Jobs anderer Suiten (Storno-Transfer) dürfen den
+  // „kein Job durch Reinigungsabfragen“-Nachweis nicht verfälschen.
+  await ctx.pool.query('TRUNCATE integration_jobs');
   await truncateCrmTables(ctx.pool);
   await truncateAuthTables(ctx.pool);
   await truncateCommerceTables(ctx.pool);
@@ -144,7 +147,8 @@ describe('111.–118. Reinigung nach Rückgabe', () => {
     const snapshot = async () =>
       (
         await ctx.pool.query(
-          `SELECT (SELECT count(*) FROM integration_jobs) AS jobs,
+          `SELECT (SELECT count(*) FROM integration_jobs
+                     WHERE type <> 'settlement.accounting_transfer') AS jobs,
                   (SELECT count(*) FROM delivery_packets) AS packets,
                   (SELECT count(*) FROM machine_risk_incidents) AS incidents,
                   (SELECT count(*) FROM process_notes) AS notes,

@@ -20,7 +20,8 @@ import {
   truncateAuthTables,
   type TestContext,
 } from './auth-helpers.ts';
-import { adminVisibilityCtx, processServiceFor, truncateCrmTables } from './crm-helpers.ts';
+import { cancelBooking } from './cancellation-helpers.ts';
+import { truncateCrmTables } from './crm-helpers.ts';
 import {
   commerceServices,
   setPickupExactAddress,
@@ -249,7 +250,7 @@ describe('A1 – Detektor mit EINER Verbindung: keine verschachtelte Pool-Akquis
     const otherSlot = (await services.assignments.slotsForBooking(other.bookingId))[0]!;
     await services.assignments.assign(admin.id, effective, otherSlot.id, m2.id, null);
     await services.assignments.prepare(admin.id, otherSlot.id);
-    await processServiceFor(ctx).cancel(other.processId, adminVisibilityCtx());
+    await cancelBooking(ctx, admin.id, other.processId);
     await services.assignments.refreshRiskIncidents(); // systemseitiges Lösen
     const released = await services.assignments.slotsForBooking(other.bookingId);
     expect(released[0]?.machine).toBeNull();

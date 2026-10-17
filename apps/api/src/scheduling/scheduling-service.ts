@@ -717,6 +717,42 @@ export class SchedulingService {
       );
   }
 
+  /**
+   * Storno des Vorgangs (Phase 9 §56): alle noch offenen Termine des
+   * Vorgangs unter Sperre stornieren (bestehender Statuswert `cancelled`,
+   * Version +1 – eine parallele Verschiebung sieht danach Versions-/Status-
+   * Konflikt statt eines Lost Updates) und offene Überfälligkeits-Incidents
+   * beenden. Läuft innerhalb der Storno-Transaktion.
+   */
+  async cancelForProcessWithin(
+    tx: DatabaseTransaction,
+    processId: string,
+    now: Date,
+  ): Promise<{ appointments: number }> {
+    const rows = await tx
+      .select()
+      .from(appointments)
+      .where(and(eq(appointments.processId, processId), eq(appointments.status, 'scheduled')))
+      .orderBy(asc(appointments.createdAt), asc(appointments.id))
+      .for('no key update');
+    for (const row of rows) {
+      await tx
+        .update(appointments)
+        .set({ status: 'cancelled', cancelledAt: now, version: row.version + 1, updatedAt: now })
+        .where(eq(appointments.id, row.id));
+      await tx
+        .update(appointmentOverdueIncidents)
+        .set({ resolvedAt: now })
+        .where(
+          and(
+            eq(appointmentOverdueIncidents.appointmentId, row.id),
+            isNull(appointmentOverdueIncidents.resolvedAt),
+          ),
+        );
+    }
+    return { appointments: rows.length };
+  }
+
   // ── Überfälligkeit & Incidents (Order §§23/24/26/27) ────────────────────
 
   /**

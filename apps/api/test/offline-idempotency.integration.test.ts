@@ -35,8 +35,8 @@ import {
 import { PERMISSION_KEYS } from '@mietroyal/permissions';
 import { eq } from 'drizzle-orm';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { adminVisibilityCtx, processServiceFor } from './crm-helpers.ts';
 import { createTestContext, destroyTestContext, type TestContext } from './auth-helpers.ts';
+import { cancelBooking } from './cancellation-helpers.ts';
 import {
   DAYS,
   handoverServicesFor,
@@ -898,7 +898,7 @@ describe('Konfliktdetails (Order-Finalisierung §4; Tests 26–30)', () => {
     for (const key of PERMISSION_KEYS) expect(revokedText).not.toContain(key);
 
     // Test 28: Storno – klare Ursache.
-    await processServiceFor(ctx).cancel(world.processId, adminVisibilityCtx());
+    await cancelBooking(ctx, admin.id, world.processId);
     const cancelled = await h.sync(staff.cookie, {
       type: 'handover.recipient',
       contextId: world.bookingId,

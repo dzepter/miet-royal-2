@@ -22,7 +22,7 @@ import { OfflineEnvironmentMismatchError, OfflineLeaseService } from '../offline
 import { OfflineLeaseRequiredError, OfflinePackageService } from '../offline/package-service.ts';
 import { OfflineSyncService, SyncInProgressError } from '../offline/sync-service.ts';
 import { DamageService } from '../returns/damage-service.ts';
-import { ReturnService } from '../returns/return-service.ts';
+import { ReturnService, type ReturnFinalizedListener } from '../returns/return-service.ts';
 import { SchedulingService } from '../scheduling/scheduling-service.ts';
 import { InventoryService } from '../warehouse/inventory-service.ts';
 import { MachineService } from '../warehouse/machine-service.ts';
@@ -40,6 +40,8 @@ interface OfflineRouteOptions {
   auth: StaffAuthService;
   config: AppConfig;
   storage: StorageProvider;
+  /** Phase 9: Nachlauf nach erfolgreicher Finalisierung (Abrechnung anlegen) – verdrahtet in app.ts. */
+  finalizedListeners?: readonly ReturnFinalizedListener[];
 }
 
 /**
@@ -76,6 +78,7 @@ export function registerOfflineRoutes(app: FastifyInstance, options: OfflineRout
     scheduling,
     damages,
     assignments,
+    options.finalizedListeners ?? [],
   );
   const processes = new ProcessService(db);
   const leases = new OfflineLeaseService(db, config);

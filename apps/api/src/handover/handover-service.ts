@@ -36,6 +36,7 @@ import { CANISTER_SLUG, CANISTERS_PER_CONTAINER_LIMIT, handoverBlockers } from '
 import type { StorageProvider } from '@mietroyal/integrations';
 import { and, asc, eq, inArray, ne, sql } from 'drizzle-orm';
 import { AuthError } from '../auth/service.ts';
+import { assertBookingNotCancelled, isBookingCancelled } from '../cancellation/booking-guard.ts';
 import { transportNotes } from '../commerce/confirmation-service.ts';
 import { visibleProcessesWhere, type ProcessVisibilityContext } from '../crm/visibility.ts';
 import type { DocumentService } from '../commerce/document-service.ts';
@@ -586,6 +587,7 @@ export class HandoverService {
 
     const blockers = this.computeBlockers({
       processStatus: process.mainStatus,
+      bookingCancelled: await isBookingCancelled(executor, booking.processId),
       handover,
       slots,
       machineViews,
@@ -717,6 +719,7 @@ export class HandoverService {
    */
   private computeBlockers(input: {
     processStatus: string;
+    bookingCancelled: boolean;
     handover: Handover;
     slots: AssignmentView[];
     machineViews: HandoverDetailView['machines'];
@@ -728,6 +731,7 @@ export class HandoverService {
   }): string[] {
     return handoverBlockers({
       processStatus: input.processStatus,
+      bookingCancelled: input.bookingCancelled,
       handoverStatus: input.handover.status,
       recipientKind: input.handover.recipientKind,
       recipientName: input.handover.recipientName,
@@ -791,6 +795,8 @@ export class HandoverService {
           'Die Übergabe ist bereits abgeschlossen und unveränderlich.',
         );
       }
+      // Phase 9 §63: stornierte Buchung wird nie reaktiviert (auch nach Reopen).
+      await assertBookingNotCancelled(tx, handover.processId);
       return fn(tx, handover);
     });
   }
@@ -1614,6 +1620,8 @@ export class HandoverService {
       const locked = lockedRows[0];
       if (locked === undefined) throw new AuthError('NOT_FOUND', 'Übergabe nicht gefunden.');
       if (locked.status === 'finalized') return; // idempotent – parallele Finalisierung
+      // Phase 9 §63: stornierte Buchung wird nie ausgegeben (auch nach Reopen).
+      await assertBookingNotCancelled(tx, booking.processId);
 
       // Sperrreihenfolge wie im AssignmentService: erst die Slot-Zeilen, dann
       // die Advisory-Locks aller Maschinen (sortiert) – parallele Zuweisungen,

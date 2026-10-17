@@ -1,6 +1,7 @@
 import {
   bookingPickupRepresentatives,
   bookings,
+  cancellations,
   customers,
   handovers,
   machineAssignments,
@@ -64,38 +65,64 @@ export class ProcessService {
       await this.assertAssignableUser(input.assignedUserId);
     }
 
-    return this.db.transaction(async (tx) => {
-      // Kundenzeile sperren (FOR KEY SHARE): kollidiert mit dem FOR UPDATE
-      // des Papierkorbs – ein Kunde kann nicht gleichzeitig gelöscht werden,
-      // während ihm ein Vorgang angelegt wird (und umgekehrt).
-      const customerRows = await tx
-        .select({ id: customers.id })
-        .from(customers)
-        .where(and(eq(customers.id, input.customerId), isNull(customers.deletedAt)))
-        .for('key share');
-      if (customerRows.length === 0) throw new AuthError('NOT_FOUND', 'Kunde nicht gefunden.');
+    return this.db.transaction((tx) => this.createProcessWithin(tx, actorId, input, now));
+  }
 
-      const seqResult = await tx.execute(sql`SELECT nextval('process_number_seq') AS seq`);
-      const seqValue = seqResult.rows[0]?.seq;
-      if (seqValue === undefined) throw new AuthError('CONFLICT', 'Nummernvergabe fehlgeschlagen.');
-      const sequence = Number(seqValue);
-      const processNumber = `MR-${berlinYear(now)}-${String(sequence).padStart(4, '0')}`;
+  /**
+   * Anlegen innerhalb einer laufenden Transaktion (Phase 9: Folgevorgang
+   * aus Storno – Verknüpfung und neuer Vorgang entstehen atomar). Die
+   * Zuweisungsprüfung übernimmt der Aufrufer von createProcess.
+   */
+  async createProcessWithin(
+    tx: DatabaseTransaction,
+    actorId: string,
+    input: {
+      customerId: string;
+      source?: 'website' | 'whatsapp' | 'staff_manual' | 'other' | undefined;
+      eventDate?: string | undefined;
+      assignedUserId?: string | undefined;
+    },
+    now = new Date(),
+  ): Promise<Process> {
+    // Kundenzeile sperren (FOR KEY SHARE): kollidiert mit dem FOR UPDATE
+    // des Papierkorbs – ein Kunde kann nicht gleichzeitig gelöscht werden,
+    // während ihm ein Vorgang angelegt wird (und umgekehrt).
+    const customerRows = await tx
+      .select({ id: customers.id })
+      .from(customers)
+      .where(and(eq(customers.id, input.customerId), isNull(customers.deletedAt)))
+      .for('key share');
+    if (customerRows.length === 0) throw new AuthError('NOT_FOUND', 'Kunde nicht gefunden.');
 
-      const inserted = await tx
-        .insert(processes)
-        .values({
-          processNumber,
-          customerId: input.customerId,
-          source: input.source ?? 'staff_manual',
-          eventDate: input.eventDate ?? null,
-          assignedUserId: input.assignedUserId ?? null,
-          createdBy: actorId,
-        })
-        .returning();
-      const process = inserted[0];
-      if (process === undefined) throw new AuthError('CONFLICT', 'Anlegen fehlgeschlagen.');
-      return process;
-    });
+    const seqResult = await tx.execute(sql`SELECT nextval('process_number_seq') AS seq`);
+    const seqValue = seqResult.rows[0]?.seq;
+    if (seqValue === undefined) throw new AuthError('CONFLICT', 'Nummernvergabe fehlgeschlagen.');
+    const sequence = Number(seqValue);
+    const processNumber = `MR-${berlinYear(now)}-${String(sequence).padStart(4, '0')}`;
+
+    const inserted = await tx
+      .insert(processes)
+      .values({
+        processNumber,
+        customerId: input.customerId,
+        source: input.source ?? 'staff_manual',
+        eventDate: input.eventDate ?? null,
+        assignedUserId: input.assignedUserId ?? null,
+        createdBy: actorId,
+      })
+      .returning();
+    const process = inserted[0];
+    if (process === undefined) throw new AuthError('CONFLICT', 'Anlegen fehlgeschlagen.');
+    return process;
+  }
+
+  /** Bestätigte Buchung des Vorgangs (Phase 9: entscheidet über den Storno-Pfad). */
+  async bookingForProcess(processId: string): Promise<{ id: string } | null> {
+    const rows = await this.db
+      .select({ id: bookings.id })
+      .from(bookings)
+      .where(eq(bookings.processId, processId));
+    return rows[0] ?? null;
   }
 
   async getProcess(processId: string): Promise<Process> {
@@ -227,7 +254,7 @@ export class ProcessService {
    * Wieder geöffnete Vorgänge sind standardmäßig nur mit
    * process.view_completed sichtbar (visibility.ts).
    */
-  async reopen(processId: string): Promise<void> {
+  async reopen(processId: string, actorId: string | null = null): Promise<void> {
     await this.db.transaction(async (tx) => {
       // Bewusst OHNE Sichtbarkeitskontext: process.reopen_completed schließt
       // den Zugriff auf abgeschlossene Vorgänge fachlich ein (§10).
@@ -244,17 +271,28 @@ export class ProcessService {
           'Nur abgeschlossene Vorgänge können wieder geöffnet werden.',
         );
       }
+      const now = new Date();
       await tx
         .update(processes)
-        .set({ mainStatus: 'reopened', reopenedAt: new Date(), updatedAt: new Date() })
+        .set({ mainStatus: 'reopened', reopenedAt: now, updatedAt: now })
         .where(eq(processes.id, processId));
+      // Phase 9 §63: Reopen eines Stornos wird an der Stornierung markiert;
+      // Buchhaltungsdaten bleiben unverändert, die alte Buchung wird NICHT
+      // reaktiviert – der wieder geöffnete Vorgang ist nur Arbeitsgrundlage.
+      if (process.mainStatus === 'cancelled') {
+        await tx
+          .update(cancellations)
+          .set({ reopenedAt: now, reopenedBy: actorId, updatedAt: now })
+          .where(eq(cancellations.processId, processId));
+      }
     });
   }
 
   /**
-   * Grundzustand „storniert“ (Phase-2-Vorgabe Nr. 3/6). Die fachliche
-   * Storno-Logik (Gebühren, Stornorechnung, Mails) kommt erst in Phase 9 –
-   * hier wird ausschließlich der Status gesetzt.
+   * Grundzustand „storniert“ für Vorgänge OHNE bestätigte Buchung
+   * (Phase-2-Vorgabe Nr. 3/6). Vorgänge mit akzeptierter Buchung werden
+   * ausschließlich über den Storno-Pfad (CancellationService, Phase 9)
+   * storniert: Stornoberechnung, Ressourcenfreigabe, Stornorechnung.
    */
   async cancel(processId: string, ctx: ProcessVisibilityContext): Promise<void> {
     await this.db.transaction(async (tx) => {
@@ -262,13 +300,31 @@ export class ProcessService {
       if (process.mainStatus !== 'open' && process.mainStatus !== 'reopened') {
         throw new AuthError('CONFLICT', 'Nur offene Vorgänge können storniert werden.');
       }
-      const now = new Date();
-      await tx
-        .update(processes)
-        .set({ mainStatus: 'cancelled', cancelledAt: now, updatedAt: now })
-        .where(eq(processes.id, processId));
-      await this.deleteEphemeralPhones(tx, processId, now);
+      const bookingRows = await tx
+        .select({ id: bookings.id })
+        .from(bookings)
+        .where(eq(bookings.processId, processId));
+      if (bookingRows.length > 0) {
+        throw new AuthError(
+          'CONFLICT',
+          'Der Vorgang hat eine bestätigte Buchung – bitte über „Buchung stornieren“ (Stornovorschau) stornieren.',
+        );
+      }
+      await this.markCancelledWithin(tx, processId, new Date());
     });
+  }
+
+  /**
+   * Statusübergang „storniert“ unter bereits gehaltener Vorgangssperre –
+   * EINE Stelle für den Übergang (Legacy-Storno ohne Buchung und Phase-9-
+   * Storno mit Buchung): Status, Zeitstempel, ephemere Telefonnummern.
+   */
+  async markCancelledWithin(tx: DatabaseTransaction, processId: string, now: Date): Promise<void> {
+    await tx
+      .update(processes)
+      .set({ mainStatus: 'cancelled', cancelledAt: now, updatedAt: now })
+      .where(eq(processes.id, processId));
+    await this.deleteEphemeralPhones(tx, processId, now);
   }
 
   /**

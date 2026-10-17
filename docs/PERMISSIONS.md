@@ -95,6 +95,25 @@ anlegen), `missing_item.resolve` („Fehlteil erledigt“).
 `settlement.view`, `settlement.add_manual_charge`, `settlement.release`,
 `settlement.end_pre_notice_wait`, `lexware.manual_transfer`
 
+Kontrollierte Phase-9-Ergänzung (keine zweite Rechtearchitektur):
+`accounting.view_reference` (externe Buchhaltungsreferenz/Belegnummer einer
+Übertragung einsehen – ohne dieses Recht sieht die Oberfläche nur den
+Übertragungsstatus). Wiederverwendet in Phase 9: `settlement.view`
+(ABRECHNUNG-Bereich, Klärungen, Zahlungsstatus), `settlement.add_manual_charge`
+(manuelle Nachbelastung/Verspätungsgebühr, Position ändern/entfernen),
+`settlement.release` (Kundeninformation freigeben, „wie berechnet freigeben“,
+manuelle Übertragung auslösen), `settlement.end_pre_notice_wait` („Jetzt
+freigeben“ vor Ablauf der 24-h-Frist), `damage.set_cost`/`missing_item.set_cost`
+(Kostenklärung), `damage.edit_cost_before_lexware` (Kosten vor Übertragung
+ändern), `deposit.record_advance`/`deposit.record_security` (Anzahlung/Kaution
+erfassen), `deposit.retain_security` (Kaution verrechnen),
+`deposit.refund_security` (Kaution freigeben), `lexware.manual_transfer`
+(manuelle Übertragung nach Fehlschlag/Frühfreigabe), `booking.cancel` und
+`process.cancel` (Storno; Vorschau benötigt `settlement.view` oder
+`booking.cancel`), `process.reopen_completed` (Admin-Wiedereröffnung;
+Abrechnung bleibt gesperrt), `system.settings` (Mock-Buchhaltungssteuerung –
+nur außerhalb von production).
+
 ### Kaution/Anzahlung
 `deposit.record_advance`, `deposit.record_security`,
 `deposit.retain_security`, `deposit.refund_security`

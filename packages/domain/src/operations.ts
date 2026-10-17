@@ -48,6 +48,8 @@ export interface HandoverBlockerStock {
 
 export interface HandoverBlockerInput {
   processStatus: string;
+  /** Phase 9 §63: Buchung storniert (historische Stornozeile) – auch nach Reopen des Vorgangs. */
+  bookingCancelled?: boolean;
   /** draft | finalized. */
   handoverStatus: string;
   recipientKind: string | null;
@@ -67,6 +69,9 @@ export function handoverBlockers(input: HandoverBlockerInput): string[] {
   const blockers: string[] = [];
   if (input.handoverStatus === 'finalized') return blockers;
   if (input.processStatus === 'cancelled') blockers.push('Der Vorgang ist storniert.');
+  else if (input.bookingCancelled === true) {
+    blockers.push('Die Buchung wurde storniert – bitte einen Folgevorgang aus dem Storno anlegen.');
+  }
   if (input.processStatus === 'completed') {
     blockers.push('Der Vorgang ist bereits abgeschlossen – bitte zuerst wieder öffnen.');
   }

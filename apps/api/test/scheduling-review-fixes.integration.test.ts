@@ -20,6 +20,7 @@ import {
   truncateAuthTables,
   type TestContext,
 } from './auth-helpers.ts';
+import { cancelBooking } from './cancellation-helpers.ts';
 import {
   adminVisibilityCtx,
   createStaffWithPermissions,
@@ -255,7 +256,7 @@ describe('Incident-Lebenszyklus (Order §24)', () => {
     let view = await scheduling.todayView(admin.id, 'all');
     expect(view.overdue.some((entry) => entry.id === appointmentId)).toBe(true);
 
-    await processServiceFor(ctx).cancel(world.processId, adminVisibilityCtx());
+    await cancelBooking(ctx, admin.id, world.processId);
 
     view = await scheduling.todayView(admin.id, 'all');
     const all = [...view.overdue, ...view.today, ...view.organizational, ...view.upcoming];

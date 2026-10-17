@@ -28,7 +28,42 @@ Bei Transferausfall:
 
 Miet-Royal verfolgt nicht zusätzlich, ob Lexware-Rechnungsmail zugestellt wurde.
 
+### Umsetzung Phase 9: AccountingGateway (Vorstufe zu Lexware)
+Es gibt genau eine Grenze zwischen Abrechnung/Storno und Buchhaltung:
+`AccountingGateway` (`apps/api/src/accounting/gateway.ts`).
+- `MockAccountingGateway` in development/staging/demo: deterministische
+  Referenz `MOCK-RE-<Vorgangsnummer>-<lfd>` bzw. `MOCK-STORNO-…`, in der
+  Oberfläche immer als „MOCK“ gekennzeichnet; keine Rechnung, kein PDF, kein
+  Versand. Fehler nur über explizite Simulation (`fail-next`), nie zufällig.
+- `DisabledAccountingGateway` in production bis Phase 10: jede Übertragung
+  wird mit „Buchhaltungsintegration nicht konfiguriert“ abgewiesen; nichts
+  wird als übertragen markiert, keine Endlos-Retries (kein Job eingestellt).
+- Übertragung läuft ausschließlich über `AccountingTransferService`
+  (`accounting_transfers`): eingefrorener Payload-Snapshot VOR dem ersten
+  Versuch (Hash dokumentiert), stabiler Idempotenzschlüssel
+  (`settlement-transfer:<id>` / `cancellation-transfer:<id>`), Zeilensperre
+  für die Dauer des Gateway-Aufrufs (Doppelklick, paralleler Worker, Retry ⇒
+  genau eine externe Übertragung), Fehlercode ohne Stacktrace, Retry mit
+  Backoff über die bestehende PostgreSQL-Queue (`settlement.accounting_transfer`,
+  `cancellation.accounting_transfer`).
+- Payload (`AccountingPayload`, schemaVersion 1): Vorgangsnummer, Kunden- und
+  Rechnungsadress-Snapshot, Eventdatum, Positionen, Summen, Credits,
+  Endbetrag, Idempotenzschlüssel, interne Settlement-/Storno-ID. Feld `tax`
+  ist reserviert (immer null) – Phase 10 ergänzt Steuerinformationen ohne
+  Strukturbruch. Keine implizite MwSt., keine „inkl. 19 %“-Texte.
+- Zahlungsstatus open/paid/overdue kommt von außen (Phase 10: Lexware-
+  Rückfluss); Phase 9 erlaubt ihn nur über die Mock-Steuerung außerhalb von
+  production (system.settings). Miet-Royal ist nicht Source of Truth, kein
+  Mahnwesen.
+
 ## E-Mail
+Umsetzung Phase 9 (Vorstufe): `SettlementNoticeGateway` für die kombinierte
+Kundeninformation vor Schaden-/Fehlteilbelastung und die Storno-Bestätigung –
+Outbox außerhalb von production (Protokoll in `settlement_customer_notices`
+bzw. `cancellations`), in production ohne echten Adapter hart blockiert
+(Status `blocked`, niemals „gesendet“). Die 24-h-Frist beginnt nur nach
+erfolgreichem Gateway-Aufruf.
+
 Zentraler Mailservice.
 Vorlagen u. a.:
 Angebot, AB, 7-/1-Tage-Erinnerung, Ausgabe, Rückgabe,

@@ -23,6 +23,7 @@ import {
 import { and, asc, eq, inArray, isNull, ne, or, sql } from 'drizzle-orm';
 import type { StorageProvider } from '@mietroyal/integrations';
 import { AuthError } from '../auth/service.ts';
+import { assertBookingNotCancelled } from '../cancellation/booking-guard.ts';
 import { MachineAvailabilityService } from '../warehouse/availability.ts';
 import { KeyedMutex } from './keyed-mutex.ts';
 import {
@@ -692,6 +693,8 @@ export class AssignmentService {
         'Der Vorgang ist bereits abgeschlossen – bitte zuerst wieder öffnen.',
       );
     }
+    // Phase 9 §63: stornierte Buchung bleibt auch nach Reopen gesperrt.
+    await assertBookingNotCancelled(tx, processId);
   }
 
   /**
@@ -905,7 +908,8 @@ export class AssignmentService {
     actorId: string | null,
     now: Date,
     evidenceKeys: string[],
-  ): Promise<void> {
+  ): Promise<{ machineFreed: boolean }> {
+    let machineFreed = false;
     await this.clearHandoverEvidence(tx, assignment.id, evidenceKeys);
     if (assignment.machineId !== null) {
       await this.lockMachines(tx, [assignment.machineId]);
@@ -925,6 +929,7 @@ export class AssignmentService {
             undefined,
             now,
           );
+          machineFreed = true;
         }
       }
     }
@@ -947,6 +952,62 @@ export class AssignmentService {
         updatedAt: now,
       })
       .where(eq(machineAssignments.id, assignment.id));
+    return { machineFreed };
+  }
+
+  // ── Storno (Phase 9 §56): gezielte Freigabe je Vorgang ──────────────────
+
+  /**
+   * Alle Zuordnungen eines Vorgangs sperren – in DERSELBEN Reihenfolge wie
+   * die Übergabe-Finalisierung (Slot-Zeilen nach slotNo, danach die
+   * Advisory-Locks aller Maschinen sortiert). Ein paralleler Abschluss der
+   * Übergabe, eine Vorbereitung oder ein Maschinenwechsel warten damit auf
+   * die Entscheidung des Stornos (und umgekehrt), ohne Deadlock.
+   */
+  async lockAssignmentsForProcess(
+    tx: DatabaseTransaction,
+    processId: string,
+  ): Promise<MachineAssignment[]> {
+    const rows = await tx
+      .select()
+      .from(machineAssignments)
+      .where(eq(machineAssignments.processId, processId))
+      .orderBy(asc(machineAssignments.slotNo))
+      .for('no key update');
+    await this.lockMachines(
+      tx,
+      rows.map((row) => row.machineId),
+    );
+    return rows;
+  }
+
+  /**
+   * Noch nicht ausgegebene Zuordnungen (assigned/prepared) eines Vorgangs
+   * unter bereits gehaltener Sperre systemseitig lösen (Storno, Order §56):
+   * Reserviert wird sauber zurückgeführt, Slots werden offen, Prüfungen/
+   * Gesamtfotos entfernt. Ausgegebene/zurückgegebene Zuordnungen bleiben
+   * unberührt – der Aufrufer hat sie vorher als Blocker erkannt.
+   */
+  async releaseAssignmentsWithin(
+    tx: DatabaseTransaction,
+    assignments: readonly MachineAssignment[],
+    now: Date,
+    evidenceKeys: string[],
+  ): Promise<{ assignments: number; machines: number }> {
+    let released = 0;
+    let machinesFreed = 0;
+    for (const assignment of assignments) {
+      if (assignment.status !== 'assigned' && assignment.status !== 'prepared') continue;
+      const result = await this.releaseWithin(tx, assignment, null, now, evidenceKeys);
+      released += 1;
+      if (result.machineFreed) machinesFreed += 1;
+    }
+    return { assignments: released, machines: machinesFreed };
+  }
+
+  /** Verwaiste Gesamtfotos nach dem Commit entfernen (best effort). */
+  async discardEvidence(keys: readonly string[]): Promise<void> {
+    await this.deleteStorageKeys([...keys]);
   }
 
   // ── Vorbereitung / Reserviert (Order §§10/11) ───────────────────────────
@@ -954,6 +1015,8 @@ export class AssignmentService {
   async prepare(actorId: string, assignmentId: string, now = new Date()): Promise<AssignmentView> {
     const bookingId = await this.db.transaction(async (tx) => {
       const assignment = await this.lockAssignment(tx, assignmentId);
+      // Vorgangs-/Buchungszustand zuerst (storniert/abgeschlossen/Storno-Zeile).
+      await this.assertBookingOperational(tx, assignment.processId);
       if (assignment.machineId === null || assignment.status === 'open') {
         throw new AuthError('VALIDATION', 'Bitte zuerst eine konkrete Maschine zuweisen.');
       }

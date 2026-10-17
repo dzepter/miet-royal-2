@@ -274,6 +274,10 @@ async function goOnlineAndSyncExpectConflicts(page: Page) {
 async function discardAllConflicts(page: Page) {
   if (!/\/sync(\?|$)/.test(page.url())) await page.goto('/sync');
   const indicator = page.getByTestId('offline-indicator');
+  // Erst das Ende der laufenden Synchronisierung abwarten („Jetzt synchronisieren“
+  // ist währenddessen deaktiviert) – sonst zählt der Indikator einen Zwischenstand,
+  // während weitere Erfassungen noch zur Prüfung landen (langsamer Server).
+  await expect(page.getByTestId('sync-now')).toBeEnabled({ timeout: 60_000 });
   const expected = Number(await indicator.getAttribute('data-conflicts'));
   await expect(page.getByTestId('sync-conflict')).toHaveCount(expected);
   for (let remaining = expected; remaining > 0; remaining -= 1) {

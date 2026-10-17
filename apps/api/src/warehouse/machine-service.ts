@@ -58,6 +58,17 @@ export const NOT_REGULARLY_AVAILABLE_STATUSES: readonly Machine['status'][] = [
 
 const QR_TOKEN_PATTERN = /^[0-9a-f]{32,128}$/;
 
+/**
+ * QR-Tokens sind kanonisch lowercase-Hex (Phase-9-Nacharbeit A1). Eingehende Tokens
+ * werden getrimmt und in Kleinbuchstaben normalisiert, damit ein manuell groß
+ * geschriebener Token online dasselbe Ergebnis liefert wie offline (dort
+ * `sha256(token.toLowerCase())`). Die Validierung bleibt unverändert streng.
+ */
+export function normalizeQrToken(raw: string): string | null {
+  const token = raw.trim().toLowerCase();
+  return QR_TOKEN_PATTERN.test(token) ? token : null;
+}
+
 /** Wirksame, nicht aufgehobene Sperre im Zeitraum [from, to)? */
 export function blockOverlaps(
   block: Pick<MachineBlock, 'startsAt' | 'endsAt' | 'liftedAt'>,
@@ -168,8 +179,9 @@ export class MachineService {
    * unbekannte Tokens werden NEUTRAL abgelehnt (kein Oracle); der Token
    * selbst wird nie geloggt.
    */
-  async byQrToken(token: string): Promise<MachineWithProduct | null> {
-    if (!QR_TOKEN_PATTERN.test(token)) return null;
+  async byQrToken(rawToken: string): Promise<MachineWithProduct | null> {
+    const token = normalizeQrToken(rawToken);
+    if (token === null) return null;
     const rows = await this.db
       .select({ machine: machines, product: products })
       .from(machines)

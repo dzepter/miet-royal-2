@@ -14,6 +14,26 @@ export interface AcceptedBookingOptions {
   machineQuantity?: number;
   /** Auftragsbestätigung freigeben + versenden (Phase 3). */
   confirmOrder?: boolean;
+  /**
+   * Eventdatum der Anfrage (YYYY-MM-DD, Berliner Kalendertag). Standard:
+   * heute + 30 Tage. Phase 9 (Storno-Szenarien) steuert damit die
+   * verbleibenden Kalendertage bis zum Event.
+   */
+  eventDate?: string;
+  /** 6-L-Mischkanister (Kaufartikel) in der Anfrage (Phase 9: Kaufartikel-Position). */
+  purchaseCanisters?: number;
+  /**
+   * Lieferung statt Selbstabholung (Anfrageformular) inkl. manuellem
+   * Lieferpreis auf dem Angebots-Entwurf (EUR-Eingabe, z. B. „49,00“).
+   */
+  delivery?: { street: string; postalCode: string; city: string; priceEuro: string };
+  /**
+   * Prozent-Rabatt auf die Maschinenmiete im Angebots-Entwurf (≤ 10 %: ohne
+   * Pflichtgrund). Erwartet die Anzeige „Rabatt: -<Betrag>“.
+   */
+  discountPercent?: number;
+  /** Erwarteter Rabattbetrag (z. B. „7,50“) – nur zusammen mit `discountPercent`. */
+  expectedDiscountEuro?: string;
 }
 
 /**
@@ -43,13 +63,23 @@ export async function acceptedBooking(
   const processId = /\/vorgaenge\/([0-9a-f-]{36})/.exec(staff.url())![1]!;
 
   await staff.goto(`/vorgaenge/${processId}/anfrage`);
-  const eventDate = new Date(Date.now() + 30 * 24 * 3_600_000).toISOString().slice(0, 10);
+  const eventDate =
+    options.eventDate ?? new Date(Date.now() + 30 * 24 * 3_600_000).toISOString().slice(0, 10);
   await staff.getByLabel('Eventdatum').fill(eventDate);
   await staff.getByLabel('Gästezahl (exakt)').fill(String(options.guestCount ?? 30));
   await staff.getByLabel('Anlass').selectOption({ label: 'Geburtstag' });
   await staff.getByLabel('Gewünschter Maschinentyp').selectOption({ label: options.machineLabel });
   if (options.freeSyrupLiters !== undefined && options.freeSyrupLiters > 0) {
     await staff.getByLabel('Sirup Kirsche – gratis (L)').fill(String(options.freeSyrupLiters));
+  }
+  if (options.purchaseCanisters !== undefined && options.purchaseCanisters > 0) {
+    await staff.getByLabel('6-L-Mischkanister (Stück)').fill(String(options.purchaseCanisters));
+  }
+  if (options.delivery !== undefined) {
+    await staff.getByLabel('Lieferung anfragen').check();
+    await staff.getByLabel('Liefer-/Eventadresse: Straße').fill(options.delivery.street);
+    await staff.getByLabel('PLZ', { exact: true }).fill(options.delivery.postalCode);
+    await staff.getByLabel('Ort', { exact: true }).fill(options.delivery.city);
   }
   await staff.getByRole('button', { name: 'Anfrage speichern' }).click();
   await expect(staff.getByText('Anfrage gespeichert.')).toBeVisible();
@@ -71,6 +101,28 @@ export async function acceptedBooking(
     expect(patched.ok()).toBe(true);
     await staff.reload();
     await expect(staff.getByRole('heading', { name: /Version 1/ })).toBeVisible();
+  }
+  if (options.delivery !== undefined) {
+    const priceInput = staff.getByLabel('Lieferpreis (EUR, individuell geprüft)');
+    await priceInput.fill(options.delivery.priceEuro);
+    await staff.getByRole('button', { name: 'Lieferpreis speichern' }).click();
+    await expect(staff.locator('.error')).toHaveCount(0);
+    // Gespeicherter Wert wird nach dem Neuladen aus dem Entwurf zurückgelesen
+    // (Cent → EUR ohne Formatierung, z. B. „49“).
+    const cents = Math.round(Number(options.delivery.priceEuro.replace(',', '.')) * 100);
+    await staff.reload();
+    await expect(staff.getByRole('heading', { name: /Version 1/ })).toBeVisible();
+    await expect(staff.getByLabel('Lieferpreis (EUR, individuell geprüft)')).toHaveValue(
+      String(cents / 100),
+    );
+  }
+  if (options.discountPercent !== undefined) {
+    await staff.getByLabel('Art').selectOption({ label: 'Prozent' });
+    await staff.getByLabel('Prozent (z. B. 10)').fill(String(options.discountPercent));
+    await staff.getByRole('button', { name: 'Rabatt setzen' }).click();
+    await expect(
+      staff.getByText(new RegExp(`Rabatt: -${options.expectedDiscountEuro ?? ''}`)),
+    ).toBeVisible();
   }
   await staff.getByRole('button', { name: 'Angebot versenden' }).click();
   const link = staff.getByTestId('public-offer-link');

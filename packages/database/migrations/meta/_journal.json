@@ -127,6 +127,13 @@
       "when": 1792238427419,
       "tag": "0017_offline_client_mutation_id",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1792252492060,
+      "tag": "0018_settlement_cancellation",
+      "breakpoints": true
     }
   ]
 }

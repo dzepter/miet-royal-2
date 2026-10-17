@@ -143,9 +143,9 @@ describe('23.–34. Rückgabevorbereitung und Reinigungsgebühr-Fakt', () => {
       `SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'`,
     );
     const names = tables.rows.map((row) => row.table_name);
-    expect(names.some((name) => /settlement|invoice|rechnung|lexware|charge/i.test(name))).toBe(
-      false,
-    );
+    // Phase 9 führt die Abrechnung (settlements/settlement_lines) ein – Rechnungs-/
+    // Lexware-Tabellen gibt es weiterhin nicht; der Gebühr-Fakt lebt in return_machines.
+    expect(names.some((name) => /invoice|rechnung|lexware/i.test(name))).toBe(false);
     expect(names).toContain('return_machines');
     const columns = await ctx.pool.query<{ column_name: string }>(
       `SELECT column_name FROM information_schema.columns WHERE table_name = 'return_machines'`,

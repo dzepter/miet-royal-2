@@ -9,6 +9,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@mietroyal/api": "workspace:*",
     "@mietroyal/config": "workspace:*",
     "@mietroyal/database": "workspace:*",
     "@mietroyal/integrations": "workspace:*",
