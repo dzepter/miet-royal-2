@@ -292,7 +292,7 @@ describe('Lease-Claim im Arbeitsbereich: jede Entsperrung prüft erneut (offline
     try {
       expect(await ws.unlockWithPassword(PASSWORD)).toEqual({
         ok: false,
-        reason: 'lease_tampered',
+        reason: 'lease_unsupported',
       });
       expect(await ws.leaseState()).toEqual({ kind: 'tampered', reason: 'unsupported' });
     } finally {
