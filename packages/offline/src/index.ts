@@ -4,5 +4,17 @@
  * Der DOM-freie Teil (Schemata/Wire-Typen) liegt in ./shared.
  */
 export type * from './records.ts';
-export type { MediaPurpose } from './mutations.ts';
 export * from './shared.ts';
+export * from './crypto.ts';
+export * from './db.ts';
+export * from './store.ts';
+export {
+  OfflineWorkspace,
+  WorkspaceRekeyRefusedError,
+  type AuthorizeOptions,
+  type LeaseState,
+  type UnlockFailureReason,
+  type UnlockResult,
+  type WorkspaceIdentity,
+} from './workspace.ts';
+export * from './queue.ts';
