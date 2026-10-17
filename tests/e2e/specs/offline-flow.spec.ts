@@ -860,7 +860,7 @@ test('F: Zwei Geräte schließen denselben Vorgang offline ab → einer gewinnt,
 
   // Gerät A gewinnt (kein Konflikt), Gerät B sieht den Konflikt (Test 76).
   await goOnlineAndSync(staff);
-  await expect(staff.getByTestId('sync-conflicts')).toHaveCount(0);
+  await expect(staff.getByTestId('sync-conflict')).toHaveCount(0);
   await deviceB.context().setOffline(false);
   await deviceB.evaluate(() => window.dispatchEvent(new Event('online')));
   await deviceB.goto('/sync');
@@ -1121,11 +1121,25 @@ test('J: Neue Service-Worker-Version → Hinweis erst ohne ausstehende Erfassung
     staff.waitForEvent('load'),
     staff.getByRole('button', { name: 'Jetzt aktualisieren' }).click(),
   ]);
+  // Die wartende Version ist aktiviert (keine wartende mehr, Seite wird von einem Worker
+  // gesteuert, kein Hinweis mehr). Die Script-URL ist kein Nachweis: die App registriert bei
+  // jedem Start wieder `/sw.js`, Chromium ersetzt damit die per Test-URL simulierte wartende
+  // Version durch eine gleichwertige unter der Standard-URL.
   await expect
-    .poll(() => staff.evaluate(() => navigator.serviceWorker.controller?.scriptURL ?? ''), {
-      timeout: 30_000,
-    })
-    .toContain('v=e2e-update');
+    .poll(
+      () =>
+        staff.evaluate(async () => {
+          const registration = await navigator.serviceWorker.getRegistration();
+          return (
+            registration !== undefined &&
+            registration.waiting === null &&
+            navigator.serviceWorker.controller !== null
+          );
+        }),
+      { timeout: 30_000 },
+    )
+    .toBe(true);
+  await expect(staff.getByTestId('update-banner')).toHaveCount(0);
   // Nach dem Update: Arbeitsbereich und Sitzung intakt, keine erneute Anmeldung, Daten vorhanden.
   await staff.goto('/sync');
   await expect(staff.getByTestId('lease-info')).toBeVisible({ timeout: 30_000 });

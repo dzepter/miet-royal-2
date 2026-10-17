@@ -119,6 +119,18 @@ async function networkFirstPage(request, url) {
   }
 }
 
+const RECORD_ID_PATTERN = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+
+async function clearIdentifiedPages() {
+  const cache = await caches.open(PAGES_CACHE);
+  const requests = await cache.keys();
+  await Promise.all(
+    requests
+      .filter((request) => RECORD_ID_PATTERN.test(new URL(request.url).pathname))
+      .map((request) => cache.delete(request)),
+  );
+}
+
 /** Seiten-Shells vorab cachen – nur HTML derselben Origin, nie /api (§4). */
 async function prefetchPages(urls) {
   const cache = await caches.open(PAGES_CACHE);
@@ -210,9 +222,10 @@ self.addEventListener('message', (event) => {
     sessionKeyAt = 0;
   }
   if (data.type === 'CLEAR_PAGES') {
-    // Abmeldung/Wipe: vorab gecachte Seiten-Shells (ihre URLs verraten Vorgangs-/
-    // Maschinen-IDs) für den nächsten Nutzer des Geräts entfernen.
-    event.waitUntil(caches.delete(PAGES_CACHE));
+    // Abmeldung/Wipe: vorab gecachte Seiten-Shells mit Datensatz-IDs (ihre URLs verraten
+    // Vorgangs-/Maschinen-IDs) für den nächsten Nutzer entfernen. Die ID-freien Shells
+    // (Startseite, Listen) bleiben, damit die App offline weiterhin startet.
+    event.waitUntil(clearIdentifiedPages());
   }
   if (data.type === 'GET_KEY' && event.ports && event.ports[0]) {
     if (sessionKey !== null && Date.now() - sessionKeyAt > SESSION_KEY_TTL_MS) {

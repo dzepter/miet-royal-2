@@ -1429,8 +1429,9 @@ Keine spontanen Framework-/ORM-Wechsel (CLAUDE.md „Dependencies“).
   diesem Schlüssel stimmt (fremder/alter Schlüssel ⇒ Sperrbildschirm). Der
   Worker verwirft ihn nach 15 Minuten ohne Aktivitätssignal (gleiche Frist
   wie die App-Sperre; `AuthGuard` meldet Aktivität gedrosselt weiter),
-  bei `lock()`/Logout/Wipe sofort (Wipe leert zusätzlich den Seiten-Shell-
-  Cache `mr-pages-*`, dessen URLs Vorgangs-/Maschinen-IDs enthalten), und
+  bei `lock()`/Logout/Wipe sofort (Wipe entfernt zusätzlich aus dem Seiten-
+  Shell-Cache `mr-pages-*` alle Einträge mit Datensatz-IDs in der URL; die
+  ID-freien Shells bleiben, damit die App offline weiterhin startet), und
   beim Beenden des Workers durch den Browser ohnehin. Alternative „Schlüssel in sessionStorage/IndexedDB“ wurde
   verworfen: das wäre eine Klartext-Ablage des DEK auf dem Datenträger. Ohne
   aktiven Worker (erster Start, private Fenster) gilt schlicht die
