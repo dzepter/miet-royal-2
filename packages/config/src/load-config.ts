@@ -34,7 +34,37 @@ export interface AppConfig {
     /** Origin-Allowlist für den CSRF-Legacy-Fallback (meist leer). */
     allowedOrigins: readonly string[];
   };
+  /** Phase 10: Lexware-Office-Anbindung (Public API). */
+  lexware: LexwareConfig;
 }
+
+/**
+ * Lexware-Konfiguration (Phase 10, Order §§4/5):
+ * - production: `enabled` genau dann, wenn LEXWARE_API_KEY gesetzt ist; Host
+ *   ist fest api.lexware.io (LEXWARE_BASE_URL wird in production abgelehnt).
+ * - demo: niemals aktiv – ein gesetzter LEXWARE_API_KEY ist ein Konfigurationsfehler.
+ * - development/staging: nur per explizitem Opt-in (LEXWARE_ENABLED=true + Key);
+ *   LEXWARE_BASE_URL darf hier auf einen lokalen Fake-/Testserver zeigen.
+ * Der API-Key existiert ausschließlich in diesem Objekt (nie Log/DB/Antwort).
+ */
+export interface LexwareConfig {
+  enabled: boolean;
+  /** Nur gesetzt, wenn enabled; nie serialisieren. */
+  apiKey: string | null;
+  baseUrl: string;
+  /** Erwartete organizationId (Pinning gegen falschen Lexware-Account); optional. */
+  organizationId: string | null;
+  /** Öffentliche Callback-URL für Event-Subscriptions (HTTPS, production Pflicht bei enabled). */
+  webhookCallbackUrl: string | null;
+  /** Optionaler Ersatz für den offiziellen Lexware-Webhook-Public-Key (PEM); Tests/Fake. */
+  webhookPublicKeyPem: string | null;
+  /** Administrativ gesetztes Erinnerungsdatum für die Key-Rotation (YYYY-MM-DD), optional. */
+  apiKeyReminderDate: string | null;
+  /** Timeout je HTTP-Aufruf. */
+  requestTimeoutMs: number;
+}
+
+export const LEXWARE_PRODUCTION_BASE_URL = 'https://api.lexware.io';
 
 /**
  * Wird geworfen, wenn Umgebungsvariablen fehlen oder ungültig sind.
@@ -82,6 +112,24 @@ const rawEnvSchema = z.object({
    * X-Forwarded-For auflöst. 0 = keinem Proxy vertrauen (Default).
    */
   API_TRUST_PROXY_HOPS: z.coerce.number().int().min(0).max(10).optional(),
+  // Phase 10 – Lexware Office Public API
+  LEXWARE_API_KEY: z.string().min(1).max(512).optional(),
+  LEXWARE_ENABLED: z.enum(['true', 'false']).optional(),
+  LEXWARE_BASE_URL: z
+    .string()
+    .regex(/^https?:\/\/.+/, 'muss eine http(s)-URL sein')
+    .optional(),
+  LEXWARE_ORGANIZATION_ID: z.string().min(1).max(128).optional(),
+  LEXWARE_WEBHOOK_CALLBACK_URL: z
+    .string()
+    .regex(/^https?:\/\/.+/, 'muss eine http(s)-URL sein')
+    .optional(),
+  LEXWARE_WEBHOOK_PUBLIC_KEY_PEM: z.string().min(1).optional(),
+  LEXWARE_API_KEY_REMINDER_DATE: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/, 'muss YYYY-MM-DD sein')
+    .optional(),
+  LEXWARE_REQUEST_TIMEOUT_MS: z.coerce.number().int().min(1000).max(120_000).optional(),
 });
 
 /**
@@ -156,6 +204,48 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     }
   }
 
+  // Phase 10: Lexware-Konfiguration je Umgebung (fail-closed, nie Mock in production).
+  const lexwareKey = raw.LEXWARE_API_KEY?.trim();
+  let lexwareEnabled = false;
+  let lexwareBaseUrl = LEXWARE_PRODUCTION_BASE_URL;
+  if (raw.APP_ENV === 'production') {
+    lexwareEnabled = lexwareKey !== undefined && lexwareKey !== '';
+    if (
+      raw.LEXWARE_BASE_URL !== undefined &&
+      raw.LEXWARE_BASE_URL.replace(/\/+$/, '') !== LEXWARE_PRODUCTION_BASE_URL
+    ) {
+      problems.push(
+        'LEXWARE_BASE_URL: in production ist ausschließlich https://api.lexware.io zulässig',
+      );
+    }
+    if (
+      lexwareEnabled &&
+      raw.LEXWARE_WEBHOOK_CALLBACK_URL !== undefined &&
+      !/^https:\/\//.test(raw.LEXWARE_WEBHOOK_CALLBACK_URL)
+    ) {
+      problems.push('LEXWARE_WEBHOOK_CALLBACK_URL: in production nur HTTPS');
+    }
+    if (
+      lexwareEnabled &&
+      raw.LEXWARE_WEBHOOK_CALLBACK_URL !== undefined &&
+      /localhost|127\.0\.0\.1/.test(raw.LEXWARE_WEBHOOK_CALLBACK_URL)
+    ) {
+      problems.push('LEXWARE_WEBHOOK_CALLBACK_URL: in production keine localhost-Adresse');
+    }
+  } else if (raw.APP_ENV === 'demo') {
+    if (lexwareKey !== undefined && lexwareKey !== '') {
+      problems.push('LEXWARE_API_KEY: in demo nicht zulässig (Demo bucht niemals in Lexware)');
+    }
+  } else {
+    lexwareEnabled =
+      raw.LEXWARE_ENABLED === 'true' && lexwareKey !== undefined && lexwareKey !== '';
+    if (raw.LEXWARE_ENABLED === 'true' && (lexwareKey === undefined || lexwareKey === '')) {
+      problems.push('LEXWARE_API_KEY: muss gesetzt sein, wenn LEXWARE_ENABLED=true');
+    }
+    if (raw.LEXWARE_BASE_URL !== undefined)
+      lexwareBaseUrl = raw.LEXWARE_BASE_URL.replace(/\/+$/, '');
+  }
+
   if (problems.length > 0) {
     throw new ConfigError(problems);
   }
@@ -183,6 +273,16 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
         .split(',')
         .map((origin) => origin.trim())
         .filter((origin) => origin !== ''),
+    },
+    lexware: {
+      enabled: lexwareEnabled,
+      apiKey: lexwareEnabled && lexwareKey !== undefined ? lexwareKey : null,
+      baseUrl: lexwareBaseUrl,
+      organizationId: raw.LEXWARE_ORGANIZATION_ID ?? null,
+      webhookCallbackUrl: raw.LEXWARE_WEBHOOK_CALLBACK_URL ?? null,
+      webhookPublicKeyPem: raw.LEXWARE_WEBHOOK_PUBLIC_KEY_PEM ?? null,
+      apiKeyReminderDate: raw.LEXWARE_API_KEY_REMINDER_DATE ?? null,
+      requestTimeoutMs: raw.LEXWARE_REQUEST_TIMEOUT_MS ?? 15_000,
     },
   };
 }

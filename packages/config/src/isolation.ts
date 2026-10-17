@@ -42,6 +42,11 @@ export function assertConfigsIsolated(a: AppConfig, b: AppConfig): void {
     }
   }
 
+  // Phase 10: Ein Lexware-API-Key darf nie in zwei Umgebungen gleichzeitig gelten
+  // (sonst bucht z. B. Staging in den Production-Account).
+  if (a.lexware.apiKey !== null && a.lexware.apiKey === b.lexware.apiKey) {
+    collisions.push('LEXWARE_API_KEY: beide Umgebungen nutzen denselben Lexware-API-Key');
+  }
   if (a.auth.secretKey === b.auth.secretKey) {
     collisions.push('AUTH_SECRET_KEY: beide Umgebungen nutzen denselben Auth-Schlüssel');
   }

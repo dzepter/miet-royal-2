@@ -134,6 +134,13 @@
       "when": 1792252492060,
       "tag": "0018_settlement_cancellation",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1792266005109,
+      "tag": "0019_lexware_integration",
+      "breakpoints": true
     }
   ]
 }

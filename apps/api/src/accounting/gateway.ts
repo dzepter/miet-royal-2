@@ -18,7 +18,7 @@ import { AuthError } from '../auth/service.ts';
  * das Feld `tax` (heute immer null), ohne die Struktur zu brechen.
  */
 
-export const ACCOUNTING_PROVIDERS = ['mock', 'disabled'] as const;
+export const ACCOUNTING_PROVIDERS = ['mock', 'disabled', 'lexware'] as const;
 export type AccountingProvider = (typeof ACCOUNTING_PROVIDERS)[number];
 
 export interface AccountingPayloadLine {
@@ -205,12 +205,24 @@ export class MockAccountingGateway implements AccountingGateway {
   }
 }
 
-export function createAccountingGateway(config: AppConfig): AccountingGateway {
+/**
+ * Providerwahl (Phase 10, Order §4): production ⇒ lexware nur bei aktivem
+ * Lexware-Kontext, sonst Disabled (nie Mock); demo ⇒ immer Mock;
+ * development/staging ⇒ lexware nur per explizitem Opt-in, sonst Mock.
+ * Der Lexware-Provider selbst wird von `lexwareGatewayFactory` geliefert
+ * (apps/api/src/lexware/lexware-gateway.ts), damit dieses Modul frei von
+ * Lexware-Abhängigkeiten bleibt.
+ */
+export function createAccountingGateway(
+  config: AppConfig,
+  lexware?: { client: unknown | null; gateway: () => AccountingGateway } | null,
+): AccountingGateway {
+  const lexwareActive = lexware !== undefined && lexware !== null && lexware.client !== null;
   if (config.appEnv === 'production') {
-    // Die echte Buchhaltungsanbindung (Phase 10+) wird HIER angebunden.
-    return new DisabledAccountingGateway();
+    return lexwareActive ? lexware.gateway() : new DisabledAccountingGateway();
   }
-  return new MockAccountingGateway();
+  if (config.appEnv === 'demo') return new MockAccountingGateway();
+  return lexwareActive ? lexware.gateway() : new MockAccountingGateway();
 }
 
 /** Job-Typen auf der bestehenden PostgreSQL-Queue (§44). */

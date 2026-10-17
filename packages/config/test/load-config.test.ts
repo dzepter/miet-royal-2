@@ -193,3 +193,82 @@ describe('assertConfigsIsolated (Demo/Live-Trennung – Pflichttest 23)', () => 
     expect(() => assertConfigsIsolated(staging, demo)).toThrow(EnvironmentIsolationError);
   });
 });
+
+describe('Lexware-Konfiguration (Phase 10)', () => {
+  const production = {
+    APP_ENV: 'production',
+    DATABASE_URL: 'postgresql://app:pw@db.internal:5432/mietroyal_prod',
+    STORAGE_DRIVER: 'fs',
+    STORAGE_FS_ROOT: '/var/lib/mietroyal/prod',
+    AUTH_SECRET_KEY: 'prod-auth-secret-key-0123456789abcdef',
+  };
+
+  it('1. production ohne LEXWARE_API_KEY ⇒ nicht aktiv (fail closed), Host fest api.lexware.io', () => {
+    const config = loadConfig(production);
+    expect(config.lexware.enabled).toBe(false);
+    expect(config.lexware.apiKey).toBeNull();
+    expect(config.lexware.baseUrl).toBe('https://api.lexware.io');
+  });
+
+  it('2. production mit Key ⇒ aktiv; 13./164. fremder Host in production abgelehnt', () => {
+    const config = loadConfig({ ...production, LEXWARE_API_KEY: 'prod-key-SYNTH' });
+    expect(config.lexware.enabled).toBe(true);
+    expect(config.lexware.baseUrl).toBe('https://api.lexware.io');
+    expect(() =>
+      loadConfig({
+        ...production,
+        LEXWARE_API_KEY: 'prod-key-SYNTH',
+        LEXWARE_BASE_URL: 'https://api.lexoffice.io',
+      }),
+    ).toThrow(/LEXWARE_BASE_URL/);
+    expect(() =>
+      loadConfig({
+        ...production,
+        LEXWARE_API_KEY: 'prod-key-SYNTH',
+        LEXWARE_WEBHOOK_CALLBACK_URL: 'http://localhost:3001/webhooks/lexware',
+      }),
+    ).toThrow(/LEXWARE_WEBHOOK_CALLBACK_URL/);
+  });
+
+  it('3./165. demo ist niemals aktiv – ein Key ist dort ein Konfigurationsfehler', () => {
+    const demo = {
+      ...production,
+      APP_ENV: 'demo',
+      DATABASE_URL: 'postgresql://app:pw@db.internal:5432/mietroyal_demo',
+      STORAGE_FS_ROOT: '/var/lib/mietroyal/demo',
+    };
+    expect(loadConfig(demo).lexware.enabled).toBe(false);
+    expect(() => loadConfig({ ...demo, LEXWARE_API_KEY: 'x' })).toThrow(/LEXWARE_API_KEY/);
+  });
+
+  it('4./166. development/staging nur per explizitem Opt-in; Fake-Host erlaubt', () => {
+    const dev = loadConfig({ APP_ENV: 'development', LEXWARE_API_KEY: 'dev-key' });
+    expect(dev.lexware.enabled).toBe(false);
+    expect(dev.lexware.apiKey).toBeNull();
+    const optIn = loadConfig({
+      APP_ENV: 'development',
+      LEXWARE_API_KEY: 'dev-key',
+      LEXWARE_ENABLED: 'true',
+      LEXWARE_BASE_URL: 'http://127.0.0.1:4555/',
+    });
+    expect(optIn.lexware.enabled).toBe(true);
+    expect(optIn.lexware.baseUrl).toBe('http://127.0.0.1:4555');
+    expect(() => loadConfig({ APP_ENV: 'development', LEXWARE_ENABLED: 'true' })).toThrow(
+      /LEXWARE_API_KEY/,
+    );
+  });
+
+  it('Env-Isolation: derselbe Lexware-Key in zwei Umgebungen kollidiert', () => {
+    const a = loadConfig({ ...production, LEXWARE_API_KEY: 'same-key' });
+    const b = loadConfig({
+      APP_ENV: 'staging',
+      DATABASE_URL: 'postgresql://app:pw@db.internal:5432/mietroyal_staging',
+      STORAGE_DRIVER: 'fs',
+      STORAGE_FS_ROOT: '/var/lib/mietroyal/staging',
+      AUTH_SECRET_KEY: 'staging-auth-secret-key-0123456789abcdef',
+      LEXWARE_API_KEY: 'same-key',
+      LEXWARE_ENABLED: 'true',
+    });
+    expect(() => assertConfigsIsolated(a, b)).toThrow(/LEXWARE_API_KEY/);
+  });
+});

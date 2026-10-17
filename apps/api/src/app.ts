@@ -25,9 +25,10 @@ import { registerWarehouseRoutes } from './routes/warehouse.ts';
 import { registerHandoverRoutes } from './routes/handover.ts';
 import { registerReturnRoutes } from './routes/returns.ts';
 import { registerOfflineRoutes } from './routes/offline.ts';
-import { createAccountingGateway, type AccountingGateway } from './accounting/gateway.ts';
+import type { AccountingGateway } from './accounting/gateway.ts';
 import { AccountingTransferService } from './accounting/transfer-service.ts';
-import { registerFinanceJobHandlers } from './jobs/finance.ts';
+import { createAccountingGatewayFor, registerFinanceJobHandlers } from './jobs/finance.ts';
+import { createLexwareContext, type LexwareContext } from './lexware/context.ts';
 import { registerAccountingRoutes } from './routes/accounting.ts';
 import { registerCancellationRoutes } from './routes/cancellation.ts';
 import { createCancellationService } from './cancellation/cancellation-service.ts';
@@ -88,6 +89,8 @@ export interface AppOptions {
   noticeGateway?: SettlementNoticeGateway;
   /** Phase 9: Test-Injection der Job-Queue (Default: PostgresJobQueue auf dem Pool). */
   jobQueue?: JobQueue;
+  /** Phase 10: Test-Injection des Lexware-Kontexts (Default: aus config.lexware). */
+  lexwareContext?: LexwareContext;
 }
 
 /**
@@ -113,11 +116,25 @@ export function buildApp({
   accountingGateway,
   noticeGateway,
   jobQueue,
+  lexwareContext,
 }: AppOptions): FastifyInstance {
   const app = Fastify({
     logger: {
       level: config.logLevel,
-      redact: ['req.headers.authorization', 'req.headers.cookie'],
+      // Phase 10: Lexware-API-Key darf unter keinem Pfad im Log landen (Order §5).
+      redact: {
+        paths: [
+          'req.headers.authorization',
+          'req.headers.cookie',
+          'apiKey',
+          '*.apiKey',
+          'config.lexware.apiKey',
+          'lexware.apiKey',
+          'headers.authorization',
+          '*.headers.authorization',
+        ],
+        censor: '[REDACTED]',
+      },
       // Der Request-Serializer gibt NUR Methode + maskierten Pfad aus –
       // nie Query, Header-Werte oder Bodies (QR-Tokens, Telefonnummern,
       // Base64-Medien reisen im Body und dürfen nie im Log landen).
@@ -297,7 +314,9 @@ export function buildApp({
       const storageProvider = storage ?? createStorageProvider(config.storage);
       // Phase 9: Abrechnung/Storno/Buchhaltung – eine Gateway-Grenze, eine
       // Transfer-Boundary, Jobs auf der bestehenden PostgreSQL-Queue.
-      const accounting = accountingGateway ?? createAccountingGateway(config);
+      // Phase 10: ein Lexware-Kontext je Prozess (Client nur bei aktiver Konfiguration).
+      const lexware = lexwareContext ?? createLexwareContext(config, db, app.log);
+      const accounting = accountingGateway ?? createAccountingGatewayFor(config, lexware);
       const notices = noticeGateway ?? createSettlementNoticeGateway(config);
       const queue = jobQueue ?? new PostgresJobQueue(pool);
       const transfers = new AccountingTransferService(db, accounting, queue);
@@ -380,6 +399,7 @@ export function buildApp({
         queue,
         storage: storageProvider,
         accountingGateway: accounting,
+        lexware,
         logger: app.log,
       });
       registerSettlementRoutes(instance, {

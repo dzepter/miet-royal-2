@@ -1,5 +1,9 @@
 import { hostname } from 'node:os';
-import { createAccountingGateway, registerFinanceJobHandlers } from '@mietroyal/api/jobs';
+import {
+  createAccountingGatewayFor,
+  createLexwareContext,
+  registerFinanceJobHandlers,
+} from '@mietroyal/api/jobs';
 import { loadConfig } from '@mietroyal/config';
 import { createDb, createPool } from '@mietroyal/database';
 import {
@@ -22,12 +26,15 @@ runner.register(SYSTEM_HEARTBEAT_JOB_TYPE, systemHeartbeatHandler);
 // Phase 9: Buchhaltungs-Transferjobs (Abrechnung/Storno) – dieselben Handler
 // wie die Mock-Steuerung der API; in production bleibt das Gateway „disabled“
 // und jeder Transfer wird sauber als nicht konfiguriert abgewiesen.
+const db = createDb(pool);
+const lexware = createLexwareContext(config, db, logger);
 registerFinanceJobHandlers(runner, {
-  db: createDb(pool),
+  db,
   config,
   queue,
   storage: createStorageProvider(config.storage),
-  accountingGateway: createAccountingGateway(config),
+  accountingGateway: createAccountingGatewayFor(config, lexware),
+  lexware,
   logger,
 });
 
