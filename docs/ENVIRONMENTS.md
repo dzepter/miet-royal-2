@@ -72,3 +72,12 @@ pnpm check:env-isolation /pfad/zu/prod.env /pfad/zu/demo.env
 Exit-Code 0 = isoliert; 1 = Kollision (der Report nennt die betroffenen
 Variablen, nie deren Werte). Die gleichen Prüfungen laufen als Unit-Tests in
 `packages/config/test/load-config.test.ts`.
+
+## Offline-Namespaces (Phase 8)
+
+Jedes Arbeitspaket und jede Offline-Mutation trägt die Umgebungs-ID
+(`environment`), die der Server beim Ausstellen des Offline-Leases setzt und
+bei jedem Sync hart gegen `APP_ENV` prüft (Mismatch ⇒ 409 `ENVIRONMENT_MISMATCH`
++ Security-Event). Lokal liegt jede Umgebung in einer eigenen IndexedDB
+`mietroyal-offline-<env>-<userId>` mit eigenem Datenschlüssel – Demo-Daten
+können weder in Production-Stores gelangen noch dorthin synchronisiert werden.

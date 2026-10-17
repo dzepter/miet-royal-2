@@ -7,7 +7,7 @@ Ausgabe/Rückgabe, Abrechnung und Integrationen.
 **Leitprinzip: Das System darf intern komplex sein. Für Mitarbeitende und
 Kunden muss es einfach wirken.**
 
-Aktueller Stand: **Phase 7 (Rückgabe, Schäden, Fehlteile,
+Aktueller Stand: **Phase 8 (Offlinebetrieb, PWA-Sync & Lager-/Tabletmodus) auf Basis von Phase 7 (Rückgabe, Schäden, Fehlteile,
 Kommissionsrückgabe, Reinigung & Rückgabeprotokoll) umgesetzt** —
 zusätzlich zu Phase 6 (Maschinenzuweisung, Vorbereitung, Ausgabe &
 Übergabe), Phase 5 (Physische Maschinen,
