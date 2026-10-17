@@ -1962,6 +1962,12 @@ Shell cwd was reset to /home/user/Sparkoffer.de
   dauerhafte Attention-Codes), Admin-Aktion mit kleinem Batch und
   Advisory-Lock, CLI bis 100 – kein Polling. Setup ohne Callback-URL
   verwirft keine eigenen Subscription-IDs.
+- **Externe Änderung nach Übertragung**: Wird eine übertragene Rechnung in
+  Lexware storniert (voided) oder gelöscht, bleibt der Settlement-Status
+  `transferred` (Sperre, kein Retry, keine Neurechnung); nur das Status-Label
+  und der Buchhaltungsblock zeigen „Buchhaltungsprüfung erforderlich“
+  (Attention-Code `INVOICE_VOIDED`/`INVOICE_MISSING`), Zahlungsstatus bleibt
+  unverändert. Die Auflösung ist ein manueller Buchhaltungsvorgang.
 - **Preisbasis (offener Punkt)**: Die Phase-9-Beträge werden als
   NETTO-Beträge an Lexware übergeben (Steuerart net ⇒ `netAmount`, vatfree ⇒
   Satz 0, gross ⇒ `grossAmount`). MASTER_SPEC legt nicht fest, ob die

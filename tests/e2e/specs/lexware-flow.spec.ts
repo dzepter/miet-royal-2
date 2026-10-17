@@ -547,6 +547,7 @@ test('I: Mehrdeutiger Lexware-Kontakt → Transfer blockiert → Admin wählt Ko
   await expect(staff.getByTestId(`lexware-contact-candidate-${first}`)).toBeVisible();
   await expect(staff.getByTestId(`lexware-contact-candidate-${second}`)).toBeVisible();
   await staff.getByTestId(`lexware-contact-link-${first}`).click();
+  await staff.getByTestId('lexware-contact-link-confirm').click();
   await expect(staff.getByTestId('lexware-contact-status')).not.toContainText(/prüfen/);
   await expect(staff.getByTestId('lexware-contact-candidates')).toHaveCount(0);
 

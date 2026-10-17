@@ -446,7 +446,16 @@ export async function openSettlement(staff: Page, processId: string) {
 
 /** Mock-Steuerung „fällige Jobs ausführen“ (Abrechnungsseite). */
 export async function runDueJobs(staff: Page) {
+  // Auf die API-Antwort warten: Jobs können (z. B. Lexware-Timeout 5 s) länger dauern als
+  // die Expect-Frist; die Oberfläche lädt nach der Antwort neu.
+  const done = staff.waitForResponse(
+    (response) =>
+      response.url().includes('/staff/accounting/mock/run-due-jobs') &&
+      response.request().method() === 'POST',
+    { timeout: 120_000 },
+  );
   await staff.getByTestId('mock-run-jobs').click();
+  await done;
 }
 
 /** Mock-Steuerung „Wartefrist ablaufen lassen“ (Zeit-Vorspulen ausschließlich hierüber). */

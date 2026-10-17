@@ -2836,8 +2836,15 @@ export class SettlementService {
           transferRow.lastErrorCode ??
           (transferRow.status === 'attention' ? 'ATTENTION' : 'LEXWARE_OUTCOME_UNKNOWN'))
         : null);
+    // Nach erfolgreicher Übertragung extern storniert/gelöscht (attention): Status bleibt
+    // „transferred“ (Sperre), das Label zeigt aber die nötige Prüfung (Order §64).
+    const attentionAfterTransfer =
+      accounting.provider === 'lexware' &&
+      settlement.status === 'transferred' &&
+      transferRow !== undefined &&
+      (transferRow.status === 'attention' || transferRow.attentionCode !== null);
     const effectiveStatusLabel =
-      lexwareProblem && transferRow.status === 'attention'
+      (lexwareProblem && transferRow.status === 'attention') || attentionAfterTransfer
         ? 'Buchhaltungsprüfung erforderlich'
         : lexwareProblem
           ? 'Lexware-Übertragung prüfen'
