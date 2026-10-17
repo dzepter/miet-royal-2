@@ -259,11 +259,8 @@ export class SyncEngine {
             result.applied += 1;
           } else if (outcome.status === 'conflict') {
             record.status = 'conflict';
-            await this.store.updateMutation(
-              record.clientMutationId,
-              { status: 'conflict', lastErrorCode: outcome.code, nextAttemptAt: null },
-              processedIso,
-            );
+            // Konfliktdatensatz (mit Details) VOR dem Statuswechsel schreiben: Wer den Status
+            // „conflict“ sieht (Sync-Seite, Zähler), findet die Erklärung bereits vor.
             await this.store.putConflict(record.clientMutationId, {
               code: outcome.code,
               status: 'conflict',
@@ -272,6 +269,11 @@ export class SyncEngine {
               details: outcome.details ?? null,
               processedAt: outcome.processedAt,
             });
+            await this.store.updateMutation(
+              record.clientMutationId,
+              { status: 'conflict', lastErrorCode: outcome.code, nextAttemptAt: null },
+              processedIso,
+            );
             await this.store.putReceipt({
               clientMutationId: record.clientMutationId,
               status: 'conflict',
@@ -282,11 +284,6 @@ export class SyncEngine {
             result.conflicts += 1;
           } else {
             record.status = 'failed_permanent';
-            await this.store.updateMutation(
-              record.clientMutationId,
-              { status: 'failed_permanent', lastErrorCode: outcome.code, nextAttemptAt: null },
-              processedIso,
-            );
             await this.store.putConflict(record.clientMutationId, {
               code: outcome.code,
               status: 'rejected',
@@ -295,6 +292,11 @@ export class SyncEngine {
               details: outcome.details ?? null,
               processedAt: outcome.processedAt,
             });
+            await this.store.updateMutation(
+              record.clientMutationId,
+              { status: 'failed_permanent', lastErrorCode: outcome.code, nextAttemptAt: null },
+              processedIso,
+            );
             await this.store.putReceipt({
               clientMutationId: record.clientMutationId,
               status: 'rejected',
