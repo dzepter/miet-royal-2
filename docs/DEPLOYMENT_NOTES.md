@@ -17,6 +17,14 @@ Alle Prozesse werden über einen Prozessmanager (z. B. systemd) mit den
 Umgebungsvariablen der jeweiligen Umgebung betrieben (kein `.env`-Autoloading,
 siehe TECH_DECISIONS.md).
 
+**Pflichtwert für den Staff-Server in staging/production:**
+`STAFF_OFFLINE_LEASE_VERIFICATION_KEY` (öffentlicher Ed25519-Verifikations-
+schlüssel der Offline-Lease, kein Secret; Wert per `pnpm offline:lease-key`
+in der API-Umgebung ausgeben). Ohne diesen Wert ist der Offlinebetrieb der
+Staff-App dort bewusst gesperrt (fail-closed), der Online-Betrieb läuft
+normal. Nach jeder Rotation von `AUTH_SECRET_KEY` neu ausgeben und setzen.
+Details: ENVIRONMENTS.md „Offline-Lease-Verifikationsschlüssel“.
+
 Worker-Hinweis: Die Jobqueue arbeitet **at-least-once** mit Lease-basierter
 Crash-Recovery (Default 5 min, `PostgresJobQueueOptions.leaseMs`). Mehrere
 Worker-Instanzen sind sicher (SKIP LOCKED); Job-Handler müssen idempotent
@@ -36,6 +44,9 @@ gewünscht ist, wird das als eigene Entscheidung in TECH_DECISIONS.md ergänzt.
    Umgebungen kollidieren.
 6. Migrationen anwenden: `pnpm db:migrate` (läuft vor dem App-Start; nur
    versionierte Migrationen, keine manuellen Schemaänderungen).
+6a. Staging/Production-Checkliste Offline: `STAFF_OFFLINE_LEASE_VERIFICATION_KEY`
+   beim Staff-Server gesetzt und identisch mit `pnpm offline:lease-key` der
+   zugehörigen API-Umgebung (Production ≠ Demo); sonst keine Offline-Lease.
 7. Prozesse neu starten, dann Smoke Test: `/health` muss 200 liefern,
    `/ready` muss 200 liefern (prüft die Datenbankverbindung).
 8. Bei Fehlern: Rollback auf vorherigen Stand + Backup-Restore-Pfad.

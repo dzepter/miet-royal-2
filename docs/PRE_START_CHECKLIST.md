@@ -21,6 +21,11 @@ Nicht benötigt:
 ## Für spätere Phasen
 Die jeweils benötigten Zugangsdaten/Stammdaten stehen in `OPEN_ITEMS.md`.
 
+## Staging/Production (ab Phase 8)
+- `STAFF_OFFLINE_LEASE_VERIFICATION_KEY` beim Staff-Server gesetzt (Pflicht,
+  fail-closed; Wert aus `pnpm offline:lease-key` der API-Umgebung; kein
+  Secret, aber nie ins Repository committen).
+
 ## Sicherheitsregel
 Echte Zugangsdaten nie in Chat-Prompts oder Git-Dateien kopieren, wenn sie als
 Secrets/Environment-Variablen auf dem Zielsystem gesetzt werden können.

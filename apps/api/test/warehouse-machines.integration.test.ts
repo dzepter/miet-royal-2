@@ -331,6 +331,35 @@ describe('19.–22. QR-Identifier', () => {
     expect(forbidden.body).not.toContain('MR-10-01-04');
   });
 
+  it('22a. Großgeschriebene/umrandete Hex-Tokens werden kanonisch (lowercase) aufgelöst – Validierung bleibt streng', async () => {
+    const { cookie } = await adminSession();
+    const machine = await machineByCode(ctx.db, 'MR-10-01-04');
+    for (const token of [machine.qrToken.toUpperCase(), `  ${machine.qrToken}  `]) {
+      const response = await ctx.app.inject({
+        method: 'POST',
+        url: '/staff/machines/qr/resolve',
+        payload: { token },
+        headers: { cookie },
+      });
+      expect(response.statusCode, token).toBe(200);
+      expect(response.json()).toMatchObject({ machineId: machine.id, machineCode: 'MR-10-01-04' });
+    }
+    // Keine schwächere Validierung: Nicht-Hex, falsche Länge, Unicode-Varianten bleiben neutral 404.
+    for (const token of [
+      `${machine.qrToken.slice(0, -1)}g`,
+      machine.qrToken.slice(0, 31),
+      `${machine.qrToken}0`.replace(/0/g, 'o'),
+    ]) {
+      const response = await ctx.app.inject({
+        method: 'POST',
+        url: '/staff/machines/qr/resolve',
+        payload: { token },
+        headers: { cookie },
+      });
+      expect(response.statusCode, token).toBe(404);
+    }
+  });
+
   it('22. Ungültige QR-Identifier werden neutral abgelehnt', async () => {
     const { cookie } = await adminSession();
     for (const token of ['0'.repeat(48), 'nicht-hex-token-123', 'a'.repeat(9)]) {
