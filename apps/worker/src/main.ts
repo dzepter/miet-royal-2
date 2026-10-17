@@ -1,7 +1,9 @@
 import { hostname } from 'node:os';
+import { createAccountingGateway, registerFinanceJobHandlers } from '@mietroyal/api/jobs';
 import { loadConfig } from '@mietroyal/config';
-import { createPool } from '@mietroyal/database';
+import { createDb, createPool } from '@mietroyal/database';
 import {
+  createStorageProvider,
   JobRunner,
   PostgresJobQueue,
   SYSTEM_HEARTBEAT_JOB_TYPE,
@@ -17,6 +19,17 @@ const workerId = `${hostname()}:${process.pid}`;
 
 const runner = new JobRunner(queue, workerId, logger);
 runner.register(SYSTEM_HEARTBEAT_JOB_TYPE, systemHeartbeatHandler);
+// Phase 9: Buchhaltungs-Transferjobs (Abrechnung/Storno) – dieselben Handler
+// wie die Mock-Steuerung der API; in production bleibt das Gateway „disabled“
+// und jeder Transfer wird sauber als nicht konfiguriert abgewiesen.
+registerFinanceJobHandlers(runner, {
+  db: createDb(pool),
+  config,
+  queue,
+  storage: createStorageProvider(config.storage),
+  accountingGateway: createAccountingGateway(config),
+  logger,
+});
 
 // Harmloser System-Job beim Start: beweist enqueue → process in jeder
 // Umgebung. Der Idempotency-Key dedupliziert pro Stunde, Neustarts erzeugen

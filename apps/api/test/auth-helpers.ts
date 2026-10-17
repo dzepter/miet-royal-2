@@ -3,13 +3,16 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { loadConfig, type AppConfig } from '@mietroyal/config';
 import { createDb, createPool, runMigrations, type Database } from '@mietroyal/database';
-import { FilesystemStorageProvider } from '@mietroyal/integrations';
+import { FilesystemStorageProvider, JobRunner, PostgresJobQueue } from '@mietroyal/integrations';
 import type { FastifyInstance } from 'fastify';
 import type pg from 'pg';
+import { MockAccountingGateway } from '../src/accounting/gateway.ts';
 import { buildApp } from '../src/app.ts';
 import { StaffAdminService } from '../src/auth/admin-service.ts';
 import { InMemoryMailAdapter } from '../src/auth/mail.ts';
 import { StaffAuthService } from '../src/auth/service.ts';
+import { registerFinanceJobHandlers } from '../src/jobs/finance.ts';
+import { OutboxSettlementNoticeGateway } from '../src/settlement/notice-gateway.ts';
 
 export const TEST_DATABASE_URL =
   process.env.TEST_DATABASE_URL ??
@@ -24,6 +27,13 @@ export interface TestContext {
   auth: StaffAuthService;
   admin: StaffAdminService;
   storage: FilesystemStorageProvider;
+  /** Phase 9: Mock-Buchhaltung (Aufrufe/Fehlersimulation abfragbar). */
+  accounting: MockAccountingGateway;
+  /** Phase 9: Outbox der Kundeninformationen (nichts verlässt das System). */
+  notices: OutboxSettlementNoticeGateway;
+  /** Phase 9: dieselbe Queue wie die App; `jobs.runOnce()`/`drain()` verarbeitet Finanz-Jobs wie der Worker. */
+  queue: PostgresJobQueue;
+  jobs: JobRunner;
 }
 
 export async function createTestContext(
@@ -51,18 +61,32 @@ export async function createTestContext(
   const mail = new InMemoryMailAdapter();
   // Isolierter FS-Storage je Testkontext (PDF-/Dokumententests).
   const storage = new FilesystemStorageProvider(mkdtempSync(join(tmpdir(), 'mietroyal-test-')));
+  const accounting = new MockAccountingGateway();
+  const notices = new OutboxSettlementNoticeGateway();
+  const queue = new PostgresJobQueue(pool);
   const app = buildApp({
     config,
     pool,
     mailAdapter: mail,
     rateLimitEnabled: options.rateLimitEnabled ?? false,
     storage,
+    accountingGateway: accounting,
+    noticeGateway: notices,
+    jobQueue: queue,
     ...(options.logDestination === undefined ? {} : { logDestination: options.logDestination }),
   });
   await app.ready();
   const auth = new StaffAuthService(db, config, mail);
   const admin = new StaffAdminService(auth);
-  return { pool, db, config, app, mail, auth, admin, storage };
+  const jobs = new JobRunner(queue, 'test-worker');
+  registerFinanceJobHandlers(jobs, {
+    db,
+    config,
+    queue,
+    storage,
+    accountingGateway: accounting,
+  });
+  return { pool, db, config, app, mail, auth, admin, storage, accounting, notices, queue, jobs };
 }
 
 export async function destroyTestContext(context: TestContext): Promise<void> {

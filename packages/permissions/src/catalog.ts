@@ -546,6 +546,12 @@ export const PERMISSION_DEFINITIONS = [
     'Manuelle Lexware-Übertragung',
     'Die manuelle Lexware-Übertragung erfordert ein besonderes Recht.',
   ),
+  def(
+    'accounting.view_reference',
+    'lexware',
+    'Buchhaltungsreferenz einsehen',
+    'Dir fehlt das Recht, externe Buchhaltungsreferenzen einzusehen.',
+  ),
 
   // Kommunikation
   def(

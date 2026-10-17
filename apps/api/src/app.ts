@@ -10,7 +10,13 @@ import { StaffAdminService } from './auth/admin-service.ts';
 import { csrfRejects } from './auth/http.ts';
 import { createMailAdapter, type StaffMailPort } from './auth/mail.ts';
 import { StaffAuthService } from './auth/service.ts';
-import { createStorageProvider, type StorageProvider } from '@mietroyal/integrations';
+import {
+  createStorageProvider,
+  type StorageProvider,
+  JobRunner,
+  PostgresJobQueue,
+  type JobQueue,
+} from '@mietroyal/integrations';
 import { registerAuthRoutes } from './routes/auth.ts';
 import { registerCommerceRoutes } from './routes/commerce.ts';
 import { registerCrmRoutes } from './routes/crm.ts';
@@ -19,6 +25,16 @@ import { registerWarehouseRoutes } from './routes/warehouse.ts';
 import { registerHandoverRoutes } from './routes/handover.ts';
 import { registerReturnRoutes } from './routes/returns.ts';
 import { registerOfflineRoutes } from './routes/offline.ts';
+import { createAccountingGateway, type AccountingGateway } from './accounting/gateway.ts';
+import { AccountingTransferService } from './accounting/transfer-service.ts';
+import { registerFinanceJobHandlers } from './jobs/finance.ts';
+import { registerAccountingRoutes } from './routes/accounting.ts';
+import { registerCancellationRoutes } from './routes/cancellation.ts';
+import { registerSettlementRoutes } from './routes/settlement.ts';
+import {
+  createSettlementNoticeGateway,
+  type SettlementNoticeGateway,
+} from './settlement/notice-gateway.ts';
 import { AssignmentService } from './handover/assignment-service.ts';
 import { createRiskRefreshListener } from './handover/risk-refresh-listener.ts';
 import { MachineService } from './warehouse/machine-service.ts';
@@ -62,6 +78,12 @@ export interface AppOptions {
    * Finalisierung §2). Default: stdout wie bisher.
    */
   logDestination?: NodeJS.WritableStream;
+  /** Phase 9: Test-Injection der Buchhaltungsgrenze (Default: Mock außerhalb von production, sonst Disabled). */
+  accountingGateway?: AccountingGateway;
+  /** Phase 9: Test-Injection des Kundeninformations-Versandwegs (Default: Outbox außerhalb von production). */
+  noticeGateway?: SettlementNoticeGateway;
+  /** Phase 9: Test-Injection der Job-Queue (Default: PostgresJobQueue auf dem Pool). */
+  jobQueue?: JobQueue;
 }
 
 /**
@@ -84,6 +106,9 @@ export function buildApp({
   rateLimitEnabled = true,
   storage,
   logDestination,
+  accountingGateway,
+  noticeGateway,
+  jobQueue,
 }: AppOptions): FastifyInstance {
   const app = Fastify({
     logger: {
@@ -309,6 +334,51 @@ export function buildApp({
         auth: authService,
         config,
         storage: storageProvider,
+      });
+      // Phase 9: Abrechnung/Storno/Buchhaltung – eine Gateway-Grenze, eine
+      // Transfer-Boundary, Jobs auf der bestehenden PostgreSQL-Queue.
+      const accounting = accountingGateway ?? createAccountingGateway(config);
+      const notices = noticeGateway ?? createSettlementNoticeGateway(config);
+      const queue = jobQueue ?? new PostgresJobQueue(pool);
+      const transfers = new AccountingTransferService(db, accounting, queue);
+      // Nicht gestarteter Runner: verarbeitet Finanz-Jobs nur auf Anforderung
+      // der Mock-Steuerung (nicht in production); den Dauerbetrieb übernimmt
+      // apps/worker mit denselben Handlern.
+      const financeRunner = new JobRunner(queue, `api:${process.pid}`, app.log);
+      registerFinanceJobHandlers(financeRunner, {
+        db,
+        config,
+        queue,
+        storage: storageProvider,
+        accountingGateway: accounting,
+        logger: app.log,
+      });
+      registerSettlementRoutes(instance, {
+        db,
+        auth: authService,
+        config,
+        storage: storageProvider,
+        queue,
+        accountingGateway: accounting,
+        transfers,
+        noticeGateway: notices,
+      });
+      registerCancellationRoutes(instance, {
+        db,
+        auth: authService,
+        config,
+        storage: storageProvider,
+        queue,
+        accountingGateway: accounting,
+        transfers,
+      });
+      registerAccountingRoutes(instance, {
+        db,
+        auth: authService,
+        config,
+        accountingGateway: accounting,
+        transfers,
+        jobRunner: financeRunner,
       });
     });
   }

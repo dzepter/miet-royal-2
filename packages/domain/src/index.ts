@@ -5,6 +5,8 @@
  * Vertretungs-, Konflikt- und Überfälligkeitsregeln (scheduling.ts).
  * Phase 8: operative Übergabe-/Rückgabe-Blocker und Reinigungsregeln
  * (operations.ts) – eine Implementierung für Server und Offline-Projektion.
+ * Phase 9: Abrechnungs-Summen, Kommissionsregel, 24-h-Fenster und Storno-
+ * Berechnung (settlement.ts).
  */
 export * from './operations.ts';
 export * from './scheduling.ts';
@@ -37,3 +39,4 @@ export {
   type PricingSelection,
   type SpecialPriceEntry,
 } from './pricing.ts';
+export * from './settlement.ts';
