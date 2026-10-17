@@ -37,6 +37,7 @@ import type {
   AccountingTransferService,
 } from '../accounting/transfer-service.ts';
 import { AuthError } from '../auth/service.ts';
+import { buildAccountingBlock, type AccountingBlockView } from '../lexware/transfer-readiness.ts';
 import { ProcessService } from '../crm/process-service.ts';
 import { AssignmentService } from '../handover/assignment-service.ts';
 import { SchedulingService } from '../scheduling/scheduling-service.ts';
@@ -173,6 +174,12 @@ export interface CancellationView {
   transferredAt: string | null;
   lastTransferErrorCode: string | null;
   accountingBlocker: 'not_configured' | null;
+  /** Phase 10 (Vertrag §6): Provider, Blocker, Rechnungsdaten, Retry-Freigabe. */
+  accounting: AccountingBlockView;
+  /** Phase 10: Rechnungsversand – 'pending' bis Phase 12 versendet; nie automatisch 'sent'. */
+  invoiceDeliveryStatus: string | null;
+  /** Kunde des Vorgangs (Kontakt-Klärung bei CONTACT_REVIEW_REQUIRED). */
+  customerId: string;
   releasedResources: ReleasedResources;
   confirmationStatus: string;
   confirmationSentAt: string | null;
@@ -788,6 +795,10 @@ export class CancellationService {
   ): Promise<{
     outcome: 'succeeded' | 'already_succeeded' | 'skipped' | 'failed';
     errorCode?: string;
+    /** Phase 10: false ⇒ permanenter Blocker (kein Auto-Retry). */
+    transient?: boolean;
+    /** Phase 10: übersprungen wegen aktivem Claim eines anderen Workers. */
+    retryAt?: Date;
   }> {
     const current = await this.byId(cancellationId);
     if (current === null) throw new AuthError('NOT_FOUND', 'Stornierung nicht gefunden.');
@@ -852,9 +863,12 @@ export class CancellationService {
       },
       'Storno-Buchhaltungstransfer',
     );
-    return result.errorCode === undefined
-      ? { outcome: result.outcome }
-      : { outcome: result.outcome, errorCode: result.errorCode };
+    return {
+      outcome: result.outcome,
+      ...(result.errorCode === undefined ? {} : { errorCode: result.errorCode }),
+      ...(result.transient === undefined ? {} : { transient: result.transient }),
+      ...(result.retryAt === undefined ? {} : { retryAt: result.retryAt }),
+    };
   }
 
   /** Manuelle, synchrone Übertragung (Retry nach Fehlschlag / vorzeitig). */
@@ -998,6 +1012,29 @@ export class CancellationService {
     const resources = record(row.releasedResources);
     const count = (key: string) =>
       typeof resources[key] === 'number' ? (resources[key] as number) : 0;
+    const now = new Date();
+    let blockers: AccountingBlockView['blockers'] = [];
+    if (transfer !== null && pending && this.transfers.provider === 'lexware') {
+      blockers = await this.transfers.readiness(
+        transfer.snapshot as AccountingPayload,
+        process.customerId,
+      );
+    }
+    const mapping = transfer === null ? null : await this.transfers.invoiceMapping(transfer.id);
+    const accounting = buildAccountingBlock({
+      provider: this.transfers.provider,
+      blockers,
+      transfer,
+      mapping,
+      localPaymentStatus: row.paymentStatus,
+      localDeliveryStatus: row.invoiceDeliveryStatus,
+      canViewReference,
+      deeplink:
+        mapping?.lexwareInvoiceId === undefined || mapping?.lexwareInvoiceId === null
+          ? null
+          : this.transfers.invoiceDeeplink(mapping.lexwareInvoiceId),
+      now,
+    });
     return {
       id: row.id,
       processId: row.processId,
@@ -1023,8 +1060,15 @@ export class CancellationService {
       paymentStatusLabel:
         row.paymentStatus === null ? null : PAYMENT_STATUS_LABELS[row.paymentStatus],
       transferredAt: iso(row.transferredAt),
-      lastTransferErrorCode: row.lastTransferErrorCode,
+      lastTransferErrorCode:
+        row.lastTransferErrorCode ??
+        (pending && transfer !== null && transfer.status !== 'pending'
+          ? (transfer.attentionCode ?? transfer.lastErrorCode ?? 'LEXWARE_OUTCOME_UNKNOWN')
+          : null),
       accountingBlocker: pending && !configured ? 'not_configured' : null,
+      accounting,
+      invoiceDeliveryStatus: row.invoiceDeliveryStatus,
+      customerId: process.customerId,
       releasedResources: {
         appointments: count('appointments'),
         assignments: count('assignments'),

@@ -56,7 +56,11 @@ export function registerAccountingRoutes(
       provider: accountingGateway.provider,
       configured: accountingGateway.isConfigured(),
       mock: accountingGateway.provider === 'mock',
-      mockControlsAvailable: mockAllowed && accountingGateway instanceof MockAccountingGateway,
+      // Phase 10: „fällige Jobs ausführen“ steht außerhalb von production auch mit
+      // Lexware-Fake/Testaccount zur Verfügung; Zahlungs-/Fehlersimulation nur mit Mock.
+      mockControlsAvailable: mockAllowed,
+      mockPaymentControlsAvailable:
+        mockAllowed && accountingGateway instanceof MockAccountingGateway,
       environment: config.appEnv,
     };
   });
@@ -139,8 +143,16 @@ export function registerAccountingRoutes(
     };
   });
 
+  // Phase 10: „fällige Jobs ausführen“ ist auch mit Lexware-Fake außerhalb von
+  // production nötig (E2E ohne Worker) – weiterhin system.settings, production 404.
   app.post('/staff/accounting/mock/run-due-jobs', async (request, reply) => {
-    if ((await requireMockControl(request, reply)) === null) return;
+    if (!mockAllowed) {
+      sendError(request, reply, 404, 'NOT_FOUND', 'Nicht gefunden.');
+      return;
+    }
+    const context = await requireAuth(request, reply, auth, config);
+    if (context === null) return;
+    if (!(await requirePermission(request, reply, auth, context, 'system.settings'))) return;
     let processed = 0;
     let failed = 0;
     for (let i = 0; i < 50; i += 1) {

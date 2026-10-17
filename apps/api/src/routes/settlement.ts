@@ -9,6 +9,7 @@ import type { AccountingTransferService } from '../accounting/transfer-service.t
 import { requireAuth, requirePermission, sendAuthError, sendError } from '../auth/http.ts';
 import { AuthError, type AuthenticatedContext, type StaffAuthService } from '../auth/service.ts';
 import { ProcessService } from '../crm/process-service.ts';
+import { LexwareApiError } from '../lexware/errors.ts';
 import { getCompletedVisibilityDays } from '../crm/settings-service.ts';
 import { buildVisibilityContext } from '../crm/visibility.ts';
 import type { SettlementNoticeGateway } from '../settlement/notice-gateway.ts';
@@ -415,6 +416,56 @@ export function registerSettlementRoutes(
       };
     } catch (error) {
       if (sendSettlementError(request, reply, error)) return;
+      throw error;
+    }
+  });
+
+  // ── Phase 10: Rechnungsdatei (Streaming, keine Persistenz; Order §39) ──
+
+  app.get('/staff/settlements/:id/invoice-file', async (request, reply) => {
+    const context = await requireAuth(request, reply, auth, config);
+    if (context === null) return;
+    if (!(await requirePermission(request, reply, auth, context, 'accounting.view_reference')))
+      return;
+    const params = parseOrThrow(idParams, request.params, 'params');
+    const settlement = await visibleSettlement(request, reply, context, params.id);
+    if (settlement === null) return;
+    const deps = transfers.lexwareDeps;
+    if (deps === null || deps.context.client === null) {
+      sendError(request, reply, 404, 'NOT_FOUND', 'Keine Rechnungsdatei verfügbar.');
+      return;
+    }
+    const mapping =
+      settlement.accountingTransferId === null
+        ? null
+        : await transfers.invoiceMapping(settlement.accountingTransferId);
+    if (
+      mapping === null ||
+      mapping.lexwareInvoiceId === null ||
+      settlement.accountingProvider !== 'lexware'
+    ) {
+      sendError(request, reply, 404, 'NOT_FOUND', 'Keine Rechnungsdatei verfügbar.');
+      return;
+    }
+    try {
+      const file = await deps.context.client.getInvoiceFile(mapping.lexwareInvoiceId);
+      const name = (mapping.voucherNumber ?? 'rechnung').replace(/[^A-Za-z0-9_-]/g, '_');
+      return await reply
+        .header('content-type', 'application/pdf')
+        .header('content-disposition', `attachment; filename="${name}.pdf"`)
+        .header('cache-control', 'no-store')
+        .send(Buffer.from(file.data));
+    } catch (error) {
+      if (error instanceof LexwareApiError) {
+        sendError(
+          request,
+          reply,
+          error.transient ? 503 : 409,
+          error.code,
+          'Rechnungsdatei derzeit nicht abrufbar.',
+        );
+        return;
+      }
       throw error;
     }
   });

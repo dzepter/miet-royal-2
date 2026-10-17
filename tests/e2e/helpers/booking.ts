@@ -34,6 +34,13 @@ export interface AcceptedBookingOptions {
   discountPercent?: number;
   /** Erwarteter Rabattbetrag (z. B. „7,50“) – nur zusammen mit `discountPercent`. */
   expectedDiscountEuro?: string;
+  /**
+   * Phase 10: Vorgang für einen BESTEHENDEN Kunden anlegen (Kundenseite →
+   * „Vorgang anlegen“) statt einen neuen Kunden zu erfassen – Lexware-
+   * Kontakt-Mapping-Wiederverwendung (Szenarien C/D). Name/E-Mail werden
+   * dann nicht verwendet.
+   */
+  existingCustomerId?: string;
 }
 
 /**
@@ -47,15 +54,20 @@ export async function acceptedBooking(
   customerPage: Page,
   options: AcceptedBookingOptions,
 ): Promise<{ processId: string; processNumber: string }> {
-  await staff.goto('/kunden');
-  await staff.getByRole('button', { name: 'Kunde anlegen' }).click();
-  await staff.getByLabel('Vorname').fill(options.firstName);
-  await staff.getByLabel('Nachname').fill(options.lastName);
-  await staff.getByLabel('E-Mail (optional)').fill(options.email);
-  await staff.getByRole('button', { name: 'Kunde anlegen' }).click();
-  await expect(
-    staff.getByRole('heading', { name: `${options.firstName} ${options.lastName}` }),
-  ).toBeVisible();
+  if (options.existingCustomerId !== undefined) {
+    await staff.goto(`/kunden/${options.existingCustomerId}`);
+    await expect(staff.getByRole('heading', { name: 'Stammdaten' })).toBeVisible();
+  } else {
+    await staff.goto('/kunden');
+    await staff.getByRole('button', { name: 'Kunde anlegen' }).click();
+    await staff.getByLabel('Vorname').fill(options.firstName);
+    await staff.getByLabel('Nachname').fill(options.lastName);
+    await staff.getByLabel('E-Mail (optional)').fill(options.email);
+    await staff.getByRole('button', { name: 'Kunde anlegen' }).click();
+    await expect(
+      staff.getByRole('heading', { name: `${options.firstName} ${options.lastName}` }),
+    ).toBeVisible();
+  }
   await staff.getByRole('button', { name: 'Vorgang anlegen' }).click();
   const numberHeading = staff.getByRole('heading', { name: /^MR-\d{4}-\d{4,}$/ });
   await expect(numberHeading).toBeVisible();

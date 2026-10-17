@@ -4,13 +4,25 @@ import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import { useCallback, useEffect, useState } from 'react';
 import { AuthGuard, useMe } from '../../../components/auth-guard';
-import { apiFetch, hasPermission } from '../../../lib/api';
+import { ConfirmDialog } from '../../../components/confirm-dialog';
+import { apiFetch, hasPermission, type Me } from '../../../lib/api';
 import {
   formatEventDate,
   STATUS_BADGE_CLASS,
   STATUS_LABELS,
   type ProcessRow,
 } from '../../../lib/crm';
+import { formatBerlin } from '../../../lib/handover';
+import {
+  contactStatusLabel,
+  createLexwareContact,
+  fetchCustomerLexwareContact,
+  fetchLexwareStatus,
+  linkLexwareContact,
+  type ContactCandidate,
+  type CustomerLexwareContact,
+} from '../../../lib/lexware';
+import { fetchAccountingStatus } from '../../../lib/settlement';
 import { CustomerForm } from '../page';
 
 interface CustomerDetail {
@@ -178,6 +190,8 @@ function CustomerView() {
         </div>
       )}
 
+      <LexwareContactBlock customerId={params.id} me={me} />
+
       <div className="card">
         <h2>Vorgänge</h2>
         {detail.processes.length === 0 && <p className="muted">Keine sichtbaren Vorgänge.</p>}
@@ -194,6 +208,235 @@ function CustomerView() {
         ))}
       </div>
     </main>
+  );
+}
+
+/**
+ * Phase 10 (Order §17, Vertrag §5): Lexware-Kontakt des Kunden. Nur sichtbar,
+ * wenn die Lexware-Integration aktiv ist (Status-Route `enabled`; ohne
+ * system.settings ersatzweise Provider „lexware“ aus /staff/accounting/status).
+ * Verknüpfen/Anlegen sind kritische Aktionen mit Bestätigung; der Server
+ * prüft Rechte und Eindeutigkeit – die UI mergt nie automatisch.
+ */
+function LexwareContactBlock({ customerId, me }: { customerId: string; me: Me | null }) {
+  const [enabled, setEnabled] = useState(false);
+  const [view, setView] = useState<CustomerLexwareContact | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [confirm, setConfirm] = useState<
+    { kind: 'link'; candidate: ContactCandidate } | { kind: 'create' } | null
+  >(null);
+
+  const canSettings = hasPermission(me, 'system.settings');
+  const canView = canSettings || hasPermission(me, 'settlement.view');
+
+  useEffect(() => {
+    if (!canView) return;
+    let cancelled = false;
+    void (async () => {
+      if (canSettings) {
+        const status = await fetchLexwareStatus();
+        if (status.data !== null) {
+          if (!cancelled) setEnabled(status.data.enabled === true);
+          return;
+        }
+      }
+      const accounting = await fetchAccountingStatus();
+      if (!cancelled && accounting.data !== null) {
+        setEnabled(accounting.data.provider === 'lexware');
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [canView, canSettings]);
+
+  const load = useCallback(async () => {
+    const result = await fetchCustomerLexwareContact(customerId);
+    if (result.data !== null) setView(result.data);
+    else if (result.status !== 404) {
+      setError(result.errorMessage ?? 'Lexware-Kontakt konnte nicht geladen werden.');
+    }
+  }, [customerId]);
+  useEffect(() => {
+    if (!enabled) return;
+    void load();
+  }, [enabled, load]);
+
+  async function run(
+    action: () => Promise<{
+      ok: boolean;
+      data: CustomerLexwareContact | null;
+      errorMessage: string | null;
+      errorCode: string | null;
+    }>,
+    okText: string,
+  ): Promise<void> {
+    setConfirm(null);
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    const result = await action();
+    setBusy(false);
+    if (!result.ok) {
+      setError(
+        result.errorCode === 'CONTACT_ALREADY_MAPPED'
+          ? 'Dieser Lexware-Kontakt ist bereits einem anderen Kunden zugeordnet.'
+          : (result.errorMessage ?? 'Aktion fehlgeschlagen.'),
+      );
+      await load();
+      return;
+    }
+    if (result.data !== null) setView(result.data);
+    else await load();
+    setNotice(okText);
+  }
+
+  if (!enabled || !canView) return null;
+
+  const mapping = view?.mapping ?? null;
+  const linked = mapping !== null && mapping.status === 'linked';
+  const review =
+    !linked && (mapping?.status === 'review_required' || (view?.candidates.length ?? 0) > 0);
+  const deeplink = view?.deeplink ?? null;
+
+  return (
+    <div className="card" data-testid="lexware-contact-block">
+      <h2>Lexware-Kontakt</h2>
+      {error !== null && <p className="error">{error}</p>}
+      {notice !== null && <p className="success">{notice}</p>}
+      <p>
+        Status:{' '}
+        <span
+          className={`badge ${linked ? 'ok' : review ? 'locked' : ''}`}
+          data-testid="lexware-contact-status"
+        >
+          {contactStatusLabel(view)}
+        </span>
+        {linked && mapping.lastSyncedAt !== undefined && mapping.lastSyncedAt !== null && (
+          <span className="muted"> · zuletzt abgeglichen {formatBerlin(mapping.lastSyncedAt)}</span>
+        )}
+        {deeplink !== null && deeplink !== '' && (
+          <>
+            {' '}
+            <a
+              href={deeplink}
+              target="_blank"
+              rel="noopener noreferrer"
+              data-testid="lexware-contact-open"
+            >
+              In Lexware öffnen
+            </a>
+          </>
+        )}
+      </p>
+      {review && (
+        <>
+          <p className="warning-red" role="status">
+            Mehrere oder widersprüchliche Lexware-Kontakte gefunden – bitte den passenden Kontakt
+            wählen oder einen neuen anlegen. Es wird nichts automatisch zusammengeführt.
+          </p>
+          <div data-testid="lexware-contact-candidates">
+            {(view?.candidates ?? []).map((candidate) => (
+              <div
+                className="list-row"
+                key={candidate.contactId}
+                data-testid={`lexware-contact-candidate-${candidate.contactId}`}
+              >
+                <div>
+                  <strong>{candidate.displayName}</strong>
+                  <div className="muted">
+                    {candidate.email ?? 'keine E-Mail'}
+                    {candidate.reason !== undefined &&
+                    candidate.reason !== null &&
+                    candidate.reason !== ''
+                      ? ` · ${candidate.reason}`
+                      : ''}
+                  </div>
+                </div>
+                {canSettings && (
+                  <button
+                    type="button"
+                    data-testid={`lexware-contact-link-${candidate.contactId}`}
+                    disabled={busy}
+                    onClick={() => setConfirm({ kind: 'link', candidate })}
+                  >
+                    Verknüpfen
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+      {!linked && (
+        <p className="muted">
+          {review
+            ? ''
+            : 'Der Kontakt wird bei der ersten Rechnungsübertragung automatisch gesucht oder angelegt.'}
+        </p>
+      )}
+      {!linked && canSettings && (
+        <p>
+          <button
+            type="button"
+            className={review ? 'primary' : undefined}
+            data-testid="lexware-contact-create"
+            disabled={busy}
+            onClick={() => setConfirm({ kind: 'create' })}
+          >
+            Neuen Lexware-Kontakt anlegen
+          </button>
+        </p>
+      )}
+      {!linked && !canSettings && review && (
+        <p className="muted">Die Zuordnung übernimmt eine Person mit Systemeinstellungs-Recht.</p>
+      )}
+      {confirm !== null && confirm.kind === 'link' && (
+        <ConfirmDialog
+          testId="lexware-contact-link-dialog"
+          title="Lexware-Kontakt verknüpfen?"
+          confirmLabel="Verknüpfen"
+          confirmTestId="lexware-contact-link-confirm"
+          busy={busy}
+          onCancel={() => setConfirm(null)}
+          onConfirm={() =>
+            void run(
+              () => linkLexwareContact(customerId, confirm.candidate.contactId),
+              'Lexware-Kontakt verknüpft.',
+            )
+          }
+        >
+          <p>
+            Der Kunde wird dauerhaft mit dem Lexware-Kontakt{' '}
+            <strong>{confirm.candidate.displayName}</strong>
+            {confirm.candidate.email !== undefined && confirm.candidate.email !== null
+              ? ` (${confirm.candidate.email})`
+              : ''}{' '}
+            verknüpft. Künftige Rechnungen laufen auf diesen Kontakt.
+          </p>
+        </ConfirmDialog>
+      )}
+      {confirm !== null && confirm.kind === 'create' && (
+        <ConfirmDialog
+          testId="lexware-contact-create-dialog"
+          title="Neuen Lexware-Kontakt anlegen?"
+          confirmLabel="Kontakt anlegen"
+          confirmTestId="lexware-contact-create-confirm"
+          busy={busy}
+          onCancel={() => setConfirm(null)}
+          onConfirm={() =>
+            void run(() => createLexwareContact(customerId), 'Lexware-Kontakt angelegt.')
+          }
+        >
+          <p>
+            In Lexware wird ein neuer Kontakt aus den aktuellen Stammdaten angelegt und mit diesem
+            Kunden verknüpft. Vorhandene Lexware-Kontakte werden dabei nicht zusammengeführt.
+          </p>
+        </ConfirmDialog>
+      )}
+    </div>
   );
 }
 

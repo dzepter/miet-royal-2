@@ -3,10 +3,16 @@
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import { useCallback, useEffect, useState } from 'react';
+import {
+  AccountingBlockCard,
+  accountingBlockData,
+  SETTLEMENT_ACCOUNTING_IDS,
+} from '../../../../components/accounting-block';
 import { AuthGuard } from '../../../../components/auth-guard';
 import { ConfirmDialog } from '../../../../components/confirm-dialog';
 import type { ApiResult } from '../../../../lib/api';
 import { formatBerlin } from '../../../../lib/handover';
+import { RETRY_TRANSFER_LABEL_LEXWARE, TRANSFER_CHECK_TEXT } from '../../../../lib/lexware';
 import {
   ACCOUNTING_NOT_CONFIGURED_HINT,
   addLine,
@@ -214,7 +220,27 @@ function SettlementPage() {
     s.accountingBlocker === null &&
     (dominant.key === 'transfer_now' ||
       (s.status === 'ready_for_accounting' && s.manualTransferRequired));
-  const showRetry = perms.canManualTransfer && s.status === 'transfer_failed';
+  // Phase 10: Buchhaltungsblock (Vertrag §6) – ersatzweise aus den Phase-9-Feldern.
+  const accounting = accountingBlockData({
+    accounting: s.accounting,
+    fallback: {
+      provider: s.accountingProvider,
+      isMock: view.mock.isMock,
+      transferredAt: s.transferredAt,
+      reference: s.accountingReference,
+      referenceVisible: s.accountingReferenceVisible,
+      paymentStatus: s.paymentStatus,
+      paymentStatusLabel: s.paymentStatusLabel,
+      deliveryStatus: s.invoiceDeliveryStatus,
+      transferFailed: s.status === 'transfer_failed',
+    },
+  });
+  const isLexware = accounting.provider === 'lexware';
+  const showRetry =
+    perms.canManualTransfer && (s.status === 'transfer_failed' || accounting.canRetry);
+  const retryLabel =
+    accounting.retryLabel ??
+    (isLexware ? RETRY_TRANSFER_LABEL_LEXWARE : 'Übertragung erneut versuchen');
 
   const linesByType = (types: string[]): SettlementLineView[] =>
     view.lines.filter((line) => types.includes(line.type));
@@ -492,7 +518,7 @@ function SettlementPage() {
               disabled={busy || !perms.canManualTransfer}
               onClick={() => setConfirm('transfer')}
             >
-              {label}
+              {isLexware ? retryLabel : label}
             </button>
           </span>
         );
@@ -538,28 +564,19 @@ function SettlementPage() {
         )}
         {s.status === 'transfer_failed' && (
           <p className="error" role="status">
-            {TRANSFER_FAILED_TEXT}
+            {isLexware ? TRANSFER_CHECK_TEXT : TRANSFER_FAILED_TEXT}
           </p>
         )}
         {s.accountingBlocker === 'not_configured' && (
           <p className="muted">{ACCOUNTING_NOT_CONFIGURED_HINT}</p>
         )}
-        {s.transferredAt !== null && s.paymentStatus !== null && (
-          <p>
-            Zahlungsstatus:{' '}
-            <span className="badge" data-testid="payment-status">
-              {s.paymentStatusLabel ?? s.paymentStatus}
-            </span>
-          </p>
-        )}
-        {s.accountingReferenceVisible && s.accountingReference !== null && (
-          <p className="muted">
-            Buchhaltungsreferenz:{' '}
-            <span data-testid="accounting-reference">{s.accountingReference}</span>
-            {view.mock.isMock ? ' (Mock)' : ''}
-          </p>
-        )}
       </div>
+
+      <AccountingBlockCard
+        ids={SETTLEMENT_ACCOUNTING_IDS}
+        data={accounting}
+        customerId={s.customerId ?? null}
+      />
 
       <div className="card" aria-label="Nächste Aktion">
         <h2 style={{ marginTop: 0 }}>Nächste Aktion</h2>
@@ -671,7 +688,7 @@ function SettlementPage() {
               disabled={busy}
               onClick={() => setConfirm('transfer')}
             >
-              Übertragung erneut versuchen
+              {retryLabel}
             </button>
           )}
         </p>
@@ -936,9 +953,14 @@ function SettlementPage() {
       {view.mock.controlsAvailable && (
         <div className="card" data-testid="mock-controls">
           <h2 style={{ marginTop: 0 }}>
-            Mock-Steuerung <span className="badge">MOCK</span>
+            {view.mock.isMock ? 'Mock-Steuerung' : 'Teststeuerung'}{' '}
+            <span className="badge">{view.mock.isMock ? 'MOCK' : 'TEST'}</span>
           </h2>
-          <p className="muted">Nur Test/Demo – keine echte Buchhaltung, kein Versand.</p>
+          <p className="muted">
+            {view.mock.isMock
+              ? 'Nur Test/Demo – keine echte Buchhaltung, kein Versand.'
+              : 'Nur Test/Entwicklung – führt fällige Hintergrundjobs sofort aus.'}
+          </p>
           <p>
             <button
               type="button"
@@ -967,32 +989,36 @@ function SettlementPage() {
             >
               Fällige Jobs ausführen
             </button>{' '}
-            <button
-              type="button"
-              data-testid="mock-set-paid"
-              disabled={busy || view.transfer === null}
-              onClick={() => {
-                if (view.transfer === null) return;
-                const transferId = view.transfer.id;
-                void mutate(() => mockPaymentStatus(transferId, 'paid'), {
-                  okNotice: 'Zahlungsstatus auf „Bezahlt“ gesetzt (Mock).',
-                });
-              }}
-            >
-              Als bezahlt markieren
-            </button>{' '}
-            <button
-              type="button"
-              data-testid="mock-fail-next"
-              disabled={busy}
-              onClick={() =>
-                void mutate(() => mockFailNext(1), {
-                  okNotice: 'Nächster Transfer schlägt fehl (Mock).',
-                })
-              }
-            >
-              Nächsten Transfer fehlschlagen lassen
-            </button>
+            {view.mock.isMock && (
+              <>
+                <button
+                  type="button"
+                  data-testid="mock-set-paid"
+                  disabled={busy || view.transfer === null}
+                  onClick={() => {
+                    if (view.transfer === null) return;
+                    const transferId = view.transfer.id;
+                    void mutate(() => mockPaymentStatus(transferId, 'paid'), {
+                      okNotice: 'Zahlungsstatus auf „Bezahlt“ gesetzt (Mock).',
+                    });
+                  }}
+                >
+                  Als bezahlt markieren
+                </button>{' '}
+                <button
+                  type="button"
+                  data-testid="mock-fail-next"
+                  disabled={busy}
+                  onClick={() =>
+                    void mutate(() => mockFailNext(1), {
+                      okNotice: 'Nächster Transfer schlägt fehl (Mock).',
+                    })
+                  }
+                >
+                  Nächsten Transfer fehlschlagen lassen
+                </button>
+              </>
+            )}
           </p>
         </div>
       )}
@@ -1034,6 +1060,9 @@ function SettlementPage() {
             Noch offen: <strong>{formatCents(s.amountDueCents)}</strong>. Nach der Übertragung sind
             Positionen und Beträge gesperrt.
             {view.mock.isMock ? ' Übertragung an die Mock-Buchhaltung (kein echter Transfer).' : ''}
+            {isLexware
+              ? ' In Lexware wird genau eine finale Rechnung erstellt; ein Versand erfolgt nicht automatisch.'
+              : ''}
           </p>
         </ConfirmDialog>
       )}

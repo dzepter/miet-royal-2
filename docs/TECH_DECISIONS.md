@@ -1861,3 +1861,125 @@ Shell cwd was reset to /home/user/Sparkoffer.de
   auslösbar), Admin-Information bei wiederholtem Transferfehler
   (DOMAIN_RULES „Admin informieren“ – Dead-Jobs sind in `integration_jobs`
   diagnostizierbar).
+
+## Phase 10: Echte Lexware-Office-Integration
+
+- **Quelle der Wahrheit**: Alle API-Annahmen stehen verifiziert in
+  `docs/LEXWARE_API_NOTES.md` (Verifikationsdatum, Endpunkte, Berechtigungen,
+  Einschränkungen). Lexware ist veränderlich – vor jedem Release erneut
+  prüfen. Die alte lexoffice-Domain kommt im Code nicht vor; production
+  verwendet fest `https://api.lexware.io`, `LEXWARE_BASE_URL` ist dort
+  verboten (Tests/Fake nur außerhalb).
+- **Providerwahl fail-closed** (`createAccountingGateway(config, lexware)`):
+  production ⇒ `lexware` nur mit Key und aktivem Kontext, sonst `disabled`
+  (nie Mock); demo ⇒ immer Mock (ein gesetzter Key ist ein
+  Konfigurationsfehler); development/staging ⇒ Mock, Lexware nur per
+  explizitem Opt-in (`LEXWARE_ENABLED=true`). `assertConfigsIsolated` lehnt
+  denselben Lexware-Key in zwei Umgebungen ab. Der Key existiert nur in
+  `config.lexware.apiKey` (nie DB, nie Antwort, Pino-Redaction für
+  `apiKey`/`authorization`).
+- **Ein Client, ein Limit**: `LexwareClient` ist der einzige fetch()-Ort
+  (Bearer, JSON, Timeout, zod-validierte Antworten, neutrale Fehlerklassen
+  `validation|unauthorized|forbidden|not_found|conflict|rate_limited|server|
+  timeout|network|invalid_response`, Retry-After, Correlation-ID, Pfade mit
+  maskierten IDs im Log). Retries entscheidet die Queue anhand `transient`.
+  Das Lexware-Limit von 2 Requests/Sekunde gilt prozessübergreifend:
+  `PostgresLexwareThrottle` reserviert in einer kurzen Transaktion
+  (`lexware_rate_limit` FOR UPDATE) den nächsten Slot (≥ 500 ms Abstand) und
+  wartet AUSSERHALB jeder Transaktion – API und Worker teilen sich so dieselbe
+  Grenze ohne offene Business-Sperren.
+- **Geld**: Lexware erwartet Dezimalbeträge; `money.ts` konvertiert
+  Integer-Cent ⇄ Dezimalstring ohne Float-Arithmetik (JSON-Zahlen mit ≤ 2
+  Nachkommastellen sind verlustfrei serialisierbar, gerechnet wird nie damit),
+  lehnt mehr als zwei Nachkommastellen ab und rundet Steuer je Position
+  kaufmännisch in Integer-Arithmetik. Summen werden vor dem Create lokal
+  erwartet und nach dem Create gegen die Lexware-Antwort geprüft; Abweichung
+  ⇒ `attention` (TOTAL_MISMATCH), nie stille Cent-Anpassung.
+- **Steuern werden nicht erfunden**: `accounting_tax_config` je Kategorie
+  (Behandlung, Satz in Basispunkten, `synthetic`-Kennzeichen) + globale
+  Lexware-Steuerart in `system_settings`. Production blockiert jede Rechnung,
+  solange eine Kategorie fehlt oder synthetisch ist; dev/test/demo dürfen
+  klar markierte synthetische Werte setzen. Profil (`taxType`,
+  `smallBusiness`) dient nur der Plausibilität.
+- **Schema (Migration 0019)**: `lexware_integration_state` (eine Zeile je
+  Umgebung: gepinnte organizationId, Status, Profilfelder ohne
+  Personendaten, Webhook-Stand), `lexware_contact_mappings` (ein aktives
+  Mapping je Kunde, ein Kunde je Lexware-Kontakt), `lexware_invoice_mappings`
+  (je accounting_transfer: Rechnungs-ID, Nummer, Status, Fälligkeit, offener
+  Betrag, Zahlungsstatus, `delivery_status` pending, stabiler
+  `transfer_marker`), `lexware_webhook_events` (Fingerprint-Dedup),
+  `lexware_rate_limit`, `accounting_tax_config`; `accounting_transfers`
+  erhält `in_progress|outcome_unknown|attention`, Claim-Felder und einen
+  versionierten Provider-Snapshot (v2), der den Phase-9-Snapshot nie ersetzt.
+- **Webhook-Signatur**: offizieller Lexware-Public-Key (RSA-4096, PEM) im
+  Code (`webhook-public-key.ts`, Quelle + Datum dokumentiert, per
+  `LEXWARE_WEBHOOK_PUBLIC_KEY_PEM` für den Contract-Fake übersteuerbar);
+  Verifikation RSA-SHA512 über die Rohbytes und – weil die Doku „ohne
+  Whitespaces“ nennt – zusätzlich über die kompakt serialisierte Form; nie
+  Vertrauen ohne gültige Signatur, danach organizationId-Abgleich, Allowlist,
+  Dedup (SHA-256 aus organizationId|eventType|resourceId|eventDate), Job.
+- **Contract-Fake statt echtem Account**: `FakeLexwareServer` simuliert die
+  genutzten Endpunkte mit Pflichtfeldprüfung, read-only-Ablehnung,
+  Draft-/Finalize-Semantik, voucherlist-`overdue` (transient), Payments,
+  Event-Subscriptions (409 Duplikat, 406 unsichere Callback-URL), 2-Req/s-
+  Limit, Fehlerinjektion und „Timeout nach erfolgreichem Create“. Der
+  Quality-Gate läuft nie gegen einen echten Lexware-Account.
+- **Zweiphasiger Transfer (Order §§32/59/60)**: `AccountingTransferService.execute()`
+  delegiert beim Provider `lexware` an einen dreistufigen Pfad: Phase 1
+  (kurze Transaktion, Transferzeile FOR UPDATE) prüft Hooks/Readiness
+  (Verbindung gepinnt, Steuerkonfiguration vollständig und plausibel zum
+  Profil, keine Anzahlungs-/Kautions-Credits, Kontakt eindeutig), friert den
+  Provider-Snapshot v2 ein, beansprucht die Zeile (`in_progress`, Claim mit
+  Ablauf) und legt das Rechnungs-Mapping mit stabilem Transfermarker an;
+  Phase 2 läuft OHNE Datenbanksperre (Kontakt-Sync, Recovery, `POST
+  /v1/invoices?finalize=true`, `GET invoice`, `GET payment`); Phase 3 commitet
+  mit Claim-Fencing. Jeder Fehler nach dem abgesetzten Create ⇒
+  `outcome_unknown` (Rechnungs-ID, falls bekannt, wird gemerkt); vor jedem
+  erneuten Create läuft die Recovery (GET by ID bzw. Belegliste je Kontakt und
+  Belegdatum ±1 Tag, Treffer nur bei Marker UND Bruttosumme; genau einer ⇒
+  verbinden, keiner ⇒ Create, mehrere ⇒ `attention RECOVERY_AMBIGUOUS`).
+  `outcome_unknown` wird erst verlassen, wenn eine Recovery abgeschlossen ist –
+  auch bei gescheiterter Recovery, Blockern oder abgelaufenem Claim bleibt die
+  Recovery-Pflicht erhalten (Review-Befund). Summen-Mismatch, Draft trotz
+  finalize und Fremd-Claim ⇒ `attention` mit verbundener Rechnung, nie ein
+  zweiter Create. Phase-9-Zeilen mit Provider `disabled` werden ohne zweite
+  Zeile übernommen (externalReference leer, Schlüssel unverändert).
+- **Kontakt-Sync**: ein aktives Mapping je Kunde, ein Kunde je
+  Lexware-Kontakt (Unique je Organisation). Ohne Mapping: Suche über exakt
+  normalisierte E-Mail und Name; nur bei E-Mail UND Person/Firma gleich wird
+  automatisch verknüpft, sonst „Lexware-Kontakt prüfen“ (Admin wählt oder legt
+  neu an). Create mit Claim vor dem HTTP-Aufruf (parallele Transfers erzeugen
+  keinen Doppelkontakt), Unknown-Outcome-Recovery über die exakte Identität,
+  ohne durchführbare Suche ⇒ Prüfung statt erneutem Create. PUT ist ein
+  Merge über den aktuellen Remote-Kontakt (nur gepflegte Felder werden
+  überschrieben), Basis ist immer der heutige Kundenstamm, nie ein
+  Buchungs-Snapshot; die Rechnungsadresse im Beleg stammt ausschließlich aus
+  dem eingefrorenen Accounting-Snapshot.
+- **Webhooks/Reconcile**: Dedup und Job-Einreihung sind nicht in einer
+  Transaktion (Queue auf eigener Verbindung); deshalb reiht eine erneute
+  Zustellung desselben Events den Job mit demselben Idempotenzschlüssel
+  nach. Reconcile prüft nur relevante Mappings (offen/überfällig, ohne
+  dauerhafte Attention-Codes), Admin-Aktion mit kleinem Batch und
+  Advisory-Lock, CLI bis 100 – kein Polling. Setup ohne Callback-URL
+  verwirft keine eigenen Subscription-IDs.
+- **Externe Änderung nach Übertragung**: Wird eine übertragene Rechnung in
+  Lexware storniert (voided) oder gelöscht, bleibt der Settlement-Status
+  `transferred` (Sperre, kein Retry, keine Neurechnung); nur das Status-Label
+  und der Buchhaltungsblock zeigen „Buchhaltungsprüfung erforderlich“
+  (Attention-Code `INVOICE_VOIDED`/`INVOICE_MISSING`), Zahlungsstatus bleibt
+  unverändert. Die Auflösung ist ein manueller Buchhaltungsvorgang.
+- **Preisbasis (offener Punkt)**: Die Phase-9-Beträge werden als
+  NETTO-Beträge an Lexware übergeben (Steuerart net ⇒ `netAmount`, vatfree ⇒
+  Satz 0, gross ⇒ `grossAmount`). MASTER_SPEC legt nicht fest, ob die
+  Mietpreise netto oder brutto gelten – vor Produktivbetrieb mit der
+  Buchhaltung entscheiden; die Steuerkonfiguration (`taxType`) bildet beides
+  ab. Steuer wird je Steuersatz-Gruppe auf die Nettosumme gerechnet; die
+  reale Lexware-Rundung ist nicht dokumentiert (Summenprüfung fail-closed).
+- **Bewusst offen (Deferred, Phase 10)**: Anzahlungen/Kautionen auf der
+  Lexware-Rechnung (Public API: Down-Payment-Invoices read-only ⇒
+  fail-closed), Auflösung von Attention-Zeilen (nur manuell durch die
+  Buchhaltung; keine Fachregel), Rechnungsversand (Phase 12), echte
+  Key-Ablaufüberwachung (Lexware liefert kein Ablaufdatum), IP-Rate-Limit
+  am Webhook-Endpunkt (Signaturprüfung vor jedem DB-Zugriff genügt vorerst),
+  Nutzung von `Retry-After` im Queue-Backoff (Lexware dokumentiert den Header
+  nicht), Live-Verifikation von Steuerrundung und Scope-Namen am Testaccount.

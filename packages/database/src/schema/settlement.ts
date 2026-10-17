@@ -101,9 +101,15 @@ export const accountingTransferStatus = pgEnum('accounting_transfer_status', [
   'pending',
   'succeeded',
   'failed',
+  /** Phase 10: Transfer beansprucht, externer Aufruf läuft (Sperre NICHT gehalten). */
+  'in_progress',
+  /** Phase 10: externer Aufruf ohne Antwort – Recovery vor jedem erneuten CREATE. */
+  'outcome_unknown',
+  /** Phase 10: manuelle Buchhaltungsprüfung erforderlich (Summen-/Kontakt-/Extern-Abweichung). */
+  'attention',
 ]);
 
-export const accountingProvider = pgEnum('accounting_provider', ['mock', 'disabled']);
+export const accountingProvider = pgEnum('accounting_provider', ['mock', 'disabled', 'lexware']);
 
 /** Externer Zahlungsstatus (Order §42) – Miet-Royal ist dafür nicht Source of Truth. */
 export const accountingPaymentStatus = pgEnum('accounting_payment_status', [
@@ -194,6 +200,8 @@ export const settlements = pgTable(
     paymentStatus: accountingPaymentStatus('payment_status'),
     /** Letzter Transferfehler (nur neutraler Code, kein Stacktrace). */
     lastTransferErrorCode: text('last_transfer_error_code'),
+    /** Phase 10: Rechnungsversand (Lexware mailt nicht per API) – 'pending' bis Phase 12 versendet; nie automatisch 'sent'. */
+    invoiceDeliveryStatus: text('invoice_delivery_status'),
     /** Optimistische Sperre gegen Lost Updates (Order §82). */
     version: integer('version').notNull().default(1),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
@@ -342,6 +350,17 @@ export const accountingTransfers = pgTable(
     externalReference: text('external_reference'),
     paymentStatus: accountingPaymentStatus('payment_status'),
     transferredAt: timestamp('transferred_at', { withTimezone: true }),
+    // ── Phase 10: zweiphasiger externer Transfer (Order §§32/60) ──
+    /** Beanspruchung (claim) ohne gehaltene DB-Sperre während des HTTP-Aufrufs. */
+    claimedAt: timestamp('claimed_at', { withTimezone: true }),
+    claimedBy: text('claimed_by'),
+    claimExpiresAt: timestamp('claim_expires_at', { withTimezone: true }),
+    /** Versionierter Provider-Snapshot (schemaVersion 2: Steuer, Adresse, Line-Mapping) – Phase-9-Snapshot bleibt unverändert. */
+    providerSnapshot: jsonb('provider_snapshot'),
+    providerSnapshotHash: text('provider_snapshot_hash'),
+    /** Neutraler Code, warum eine manuelle Prüfung nötig ist (z. B. TOTAL_MISMATCH, RECOVERY_AMBIGUOUS). */
+    attentionCode: text('attention_code'),
+    attentionAt: timestamp('attention_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
@@ -475,6 +494,8 @@ export const cancellations = pgTable(
     paymentStatus: accountingPaymentStatus('payment_status'),
     transferredAt: timestamp('transferred_at', { withTimezone: true }),
     lastTransferErrorCode: text('last_transfer_error_code'),
+    /** Phase 10: Rechnungsversand der Stornokostenrechnung ('pending'; nie automatisch 'sent'). */
+    invoiceDeliveryStatus: text('invoice_delivery_status'),
     /** Freigegebene Ressourcen (Zähler) – nur Nachvollziehbarkeit. */
     releasedResources: jsonb('released_resources'),
     /** Kundenbestätigung: prepared | sent | blocked (Order §61). */

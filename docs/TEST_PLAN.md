@@ -65,6 +65,19 @@ settlement.test.ts` (Summen, Kommissionsregel, Storno-Grenzen 15/14/7/6/0,
 Berlin-Kalendertage, half-up-Rundung), E2E `tests/e2e/specs/settlement-flow.spec.ts`
 (A–M).
 
+Umsetzung Phase 10 (Lexware Office, nur gegen den lokalen Contract-Fake
+`apps/api/src/lexware/testing/fake-server.ts`, nie gegen einen echten
+Account): `apps/api/test/lexware-client.test.ts` (Client, Fehlerklassen,
+Geldumrechnung, Webhook-Signatur), `lexware-connection/-rate-limit/-webhooks/
+-reconcile` (Verbindung, 2 Req/s über zwei Prozesse, signierte Webhooks,
+Dedup, Reconcile/Setup idempotent), `lexware-tax/-contacts/-invoice/
+-cancellation/-transfer/-credits/-delivery/-payment/-security`
+(Steuerkonfiguration fail-closed, Kontakt-Mapping ohne Auto-Merge, finale
+Rechnung aus dem Snapshot, Stornokostenrechnung, Doppelklick/Worker/Timeout-
+Recovery ⇒ genau eine Rechnung, Anzahlung/Kaution blockiert, kein PDF,
+Versand „ausstehend“, Zahlungsstatus, IDOR/Key-Leaks), E2E
+`tests/e2e/specs/lexware-flow.spec.ts` (A–N) im eigenen Playwright-Projekt.
+
 ## Gutschein
 - nur nach paid + schadenfrei
 - nur einmal

@@ -114,6 +114,19 @@ erfassen), `deposit.retain_security` (Kaution verrechnen),
 Abrechnung bleibt gesperrt), `system.settings` (Mock-Buchhaltungssteuerung –
 nur außerhalb von production).
 
+Phase 10 (echte Lexware-Integration) führt **keine neuen Rechte** ein.
+Wiederverwendet: `system.settings` (Einstellungen → Lexware: Status,
+Verbindungsprüfung, Webhook-Einrichtung, Abgleich, Organisation bestätigen;
+Steuerkonfiguration je Kategorie; Lexware-Kontakt verknüpfen/anlegen;
+„fällige Jobs ausführen“ außerhalb von production), `settlement.view`
+(Buchhaltungsblock inkl. Blocker/Prüfhinweise, Lexware-Kontaktstatus eines
+Kunden lesen), `accounting.view_reference` (Lexware-Rechnungsnummer,
+Deeplink und Rechnungs-PDF-Durchleitung – ohne dieses Recht nur der
+Status), `lexware.manual_transfer` (erneute Übertragung nach Timeout/
+Fehlschlag). Der Webhook-Endpunkt `POST /webhooks/lexware` ist
+unauthentifiziert und ausschließlich durch die RSA-SHA512-Signaturprüfung
+(offizieller Lexware-Public-Key) plus Organisationsabgleich geschützt.
+
 ### Kaution/Anzahlung
 `deposit.record_advance`, `deposit.record_security`,
 `deposit.retain_security`, `deposit.refund_security`
