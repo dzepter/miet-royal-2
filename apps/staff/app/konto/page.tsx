@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { AuthGuard, useMe } from '../../components/auth-guard';
 import { apiFetch } from '../../lib/api';
+import { offlineRuntime } from '../../lib/offline/runtime';
 
 interface OwnSessions {
   currentSessionId: string;
@@ -51,6 +52,8 @@ function Account() {
       setPwMessage({ kind: 'error', text: result.errorMessage ?? 'Änderung fehlgeschlagen.' });
       return;
     }
+    // Offline-Arbeitsbereich: Passwort-Wrap des lokalen Schlüssels erneuern (§7).
+    await offlineRuntime().rewrapPassword(newPassword);
     setCurrentPassword('');
     setNewPassword('');
     setPwMessage({

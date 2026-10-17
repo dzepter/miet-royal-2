@@ -26,6 +26,8 @@ interface IssueEntry {
   handoverStatus: 'draft' | 'finalized' | null;
   preparation: 'none' | 'partial' | 'prepared';
   unscheduled: boolean;
+  /** Phase 8: Übergabe offline abgeschlossen, Synchronisierung ausstehend (§15). */
+  offlinePendingFinalize?: boolean;
 }
 
 const PREPARATION_LABELS: Record<IssueEntry['preparation'], string> = {
@@ -102,9 +104,15 @@ function IssueView() {
               ? 'Zeit festlegen'
               : `${formatBerlin(entry.startAt).slice(-5)} Uhr`}
           </div>
-          <span className={`badge ${entry.preparation === 'prepared' ? 'ok' : 'locked'}`}>
-            {PREPARATION_LABELS[entry.preparation]}
-          </span>
+          {entry.offlinePendingFinalize === true ? (
+            <span className="badge" data-testid="offline-pending-badge">
+              Übergabe offline erfasst – Synchronisierung ausstehend
+            </span>
+          ) : (
+            <span className={`badge ${entry.preparation === 'prepared' ? 'ok' : 'locked'}`}>
+              {PREPARATION_LABELS[entry.preparation]}
+            </span>
+          )}
         </div>
       </div>
     </Link>

@@ -147,6 +147,29 @@ function MachineDetailView() {
     return true;
   }
 
+  /** Reinigungsabschluss: online sofort, offline als ausstehende Mutation (Phase 8, §25). */
+  async function completeCleaning(): Promise<void> {
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    const result = await apiFetch<{ offlinePending?: boolean }>(
+      `/staff/machines/${params.id}/clean-complete`,
+      { method: 'POST', body: {} },
+    );
+    setBusy(false);
+    if (!result.ok) {
+      setError(result.errorMessage ?? 'Aktion fehlgeschlagen.');
+      return;
+    }
+    setNotice(
+      result.data?.offlinePending === true
+        ? 'Reinigung offline erfasst – Synchronisierung ausstehend.'
+        : 'Maschine ist gereinigt und einsatzbereit.',
+    );
+    await load();
+    await loadCondition();
+  }
+
   async function submitFinding(): Promise<void> {
     if (findingPhoto === null) {
       setError('Für einen nachträglich festgestellten Schaden ist ein Foto Pflicht.');
@@ -234,21 +257,23 @@ function MachineDetailView() {
             In Reinigung seit {formatBerlin(condition.cleaning.since)}
             {condition.cleaning.overdue ? ' – länger als 24 Stunden!' : ''}
           </strong>
-          {canCleanComplete && (
-            <p style={{ margin: '0.5rem 0 0' }}>
-              <button
-                className="primary"
-                data-testid="clean-complete-button"
-                disabled={busy}
-                onClick={() =>
-                  void run(`/staff/machines/${machine.id}/clean-complete`).then((ok) => {
-                    if (ok) setNotice('Maschine ist gereinigt und einsatzbereit.');
-                  })
-                }
-              >
-                Gereinigt &amp; einsatzbereit
-              </button>
+          {condition.offlinePendingCleanComplete === true ? (
+            <p style={{ margin: '0.5rem 0 0' }} data-testid="cleaning-offline-pending">
+              <span className="badge">Reinigung offline erfasst – Synchronisierung ausstehend</span>
             </p>
+          ) : (
+            canCleanComplete && (
+              <p style={{ margin: '0.5rem 0 0' }}>
+                <button
+                  className="primary"
+                  data-testid="clean-complete-button"
+                  disabled={busy}
+                  onClick={() => void completeCleaning()}
+                >
+                  Gereinigt &amp; einsatzbereit
+                </button>
+              </p>
+            )
           )}
         </div>
       )}
