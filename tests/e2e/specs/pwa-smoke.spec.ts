@@ -105,26 +105,46 @@ test('WebKit: PWA-Grundstart, IndexedDB, Offline-App-Shell, Sync-Status', async 
   expect(idb.workspace).toContain('wrappedByPassword');
   expect(idb.workspace).not.toContain(ADMIN_PASSWORD);
 
-  // Offline-App-Shell: ohne Netz neu laden → App startet aus dem lokalen Arbeitsbereich.
-  // Je nach Engine bleibt die Sitzung über den flüchtigen Schlüssel entsperrt oder der
-  // Sperrbildschirm „App gesperrt“ verlangt die Offline-Entsperrung mit dem Passwort.
+  // Offline-App-Shell: ohne Netz bleibt die geöffnete App-Shell nutzbar (Indikator OFFLINE,
+  // clientseitige Navigation, lokaler Arbeitsbereich lesbar). Ein harter Neustart ohne Netz
+  // (Navigation über den Service-Worker-Cache) ist in Playwright-WebKit unter Linux NICHT
+  // ausführbar: `setOffline` blockiert dort auch Service-Worker-Antworten („WebKit encountered
+  // an internal error“ / „Load failed“) – dieser Teil ist nur in Chromium (offline-flow A/K)
+  // nachgewiesen und im Abschlussbericht als nicht in WebKit getestet ausgewiesen.
+  test.info().annotations.push({
+    type: 'not-covered',
+    description:
+      'Offline-Neustart über den Service-Worker-Cache ist in Playwright-WebKit (Linux) nicht ausführbar.',
+  });
   await page.context().setOffline(true);
   await page.evaluate(() => window.dispatchEvent(new Event('offline')));
-  await page.goto('/', { waitUntil: 'commit' });
-  const lockDialog = page.getByRole('dialog', { name: 'App gesperrt' });
-  const heute = page.getByRole('heading', { name: 'Heute' });
-  await expect(lockDialog.or(heute).first()).toBeVisible({ timeout: 30_000 });
-  if ((await lockDialog.count()) > 0) {
-    await expect(page.getByTestId('offline-unlock-hint')).toBeVisible();
-    await page.locator('#unlock-password').fill(ADMIN_PASSWORD);
-    await page.getByRole('button', { name: 'Entsperren' }).click();
-  }
-  await expect(heute).toBeVisible({ timeout: 30_000 });
-  await expect(page.getByTestId('offline-indicator')).toContainText('OFFLINE');
   await expect(page.getByTestId('offline-indicator')).toHaveAttribute(
     'data-connectivity',
     'offline',
+    { timeout: 30_000 },
   );
+  await expect(page.getByTestId('offline-indicator')).toContainText('OFFLINE');
+  await page.getByRole('link', { name: /Synchronisierungsstatus/ }).click();
+  await expect(page).toHaveURL(/\/sync$/);
+  await expect(page.getByTestId('sync-status')).toContainText('OFFLINE');
+  const offlineRows = await page.evaluate(async () => {
+    const databases = await indexedDB.databases();
+    const name = databases.map((d) => d.name).find((n) => n?.startsWith('mietroyal-offline-'));
+    if (name === undefined) return -1;
+    const db = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open(name);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    const count = await new Promise<number>((resolve, reject) => {
+      const request = db.transaction('workspace').objectStore('workspace').count();
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    db.close();
+    return count;
+  });
+  expect(offlineRows).toBe(1);
 
   // Netz zurück → Sync-Status wieder ONLINE/SYNCHRONISIERT.
   await page.context().setOffline(false);
