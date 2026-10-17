@@ -222,8 +222,9 @@ describe('95.–98. Keine Client-Fälschungen', () => {
     );
     const machine = await machineByCode(ctx.db, 'MR-10-01-01');
     const resolved = await ctx.app.inject({
-      method: 'GET',
-      url: `/staff/machines/qr/${machine.qrToken}`,
+      method: 'POST',
+      url: '/staff/machines/qr/resolve',
+      payload: { token: machine.qrToken },
       headers: { cookie: scanner.cookie },
     });
     expect(resolved.statusCode).toBe(200);

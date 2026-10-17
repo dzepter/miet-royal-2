@@ -39,17 +39,20 @@ function TabletView() {
   async function resolveScan(
     token: string,
   ): Promise<{ data: ScanResult | null; errorMessage: string | null }> {
+    // Token nur im POST-Body – nie in URL oder Protokoll.
     const machine = await apiFetch<{ machineId: string; machineCode: string }>(
-      `/staff/machines/qr/${encodeURIComponent(token)}`,
+      '/staff/machines/qr/resolve',
+      { method: 'POST', body: { token } },
     );
     if (machine.data === null) return { data: null, errorMessage: machine.errorMessage };
     const machineId = machine.data.machineId;
     // Kontext zeigen, Mitarbeiter entscheidet (§51) – keine automatische Geschäftsaktion.
     let returnBooking: ReturnResolved | null = null;
     if (canReturn) {
-      const candidate = await apiFetch<ReturnResolved>(
-        `/staff/returns/resolve-qr/${encodeURIComponent(token)}`,
-      );
+      const candidate = await apiFetch<ReturnResolved>('/staff/returns/resolve-qr', {
+        method: 'POST',
+        body: { token },
+      });
       if (candidate.data !== null) returnBooking = candidate.data;
     }
     // Ausgabe-Kontext: offener Übergabe-Vorgang aus dem lokalen Arbeitspaket, dessen Slot

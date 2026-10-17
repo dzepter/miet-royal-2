@@ -67,7 +67,7 @@ function ReturnListView() {
       </p>
       {scanning && (
         <QrScanner<ReturnResolved>
-          resolvePath="/staff/returns/resolve-qr/"
+          resolveEndpoint="/staff/returns/resolve-qr"
           onResolved={(resolved) => {
             setScanning(false);
             router.push(`/vorgaenge/${resolved.processId}/rueckgabe`);

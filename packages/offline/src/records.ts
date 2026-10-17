@@ -35,6 +35,10 @@ export interface LeaseRecord {
   deviceId: string;
   issuedAt: string;
   expiresAt: string;
+  /** Serverseitig signierter Claim (JSON-Text), Ed25519-Signatur und Verifikationsschlüssel (Base64url). */
+  claim: string;
+  signature: string;
+  verificationKey: string;
   /** Rechte-Snapshot (nur operative Keys) – lokal nur Darstellung. */
   permissions: string[];
   firstName: string;

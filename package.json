@@ -33,6 +33,7 @@
     "infra:down": "docker compose -f infra/docker-compose.yml down",
     "check:env-isolation": "pnpm --filter @mietroyal/config check:env-isolation",
     "staff:bootstrap-admin": "pnpm --filter @mietroyal/api bootstrap-admin",
+    "offline:lease-key": "pnpm --filter @mietroyal/api offline:lease-key",
     "scheduling:ensure-booking-appointments": "pnpm --filter @mietroyal/api scheduling:ensure-booking-appointments"
   },
   "devDependencies": {

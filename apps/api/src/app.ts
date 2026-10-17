@@ -33,13 +33,16 @@ const CORRELATION_ID_PATTERN = /^[A-Za-z0-9_-]{8,64}$/;
  * Pfad fürs Request-Log: Query-Strings enthalten Kundendaten (z. B.
  * Suchbegriffe wie Namen oder Telefonnummern) und werden komplett
  * weggelassen; opake Tokens im Pfad (öffentliche Angebots-Links,
- * Maschinen-QR-Identifier) erscheinen nie im Klartext im Log.
+ * Maschinen-QR-Identifier) erscheinen nie im Klartext im Log. Die QR-Routen
+ * nehmen den Token seit der Phase-8-Finalisierung (§2) nur noch im Body
+ * entgegen; die Maskierung bleibt als Schutz gegen Altclients/Tippfehler
+ * (der statische Routenname `resolve` bleibt lesbar).
  */
 export function maskLoggedPath(url: string): string {
   const path = url.split('?')[0] ?? url;
   return path
     .replace(/(\/public\/offers\/)[^/]+/, '$1***')
-    .replace(/(\/staff\/machines\/qr\/)[^/]+/, '$1***')
+    .replace(/(\/staff\/machines\/qr\/)(?!resolve(?:\/|$))[^/]+/, '$1***')
     .replace(/(\/staff\/returns\/resolve-qr\/)[^/]+/, '$1***');
 }
 
@@ -53,6 +56,12 @@ export interface AppOptions {
   rateLimitEnabled?: boolean;
   /** Test-Injection für den Objektspeicher (Default: laut config.storage). */
   storage?: StorageProvider;
+  /**
+   * Test-Injection für das Logger-Ziel (pino-Stream), damit Tests das
+   * Serverlog auffangen und auf Datenlecks prüfen können (Phase-8-
+   * Finalisierung §2). Default: stdout wie bisher.
+   */
+  logDestination?: NodeJS.WritableStream;
 }
 
 /**
@@ -74,16 +83,21 @@ export function buildApp({
   mailAdapter,
   rateLimitEnabled = true,
   storage,
+  logDestination,
 }: AppOptions): FastifyInstance {
   const app = Fastify({
     logger: {
       level: config.logLevel,
       redact: ['req.headers.authorization', 'req.headers.cookie'],
+      // Der Request-Serializer gibt NUR Methode + maskierten Pfad aus –
+      // nie Query, Header-Werte oder Bodies (QR-Tokens, Telefonnummern,
+      // Base64-Medien reisen im Body und dürfen nie im Log landen).
       serializers: {
         req(request: FastifyRequest) {
           return { method: request.method, url: maskLoggedPath(request.url) };
         },
       },
+      ...(logDestination === undefined ? {} : { stream: logDestination }),
     },
     genReqId: (req) => {
       const incoming = req.headers[CORRELATION_ID_HEADER];

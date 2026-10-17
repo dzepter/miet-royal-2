@@ -46,11 +46,127 @@ const OFFLINE_UNLOCK_MESSAGES: Record<string, string> = {
   lease_expired:
     'Die Offline-Berechtigung dieses Geräts ist abgelaufen (max. 72 Stunden). Bitte online anmelden.',
   lease_tampered: 'Der Offline-Arbeitsbereich ist beschädigt. Bitte online anmelden.',
+  lease_unsupported:
+    'Dieser Browser unterstützt die Offline-Prüfung der Berechtigung nicht. Bitte online anmelden.',
+  lease_untrusted:
+    'Die Offline-Berechtigung konnte nicht gegen den hinterlegten Serverschlüssel geprüft werden. Bitte online anmelden.',
   no_workspace:
     'Auf diesem Gerät ist kein Offline-Arbeitsbereich eingerichtet. Bitte online anmelden.',
   too_many_attempts:
     'Zu viele Fehlversuche – die Offline-Entsperrung ist auf diesem Gerät gesperrt. Bitte mit Verbindung anmelden.',
 };
+
+/**
+ * Zweistufige Bestätigung vor dem Verwerfen lokaler Erfassungen (Order §38,
+ * Finalisierung §7) – ersetzt `window.confirm`. Stufe 1 nennt die Zähler und
+ * bietet „Zuerst synchronisieren“ (nur beim Abmelden), Stufe 2 verlangt die
+ * ausdrückliche, unwiderrufliche Bestätigung. „Abbrechen“ ändert nichts.
+ */
+function DiscardDialog({
+  prefix,
+  stage,
+  counts,
+  busy,
+  confirmLabel,
+  onSyncFirst,
+  onCancel,
+  onDiscard,
+  onConfirm,
+}: {
+  prefix: 'logout' | 'rekey';
+  stage: 1 | 2;
+  counts: { mutations: number; media: number };
+  busy: boolean;
+  confirmLabel: string;
+  onSyncFirst?: () => void;
+  onCancel: () => void;
+  onDiscard: () => void;
+  onConfirm: () => void;
+}) {
+  const amounts = `${counts.mutations} Erfassungen, ${counts.media} Fotos/Unterschriften`;
+  if (stage === 1) {
+    return (
+      <div
+        className="lock-overlay"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Nicht synchronisierte Erfassungen"
+        data-testid={`${prefix}-dialog`}
+      >
+        <div className="card">
+          <h2 style={{ marginTop: 0 }}>Nicht synchronisierte Erfassungen</h2>
+          <p>
+            Auf diesem Gerät sind noch nicht synchronisierte Erfassungen vorhanden ({amounts}). Beim
+            Abmelden ohne Synchronisierung gehen sie unwiderruflich verloren.
+          </p>
+          <p>
+            {onSyncFirst !== undefined && (
+              <>
+                <button
+                  type="button"
+                  className="primary"
+                  data-testid={`${prefix}-sync-first`}
+                  disabled={busy}
+                  onClick={onSyncFirst}
+                >
+                  Zuerst synchronisieren (empfohlen)
+                </button>{' '}
+              </>
+            )}
+            <button
+              type="button"
+              data-testid={`${prefix}-cancel`}
+              disabled={busy}
+              onClick={onCancel}
+            >
+              Abbrechen
+            </button>{' '}
+            <button
+              type="button"
+              className="danger"
+              data-testid={`${prefix}-discard`}
+              disabled={busy}
+              onClick={onDiscard}
+            >
+              Lokale Erfassungen verwerfen …
+            </button>
+          </p>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div
+      className="lock-overlay"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Wirklich verwerfen?"
+      data-testid={`${prefix}-dialog-confirm`}
+    >
+      <div className="card">
+        <h2 style={{ marginTop: 0 }}>Wirklich verwerfen?</h2>
+        <p>
+          Wirklich verwerfen? {amounts} werden unwiderruflich gelöscht und können nicht
+          wiederhergestellt werden.
+        </p>
+        <p>
+          <button
+            type="button"
+            className="danger"
+            data-testid={`${prefix}-discard-confirm`}
+            disabled={busy}
+            onClick={onConfirm}
+          >
+            {confirmLabel}
+          </button>{' '}
+          <button type="button" data-testid={`${prefix}-cancel`} disabled={busy} onClick={onCancel}>
+            Abbrechen
+          </button>
+        </p>
+      </div>
+    </div>
+  );
+}
 
 function LockScreen({
   name,
@@ -69,15 +185,19 @@ function LockScreen({
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [rekeyRefused, setRekeyRefused] = useState(false);
+  const [rekeyConfirm, setRekeyConfirm] = useState<{ mutations: number; media: number } | null>(
+    null,
+  );
   const acceptedPasswordRef = useRef('');
   const router = useRouter();
 
+  async function askDiscardWorkspace() {
+    // Order §38: nie still vernichten – Stufe 2 mit Zählern (Klartext-Metadaten, ohne DEK).
+    setRekeyConfirm(await offlineRuntime().pendingSummary());
+  }
+
   async function discardWorkspace() {
-    // Order §38: nie still vernichten – bewusste Entscheidung des Mitarbeiters.
-    const confirmed = window.confirm(
-      'Die lokalen Offline-Erfassungen dieses Geräts (inkl. Fotos/Unterschriften) werden unwiderruflich verworfen und der Offline-Arbeitsbereich neu eingerichtet. Fortfahren?',
-    );
-    if (!confirmed) return;
+    setRekeyConfirm(null);
     setBusy(true);
     await onDiscardWorkspace(acceptedPasswordRef.current);
     acceptedPasswordRef.current = '';
@@ -170,12 +290,29 @@ function LockScreen({
               Ohne Verbindung kannst du den Arbeitsbereich mit dem bisherigen Passwort entsperren
               und anschließend synchronisieren.
             </p>
-            <button type="button" disabled={busy} onClick={() => void discardWorkspace()}>
+            <button
+              type="button"
+              data-testid="rekey-discard"
+              disabled={busy}
+              onClick={() => void askDiscardWorkspace()}
+            >
               Lokale Offline-Erfassungen verwerfen und neu einrichten
             </button>
           </div>
         )}
       </div>
+      {rekeyConfirm !== null && (
+        <DiscardDialog
+          prefix="rekey"
+          stage={2}
+          counts={rekeyConfirm}
+          busy={busy}
+          confirmLabel="Ja, unwiderruflich verwerfen und neu einrichten"
+          onCancel={() => setRekeyConfirm(null)}
+          onDiscard={() => undefined}
+          onConfirm={() => void discardWorkspace()}
+        />
+      )}
     </div>
   );
 }
@@ -203,6 +340,11 @@ export function AuthGuard({ children }: { children: ReactNode }) {
   const [state, setState] = useState<GuardState>('loading');
   const [identity, setIdentity] = useState<OfflineIdentity | null>(null);
   const [warehouseMode, setWarehouseModeState] = useState(false);
+  const [logoutDialog, setLogoutDialog] = useState<{
+    stage: 1 | 2;
+    counts: { mutations: number; media: number };
+  } | null>(null);
+  const [logoutBusy, setLogoutBusy] = useState(false);
   const lastActivityRef = useRef(Date.now());
 
   useEffect(() => {
@@ -298,9 +440,17 @@ export function AuthGuard({ children }: { children: ReactNode }) {
       offlineRuntime().touchActivity();
     };
     const lock = () => {
-      offlineRuntime().lock();
+      const runtime = offlineRuntime();
+      runtime.lock();
+      // Ohne Verbindung (laut Statusprüfung oder Browser) zeigt der Sperrbildschirm die
+      // Offline-Entsperrung – unabhängig davon, ob die Sitzung online oder offline begann.
+      const offlineNow =
+        runtime.snapshot.connectivity === 'offline' ||
+        (typeof navigator !== 'undefined' && navigator.onLine === false);
       setState((current) =>
-        current === 'offline-ready' || current === 'offline-locked' ? 'offline-locked' : 'locked',
+        current === 'offline-ready' || current === 'offline-locked' || offlineNow
+          ? 'offline-locked'
+          : 'locked',
       );
     };
     const toLogin = () => {
@@ -327,20 +477,25 @@ export function AuthGuard({ children }: { children: ReactNode }) {
     };
   }, [router]);
 
-  async function logout() {
+  /** Abmelden ohne lokale Daten (bzw. nach ausdrücklicher Stufe-2-Bestätigung). */
+  async function performLogout() {
+    setLogoutBusy(true);
     const runtime = offlineRuntime();
-    if (await runtime.hasPendingWork()) {
-      // Order §38: nicht still vernichten – bewusste Entscheidung des Mitarbeiters.
-      const discard = window.confirm(
-        'Auf diesem Gerät sind noch nicht synchronisierte Daten vorhanden.\n\n' +
-          'Abbrechen = zuerst synchronisieren (empfohlen). OK = Abmelden und die lokalen Offline-Erfassungen (inkl. Fotos/Unterschriften) bewusst verwerfen.',
-      );
-      if (!discard) return;
-    }
     await runtime.revokeLeaseOnline();
     await runtime.wipe();
     await apiFetch('/auth/logout', { method: 'POST', body: {} });
     router.replace('/login');
+  }
+
+  async function logout() {
+    const counts = await offlineRuntime().pendingSummary();
+    if (counts.mutations + counts.media > 0) {
+      // Order §38 / Finalisierung §7: nicht still vernichten – zweistufiger In-App-Dialog,
+      // kein window.confirm, kein Timeout-Wipe.
+      setLogoutDialog({ stage: 1, counts });
+      return;
+    }
+    await performLogout();
   }
 
   if (state === 'loading') {
@@ -477,6 +632,22 @@ export function AuthGuard({ children }: { children: ReactNode }) {
           </button>
         </header>
         {children}
+        {logoutDialog !== null && (
+          <DiscardDialog
+            prefix="logout"
+            stage={logoutDialog.stage}
+            counts={logoutDialog.counts}
+            busy={logoutBusy}
+            confirmLabel="Ja, unwiderruflich verwerfen und abmelden"
+            onSyncFirst={() => {
+              setLogoutDialog(null);
+              router.push('/sync');
+            }}
+            onCancel={() => setLogoutDialog(null)}
+            onDiscard={() => setLogoutDialog({ stage: 2, counts: logoutDialog.counts })}
+            onConfirm={() => void performLogout()}
+          />
+        )}
       </OfflineProvider>
     </MeContext.Provider>
   );

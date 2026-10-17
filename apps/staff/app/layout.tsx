@@ -1,4 +1,5 @@
 import type { Metadata, Viewport } from 'next';
+import { connection } from 'next/server';
 import type { ReactNode } from 'react';
 import { PwaRegister } from '../components/pwa-register';
 import './globals.css';
@@ -20,9 +21,15 @@ export const viewport: Viewport = {
   themeColor: '#1f4e8c',
 };
 
-export default function RootLayout({ children }: { children: ReactNode }) {
+export default async function RootLayout({ children }: { children: ReactNode }) {
+  // Zur Laufzeit (nicht zur Build-Zeit) aus der Umgebung des Staff-Servers: öffentlicher
+  // Ed25519-Verifikationsschlüssel der Offline-Lease (kein Secret). In staging/production
+  // akzeptiert der Client ohne diesen Schlüssel keine Lease (fail-closed, TECH_DECISIONS).
+  await connection();
+  const leaseKey = process.env.STAFF_OFFLINE_LEASE_VERIFICATION_KEY?.trim() ?? '';
   return (
     <html lang="de">
+      <head>{leaseKey !== '' && <meta name="mr-offline-lease-key" content={leaseKey} />}</head>
       <body>
         <PwaRegister />
         {children}

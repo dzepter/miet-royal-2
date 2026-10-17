@@ -2,17 +2,44 @@
 
 import Link from 'next/link';
 import { useCallback, useEffect, useState } from 'react';
-import { CONFLICT_LABELS, type ConflictCode } from '@mietroyal/offline';
+import { CONFLICT_LABELS, type ConflictCode, type ConflictDetails } from '@mietroyal/offline';
 import { AuthGuard } from '../../components/auth-guard';
 import { formatBerlin } from '../../lib/handover';
 import { offlineStatusLabel, useOffline } from '../../lib/offline/provider';
 import type { OfflineRuntime } from '../../lib/offline/runtime';
+import { KIND_LABELS } from '../../lib/scheduling';
 
 type Row = Awaited<ReturnType<OfflineRuntime['listMutations']>>[number] & {
-  conflict: { code: string; message: string } | null;
+  conflict: { code: string; message: string; details: ConflictDetails | null } | null;
   /** Vorgangs-ID (aus dem lokalen Snapshot) für den Absprung in den Wizard. */
   processId: string | null;
+  /**
+   * Client-Fallback für „Offline erfasst“, wenn der Server `details.offline` nicht
+   * kennt (z. B. alte Terminzeit aus dem lokalen Snapshot) – keine Kundendaten.
+   */
+  offlineBasis: string | null;
 };
+
+const DEFAULT_ACTION =
+  'Serverstand laden und die Eingabe prüfen; wenn die Aktion weiterhin zulässig ist, erneut anwenden – sonst die lokale Änderung bewusst verwerfen. Fotos und Unterschriften bleiben bis dahin lokal erhalten.';
+
+/** „dd.mm.yyyy HH:MM Uhr“ in Europe/Berlin. */
+function formatBerlinClock(iso: string): string {
+  return `${formatBerlin(iso).replace(',', '')} Uhr`;
+}
+
+/** Basisstand (§33) der Mutation lesen – nur technische Felder. */
+function baseOf(row: { baseVersion: string | null }): Record<string, unknown> | null {
+  if (row.baseVersion === null) return null;
+  try {
+    const parsed = JSON.parse(row.baseVersion) as unknown;
+    return typeof parsed === 'object' && parsed !== null
+      ? (parsed as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
 
 const STATUS_LABELS: Record<Row['status'], string> = {
   pending: 'Ausstehend',
@@ -32,6 +59,22 @@ const REJECTION_LABELS: Record<string, string> = {
   PAYLOAD_TOO_LARGE: 'Die Übertragung ist zu groß (Fotos verkleinern).',
 };
 
+/** Serverseitige Offline-Zeile enthält bereits „Offline erfasst:/Offline gewählt:/Offline-Grundlage:“ – kein Doppelpräfix. */
+function stripOfflinePrefix(text: string) {
+  const match = /^(Offline erfasst|Offline gewählt|Offline-Grundlage):\s*/.exec(text);
+  if (match === null)
+    return (
+      <>
+        <strong>Offline erfasst:</strong> {text}
+      </>
+    );
+  return (
+    <>
+      <strong>{match[1]}:</strong> {text.slice(match[0].length)}
+    </>
+  );
+}
+
 function conflictText(code: string, fallback: string): string {
   if ((Object.keys(CONFLICT_LABELS) as string[]).includes(code)) {
     return CONFLICT_LABELS[code as ConflictCode];
@@ -42,11 +85,14 @@ function conflictText(code: string, fallback: string): string {
 }
 
 /**
- * „Synchronisierung prüfen“ (Phase-8-Order §§34, 41, 42): ausstehende
- * Aktionen, Konflikte mit verständlicher Erklärung (welcher Vorgang, welche
- * Aktion, was offline erfasst wurde, was sich serverseitig änderte) und die
- * drei Handlungen: Serverstand laden & prüfen, erneut anwenden (über die
+ * „Synchronisierung prüfen“ (Phase-8-Order §§34, 41, 42; Finalisierung §4):
+ * ausstehende Aktionen, Konflikte mit verständlicher Gegenüberstellung in drei
+ * Zeilen – „Offline erfasst“ (Server-`details.offline`, sonst Client-Fallback
+ * aus lokalem Snapshot/Payload), „Serverstand“ (`details.server`, sonst Code-
+ * Label), „Was jetzt zu tun ist“ (`details.action`, sonst Standardtext) – und
+ * die drei Handlungen: Serverstand laden & prüfen, erneut anwenden (über die
  * normalen Domainservices – keine Direktüberschreibung), bewusst verwerfen.
+ * Keine JSON-Dumps, keine Kundendaten.
  */
 function SyncView() {
   const offline = useOffline();
@@ -63,11 +109,40 @@ function SyncView() {
         mutation.status === 'conflict' || mutation.status === 'failed_permanent'
           ? await offline.runtime.getConflict(mutation.clientMutationId)
           : null;
-      const processId =
+      const snapshot =
         mutation.contextKind === 'booking'
-          ? ((await offline.runtime.findBooking(mutation.contextId))?.processId ?? null)
+          ? await offline.runtime.findBooking(mutation.contextId)
           : null;
-      result.push({ ...mutation, conflict, processId });
+      const processId = snapshot?.processId ?? null;
+      let offlineBasis: string | null = null;
+      const code = conflict?.code ?? mutation.lastErrorCode;
+      if (code === 'APPOINTMENT_CHANGED') {
+        // Offline-Grundlage: Terminart + Terminzeit zum Erfassungszeitpunkt (in der Summary
+        // eingefroren – der lokale Snapshot trägt nach dem Sync bereits den neuen Serverstand).
+        const frozen = mutation.summary.basis ?? null;
+        if (frozen !== null) offlineBasis = `Grundlage: ${frozen}`;
+        else if (snapshot !== null) {
+          const appointmentId = baseOf(mutation)?.appointmentId;
+          const appointment =
+            snapshot.appointments.find((a) => a.id === appointmentId) ??
+            snapshot.appointments.find((a) =>
+              mutation.type.startsWith('return.') ? a.kind === 'return' : a.kind !== 'return',
+            ) ??
+            null;
+          if (appointment !== null) {
+            const kind = KIND_LABELS[appointment.kind] ?? appointment.kind;
+            offlineBasis = `Grundlage: ${kind} ${
+              appointment.startAt !== null ? formatBerlinClock(appointment.startAt) : 'ohne Uhrzeit'
+            }`;
+          }
+        }
+      }
+      if (offlineBasis === null) {
+        offlineBasis = `${mutation.summary.actionLabel}${
+          mutation.summary.detail !== null ? ` (${mutation.summary.detail})` : ''
+        }`;
+      }
+      result.push({ ...mutation, conflict, processId, offlineBasis });
     }
     setRows(result.sort((a, b) => a.seq - b.seq));
   }, [offline]);
@@ -193,13 +268,23 @@ function SyncView() {
             >
               <strong>{title(row)}</strong>
               <div className="muted">Offline erfasst am {formatBerlin(row.createdAt)}.</div>
-              <div>
-                <strong>Serverseitig:</strong> {conflictText(code, row.conflict?.message ?? '')}
+              <div data-testid="conflict-offline">
+                {row.conflict?.details?.offline !== null &&
+                row.conflict?.details?.offline !== undefined ? (
+                  stripOfflinePrefix(row.conflict.details.offline)
+                ) : (
+                  <>
+                    <strong>Offline erfasst:</strong> {row.offlineBasis}
+                  </>
+                )}
               </div>
-              <div className="muted">
-                Was jetzt zu tun ist: Serverstand laden und die Eingabe prüfen; wenn die Aktion
-                weiterhin zulässig ist, erneut anwenden – sonst die lokale Änderung bewusst
-                verwerfen. Fotos und Unterschriften bleiben bis dahin lokal erhalten.
+              <div data-testid="conflict-server">
+                <strong>Serverstand:</strong>{' '}
+                {row.conflict?.details?.server ?? conflictText(code, row.conflict?.message ?? '')}
+              </div>
+              <div className="muted" data-testid="conflict-action">
+                <strong>Was jetzt zu tun ist:</strong>{' '}
+                {row.conflict?.details?.action ?? DEFAULT_ACTION}
               </div>
               <p className="conflict-actions">
                 <Link href={contextLink(row)} className="button-like">

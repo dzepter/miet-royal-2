@@ -671,7 +671,7 @@ function HandoverWizard() {
               <p>
                 {documents.map((doc) => (
                   <span key={doc.id}>
-                    <DocumentLink documentId={doc.id}>
+                    <DocumentLink documentId={doc.id} bookingId={booking.id}>
                       {DOCUMENT_TYPE_LABELS[doc.type] ?? doc.type}
                     </DocumentLink>{' '}
                   </span>

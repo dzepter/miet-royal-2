@@ -7,7 +7,7 @@
  * Datenminimierung (§11): nur operative Kontaktdaten (Name, Telefon,
  * Lieferadresse nur bei Lieferung), keine E-Mail-, Admin- oder Finanzdaten.
  */
-import type { OfflineEnvironment } from './mutations.ts';
+import { OFFLINE_ENVIRONMENTS, type OfflineEnvironment } from './mutations.ts';
 
 /** Grund, warum ein Vorgang im Paket liegt (Horizont heute ±3 Tage, aktiv, überfällig, bewusst geöffnet). */
 export type OfflineBookingRelevance = 'handover' | 'return' | 'extra' | 'active' | 'overdue';
@@ -160,11 +160,90 @@ export interface LeaseGrant {
   deviceId: string;
   issuedAt: string;
   expiresAt: string;
+  /**
+   * Serverseitig signierter Lease-Claim (Phase-8-Finalisierung §1): exakt der
+   * JSON-Text eines `OfflineLeaseClaim`, über dessen UTF-8-Bytes der Server mit
+   * Ed25519 signiert hat. Der Client verifiziert die Signatur vollständig offline
+   * und übernimmt userId/deviceId/environment/issuedAt/expiresAt NUR aus dem
+   * verifizierten Claim – nie aus lokal veränderbaren Feldern.
+   */
+  claim: string;
+  /** Base64url – Ed25519-Signatur über die UTF-8-Bytes von `claim`. */
+  signature: string;
+  /** Base64url – roher 32-Byte-Ed25519-Verifikationsschlüssel (nur öffentlich; Signatur bleibt serverseitig). */
+  verificationKey: string;
   /** Base64url – Wrap B des lokalen DEK; nur über die entsperrte Session abrufbar. */
   leaseSecret: string;
   permissions: string[];
   firstName: string;
   lastName: string;
+}
+
+/** Inhalt des signierten Lease-Claims (Feldreihenfolge = Serialisierungsreihenfolge). */
+export interface OfflineLeaseClaim {
+  v: 1;
+  leaseId: string;
+  userId: string;
+  deviceId: string;
+  environment: OfflineEnvironment;
+  issuedAt: string;
+  expiresAt: string;
+  /** Zufällige Nonce (Base64url, 16 Byte) – jede Ausstellung ist einzigartig. */
+  nonce: string;
+}
+
+/** Maximale Lease-Laufzeit (Order §8): expiresAt ≤ issuedAt + 72 h – Server UND Client prüfen das. */
+export const OFFLINE_LEASE_MAX_MS = 72 * 3_600_000;
+
+/**
+ * Claim-Text parsen und strukturell prüfen (keine Signaturprüfung – die läuft
+ * in Server (node:crypto) bzw. Client (WebCrypto Ed25519)). Gibt null zurück,
+ * wenn Struktur, Laufzeit (≤ 72 h) oder Zeitformat ungültig sind.
+ */
+export function parseOfflineLeaseClaim(claimText: string): OfflineLeaseClaim | null {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(claimText);
+  } catch {
+    return null;
+  }
+  if (typeof raw !== 'object' || raw === null) return null;
+  const c = raw as Record<string, unknown>;
+  const str = (k: string): string | null => (typeof c[k] === 'string' ? (c[k] as string) : null);
+  const leaseId = str('leaseId');
+  const userId = str('userId');
+  const deviceId = str('deviceId');
+  const environment = str('environment');
+  const issuedAt = str('issuedAt');
+  const expiresAt = str('expiresAt');
+  const nonce = str('nonce');
+  if (
+    c['v'] !== 1 ||
+    leaseId === null ||
+    userId === null ||
+    deviceId === null ||
+    environment === null ||
+    issuedAt === null ||
+    expiresAt === null ||
+    nonce === null ||
+    !(OFFLINE_ENVIRONMENTS as readonly string[]).includes(environment)
+  ) {
+    return null;
+  }
+  const issued = Date.parse(issuedAt);
+  const expires = Date.parse(expiresAt);
+  if (!Number.isFinite(issued) || !Number.isFinite(expires)) return null;
+  if (expires <= issued || expires - issued > OFFLINE_LEASE_MAX_MS) return null;
+  return {
+    v: 1,
+    leaseId,
+    userId,
+    deviceId,
+    environment: environment as OfflineEnvironment,
+    issuedAt,
+    expiresAt,
+    nonce,
+  };
 }
 
 /** Antwort des authentifizierten Health-Checks GET /staff/offline/status (verlängert die Aktivität NICHT). */

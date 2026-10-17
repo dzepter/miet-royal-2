@@ -19,6 +19,8 @@ import { UUID_PATTERN } from './auth.ts';
 
 const uuidSchema = z.string().regex(UUID_PATTERN, 'muss eine UUID sein');
 const idParams = z.object({ id: uuidSchema });
+/** QR-Token nur im Body (§2) – unbekannte Felder werden abgelehnt. */
+const qrResolveBody = z.strictObject({ token: z.string().min(8).max(200) });
 const isoDateTime = z
   .string()
   .refine((value) => !Number.isNaN(Date.parse(value)), 'muss ein gültiger Zeitpunkt sein')
@@ -220,17 +222,16 @@ export function registerWarehouseRoutes(
    * QR-Auflösung (Order §10): nur nach Staff-Login + machine.view; ungültige
    * oder unbekannte Tokens werden neutral abgelehnt. Der Token wird nicht
    * geloggt und gibt ohne Recht keinerlei Maschinendaten preis.
+   * Phase-8-Finalisierung §2: Der Rohtoken reist ausschließlich im Body
+   * (POST), nie im URL-Pfad – damit landet er weder in Server-/Proxy-Logs
+   * noch in Browser-Verläufen; Request-Bodies werden nie geloggt.
    */
-  app.get('/staff/machines/qr/:token', async (request, reply) => {
+  app.post('/staff/machines/qr/resolve', async (request, reply) => {
     const context = await requireAuth(request, reply, auth, config);
     if (context === null) return;
     if (!(await requirePermission(request, reply, auth, context, 'machine.view'))) return;
-    const params = parseOrThrow(
-      z.object({ token: z.string().min(8).max(200) }),
-      request.params,
-      'params',
-    );
-    const resolved = await machineService.byQrToken(params.token);
+    const body = parseOrThrow(qrResolveBody, request.body);
+    const resolved = await machineService.byQrToken(body.token);
     if (resolved === null) {
       sendError(request, reply, 404, 'NOT_FOUND', 'Dieser QR-Code ist nicht gültig.');
       return;

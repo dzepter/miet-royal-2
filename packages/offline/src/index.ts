@@ -11,10 +11,13 @@ export * from './store.ts';
 export {
   OfflineWorkspace,
   WorkspaceRekeyRefusedError,
+  computeLeaseMac,
   type AuthorizeOptions,
   type LeaseState,
   type UnlockFailureReason,
   type UnlockResult,
   type WorkspaceIdentity,
+  type WorkspaceOptions,
 } from './workspace.ts';
+export * from './lease-claim.ts';
 export * from './queue.ts';

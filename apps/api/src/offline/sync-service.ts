@@ -5,20 +5,29 @@ import {
   bookings,
   damagePhotos,
   handoverPhotos,
+  handoverSignatures,
+  handovers,
+  machineDamages,
+  machines,
+  missingAccessoryCases,
   offlineMutationReceipts,
+  rentalReturns,
   returnPhotos,
+  returnSignatures,
   type Database,
   type OfflineMutationReceipt,
 } from '@mietroyal/database';
 import {
   CONFLICT_LABELS,
   MUTATION_BASE_SCHEMAS,
+  MUTATION_LABELS,
   MUTATION_PAYLOAD_SCHEMAS,
   MUTATION_PERMISSIONS,
   carriesCapturedTime,
   contextKindFor,
   type BookingBase,
   type ConflictCode,
+  type ConflictDetails,
   type MediaPurpose,
   type MutationBase,
   type MutationPayload,
@@ -32,13 +41,13 @@ import { AuthError, type AuthenticatedContext, type StaffAuthService } from '../
 import { getCompletedVisibilityDays } from '../crm/settings-service.ts';
 import type { ProcessService } from '../crm/process-service.ts';
 import { buildVisibilityContext, isProcessVisible } from '../crm/visibility.ts';
-import type { AssignmentService } from '../handover/assignment-service.ts';
+import type { AssignmentService, MachineEvaluation } from '../handover/assignment-service.ts';
 import type { HandoverDetailView, HandoverService } from '../handover/handover-service.ts';
 import { KeyedMutex } from '../handover/keyed-mutex.ts';
 import type { DamageService } from '../returns/damage-service.ts';
 import type { ReturnDetailView, ReturnService } from '../returns/return-service.ts';
 import type { SchedulingService } from '../scheduling/scheduling-service.ts';
-import type { MachineService } from '../warehouse/machine-service.ts';
+import { MACHINE_STATUS_LABELS, type MachineService } from '../warehouse/machine-service.ts';
 import type { OfflineLeaseService } from './lease-service.ts';
 
 /**
@@ -54,8 +63,17 @@ import type { OfflineLeaseService } from './lease-service.ts';
  * der Fachmutation als `processing` reserviert – ein Abbruch dazwischen
  * führt nie zu einer stillen zweiten Ausführung (§28).
  *
+ * Wiederaufnahme nach Abbruch (Phase-8-Finalisierung §3): bleibt eine
+ * Quittung länger als PROCESSING_STALE_MS in `processing`, prüft `recover`
+ * operation-spezifisch, ob die Fachwirkung bereits existiert – neu erzeugte
+ * Fachobjekte tragen die erzeugende `client_mutation_id`, Zustandsänderungen
+ * werden am Zielzustand erkannt. Nachweislich angewendet ⇒ `applied`
+ * (dedupliziert); nicht nachweisbar ⇒ normale Ausführung.
+ *
  * Kein Last-Write-Wins (§32): abweichender Serverstand ⇒ neutraler
- * Konfliktcode; der Mitarbeiter entscheidet online nach Prüfung.
+ * Konfliktcode mit fachlich verständlichen Details (§4: kurze Sätze, nur
+ * relevante Felder, Maschinencodes erlaubt, nie Kundendaten/Rechte-Keys);
+ * der Mitarbeiter entscheidet online nach Prüfung.
  */
 
 export interface OfflineSyncDeps {
@@ -79,6 +97,7 @@ export class SyncConflict extends Error {
   constructor(
     readonly code: ConflictCode,
     message?: string,
+    readonly details?: ConflictDetails,
   ) {
     super(message ?? CONFLICT_LABELS[code]);
     this.name = 'SyncConflict';
@@ -90,6 +109,7 @@ export class SyncRejected extends Error {
   constructor(
     readonly code: string,
     message: string,
+    readonly details?: ConflictDetails,
   ) {
     super(message);
     this.name = 'SyncRejected';
@@ -137,6 +157,96 @@ function neutralMessage(error: AuthError): string {
   }
 }
 
+/** Hinweis auf die Wiederaufnahme nach einem Abbruch (Order-Finalisierung §3). */
+export const RECOVERED_MESSAGE = 'Bereits übernommen (Wiederaufnahme nach Unterbrechung).';
+
+const ACTION_LOAD_SERVER_STATE = 'Serverstand laden und prüfen.';
+
+/** Zeitpunkt für Konfliktdetails: Berliner Zeit „dd.mm.yyyy HH:MM“ (§4). */
+function berlinTimeLabel(at: Date): string {
+  const parts = new Intl.DateTimeFormat('de-DE', {
+    timeZone: 'Europe/Berlin',
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).formatToParts(at);
+  const get = (type: string) => parts.find((part) => part.type === type)?.value ?? '';
+  return `${get('day')}.${get('month')}.${get('year')} ${get('hour')}:${get('minute')}`;
+}
+
+function offlineLabel(type: OfflineMutationType): string {
+  return `Offline erfasst: ${MUTATION_LABELS[type]}`;
+}
+
+/**
+ * Standard-Details je Code (§4), wenn der Konflikt keine fachlich konkretere
+ * Gegenüberstellung mitbringt. Nie Kundendaten, nie Rechte-Keys, keine JSON-Dumps.
+ */
+function defaultDetails(
+  type: OfflineMutationType,
+  code: string,
+  message: string | null,
+): ConflictDetails {
+  const offline = offlineLabel(type);
+  const handover = type.startsWith('handover.');
+  switch (code) {
+    case 'PERMISSION_REVOKED':
+    case 'FORBIDDEN':
+      return {
+        offline,
+        server: 'Dafür fehlt dir inzwischen die Berechtigung.',
+        action: 'Mit einer berechtigten Person klären oder verwerfen.',
+      };
+    case 'PROCESS_CANCELLED':
+      return {
+        offline,
+        server: 'Der Vorgang wurde inzwischen storniert.',
+        action: 'Erfassung prüfen und verwerfen, wenn sie nicht mehr gilt.',
+      };
+    case 'PROCESS_COMPLETED':
+      return {
+        offline,
+        server: 'Der Vorgang wurde inzwischen abgeschlossen.',
+        action: 'Erfassung prüfen und verwerfen, wenn sie nicht mehr gilt.',
+      };
+    case 'ALREADY_FINALIZED':
+      return {
+        offline,
+        server: handover
+          ? 'Die Übergabe wurde inzwischen abgeschlossen (anderes Gerät).'
+          : 'Die Rückgabe wurde inzwischen abgeschlossen (anderes Gerät).',
+        action: 'Serverstand laden und mit der lokalen Erfassung abgleichen.',
+      };
+    case 'DEPENDENCY_NOT_APPLIED':
+      return {
+        offline,
+        server: 'Eine vorausgehende Erfassung wurde nicht übernommen.',
+        action: 'Zuerst die vorausgehende Erfassung klären.',
+      };
+    case 'NOT_VISIBLE':
+      return {
+        offline,
+        server: 'Der Vorgang ist für dich nicht (mehr) sichtbar.',
+        action: 'Mit der Disposition klären oder verwerfen.',
+      };
+    case 'VALIDATION':
+      return { offline, server: message, action: 'Erfassung prüfen und ggf. verwerfen.' };
+    case 'MEDIA_HASH_MISMATCH':
+      return { offline, server: message, action: 'Foto bzw. Unterschrift erneut erfassen.' };
+    case 'CLOCK_IMPLAUSIBLE':
+      return {
+        offline,
+        server: message,
+        action: 'Gerätezeit prüfen und erneut synchronisieren.',
+      };
+    default:
+      return { offline, server: message, action: ACTION_LOAD_SERVER_STATE };
+  }
+}
+
 export class OfflineSyncService {
   private readonly mutex = new KeyedMutex();
 
@@ -157,11 +267,17 @@ export class OfflineSyncService {
         const existing = await this.receipt(mutation.clientMutationId);
         if (existing !== null) {
           if (existing.staffUserId !== context.user.id) {
+            const message = 'Diese Mutations-ID gehört zu einem anderen Benutzer.';
             return this.finish(context, input, now, {
               status: 'rejected',
               code: 'FORBIDDEN',
-              message: 'Diese Mutations-ID gehört zu einem anderen Benutzer.',
+              message,
               resultRef: null,
+              details: {
+                offline: offlineLabel(mutation.type),
+                server: message,
+                action: 'Erfassung verwerfen.',
+              },
               deduplicated: false,
               persist: false,
             });
@@ -173,11 +289,13 @@ export class OfflineSyncService {
           ) {
             // Eine Mutations-ID steht für genau EINE Aktion (§63/§64) – Wiederverwendung
             // mit anderem Typ/Kontext würde die Quittung entwerten.
+            const message = 'Diese Mutations-ID wurde bereits für eine andere Aktion verwendet.';
             return this.finish(context, input, now, {
               status: 'rejected',
               code: 'VALIDATION',
-              message: 'Diese Mutations-ID wurde bereits für eine andere Aktion verwendet.',
+              message,
               resultRef: null,
+              details: defaultDetails(mutation.type, 'VALIDATION', message),
               deduplicated: false,
               persist: false,
             });
@@ -188,6 +306,7 @@ export class OfflineSyncService {
               resultRef: (existing.resultRef as ResultRef | null) ?? null,
               code: null,
               message: null,
+              details: null,
               deduplicated: true,
               processedAt: existing.processedAt.toISOString(),
               serverTime: now.toISOString(),
@@ -197,20 +316,30 @@ export class OfflineSyncService {
             if (now.getTime() - existing.processedAt.getTime() < PROCESSING_STALE_MS) {
               throw new SyncInProgressError();
             }
-            // Abbruch zwischen Fachmutation und Quittung: Ergebnis unbekannt. NIE still erneut
-            // ausführen (§28) – Konflikt zur Prüfung des Serverstands; die bewusste Wieder-
-            // holung („Erneut anwenden“) läuft danach durch die normalen Prüfungen.
-            return this.finish(context, input, now, {
-              status: 'conflict',
-              code: 'SERVER_STATE_CHANGED',
-              message:
-                'Das Ergebnis der vorherigen Übertragung ist unklar – bitte Serverstand laden und prüfen.',
-              resultRef: null,
-              deduplicated: false,
-              persist: true,
-            });
+            // Abbruch zwischen Fachmutation und Quittung (§28/§3): NIE still erneut ausführen.
+            // Operation-spezifische Wiederaufnahme – ist die Wirkung nachweislich vorhanden,
+            // wird sie als bereits übernommen quittiert; sonst normale Ausführung.
+            const recovered = await this.recover(
+              mutation.type,
+              mutation.payload,
+              mutation.baseVersion,
+              mutation.contextId,
+              mutation.clientMutationId,
+              now,
+            );
+            if (recovered !== null) {
+              return this.finish(context, input, now, {
+                status: 'applied',
+                code: null,
+                message: RECOVERED_MESSAGE,
+                resultRef: recovered,
+                details: null,
+                deduplicated: true,
+                persist: true,
+              });
+            }
           }
-          // conflict/rejected: erneute Bewertung (Order §64).
+          // conflict/rejected (oder nicht nachweisbar angewendet): erneute Bewertung (Order §64).
         }
 
         // Phase 1: Quittung VOR der Fachmutation reservieren – ein Abbruch danach
@@ -223,6 +352,7 @@ export class OfflineSyncService {
             code: null,
             message: null,
             resultRef,
+            details: null,
             deduplicated: false,
             persist: true,
           });
@@ -233,6 +363,7 @@ export class OfflineSyncService {
               code: error.code,
               message: error.message,
               resultRef: null,
+              details: error.details ?? defaultDetails(mutation.type, error.code, error.message),
               deduplicated: false,
               persist: true,
             });
@@ -243,6 +374,7 @@ export class OfflineSyncService {
               code: error.code,
               message: error.message,
               resultRef: null,
+              details: error.details ?? defaultDetails(mutation.type, error.code, error.message),
               deduplicated: false,
               persist: true,
             });
@@ -250,11 +382,14 @@ export class OfflineSyncService {
           if (error instanceof AuthError) {
             // CONFLICT/NOT_FOUND: Serverzustand hat sich geändert (§32); FORBIDDEN/VALIDATION: dauerhaft.
             const conflict = error.code === 'CONFLICT' || error.code === 'NOT_FOUND';
+            const code = conflict ? 'SERVER_STATE_CHANGED' : error.code;
+            const message = neutralMessage(error);
             return this.finish(context, input, now, {
               status: conflict ? 'conflict' : 'rejected',
-              code: conflict ? 'SERVER_STATE_CHANGED' : error.code,
-              message: neutralMessage(error),
+              code,
+              message,
               resultRef: null,
+              details: defaultDetails(mutation.type, code, message),
               deduplicated: false,
               persist: true,
             });
@@ -316,6 +451,7 @@ export class OfflineSyncService {
       code: string | null;
       message: string | null;
       resultRef: ResultRef | null;
+      details: ConflictDetails | null;
       deduplicated: boolean;
       persist: boolean;
     },
@@ -338,6 +474,7 @@ export class OfflineSyncService {
       resultRef: outcome.resultRef,
       code: outcome.code,
       message: outcome.message,
+      details: outcome.status === 'applied' ? null : outcome.details,
       deduplicated: outcome.deduplicated,
       processedAt: now.toISOString(),
       serverTime: now.toISOString(),
@@ -401,7 +538,17 @@ export class OfflineSyncService {
         captured > now.getTime() + CLOCK_TOLERANCE_MS ||
         captured < now.getTime() - MAX_OFFLINE_AGE_MS
       ) {
-        throw new SyncConflict('CLOCK_IMPLAUSIBLE');
+        const server =
+          skew > CLOCK_TOLERANCE_MS
+            ? `Gerätezeit weicht um ca. ${Math.round(skew / 60_000)} Minuten ab.`
+            : 'Die erfasste Zeit liegt in der Zukunft oder zu weit zurück.';
+        throw new SyncConflict('CLOCK_IMPLAUSIBLE', undefined, {
+          offline: Number.isFinite(captured)
+            ? `Offline erfasst: ${MUTATION_LABELS[type]} um ${berlinTimeLabel(new Date(captured))}`
+            : offlineLabel(type),
+          server,
+          action: 'Gerätezeit prüfen und erneut synchronisieren.',
+        });
       }
     }
 
@@ -446,7 +593,42 @@ export class OfflineSyncService {
       base,
       media,
       now,
+      mutation.clientMutationId,
     );
+  }
+
+  /** Maschinencode für Konfliktdetails (§4: Maschinencodes sind erlaubt, keine Kundendaten). */
+  private async machineCodeOf(machineId: string | null): Promise<string> {
+    if (machineId === null) return 'keine Maschine';
+    const rows = await this.deps.db
+      .select({ code: machines.machineCode })
+      .from(machines)
+      .where(eq(machines.id, machineId));
+    return rows[0]?.code ?? 'unbekannte Maschine';
+  }
+
+  /** MACHINE_REASSIGNED mit konkreter Differenz: offline erwartete vs. aktuelle Maschine. */
+  private async machineReassigned(
+    offline: string,
+    currentMachineCode: string | null,
+    subject = 'Der Slot',
+  ): Promise<SyncConflict> {
+    return new SyncConflict('MACHINE_REASSIGNED', undefined, {
+      offline,
+      server:
+        currentMachineCode === null
+          ? `${subject} ist inzwischen keiner Maschine mehr zugeordnet.`
+          : `${subject} ist inzwischen Maschine ${currentMachineCode} zugeordnet.`,
+      action: 'Serverstand laden und Zuweisung prüfen.',
+    });
+  }
+
+  /** Problemlage einer Maschine als neutrale Labels (keine Vorgangsnummern anderer Kunden). */
+  private situationLabels(evaluation: MachineEvaluation): string {
+    const labels = [
+      ...new Set(evaluation.problems.filter((p) => !p.warningOnly).map((p) => p.label)),
+    ];
+    return labels.length === 0 ? 'keine Einschränkung mehr' : labels.join(', ');
   }
 
   /** Medien dekodieren und Hash prüfen (§75): Mismatch ⇒ rejected, nie still übernommen. */
@@ -520,6 +702,7 @@ export class OfflineSyncService {
     base: unknown,
     media: Map<string, DecodedMedia>,
     now: Date,
+    operationId: string,
   ): Promise<ResultRef> {
     const bookingRows = await this.deps.db
       .select()
@@ -552,21 +735,54 @@ export class OfflineSyncService {
         base,
         media,
         now,
+        operationId,
       );
     }
-    return this.returnMutation(actorId, effective, type, bookingId, payload, base, media, now);
+    return this.returnMutation(
+      actorId,
+      effective,
+      type,
+      bookingId,
+      payload,
+      base,
+      media,
+      now,
+      operationId,
+    );
   }
 
-  /** Basisstand des Termins (§33): geänderte Version ⇒ APPOINTMENT_CHANGED. */
+  /** Basisstand des Termins (§33): geänderte Version ⇒ APPOINTMENT_CHANGED mit neuer Zeit. */
   private async assertAppointmentUnchanged(base: BookingBase): Promise<void> {
     if (base.appointmentId === null) return;
     const rows = await this.deps.db
-      .select({ version: appointments.version, status: appointments.status })
+      .select({
+        version: appointments.version,
+        status: appointments.status,
+        kind: appointments.kind,
+        startAt: appointments.startAt,
+      })
       .from(appointments)
       .where(eq(appointments.id, base.appointmentId));
     const row = rows[0];
     if (row === undefined || row.version !== base.appointmentVersion) {
-      throw new SyncConflict('APPOINTMENT_CHANGED');
+      // Der Client kennt die alte Terminzeit aus seinem Snapshot – `offline` bleibt null (§4).
+      let server: string;
+      if (row === undefined) {
+        server = 'Der Termin existiert nicht mehr.';
+      } else {
+        const kind = row.kind === 'return' ? 'Rückgabe' : 'Ausgabe';
+        server =
+          row.status === 'cancelled'
+            ? `${kind}-Termin wurde inzwischen abgesagt.`
+            : row.startAt === null
+              ? `${kind} inzwischen ohne feste Zeit geplant.`
+              : `${kind} inzwischen auf ${berlinTimeLabel(row.startAt)} geändert.`;
+      }
+      throw new SyncConflict('APPOINTMENT_CHANGED', undefined, {
+        offline: null,
+        server,
+        action: 'Serverstand laden und Termin prüfen.',
+      });
     }
   }
 
@@ -580,29 +796,50 @@ export class OfflineSyncService {
     base: unknown,
     media: Map<string, DecodedMedia>,
     now: Date,
+    operationId: string,
   ): Promise<ResultRef> {
     const slotOf = (assignmentId: string) => {
       const slot = detail.slots.find((s) => s.id === assignmentId);
       if (slot === undefined) throw new SyncRejected('VALIDATION', 'Zuordnung nicht gefunden.');
       return slot;
     };
-    const assertSlotMachine = (assignmentId: string, machineId: string) => {
+    const assertSlotMachine = async (assignmentId: string, machineId: string) => {
       const slot = slotOf(assignmentId);
-      if ((slot.machine?.id ?? null) !== machineId) throw new SyncConflict('MACHINE_REASSIGNED');
+      if ((slot.machine?.id ?? null) !== machineId) {
+        throw await this.machineReassigned(
+          `Offline-Grundlage: Maschine ${await this.machineCodeOf(machineId)}`,
+          slot.machine?.machineCode ?? null,
+        );
+      }
       return slot;
     };
+    const slotTaken = (status: string): SyncConflict =>
+      new SyncConflict('SERVER_STATE_CHANGED', undefined, {
+        offline: offlineLabel(type),
+        server:
+          status === 'issued'
+            ? 'Die Maschine dieses Slots ist inzwischen ausgegeben.'
+            : 'Die Maschine dieses Slots ist inzwischen zurückgegeben.',
+        action: ACTION_LOAD_SERVER_STATE,
+      });
 
     switch (type) {
       case 'handover.assign': {
         const p = payload as MutationPayload<'handover.assign'>;
         const b = base as MutationBase<'handover.assign'>;
         const slot = slotOf(p.assignmentId);
+        const chosenCode = await this.machineCodeOf(p.machineId);
+        const offline =
+          p.override === null
+            ? `Offline gewählt: ${chosenCode}`
+            : `Offline gewählt: ${chosenCode} (mit Bestätigung der Problemlage)`;
         if ((slot.machine?.id ?? null) !== b.expectedMachineId) {
-          throw new SyncConflict('MACHINE_REASSIGNED');
+          throw await this.machineReassigned(
+            `${offline}; Grundlage: ${await this.machineCodeOf(b.expectedMachineId)}`,
+            slot.machine?.machineCode ?? null,
+          );
         }
-        if (slot.status === 'issued' || slot.status === 'returned') {
-          throw new SyncConflict('SERVER_STATE_CHANGED');
-        }
+        if (slot.status === 'issued' || slot.status === 'returned') throw slotTaken(slot.status);
         if (slot.machine?.id === p.machineId)
           return { assignmentId: slot.id, machineId: p.machineId };
         const assignment = await this.deps.assignments.assignmentById(p.assignmentId);
@@ -612,15 +849,28 @@ export class OfflineSyncService {
           { ...assignment, rentalFrom: interval.from, rentalTo: interval.to },
           now,
         );
-        if (evaluation.hardBlocked) throw new SyncConflict('MACHINE_UNAVAILABLE');
-        if (
-          p.situationFingerprint !== null &&
-          evaluation.situationFingerprint !== p.situationFingerprint
-        ) {
-          throw new SyncConflict('SITUATION_CHANGED');
+        if (evaluation.hardBlocked) {
+          const code = evaluation.machineCode;
+          // Harte Blocker sind ausschließlich „an anderen Vorgang ausgegeben“ und „vermietet“.
+          const server = evaluation.problems.some((pr) => pr.code === 'issued_elsewhere')
+            ? `Maschine ${code} ist inzwischen an einen anderen Vorgang ausgegeben.`
+            : `Maschine ${code} ist inzwischen vermietet (Status „${MACHINE_STATUS_LABELS.rented}“).`;
+          throw new SyncConflict('MACHINE_UNAVAILABLE', undefined, {
+            offline,
+            server,
+            action: 'Serverstand laden und eine andere Maschine wählen.',
+          });
         }
-        if (evaluation.overrideRequired && p.override === null) {
-          throw new SyncConflict('SITUATION_CHANGED');
+        if (
+          (p.situationFingerprint !== null &&
+            evaluation.situationFingerprint !== p.situationFingerprint) ||
+          (evaluation.overrideRequired && p.override === null)
+        ) {
+          throw new SyncConflict('SITUATION_CHANGED', undefined, {
+            offline,
+            server: `Die Problemlage von ${evaluation.machineCode} hat sich geändert: ${this.situationLabels(evaluation)}.`,
+            action: 'Serverstand laden und Problemlage erneut prüfen.',
+          });
         }
         const view = await this.deps.assignments.assign(
           actorId,
@@ -637,24 +887,25 @@ export class OfflineSyncService {
         const b = base as MutationBase<'handover.prepare'>;
         const slot = slotOf(p.assignmentId);
         if ((slot.machine?.id ?? null) !== b.expectedMachineId || slot.machine === null) {
-          throw new SyncConflict('MACHINE_REASSIGNED');
+          throw await this.machineReassigned(
+            `Offline-Grundlage: Maschine ${await this.machineCodeOf(b.expectedMachineId)}`,
+            slot.machine?.machineCode ?? null,
+          );
         }
         if (slot.status === 'prepared') return { assignmentId: slot.id };
-        if (slot.status === 'issued' || slot.status === 'returned') {
-          throw new SyncConflict('SERVER_STATE_CHANGED');
-        }
+        if (slot.status === 'issued' || slot.status === 'returned') throw slotTaken(slot.status);
         await this.deps.assignments.prepare(actorId, p.assignmentId, now);
         return { assignmentId: slot.id };
       }
       case 'handover.check_machine': {
         const p = payload as MutationPayload<'handover.check_machine'>;
-        assertSlotMachine(p.assignmentId, p.machineId);
+        await assertSlotMachine(p.assignmentId, p.machineId);
         await this.deps.handover.checkMachine(actorId, bookingId, p.assignmentId, now);
         return { assignmentId: p.assignmentId };
       }
       case 'handover.photo': {
         const p = payload as MutationPayload<'handover.photo'>;
-        assertSlotMachine(p.assignmentId, p.machineId);
+        await assertSlotMachine(p.assignmentId, p.machineId);
         const file = this.mediaFor(media, p.mediaId, 'handover_photo');
         // Foto-Dedup per SHA-256 (§28): dieselben Bytes erzeugen kein zweites Fachobjekt.
         const dup = await this.deps.db
@@ -674,16 +925,27 @@ export class OfflineSyncService {
           p.assignmentId,
           { bytes: file.bytes, mimeType: file.mimeType },
           now,
+          operationId,
         );
         return { photoId };
       }
       case 'handover.item_quantity': {
         const p = payload as MutationPayload<'handover.item_quantity'>;
         const item = detail.deliveryNote.items.find((i) => i.id === p.itemId);
-        if (item === undefined) throw new SyncConflict('SERVER_STATE_CHANGED');
+        if (item === undefined) {
+          throw new SyncConflict('SERVER_STATE_CHANGED', undefined, {
+            offline: `Offline erfasst: Menge ${p.actualQuantity}`,
+            server: 'Die Lieferscheinposition existiert serverseitig nicht mehr.',
+            action: ACTION_LOAD_SERVER_STATE,
+          });
+        }
         if (item.actualQuantity === p.actualQuantity) return { itemId: item.id };
         if (item.actualQuantity !== p.expectedPreviousQuantity) {
-          throw new SyncConflict('QUANTITY_CHANGED');
+          throw new SyncConflict('QUANTITY_CHANGED', undefined, {
+            offline: `Offline erfasst: Menge ${p.actualQuantity} (Grundlage: Menge ${p.expectedPreviousQuantity})`,
+            server: `Serverseitig inzwischen Menge ${item.actualQuantity}.`,
+            action: 'Menge am Serverstand prüfen und erneut erfassen.',
+          });
         }
         await this.deps.handover.updateItemQuantity(bookingId, p.itemId, p.actualQuantity, now);
         return { itemId: item.id };
@@ -701,7 +963,7 @@ export class OfflineSyncService {
         const p = payload as MutationPayload<'handover.signature'>;
         const file = this.mediaFor(media, p.mediaId, 'handover_signature');
         // Mitarbeiter-Identität kommt ausschließlich aus der Session (§21).
-        await this.deps.handover.sign(actorId, bookingId, p.role, file.bytes, now);
+        await this.deps.handover.sign(actorId, bookingId, p.role, file.bytes, now, operationId);
         return { bookingId, role: p.role };
       }
       case 'handover.finalize': {
@@ -710,13 +972,21 @@ export class OfflineSyncService {
         for (const expected of p.expectedSlots) {
           const slot = slotOf(expected.assignmentId);
           if ((slot.machine?.id ?? null) !== expected.machineId) {
-            throw new SyncConflict('MACHINE_REASSIGNED');
+            throw await this.machineReassigned(
+              `Offline-Grundlage: Maschine ${await this.machineCodeOf(expected.machineId)}`,
+              slot.machine?.machineCode ?? null,
+            );
           }
         }
         if (detail.blockers.length > 0) {
           throw new SyncConflict(
             'SERVER_STATE_CHANGED',
             'Der Serverstand erfüllt die Vorbedingungen des Abschlusses nicht mehr – bitte prüfen.',
+            {
+              offline: offlineLabel(type),
+              server: `Der Serverstand erfüllt die Vorbedingungen des Abschlusses nicht mehr (${detail.blockers.length} offen).`,
+              action: 'Serverstand laden und fehlende Schritte nachholen.',
+            },
           );
         }
         const view = await this.deps.handover.finalize(
@@ -745,6 +1015,7 @@ export class OfflineSyncService {
     base: unknown,
     media: Map<string, DecodedMedia>,
     now: Date,
+    operationId: string,
   ): Promise<ResultRef> {
     const existing = await this.deps.returns.returnFor(bookingId);
     if (type === 'return.start') {
@@ -753,14 +1024,26 @@ export class OfflineSyncService {
       return { returnId: created.id };
     }
     // Alle weiteren Rückgabe-Mutationen setzen die (offline zuerst erfasste) Rückgabe voraus.
-    if (existing === null) throw new SyncConflict('DEPENDENCY_NOT_APPLIED');
+    if (existing === null) {
+      throw new SyncConflict('DEPENDENCY_NOT_APPLIED', undefined, {
+        offline: offlineLabel(type),
+        server: 'Die Rückgabe wurde serverseitig noch nicht begonnen.',
+        action: 'Zuerst „Rückgabe begonnen“ übertragen bzw. klären.',
+      });
+    }
     const detail: ReturnDetailView = await this.deps.returns.detail(bookingId, now);
     if (detail.return.status === 'finalized') throw new SyncConflict('ALREADY_FINALIZED');
-    const machineOf = (assignmentId: string, machineId: string) => {
+    const machineOf = async (assignmentId: string, machineId: string) => {
       const rm = detail.machines.find((m) => m.assignmentId === assignmentId);
       if (rm === undefined)
         throw new SyncRejected('VALIDATION', 'Rückgabeabschnitt nicht gefunden.');
-      if (rm.machineId !== machineId) throw new SyncConflict('MACHINE_REASSIGNED');
+      if (rm.machineId !== machineId) {
+        throw await this.machineReassigned(
+          `Offline-Grundlage: Maschine ${await this.machineCodeOf(machineId)}`,
+          rm.machineCode,
+          'Der Rückgabeabschnitt',
+        );
+      }
       return rm;
     };
 
@@ -777,14 +1060,14 @@ export class OfflineSyncService {
       }
       case 'return.accessory': {
         const p = payload as MutationPayload<'return.accessory'>;
-        const rm = machineOf(p.assignmentId, p.machineId);
+        const rm = await machineOf(p.assignmentId, p.machineId);
         if (rm.accessoryComplete === true) return { returnMachineId: rm.id };
         await this.deps.returns.confirmAccessoriesComplete(actorId, bookingId, rm.id, now);
         return { returnMachineId: rm.id };
       }
       case 'return.missing_item': {
         const p = payload as MutationPayload<'return.missing_item'>;
-        const rm = machineOf(p.assignmentId, p.machineId);
+        const rm = await machineOf(p.assignmentId, p.machineId);
         const { caseId } = await this.deps.returns.addMissingCase(
           actorId,
           bookingId,
@@ -795,12 +1078,13 @@ export class OfflineSyncService {
             description: p.description,
           },
           now,
+          operationId,
         );
         return { caseId };
       }
       case 'return.cleanliness': {
         const p = payload as MutationPayload<'return.cleanliness'>;
-        const rm = machineOf(p.assignmentId, p.machineId);
+        const rm = await machineOf(p.assignmentId, p.machineId);
         await this.deps.returns.checkCleanliness(
           actorId,
           effective,
@@ -817,7 +1101,7 @@ export class OfflineSyncService {
       }
       case 'return.cleanup_photo': {
         const p = payload as MutationPayload<'return.cleanup_photo'>;
-        const rm = machineOf(p.assignmentId, p.machineId);
+        const rm = await machineOf(p.assignmentId, p.machineId);
         const file = this.mediaFor(media, p.mediaId, 'return_cleanup_photo');
         const mimeType = this.embeddable(file);
         const dup = await this.deps.db
@@ -833,15 +1117,27 @@ export class OfflineSyncService {
           rm.id,
           { bytes: file.bytes, mimeType },
           now,
+          operationId,
         );
         return { photoId };
       }
       case 'return.item_quantity': {
         const p = payload as MutationPayload<'return.item_quantity'>;
         const item = detail.items.find((i) => i.deliveryNoteItemId === p.deliveryNoteItemId);
-        if (item === undefined) throw new SyncConflict('SERVER_STATE_CHANGED');
+        const offline = `Offline erfasst: ${p.returnedUnopenedQuantity} ungeöffnet zurück (Grundlage: ${p.expectedIssuedQuantity} ausgegeben)`;
+        if (item === undefined) {
+          throw new SyncConflict('SERVER_STATE_CHANGED', undefined, {
+            offline,
+            server: 'Die Kommissionsposition existiert serverseitig nicht mehr.',
+            action: ACTION_LOAD_SERVER_STATE,
+          });
+        }
         if (item.issuedQuantity !== p.expectedIssuedQuantity) {
-          throw new SyncConflict('QUANTITY_CHANGED');
+          throw new SyncConflict('QUANTITY_CHANGED', undefined, {
+            offline,
+            server: `Serverseitig inzwischen ${item.issuedQuantity} ausgegeben.`,
+            action: 'Menge am Serverstand prüfen und erneut erfassen.',
+          });
         }
         if (p.returnedUnopenedQuantity > item.issuedQuantity) {
           throw new SyncRejected(
@@ -862,7 +1158,7 @@ export class OfflineSyncService {
       }
       case 'return.damage': {
         const p = payload as MutationPayload<'return.damage'>;
-        const rm = machineOf(p.assignmentId, p.machineId);
+        const rm = await machineOf(p.assignmentId, p.machineId);
         const { damageId } = await this.deps.returns.addDamage(
           actorId,
           bookingId,
@@ -880,6 +1176,7 @@ export class OfflineSyncService {
             })),
           },
           now,
+          operationId,
         );
         return { damageId };
       }
@@ -898,13 +1195,23 @@ export class OfflineSyncService {
             receipt.operationType !== 'return.damage' ||
             typeof ref?.damageId !== 'string'
           ) {
-            throw new SyncConflict('DEPENDENCY_NOT_APPLIED');
+            throw new SyncConflict('DEPENDENCY_NOT_APPLIED', undefined, {
+              offline: offlineLabel(type),
+              server: 'Der zugehörige Schaden wurde serverseitig nicht übernommen.',
+              action: 'Zuerst die Schadenserfassung klären.',
+            });
           }
           damageId = ref.damageId;
         }
         if (damageId === null) throw new SyncRejected('VALIDATION', 'Schadensreferenz fehlt.');
         const damage = detail.machines.flatMap((m) => m.damages).find((d) => d.id === damageId);
-        if (damage === undefined) throw new SyncConflict('SERVER_STATE_CHANGED');
+        if (damage === undefined) {
+          throw new SyncConflict('SERVER_STATE_CHANGED', undefined, {
+            offline: offlineLabel(type),
+            server: 'Der zugehörige Schaden existiert in dieser Rückgabe nicht mehr.',
+            action: ACTION_LOAD_SERVER_STATE,
+          });
+        }
         const file = this.mediaFor(media, p.mediaId, 'return_damage_photo');
         const mimeType = this.embeddable(file);
         const dup = await this.deps.db
@@ -917,6 +1224,7 @@ export class OfflineSyncService {
           damageId,
           { bytes: file.bytes, mimeType },
           now,
+          operationId,
         );
         return { damageId, photoId };
       }
@@ -924,7 +1232,7 @@ export class OfflineSyncService {
         const p = payload as MutationPayload<'return.signature'>;
         const file = this.mediaFor(media, p.mediaId, 'return_signature');
         // Mitarbeiter-Identität kommt ausschließlich aus der Session (§21).
-        await this.deps.returns.sign(actorId, bookingId, p.role, file.bytes, now);
+        await this.deps.returns.sign(actorId, bookingId, p.role, file.bytes, now, operationId);
         return { returnId: existing.id, role: p.role };
       }
       case 'return.actual_time': {
@@ -941,14 +1249,23 @@ export class OfflineSyncService {
         const p = payload as MutationPayload<'return.finalize'>;
         await this.assertAppointmentUnchanged(base as BookingBase);
         if (p.expectedMachines.length !== detail.machines.length) {
-          throw new SyncConflict('SERVER_STATE_CHANGED');
+          throw new SyncConflict('SERVER_STATE_CHANGED', undefined, {
+            offline: `Offline erfasst: Rückgabe mit ${p.expectedMachines.length} Maschine(n)`,
+            server: `Die Rückgabe umfasst serverseitig ${detail.machines.length} Maschine(n).`,
+            action: ACTION_LOAD_SERVER_STATE,
+          });
         }
         for (const expected of p.expectedMachines)
-          machineOf(expected.assignmentId, expected.machineId);
+          await machineOf(expected.assignmentId, expected.machineId);
         if (detail.blockers.length > 0) {
           throw new SyncConflict(
             'SERVER_STATE_CHANGED',
             'Der Serverstand erfüllt die Vorbedingungen des Abschlusses nicht mehr – bitte prüfen.',
+            {
+              offline: offlineLabel(type),
+              server: `Der Serverstand erfüllt die Vorbedingungen des Abschlusses nicht mehr (${detail.blockers.length} offen).`,
+              action: 'Serverstand laden und fehlende Schritte nachholen.',
+            },
           );
         }
         // Tatsächliche Rückgabezeit = Erfassungszeit am Gerät (plausibilisiert), sofern
@@ -973,6 +1290,275 @@ export class OfflineSyncService {
     }
   }
 
+  // ── Wiederaufnahme nach Abbruch (Order-Finalisierung §3) ─────────────────
+
+  /**
+   * Prüft operation-spezifisch, ob die Wirkung einer Mutation mit veralteter
+   * `processing`-Quittung bereits existiert. Insert-Typen über die am Fachobjekt
+   * gespeicherte `client_mutation_id`, Zustandsänderungen über den Zielzustand,
+   * Finalisierungen/Reinigungsabschluss zusätzlich über Akteur und Zeitpunkt nach
+   * der Reservierung (ein Abschluss durch ein ANDERES Gerät zählt nicht als
+   * Wirkung dieser Mutation). Liefert den ResultRef wie bei Erfolg oder null.
+   * Der Basisstand ist hier bewusst unerheblich: maßgeblich ist, ob genau diese
+   * Mutation gewirkt hat – nicht, ob sie heute noch anwendbar wäre.
+   */
+  private async recover(
+    type: OfflineMutationType,
+    payload: unknown,
+    base: string | null,
+    contextId: string,
+    clientMutationId: string,
+    now: Date,
+  ): Promise<ResultRef | null> {
+    void base;
+    const parsed = MUTATION_PAYLOAD_SCHEMAS[type].safeParse(payload);
+    if (!parsed.success) return null;
+    const receipt = await this.receipt(clientMutationId);
+    if (receipt === null) return null;
+    const reservedAt = receipt.processedAt;
+    const actorId = receipt.staffUserId;
+    const p = parsed.data;
+    const byMutation = <T extends { id: string }>(rows: T[]): T | null => rows[0] ?? null;
+
+    try {
+      if (type === 'machine.clean_complete') {
+        const rows = await this.deps.db.select().from(machines).where(eq(machines.id, contextId));
+        const machine = rows[0];
+        if (machine === undefined) return null;
+        const completedAfterReservation =
+          machine.cleanedAt !== null && machine.cleanedAt.getTime() >= reservedAt.getTime();
+        if (
+          machine.status === 'ready' &&
+          completedAfterReservation &&
+          machine.cleanedBy === actorId
+        ) {
+          return { machineId: machine.id, status: machine.status };
+        }
+        return null;
+      }
+
+      if (type.startsWith('handover.')) {
+        const handoverRows = await this.deps.db
+          .select()
+          .from(handovers)
+          .where(eq(handovers.bookingId, contextId));
+        const handover = handoverRows[0];
+        if (handover === undefined) return null;
+        switch (type) {
+          case 'handover.photo': {
+            const row = byMutation(
+              await this.deps.db
+                .select({ id: handoverPhotos.id })
+                .from(handoverPhotos)
+                .where(eq(handoverPhotos.clientMutationId, clientMutationId)),
+            );
+            return row === null ? null : { photoId: row.id };
+          }
+          case 'handover.signature': {
+            const sp = p as MutationPayload<'handover.signature'>;
+            const row = byMutation(
+              await this.deps.db
+                .select({ id: handoverSignatures.id })
+                .from(handoverSignatures)
+                .where(eq(handoverSignatures.clientMutationId, clientMutationId)),
+            );
+            return row === null ? null : { bookingId: contextId, role: sp.role };
+          }
+          case 'handover.finalize': {
+            if (
+              handover.status !== 'finalized' ||
+              handover.finalizedBy !== actorId ||
+              handover.finalizedAt === null ||
+              handover.finalizedAt.getTime() < reservedAt.getTime()
+            ) {
+              return null;
+            }
+            const ref: ResultRef = { bookingId: contextId, handoverId: handover.id };
+            if (handover.protocolDocumentId !== null) {
+              ref.protocolDocumentId = handover.protocolDocumentId;
+            }
+            return ref;
+          }
+          default:
+            break;
+        }
+        const detail = await this.deps.handover.detail(contextId, now);
+        switch (type) {
+          case 'handover.assign': {
+            const ap = p as MutationPayload<'handover.assign'>;
+            const slot = detail.slots.find((s) => s.id === ap.assignmentId);
+            return slot?.machine?.id === ap.machineId
+              ? { assignmentId: slot.id, machineId: ap.machineId }
+              : null;
+          }
+          case 'handover.prepare': {
+            const pp = p as MutationPayload<'handover.prepare'>;
+            const slot = detail.slots.find((s) => s.id === pp.assignmentId);
+            const prepared =
+              slot !== undefined &&
+              slot.machine !== null &&
+              (slot.status === 'prepared' ||
+                slot.status === 'issued' ||
+                slot.status === 'returned');
+            return prepared ? { assignmentId: slot.id } : null;
+          }
+          case 'handover.check_machine': {
+            const cp = p as MutationPayload<'handover.check_machine'>;
+            const entry = detail.machines.find((m) => m.assignmentId === cp.assignmentId);
+            return entry !== undefined && entry.checked && entry.machineId === cp.machineId
+              ? { assignmentId: cp.assignmentId }
+              : null;
+          }
+          case 'handover.item_quantity': {
+            const qp = p as MutationPayload<'handover.item_quantity'>;
+            const item = detail.deliveryNote.items.find((i) => i.id === qp.itemId);
+            return item !== undefined && item.actualQuantity === qp.actualQuantity
+              ? { itemId: item.id }
+              : null;
+          }
+          case 'handover.recipient': {
+            const rp = p as MutationPayload<'handover.recipient'>;
+            if (detail.handover.recipientKind !== rp.kind) return null;
+            if (rp.kind === 'other') {
+              const name = (rp.name ?? '').trim();
+              const phone = (rp.phone ?? '').trim() === '' ? null : (rp.phone ?? '').trim();
+              if (detail.handover.recipientName !== name) return null;
+              if ((detail.handover.recipientPhone ?? null) !== phone) return null;
+            }
+            return { bookingId: contextId };
+          }
+          default:
+            return null;
+        }
+      }
+
+      // Rückgabe-Mutationen
+      const returnRows = await this.deps.db
+        .select()
+        .from(rentalReturns)
+        .where(eq(rentalReturns.bookingId, contextId));
+      const ret = returnRows[0];
+      if (ret === undefined) return null;
+      switch (type) {
+        case 'return.start':
+          return { returnId: ret.id };
+        case 'return.missing_item': {
+          const row = byMutation(
+            await this.deps.db
+              .select({ id: missingAccessoryCases.id })
+              .from(missingAccessoryCases)
+              .where(eq(missingAccessoryCases.clientMutationId, clientMutationId)),
+          );
+          return row === null ? null : { caseId: row.id };
+        }
+        case 'return.cleanup_photo': {
+          const row = byMutation(
+            await this.deps.db
+              .select({ id: returnPhotos.id })
+              .from(returnPhotos)
+              .where(eq(returnPhotos.clientMutationId, clientMutationId)),
+          );
+          return row === null ? null : { photoId: row.id };
+        }
+        case 'return.damage': {
+          const row = byMutation(
+            await this.deps.db
+              .select({ id: machineDamages.id })
+              .from(machineDamages)
+              .where(eq(machineDamages.clientMutationId, clientMutationId)),
+          );
+          return row === null ? null : { damageId: row.id };
+        }
+        case 'return.damage_photo': {
+          const rows = await this.deps.db
+            .select({ id: damagePhotos.id, damageId: damagePhotos.damageId })
+            .from(damagePhotos)
+            .where(eq(damagePhotos.clientMutationId, clientMutationId));
+          const row = rows[0];
+          return row === undefined ? null : { damageId: row.damageId, photoId: row.id };
+        }
+        case 'return.signature': {
+          const sp = p as MutationPayload<'return.signature'>;
+          const row = byMutation(
+            await this.deps.db
+              .select({ id: returnSignatures.id })
+              .from(returnSignatures)
+              .where(eq(returnSignatures.clientMutationId, clientMutationId)),
+          );
+          return row === null ? null : { returnId: ret.id, role: sp.role };
+        }
+        case 'return.returner': {
+          const rp = p as MutationPayload<'return.returner'>;
+          if (ret.returnerKind !== rp.kind) return null;
+          if (rp.kind === 'other') {
+            const name = `${(rp.firstName ?? '').trim()} ${(rp.lastName ?? '').trim()}`;
+            if (ret.returnerName !== name || (ret.returnerPhone ?? '') !== (rp.phone ?? '').trim())
+              return null;
+          }
+          return { returnId: ret.id };
+        }
+        case 'return.actual_time': {
+          const tp = p as MutationPayload<'return.actual_time'>;
+          const wanted = new Date(tp.actualReturnAt).getTime();
+          const matches =
+            ret.draftActualReturnAt?.getTime() === wanted ||
+            ret.actualReturnAt?.getTime() === wanted;
+          return matches ? { returnId: ret.id } : null;
+        }
+        case 'return.finalize': {
+          if (
+            ret.status !== 'finalized' ||
+            ret.finalizedBy !== actorId ||
+            ret.finalizedAt === null ||
+            ret.finalizedAt.getTime() < reservedAt.getTime()
+          ) {
+            return null;
+          }
+          const ref: ResultRef = { bookingId: contextId, returnId: ret.id };
+          if (ret.protocolDocumentId !== null) ref.protocolDocumentId = ret.protocolDocumentId;
+          return ref;
+        }
+        default:
+          break;
+      }
+      const detail = await this.deps.returns.detail(contextId, now);
+      switch (type) {
+        case 'return.accessory': {
+          const ap = p as MutationPayload<'return.accessory'>;
+          const rm = detail.machines.find((m) => m.assignmentId === ap.assignmentId);
+          return rm !== undefined && rm.machineId === ap.machineId && rm.accessoryComplete === true
+            ? { returnMachineId: rm.id }
+            : null;
+        }
+        case 'return.cleanliness': {
+          const cp = p as MutationPayload<'return.cleanliness'>;
+          const rm = detail.machines.find((m) => m.assignmentId === cp.assignmentId);
+          const same =
+            rm !== undefined &&
+            rm.machineId === cp.machineId &&
+            rm.cleanlinessCheckedAt !== null &&
+            rm.emptied === cp.emptied &&
+            rm.rinsedTwice === cp.rinsedTwice &&
+            rm.nothingDismantled === cp.nothingDismantled;
+          return same ? { returnMachineId: rm.id } : null;
+        }
+        case 'return.item_quantity': {
+          const qp = p as MutationPayload<'return.item_quantity'>;
+          const item = detail.items.find((i) => i.deliveryNoteItemId === qp.deliveryNoteItemId);
+          return item !== undefined && item.returnedUnopenedQuantity === qp.returnedUnopenedQuantity
+            ? { itemId: item.id }
+            : null;
+        }
+        default:
+          return null;
+      }
+    } catch (error) {
+      // Nicht nachweisbar (z. B. Vorgang nicht mehr lesbar) ⇒ normale Ausführung entscheidet.
+      if (error instanceof AuthError) return null;
+      throw error;
+    }
+  }
+
   // ── Reinigung ────────────────────────────────────────────────────────────
 
   private async cleanComplete(
@@ -983,14 +1569,33 @@ export class OfflineSyncService {
     now: Date,
   ): Promise<ResultRef> {
     const { machine } = await this.deps.machines.byId(machineId);
-    if (machine.status !== 'cleaning') throw new SyncConflict('NOT_IN_CLEANING');
+    const offline =
+      payload.expectedCleaningSince === null
+        ? offlineLabel('machine.clean_complete')
+        : `${offlineLabel('machine.clean_complete')} (Reinigung seit ${berlinTimeLabel(new Date(payload.expectedCleaningSince))})`;
+    if (machine.status !== 'cleaning') {
+      throw new SyncConflict('NOT_IN_CLEANING', undefined, {
+        offline,
+        server: `Maschine ${machine.machineCode} ist inzwischen „${MACHINE_STATUS_LABELS[machine.status]}“.`,
+        action: 'Maschinenstatus prüfen; die Erfassung ist vermutlich überholt.',
+      });
+    }
     const cleaningSince = machine.cleaningSince?.toISOString() ?? null;
     const expected =
       payload.expectedCleaningSince === null
         ? null
         : new Date(payload.expectedCleaningSince).toISOString();
     // Anderer Reinigungsbeginn = anderer Zyklus (§25): kein stilles Überschreiben.
-    if (cleaningSince !== expected) throw new SyncConflict('CLEANING_CYCLE_CHANGED');
+    if (cleaningSince !== expected) {
+      throw new SyncConflict('CLEANING_CYCLE_CHANGED', undefined, {
+        offline,
+        server:
+          machine.cleaningSince === null
+            ? `Maschine ${machine.machineCode} ist inzwischen in einem neuen Reinigungszyklus.`
+            : `Maschine ${machine.machineCode} ist inzwischen in einem neuen Reinigungszyklus (seit ${berlinTimeLabel(machine.cleaningSince)}).`,
+        action: 'Serverstand laden und den aktuellen Reinigungszyklus prüfen.',
+      });
+    }
     // base.machineUpdatedAt ist nur Basisstand-Pflicht (§33); maßgeblich für den
     // Reinigungszyklus ist ausschließlich der Reinigungsbeginn.
     void base;

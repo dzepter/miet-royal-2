@@ -1,6 +1,8 @@
 'use client';
 
 import {
+  LeaseInvalidError,
+  OFFLINE_LEASE_MAX_MS,
   OFFLINE_MIGRATIONS,
   OFFLINE_SCHEMA_VERSION,
   OfflineDb,
@@ -10,6 +12,7 @@ import {
   offlineDbName,
   openOfflineDatabase,
   sha256Hex,
+  type ConflictDetails,
   type ContextKind,
   type LeaseGrant,
   type LeaseState,
@@ -92,12 +95,17 @@ export type AuthorizeOutcome =
 /** Lokale Offline-Entsperrung: nach so vielen Fehlversuchen nur noch online (gestohlenes Gerät). */
 const OFFLINE_UNLOCK_MAX_ATTEMPTS = 5;
 const META_UNLOCK_FAILURES = 'unlock.failures';
-/** Höchste bisher gesehene Zeit (Server oder lokal): eine zurückgestellte Uhr verlängert kein Lease. */
+/**
+ * Monotone Uhr (Phase-8-Finalisierung, präzisierte Regel): `clock.serverMs` ist die
+ * höchste je gesehene Serverzeit, `clock.maxSeenMs` die Untergrenze für `now()`.
+ * Serverzeit aktualisiert beide. Lokale Zeit wird nur übernommen, wenn schon eine
+ * Serverzeit bekannt ist, und höchstens bis `serverMs + 72 h`: eine zurückgestellte
+ * Uhr verlängert kein Lease (Ablauf bleibt erkannt), eine grob vorgehende Uhr sperrt
+ * das Gerät höchstens bis zum Ende der maximalen Lease-Laufzeit – eine neue Online-
+ * Autorisierung (expiresAt = Server-Jetzt + 72 h > maxSeen) öffnet wieder.
+ */
+const META_CLOCK_SERVER = 'clock.serverMs';
 const META_CLOCK_MAX_SEEN = 'clock.maxSeenMs';
-/** Lokale Zeit wird nur als Untergrenze übernommen, wenn sie nicht weiter als eine maximale
- *  Offline-Phase vor der bisherigen Grenze liegt – eine grob vorgehende Uhr sperrt sonst nach
- *  ihrer Korrektur das Gerät bis zum Ablauf der falschen Zeit. */
-const CLOCK_LOCAL_PLAUSIBLE_MS = 72 * 3_600_000 + 15 * 60_000;
 const CONNECTIVITY_INTERVAL_MS = 60_000;
 /** Aktivitätsmeldung an den Service Worker höchstens alle 30 s. */
 const KEY_TOUCH_THROTTLE_MS = 30_000;
@@ -160,6 +168,28 @@ export function fromBase64(value: string): Uint8Array {
   return bytes;
 }
 
+/**
+ * Optional gepinnter Ed25519-Verifikationsschlüssel des Servers (öffentlich, kein
+ * Secret; zur Build-Zeit eingebettet). Ungesetzt gilt der im Lease-Grant gelieferte
+ * Schlüssel – siehe docs/TECH_DECISIONS.md (Client-Lease-Verifikation).
+ */
+function trustedLeaseVerificationKey(): string | null {
+  // Bevorzugt aus der Staff-Server-Umgebung (STAFF_OFFLINE_LEASE_VERIFICATION_KEY → Meta-Tag im
+  // Layout, zur Laufzeit je Umgebung), sonst zur Build-Zeit eingebettet.
+  if (typeof document !== 'undefined') {
+    const meta = document.querySelector('meta[name="mr-offline-lease-key"]');
+    const content = meta?.getAttribute('content')?.trim() ?? '';
+    if (content !== '') return content;
+  }
+  const value = process.env.NEXT_PUBLIC_OFFLINE_LEASE_VERIFICATION_KEY;
+  return typeof value === 'string' && value.trim() !== '' ? value.trim() : null;
+}
+
+/** In staging/production gilt eine Lease nur gegen den hinterlegten Serverschlüssel (fail-closed). */
+function leasePinningRequired(environment: string): boolean {
+  return environment === 'production' || environment === 'staging';
+}
+
 type Listener = (state: OfflineRuntimeState) => void;
 
 export interface LocalMutationRow extends LocalMutation {
@@ -170,6 +200,8 @@ export interface LocalMutationRow extends LocalMutation {
   lastErrorCode: string | null;
   retryCount: number;
   nextAttemptAt: string | null;
+  /** JSON-Basisstand (§33) – Client-Fallback der Konfliktdarstellung (z. B. Termin-ID). */
+  baseVersion: string | null;
 }
 
 export interface ConflictView {
@@ -178,6 +210,14 @@ export interface ConflictView {
   processedAt: string;
   message: string;
   serverState: unknown;
+  /** Fachliche Gegenüberstellung des Servers (§4) – null, wenn nicht geliefert. */
+  details: ConflictDetails | null;
+}
+
+/** Zähler für die Logout-Warnung (§38): offene/zu prüfende Erfassungen und nicht hochgeladene Medien. */
+export interface PendingSummary {
+  mutations: number;
+  media: number;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -198,6 +238,7 @@ export class OfflineRuntime {
   private packageRefresh: Promise<boolean> | null = null;
   private connectivityCheck: Promise<ConnectivityResult> | null = null;
   private clockMaxSeenMs = 0;
+  private clockServerMs = 0;
   private syncRequested = false;
   private state: OfflineRuntimeState = {
     initialized: false,
@@ -297,9 +338,15 @@ export class OfflineRuntime {
       },
       // Monotone Zeit: Lease-Ablauf gegen die höchste je gesehene Zeit prüfen (§103).
       () => new Date(Math.max(Date.now(), this.clockMaxSeenMs)),
+      {
+        trustedVerificationKey: trustedLeaseVerificationKey(),
+        requireTrustedKey: leasePinningRequired(identity.environment),
+      },
     );
     const seen = await this.store.getMeta(META_CLOCK_MAX_SEEN);
+    const server = await this.store.getMeta(META_CLOCK_SERVER);
     this.clockMaxSeenMs = typeof seen === 'number' ? seen : 0;
+    this.clockServerMs = typeof server === 'number' ? server : 0;
     await this.noteClock(Date.now(), 'local');
     this.engine = new SyncEngine(
       this.store,
@@ -471,7 +518,9 @@ export class OfflineRuntime {
       await this.workspace.authorizeOnline(grant, password, {
         allowNewDek: existing === undefined || !(await this.hasPendingWork()),
       });
-    } catch {
+    } catch (error) {
+      // Ungültig signierter/fremder/abgelaufener Lease-Claim (§1): nicht übernommen.
+      if (error instanceof LeaseInvalidError) return { ok: false, reason: 'rejected' };
       // Schlüssel nicht wiederherstellbar (z. B. geändertes Passwort) bei
       // ausstehenden Daten: keine Neuverschlüsselung, Daten bleiben erhalten.
       return { ok: false, reason: 'rekey_refused' };
@@ -501,22 +550,37 @@ export class OfflineRuntime {
     }
   }
 
-  /** Höchste gesehene Zeit festhalten (Serverzeit aus Paket/Status, lokale Uhr). */
+  /**
+   * Monotone Uhr festhalten (siehe META_CLOCK_*): Serverzeit (Lease, Paket, Status)
+   * aktualisiert `serverMs` und `maxSeen`; lokale Zeit hebt `maxSeen` nur bis
+   * `serverMs + 72 h` an und nur, wenn bereits eine Serverzeit bekannt ist.
+   */
   async noteClock(ms: number, source: 'server' | 'local' = 'server'): Promise<void> {
-    if (!Number.isFinite(ms) || ms <= this.clockMaxSeenMs) return;
-    if (
-      source === 'local' &&
-      this.clockMaxSeenMs > 0 &&
-      ms > this.clockMaxSeenMs + CLOCK_LOCAL_PLAUSIBLE_MS
-    )
+    if (!Number.isFinite(ms)) return;
+    const persist = async (key: string, value: number) => {
+      if (this.store === null) return;
+      try {
+        await this.store.setMeta(key, value, new Date().toISOString());
+      } catch {
+        // Meta nicht persistierbar: die In-Memory-Grenze gilt bis zum Neuladen.
+      }
+    };
+    if (source === 'server') {
+      if (ms > this.clockServerMs) {
+        this.clockServerMs = ms;
+        await persist(META_CLOCK_SERVER, ms);
+      }
+      if (ms > this.clockMaxSeenMs) {
+        this.clockMaxSeenMs = ms;
+        await persist(META_CLOCK_MAX_SEEN, ms);
+      }
       return;
-    this.clockMaxSeenMs = ms;
-    if (this.store === null) return;
-    try {
-      await this.store.setMeta(META_CLOCK_MAX_SEEN, ms, new Date().toISOString());
-    } catch {
-      // Meta nicht persistierbar: die In-Memory-Grenze gilt bis zum Neuladen.
     }
+    if (this.clockServerMs <= 0) return;
+    const bounded = Math.min(ms, this.clockServerMs + OFFLINE_LEASE_MAX_MS);
+    if (bounded <= this.clockMaxSeenMs) return;
+    this.clockMaxSeenMs = bounded;
+    await persist(META_CLOCK_MAX_SEEN, bounded);
   }
 
   private async unlockFailures(): Promise<number> {
@@ -567,6 +631,8 @@ export class OfflineRuntime {
   /** Lokale Offline-Entsperrung mit dem Passwort (Wrap A, PBKDF2) – ohne Server (§7). */
   async unlockOffline(password: string): Promise<UnlockResult> {
     if (this.workspace === null) return { ok: false, reason: 'no_workspace' } as UnlockResult;
+    // Gerätezeit als monotone Untergrenze festhalten (gedeckelt auf Serverzeit + 72 h).
+    await this.noteClock(Date.now(), 'local');
     const failures = await this.unlockFailures();
     if (failures >= OFFLINE_UNLOCK_MAX_ATTEMPTS) {
       return { ok: false, reason: 'too_many_attempts' };
@@ -634,6 +700,21 @@ export class OfflineRuntime {
         counts.failed_permanent >
       0
     );
+  }
+
+  /** Logout-/Verwerfen-Dialog: Erfassungen (pending + Konflikte) und Fotos/Unterschriften, die noch nicht hochgeladen sind. */
+  async pendingSummary(): Promise<PendingSummary> {
+    if (this.store === null) return { mutations: 0, media: 0 };
+    const counts = await this.store.countByStatus();
+    return {
+      mutations:
+        counts.pending +
+        counts.syncing +
+        counts.failed_retryable +
+        counts.conflict +
+        counts.failed_permanent,
+      media: await this.store.countPendingMedia(),
+    };
   }
 
   async refreshCounts(): Promise<void> {
@@ -985,6 +1066,7 @@ export class OfflineRuntime {
         lastErrorCode: row.lastErrorCode,
         retryCount: row.retryCount,
         nextAttemptAt: row.nextAttemptAt,
+        baseVersion: row.baseVersion,
       }))
       .sort((a, b) => a.seq - b.seq);
   }
@@ -1000,6 +1082,7 @@ export class OfflineRuntime {
       processedAt: record.processedAt,
       message: record.payload.message ?? '',
       serverState: record.payload.serverState ?? null,
+      details: record.payload.details ?? null,
     };
   }
 

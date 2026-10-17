@@ -4,7 +4,9 @@ import Link from 'next/link';
 import { useEffect, useRef, useState } from 'react';
 import { AuthGuard } from '../../components/auth-guard';
 import { apiFetch } from '../../lib/api';
+import { useOffline } from '../../lib/offline/provider';
 import { formatEventDate, STATUS_BADGE_CLASS, STATUS_LABELS, type MainStatus } from '../../lib/crm';
+import { MACHINE_STATUS_LABELS } from '../../lib/warehouse';
 
 interface SearchResponse {
   customers: { id: string; displayName: string; email: string | null; phone: string | null }[];
@@ -16,6 +18,10 @@ interface SearchResponse {
     customerDisplayName: string;
   }[];
   canViewCompleted: boolean;
+  /** Offline-Router (Finalisierung §6): Maschinentreffer aus dem lokalen Arbeitspaket. */
+  machines?: { id: string; machineCode: string; status: string }[];
+  /** true = Suche lief nur im lokal geladenen Arbeitspaket (kein Serverkontakt). */
+  offline?: boolean;
 }
 
 function SearchView() {
@@ -23,6 +29,8 @@ function SearchView() {
   const [includeCompleted, setIncludeCompleted] = useState(false);
   const [results, setResults] = useState<SearchResponse | null>(null);
   const [searching, setSearching] = useState(false);
+  const offline = useOffline();
+  const offlineNow = offline?.state.connectivity === 'offline';
   const [error, setError] = useState<string | null>(null);
   const debounceRef = useRef<number | null>(null);
 
@@ -52,8 +60,12 @@ function SearchView() {
     };
   }, [query, includeCompleted]);
 
+  const machines = results?.machines ?? [];
   const empty =
-    results !== null && results.customers.length === 0 && results.processes.length === 0;
+    results !== null &&
+    results.customers.length === 0 &&
+    results.processes.length === 0 &&
+    machines.length === 0;
 
   return (
     <main className="page">
@@ -83,6 +95,11 @@ function SearchView() {
         )}
       </div>
 
+      {(offlineNow || results?.offline === true) && (
+        <p className="offline-banner" data-testid="search-offline-hint">
+          Offline: Suche nur im geladenen Arbeitspaket
+        </p>
+      )}
       {query.trim().length > 0 && query.trim().length < 2 && (
         <p className="muted">Bitte mindestens 2 Zeichen eingeben.</p>
       )}
@@ -95,7 +112,11 @@ function SearchView() {
         <div className="card">
           <h2>Vorgänge</h2>
           {results.processes.map((process) => (
-            <div className="list-row" key={process.id}>
+            <div
+              className="list-row"
+              key={process.id}
+              data-testid={`search-process-${process.processNumber}`}
+            >
               <div>
                 <Link href={`/vorgaenge/${process.id}`}>
                   <strong>{process.processNumber}</strong>
@@ -105,6 +126,29 @@ function SearchView() {
               </div>
               <span className={`badge ${STATUS_BADGE_CLASS[process.mainStatus]}`}>
                 {STATUS_LABELS[process.mainStatus]}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {machines.length > 0 && (
+        <div className="card">
+          <h2>Maschinen</h2>
+          {machines.map((machine) => (
+            <div
+              className="list-row"
+              key={machine.id}
+              data-testid={`search-machine-${machine.machineCode}`}
+            >
+              <div>
+                <Link href={`/maschinen/${machine.id}`}>
+                  <strong>{machine.machineCode}</strong>
+                </Link>
+              </div>
+              <span className="badge">
+                {(MACHINE_STATUS_LABELS as Record<string, string | undefined>)[machine.status] ??
+                  machine.status}
               </span>
             </div>
           ))}

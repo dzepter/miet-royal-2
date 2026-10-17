@@ -1854,14 +1854,23 @@ describe('Sync-Sicherheit (Order §§21, 62, 74, 75; Tests 86, 99, 104–108)', 
     expect(busy.response.statusCode).toBe(503);
     expect(busy.response.headers['retry-after']).toBe('5');
     expect((busy.json as { error: { code: string } }).error.code).toBe('SYNC_IN_PROGRESS');
-    // (b) abgebrochen (älter als 2 min): Ergebnis unbekannt ⇒ Konflikt zur Prüfung, nie stille Wiederholung.
+    // (b) abgebrochen (älter als 2 min), Wirkung nachweislich NICHT vorhanden (Empfänger noch
+    // nicht gesetzt): Crash-Recovery findet nichts ⇒ normale Ausführung, genau einmal.
     const stale = randomUUID();
     await ctx.db
       .insert(offlineMutationReceipts)
       .values(processingRow(stale, new Date(Date.now() - 5 * 60_000)));
-    const unclear = await sync(staff.cookie, recipientInput(stale));
-    expect(unclear.json.status).toBe('conflict');
-    expect(unclear.json.code).toBe('SERVER_STATE_CHANGED');
+    const executed = await sync(staff.cookie, recipientInput(stale));
+    expect(executed.json.status).toBe('applied');
+    expect(executed.json.deduplicated).toBe(false);
+    // (b2) abgebrochen, Wirkung bereits vorhanden (Empfänger = Kunde): als übernommen quittiert.
+    const staleApplied = randomUUID();
+    await ctx.db
+      .insert(offlineMutationReceipts)
+      .values(processingRow(staleApplied, new Date(Date.now() - 5 * 60_000)));
+    const recovered = await sync(staff.cookie, recipientInput(staleApplied));
+    expect(recovered.json.status).toBe('applied');
+    expect(recovered.json.deduplicated).toBe(true);
     // (c) nach abgeschlossener Verarbeitung bleibt keine „processing“-Quittung zurück.
     const ok = await sync(staff.cookie, recipientInput(randomUUID()));
     expect(ok.json.status).toBe('applied');

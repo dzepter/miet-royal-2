@@ -22,7 +22,8 @@ const uuidSchema = z.string().regex(UUID_PATTERN, 'muss eine UUID sein');
 const bookingParams = z.object({ bookingId: uuidSchema });
 const machineParams = z.object({ bookingId: uuidSchema, returnMachineId: uuidSchema });
 const idParams = z.object({ id: uuidSchema });
-const tokenParams = z.object({ token: z.string().min(1).max(200) });
+/** QR-Token nur im Body (§2) – unbekannte Felder werden abgelehnt. */
+const qrResolveBody = z.strictObject({ token: z.string().min(1).max(200) });
 const isoDateTime = z
   .string()
   .refine((value) => !Number.isNaN(Date.parse(value)), 'muss ein gültiger Zeitpunkt sein');
@@ -174,15 +175,19 @@ export function registerReturnRoutes(app: FastifyInstance, options: ReturnRouteO
     return { entries: await returns.listOpen(await visibilityFor(context)) };
   });
 
-  app.get('/staff/returns/resolve-qr/:token', async (request, reply) => {
+  /**
+   * Rückgabe-Einstieg per QR. Phase-8-Finalisierung §2: Rohtoken nur im
+   * Body (POST), nie im URL-Pfad (keine Log-/Verlaufsspuren).
+   */
+  app.post('/staff/returns/resolve-qr', async (request, reply) => {
     const context = await requireAuth(request, reply, auth, config);
     if (context === null) return;
     // QR umgeht keine Rechte (Order §6/§130): Rückgabe-Recht UND Sichtbarkeit.
     if (!(await requirePermission(request, reply, auth, context, 'return.view'))) return;
     if (!(await requirePermission(request, reply, auth, context, 'process.view_all'))) return;
-    const params = parseOrThrow(tokenParams, request.params, 'params');
+    const body = parseOrThrow(qrResolveBody, request.body);
     try {
-      const resolved = await returns.resolveQr(params.token);
+      const resolved = await returns.resolveQr(body.token);
       if (!(await requireVisibleProcess(request, reply, context, resolved.processId))) return;
       return resolved;
     } catch (error) {

@@ -78,8 +78,9 @@ describe('74.–79. IDOR & verborgene Bereiche', () => {
     const { admin } = await adminSession();
     const machine = await machineByCode(ctx.db, 'MR-10-01-02');
     const anonymous = await ctx.app.inject({
-      method: 'GET',
-      url: `/staff/machines/qr/${machine.qrToken}`,
+      method: 'POST',
+      url: '/staff/machines/qr/resolve',
+      payload: { token: machine.qrToken },
     });
     expect(anonymous.statusCode).toBe(401);
     expect(anonymous.body).not.toContain(machine.id);
@@ -91,8 +92,9 @@ describe('74.–79. IDOR & verborgene Bereiche', () => {
       permissionKeys: ['inventory.view'],
     });
     const forbidden = await ctx.app.inject({
-      method: 'GET',
-      url: `/staff/machines/qr/${machine.qrToken}`,
+      method: 'POST',
+      url: '/staff/machines/qr/resolve',
+      payload: { token: machine.qrToken },
       headers: { cookie: outsider.cookie },
     });
     expect(forbidden.statusCode).toBe(403);

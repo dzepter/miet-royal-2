@@ -7,6 +7,7 @@ import { and, eq, gt, isNull, sql } from 'drizzle-orm';
 import { recordSecurityEvent, type SecurityEventInput } from '../auth/audit.ts';
 import { decryptSecret, encryptSecret } from '../auth/crypto.ts';
 import type { AuthenticatedContext } from '../auth/service.ts';
+import { OfflineLeaseSigner } from './lease-signing.ts';
 
 /**
  * Serverseitige Offline-Lease (Phase-8-Order §8): ein aktives Lease je
@@ -16,6 +17,12 @@ import type { AuthenticatedContext } from '../auth/service.ts';
  * Session. Widerruf/Deaktivierung greift beim nächsten Onlinekontakt
  * (kein Secret, kein Paket, kein Sync); lokale Daten werden dabei nicht
  * heimlich vernichtet (§39).
+ *
+ * Phase-8-Finalisierung §1: Jede Ausstellung/Verlängerung liefert zusätzlich
+ * einen serversignierten Claim (Ed25519, `OfflineLeaseSigner`) mit
+ * userId/deviceId/environment/issuedAt/expiresAt/nonce. Die Laufzeit
+ * (72 h) bestimmt ausschließlich der Server; kein Client-Parameter
+ * beeinflusst sie.
  */
 
 export const OFFLINE_LEASE_MS = 72 * 3_600_000;
@@ -73,6 +80,7 @@ export type SecurityAudit = (event: SecurityEventInput) => Promise<void>;
 
 export class OfflineLeaseService {
   private readonly audit: SecurityAudit;
+  private readonly signer: OfflineLeaseSigner;
 
   constructor(
     private readonly db: Database,
@@ -80,6 +88,12 @@ export class OfflineLeaseService {
     audit?: SecurityAudit,
   ) {
     this.audit = audit ?? ((event) => recordSecurityEvent(db, event));
+    this.signer = new OfflineLeaseSigner(config.auth.secretKey);
+  }
+
+  /** Öffentlicher Verifikationsschlüssel (Base64url, 32 Byte) – nur dieser verlässt den Server. */
+  get verificationKey(): string {
+    return this.signer.verificationKey;
   }
 
   get environment(): OfflineEnvironment {
@@ -106,7 +120,8 @@ export class OfflineLeaseService {
   /**
    * Lease ausstellen oder verlängern (Upsert auf das aktive Lease). Jede
    * Verlängerung erzeugt ein NEUES Secret (der Client wickelt den DEK neu
-   * ein) und setzt die 72-h-Frist neu; die Lease-ID bleibt erhalten.
+   * ein), einen NEUEN signierten Claim (neue Nonce, neue Zeiten) und setzt
+   * die 72-h-Frist neu; die Lease-ID bleibt erhalten.
    */
   async issue(
     context: AuthenticatedContext,
@@ -166,6 +181,15 @@ export class OfflineLeaseService {
         details: { leaseId: lease.id, deviceId, environment: this.config.appEnv },
       });
     }
+    // Claim exakt über die persistierten Werte (Server-Autorität, §1).
+    const signed = this.signer.sign({
+      leaseId: lease.id,
+      userId: context.user.id,
+      deviceId,
+      environment: this.config.appEnv,
+      issuedAt: lease.issuedAt,
+      expiresAt: lease.expiresAt,
+    });
     return {
       leaseId: lease.id,
       userId: context.user.id,
@@ -173,6 +197,9 @@ export class OfflineLeaseService {
       deviceId,
       issuedAt: lease.issuedAt.toISOString(),
       expiresAt: lease.expiresAt.toISOString(),
+      claim: signed.claim,
+      signature: signed.signature,
+      verificationKey: signed.verificationKey,
       leaseSecret: secret,
       permissions: this.offlinePermissions(effective),
       firstName: context.user.firstName,

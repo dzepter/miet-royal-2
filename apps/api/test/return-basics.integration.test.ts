@@ -111,8 +111,9 @@ describe('1.–11. Rückgabe-Basis', () => {
     expect(resolved.processId).toBe(world.processId);
     expect(resolved.machineCode).toBe('MR-10-01-01');
     const response = await ctx.app.inject({
-      method: 'GET',
-      url: `/staff/returns/resolve-qr/${machine.qrToken}`,
+      method: 'POST',
+      url: '/staff/returns/resolve-qr',
+      payload: { token: machine.qrToken },
       headers: { cookie },
     });
     expect(response.statusCode).toBe(200);
@@ -133,8 +134,9 @@ describe('1.–11. Rückgabe-Basis', () => {
       message: neutral,
     });
     const response = await ctx.app.inject({
-      method: 'GET',
-      url: `/staff/returns/resolve-qr/${other.qrToken}`,
+      method: 'POST',
+      url: '/staff/returns/resolve-qr',
+      payload: { token: other.qrToken },
       headers: { cookie },
     });
     expect(response.statusCode).toBe(404);
