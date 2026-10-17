@@ -144,7 +144,8 @@ describe('111.–118. Reinigung nach Rückgabe', () => {
     const snapshot = async () =>
       (
         await ctx.pool.query(
-          `SELECT (SELECT count(*) FROM integration_jobs) AS jobs,
+          `SELECT (SELECT count(*) FROM integration_jobs
+                     WHERE type <> 'settlement.accounting_transfer') AS jobs,
                   (SELECT count(*) FROM delivery_packets) AS packets,
                   (SELECT count(*) FROM machine_risk_incidents) AS incidents,
                   (SELECT count(*) FROM process_notes) AS notes,

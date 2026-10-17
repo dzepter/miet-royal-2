@@ -37,9 +37,12 @@ export interface SettlementNoticeGateway {
 export const NOTICE_NOT_CONFIGURED_MESSAGE =
   'Kundeninformation nicht versendbar: In Production ist kein Versandadapter konfiguriert.';
 
+/** Obergrenze des In-Memory-Outbox-Protokolls (Datenminimierung, kein unbegrenztes Wachstum). */
+export const OUTBOX_MEMORY_LIMIT = 100;
+
 export class OutboxSettlementNoticeGateway implements SettlementNoticeGateway {
   readonly kind = 'outbox' as const;
-  /** Für Tests: alle „versendeten“ Informationen. */
+  /** Für Tests: zuletzt „versendete“ Informationen (begrenzt; Protokoll liegt in der DB). */
   readonly sent: SettlementNoticeRequest[] = [];
 
   isConfigured(): boolean {
@@ -52,6 +55,8 @@ export class OutboxSettlementNoticeGateway implements SettlementNoticeGateway {
 
   async send(request: SettlementNoticeRequest): Promise<SettlementNoticeResult> {
     this.sent.push(request);
+    if (this.sent.length > OUTBOX_MEMORY_LIMIT)
+      this.sent.splice(0, this.sent.length - OUTBOX_MEMORY_LIMIT);
     return { gateway: 'outbox', gatewayReference: `outbox:${request.noticeId}` };
   }
 }

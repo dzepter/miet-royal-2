@@ -45,6 +45,7 @@ import {
   truncateAuthTables,
   type TestContext,
 } from './auth-helpers.ts';
+import { cancelBooking } from './cancellation-helpers.ts';
 import { truncateCommerceTables } from './commerce-helpers.ts';
 import {
   DAYS,
@@ -1079,7 +1080,7 @@ describe('Sync: Offline-Ausgabe (Order §§15–17, 20–21, 28, 32–33; Tests 
     expect((await services.handover.detail(world.bookingId)).handover.status).toBe('draft');
 
     // Storno während offline (Test 83): Konflikt, keine Fachwirkung.
-    await processServiceFor(ctx).cancel(world.processId, adminVisibilityCtx());
+    await cancelBooking(ctx, admin.id, world.processId);
     const cancelled = await sync(staff.cookie, {
       type: 'handover.recipient',
       contextId: world.bookingId,

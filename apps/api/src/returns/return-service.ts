@@ -38,6 +38,7 @@ import { returnBlockers } from '@mietroyal/domain';
 import type { StorageProvider } from '@mietroyal/integrations';
 import { and, asc, eq, isNull, lt, ne, sql } from 'drizzle-orm';
 import { AuthError } from '../auth/service.ts';
+import { assertBookingNotCancelled } from '../cancellation/booking-guard.ts';
 import type { DocumentService } from '../commerce/document-service.ts';
 import { visibleProcessesWhere, type ProcessVisibilityContext } from '../crm/visibility.ts';
 import type { AssignmentService } from '../handover/assignment-service.ts';
@@ -277,6 +278,23 @@ function finalizationFingerprint(view: ReturnDetailView): string {
   });
 }
 
+/**
+ * Phase 9: Nach einer COMMITTETEN Finalisierung werden registrierte Listener
+ * benachrichtigt (z. B. Abrechnung anlegen). Die Rückgabe kennt nur diese
+ * Schnittstelle – keine Abhängigkeit auf die Abrechnung; Fehler eines
+ * Listeners machen die Finalisierung nie rückgängig.
+ */
+export interface ReturnFinalizedEvent {
+  returnId: string;
+  bookingId: string;
+  processId: string;
+  finalizedAt: Date;
+}
+
+export interface ReturnFinalizedListener {
+  returnFinalized(event: ReturnFinalizedEvent): Promise<void>;
+}
+
 export class ReturnService {
   private readonly finalizeMutex = new KeyedMutex();
 
@@ -289,6 +307,7 @@ export class ReturnService {
     private readonly scheduling: SchedulingService,
     private readonly damages: DamageService,
     private readonly assignments: AssignmentService,
+    private readonly listeners: readonly ReturnFinalizedListener[] = [],
   ) {}
 
   // ── Laden / Starten (Order §§3/4/6) ──────────────────────────────────────
@@ -348,6 +367,8 @@ export class ReturnService {
       await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${'return-start:' + bookingId}))`);
       const existing = await this.returnFor(bookingId, tx);
       if (existing !== null) return existing;
+      // Phase 9 §63: stornierte Buchung wird nie reaktiviert (auch nach Reopen).
+      await assertBookingNotCancelled(tx, booking.processId);
       const issued = await this.issuedAssignments(bookingId, tx);
       if (issued.length === 0) {
         throw new AuthError(
@@ -1753,6 +1774,20 @@ export class ReturnService {
       if (!registered) await this.deleteKeys([protocolKey]);
     }
     await this.assignments.refreshRiskIncidents(now);
+    // Phase 9: Listener NACH dem Commit (Abrechnung anlegen) – Fehler werden
+    // vom Listener protokolliert und ändern am Rückgabeergebnis nichts.
+    for (const listener of this.listeners) {
+      try {
+        await listener.returnFinalized({
+          returnId: ret.id,
+          bookingId,
+          processId: booking.processId,
+          finalizedAt,
+        });
+      } catch {
+        // bewusst: Finalisierung ist abgeschlossen; Nachlauf ist idempotent nachholbar (settlement:ensure)
+      }
+    }
     return this.detail(bookingId, now);
   }
 

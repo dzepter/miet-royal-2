@@ -1,10 +1,14 @@
 import type { AppConfig } from '@mietroyal/config';
-import { settlements, type Database } from '@mietroyal/database';
+import { integrationJobs, settlements, type Database } from '@mietroyal/database';
 import type { JobRunner } from '@mietroyal/integrations';
 import { parseOrThrow, z } from '@mietroyal/validation';
-import { eq, isNotNull, and } from 'drizzle-orm';
+import { and, eq, isNotNull, like } from 'drizzle-orm';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
-import { MockAccountingGateway, type AccountingGateway } from '../accounting/gateway.ts';
+import {
+  MockAccountingGateway,
+  settlementTransferIdempotencyKey,
+  type AccountingGateway,
+} from '../accounting/gateway.ts';
 import type { AccountingTransferService } from '../accounting/transfer-service.ts';
 import { requireAuth, requirePermission, sendAuthError, sendError } from '../auth/http.ts';
 import type { StaffAuthService } from '../auth/service.ts';
@@ -114,6 +118,20 @@ export function registerAccountingRoutes(
       sendError(request, reply, 409, 'CONFLICT', 'Für diese Abrechnung läuft keine Frist.');
       return;
     }
+    // Den bereits geplanten Auto-Transfer-Job (run_at = alte Frist) ebenfalls
+    // fällig stellen – sonst wäre die Zeitvorspulung nur halb wirksam.
+    await db
+      .update(integrationJobs)
+      .set({ runAt: expired })
+      .where(
+        and(
+          eq(integrationJobs.status, 'pending'),
+          like(
+            integrationJobs.idempotencyKey,
+            `${settlementTransferIdempotencyKey(body.settlementId)}%`,
+          ),
+        ),
+      );
     return {
       settlementId: rows[0].id,
       waitUntil: rows[0].waitUntil?.toISOString() ?? null,

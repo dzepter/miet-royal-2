@@ -1736,3 +1736,128 @@ Keine spontanen Framework-/ORM-Wechsel (CLAUDE.md „Dependencies“).
   Link), RSC-Payload-Prefetch für
   nie besuchte Routen (Shell-Prefetch deckt die Paket-Vorgänge ab).
 Shell cwd was reset to /home/user/Sparkoffer.de
+
+## Phase 9: Abrechnung, Kommission, Nachbelastungen, Anzahlung/Kaution, Storno & Mock-Buchhaltung
+
+- **Grundprinzip**: Die Endabrechnung entsteht ausschließlich aus
+  eingefrorenen historischen Fakten (Buchungs-Snapshot, finaler
+  Lieferschein, Phase-7-Rückgabefakten, Schaden-/Fehlteilentscheidungen,
+  manuelle Nachbelastungen, erfasste Anzahlungen/angewendete Kaution).
+  Aktuelle Produktpreise wirken nie auf alte Buchungen; Early Return ändert
+  die Miete nicht. Geld ist Integer-Cent, Rechenregeln liegen nur in
+  `@mietroyal/domain` (`settlement.ts`: `computeSettlementTotals`,
+  `commissionChargeableQuantity`, `customerNoticeWaitUntil`,
+  `calculateCancellation`); API und UI zeigen nur Ergebnisse. Keine
+  implizite MwSt. (Payload-Feld `tax` reserviert für Phase 10).
+- **Summenmodell**: fix = Miete + Lieferung − Rabatt (nie < 0), variabel =
+  Kaufartikel (tatsächliche Ausgabe) + Kommissionsverbrauch (issued −
+  returned unopened) + Reinigungsgebühr (Return-Fakt 75 € je Maschine),
+  Nachbelastungen = Schaden/Fehlteil/Verspätung/manuell, Credits = aktive
+  Anzahlungen + angewendete Kaution. `amount_due = max(0, brutto − credits)`,
+  `overpayment = max(0, credits − brutto)` als separater Hinweis „Externe
+  Rückzahlung/Verrechnung prüfen“ – nie eine negative Rechnung, keine
+  Rückzahlung. Positionen tragen nur Beträge ≥ 0; die Richtung ergibt sich
+  aus dem Typ (keine versteckten negativen Freitextpositionen).
+- **Schema** (Migration 0018): `settlements`, `settlement_lines` (Unique je
+  Quelle `(settlement_id, source_type, source_key)` = Idempotenz des
+  Positionsaufbaus), `settlement_clarifications`, `settlement_customer_notices`,
+  `accounting_transfers`, `booking_advance_payments`, `booking_security_deposits`
+  (`applied_cents ≤ amount_cents` als DB-Check), `cancellations`
+  (`fee_percent IN (0,50,100)`), `process_relations`. Optimistische Sperre
+  über `version` plus Zeilensperren (`FOR UPDATE`) in jeder Mutation – keine
+  Lost Updates bei gleichzeitigen Schadenkosten/Kautionsanwendungen.
+- **Buchhaltungsgrenze**: genau ein `AccountingGateway`
+  (`MockAccountingGateway` außerhalb von production, deterministische
+  MOCK-Referenz; `DisabledAccountingGateway` in production: „Buchhaltungs-
+  integration nicht konfiguriert“, nichts wird als übertragen markiert,
+  kein Job, kein Endlos-Retry). `AccountingTransferService` ist die einzige
+  Transfer-Boundary für Abrechnung UND Storno: `prepare()` friert den Payload
+  (Lines, Summen, Kunden-/Rechnungsadress-Snapshot, Eventdatum,
+  Idempotenzschlüssel, SHA-256-Hash) VOR dem ersten Versuch ein und ist
+  idempotent; `execute()` hält die Transferzeile für die Dauer des
+  Gateway-Aufrufs gesperrt (`SELECT … FOR UPDATE`): Doppelklick, paralleler
+  Worker und Retry warten und sehen danach `succeeded` – genau eine externe
+  Übertragung; ein Absturz während des Aufrufs rollt auf `pending` zurück,
+  der Wiederholungsversuch nutzt denselben Schlüssel (Gateway-seitig
+  idempotent). Fachliche Bedingungen werden im `recheck`-Hook INNERHALB der
+  Sperre erneut geprüft (TOCTOU: Frist, Kundenrückmeldung, Betragsänderung,
+  offene Klärungen, Prozessstatus). Fehlschläge speichern nur einen neutralen
+  Fehlercode; Retry mit Backoff über die bestehende PostgreSQL-Queue
+  (`settlement.accounting_transfer`, `cancellation.accounting_transfer`),
+  keine neue Queue. Der Worker (`apps/worker`) registriert die Handler über
+  `@mietroyal/api/jobs`; die API hält dieselben Handler in einem nicht
+  gestarteten Runner nur für die Mock-Steuerung „fällige Jobs ausführen“.
+- **Lock nach Transfer**: ab Vorbereitung der Übertragung
+  (`accounting_transfer_id` gesetzt) und erst recht nach Erfolg sind
+  Positionen, Beträge, Credits, Schaden-/Fehlteilkosten und Nachbelastungen
+  unveränderlich (409 `SETTLEMENT_LOCKED`); es gibt keine „Zurückholen“-
+  Funktion. Admin-Reopen (Phase-2-Funktion) lässt die Abrechnung gesperrt.
+- **Zahlungsstatus/Referenz**: open/paid/overdue kommt von außen; Phase 9
+  nur per Mock-Steuerung (`/staff/accounting/mock/*`: nicht in production –
+  404 –, zusätzlich `system.settings`, Antworten tragen `mock: true`). Die
+  externe Referenz ist nur mit `accounting.view_reference` (einziger neuer
+  Rechte-Key) sichtbar; normale Mitarbeiter sehen Status, nie die Nummer.
+  Kein Rechnungs-PDF, keine erfundene Lexware-Rechnungsnummer.
+- **Kundeninformation & 24 h**: nur positive Schaden-/Fehlteilbelastungen
+  erzwingen EINE kombinierte Kundeninformation (Reinigung, Verspätung,
+  Nachbelastung nicht). Mitarbeiter gibt frei; erst der erfolgreiche
+  Gateway-Aufruf (Outbox außerhalb von production; production blockiert)
+  setzt `notice_sent_at` und `wait_until = +24 h` – nur einmal je
+  Abrechnung. Der Auto-Transfer ist derselbe Queue-Job mit `run_at =
+  wait_until` (kein Scanner, kein Cron-Sonderweg); Kundenrückmeldung,
+  spätere Betragsänderung/Entfernung, „Jetzt freigeben“ und „Wie berechnet
+  freigeben“ schalten auf manuelle Übertragung um (`manual_transfer_required`),
+  der Job endet dann mit `skipped`.
+- **Storno**: nur vor Ausgabe, in einer Transaktion mit denselben
+  Zeilensperren wie die Übergabe-Finalisierung (Race: nie storniert UND
+  ausgegeben). Satz nach Berlin-Kalendertagen (≥15 → 0 %, 7–14 → 50 %,
+  0–6 → 100 %, vergangen wie 0), Basis = eingefrorene reguläre
+  Maschinen-Listenpreise (`standardUnitPriceCents × Menge`, Rabatt/
+  Sonderpreis/Lieferung/Kauf/Kommission egal), Gebühr kaufmännisch (half up)
+  auf Cent gerundet (`floor((base × percent + 50) / 100)`). Client sendet nie
+  Satz oder Basis. 0 % ⇒ „Storniert – ohne Rechnung“; sonst eine
+  Transferzeile „Stornokosten gemäß Mietbedingungen – Vorgang MR-…“ mit
+  Eventdatum/Basis/Satz/Betrag. Ressourcen werden sofort freigegeben
+  (Termine, nicht ausgegebene Zuweisungen, reservierte Maschinen,
+  Risikohinweise) – keine Lagerbewegung. Prozess bleibt `cancelled`;
+  Folgevorgang kopiert nur den Kunden und wird über `process_relations`
+  bidirektional verknüpft. `canceler_type = customer` ist vorbereitet, ohne
+  öffentlichen Endpunkt.
+- **Entscheidungen bei Regelkonflikten (dokumentiert, nicht erfunden)**:
+  „Position entfernen“ nach versendeter Kundeninformation folgt
+  DOMAIN_RULES („wenn sonst frei automatisch weiter“) und Order §33: kein
+  Manuell-Flag, Frist läuft weiter, der Auto-Job überträgt den niedrigeren
+  Betrag; entfällt die Notice-Pflicht ganz, ist die Abrechnung sofort
+  bereit. „Wie berechnet freigeben“ nach Kundenrückmeldung folgt der
+  Phase-9-Vorgabe §31 (bewusste manuelle Übertragung) – DOMAIN_RULES nennt
+  hier noch „Auto-Lexware“; der Widerspruch ist im Phase-9-Bericht als
+  offener Punkt geführt. „Betrag ändern“ ⇒ manuell (beide Quellen einig).
+- **Zeilensperren im Storno**: processes/bookings werden mit `FOR NO KEY
+  UPDATE` gesperrt, nicht `FOR UPDATE`: Die Übergabe-Finalisierung nimmt
+  beim Einfügen von Dokumenten/Paketen FK-`KEY SHARE`-Sperren auf dieselben
+  Zeilen – `FOR UPDATE` würde dort in einen Deadlock (40P01) statt in ein
+  sauberes 409 laufen. `NO KEY UPDATE` serialisiert weiterhin mit allen
+  Statusmutationen (ProcessService sperrt mit `FOR UPDATE`, das konfligiert)
+  und folgt dem Muster von Handover-/SchedulingService. Blocker werden erst
+  UNTER allen Sperren geprüft (Prozess, Buchung, Handover, Slots, Maschinen-
+  Advisory-Locks, Termine) – Race-Test Storno vs. Finalisierung läuft
+  mehrfach in beiden Startreihenfolgen.
+- **Legacy-Storno-Route**: `POST /staff/processes/:id/cancel` bleibt für
+  Vorgänge ohne Buchung (reiner Statuswechsel); mit bestätigter Buchung
+  delegiert sie an den Storno-Pfad (zusätzlich `booking.cancel`), damit es
+  keinen gebührenfreien Nebenweg gibt. Vorschau mit `booking.cancel` oder
+  `settlement.view`. Bei Gebühr wird die Transferzeile mit eingefrorenem
+  Payload immer angelegt (auch in production mit Provider `disabled`); nur
+  der Job entfällt ohne konfigurierte Buchhaltung.
+- **Datenminimierung**: Logs enthalten nur IDs, Status und Fehlercodes –
+  keine Beträge mit Kundenbezug, keine Rechnungsadresse, keine
+  Schadensbeschreibung, keine Zahlungsreferenzen.
+- **Bewusst offen (Deferred, Phase 9)**: echter Buchhaltungs-Connector und
+  Zahlungsstatus-Rückfluss (Phase 10), Steuerinformationen im Payload,
+  Kunden-Storno-Endpunkt (`canceler_type = customer` vorbereitet),
+  Gutschein-Hooks (Order §66), Mietverlängerung (§68), persistente Notiz
+  zur Kundenrückmeldung (Schema ohne Spalte), Queue-Retry nach fehlge-
+  schlagenem MANUELLEN Transfer (nur Auto-Jobs retryen; manuell erneut
+  auslösbar), Admin-Information bei wiederholtem Transferfehler
+  (DOMAIN_RULES „Admin informieren“ – Dead-Jobs sind in `integration_jobs`
+  diagnostizierbar).

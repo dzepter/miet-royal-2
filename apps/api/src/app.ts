@@ -30,11 +30,15 @@ import { AccountingTransferService } from './accounting/transfer-service.ts';
 import { registerFinanceJobHandlers } from './jobs/finance.ts';
 import { registerAccountingRoutes } from './routes/accounting.ts';
 import { registerCancellationRoutes } from './routes/cancellation.ts';
+import { createCancellationService } from './cancellation/cancellation-service.ts';
 import { registerSettlementRoutes } from './routes/settlement.ts';
 import {
   createSettlementNoticeGateway,
   type SettlementNoticeGateway,
 } from './settlement/notice-gateway.ts';
+import { createSettlementEnsureListener } from './settlement/return-listener.ts';
+import { SettlementService } from './settlement/settlement-service.ts';
+import { ProcessService } from './crm/process-service.ts';
 import { AssignmentService } from './handover/assignment-service.ts';
 import { createRiskRefreshListener } from './handover/risk-refresh-listener.ts';
 import { MachineService } from './warehouse/machine-service.ts';
@@ -290,8 +294,23 @@ export function buildApp({
         rateLimitEnabled,
       });
       registerStaffAdminRoutes(instance, { auth: authService, admin: adminService, config });
-      registerCrmRoutes(instance, { db, auth: authService, config });
       const storageProvider = storage ?? createStorageProvider(config.storage);
+      // Phase 9: Abrechnung/Storno/Buchhaltung – eine Gateway-Grenze, eine
+      // Transfer-Boundary, Jobs auf der bestehenden PostgreSQL-Queue.
+      const accounting = accountingGateway ?? createAccountingGateway(config);
+      const notices = noticeGateway ?? createSettlementNoticeGateway(config);
+      const queue = jobQueue ?? new PostgresJobQueue(pool);
+      const transfers = new AccountingTransferService(db, accounting, queue);
+      // Eine Storno-Instanz für die Storno-Routen UND die Legacy-Storno-Route
+      // (Vorgänge mit bestätigter Buchung werden nur über diesen Pfad storniert).
+      const cancellationService = createCancellationService({
+        db,
+        config,
+        storage: storageProvider,
+        transfers,
+        logger: app.log,
+      });
+      registerCrmRoutes(instance, { db, auth: authService, config, cancellationService });
       registerCommerceRoutes(instance, {
         db,
         auth: authService,
@@ -323,24 +342,34 @@ export function buildApp({
         config,
         storage: storageProvider,
       });
+      // Phase 9: nach erfolgreicher Finalisierung (online wie offline-sync)
+      // entsteht die Abrechnung – idempotent, außerhalb der Finalisierungs-Transaktion.
+      const settlementListener = createSettlementEnsureListener(
+        new SettlementService({
+          db,
+          transfers,
+          noticeGateway: notices,
+          queue,
+          processes: new ProcessService(db),
+          appEnv: config.appEnv,
+          logger: app.log,
+        }),
+        app.log,
+      );
       registerReturnRoutes(instance, {
         db,
         auth: authService,
         config,
         storage: storageProvider,
+        finalizedListeners: [settlementListener],
       });
       registerOfflineRoutes(instance, {
         db,
         auth: authService,
         config,
         storage: storageProvider,
+        finalizedListeners: [settlementListener],
       });
-      // Phase 9: Abrechnung/Storno/Buchhaltung – eine Gateway-Grenze, eine
-      // Transfer-Boundary, Jobs auf der bestehenden PostgreSQL-Queue.
-      const accounting = accountingGateway ?? createAccountingGateway(config);
-      const notices = noticeGateway ?? createSettlementNoticeGateway(config);
-      const queue = jobQueue ?? new PostgresJobQueue(pool);
-      const transfers = new AccountingTransferService(db, accounting, queue);
       // Nicht gestarteter Runner: verarbeitet Finanz-Jobs nur auf Anforderung
       // der Mock-Steuerung (nicht in production); den Dauerbetrieb übernimmt
       // apps/worker mit denselben Handlern.
@@ -371,6 +400,7 @@ export function buildApp({
         queue,
         accountingGateway: accounting,
         transfers,
+        cancellationService,
       });
       registerAccountingRoutes(instance, {
         db,

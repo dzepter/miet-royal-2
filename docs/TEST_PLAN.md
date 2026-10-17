@@ -55,6 +55,16 @@ Ausgegeben 4, ungeöffnet zurück 2 → berechenbar 2.
 Mock-Connector: derselbe Job mehrfach retryen → extern nur eine Rechnung.
 Nach erfolgreichem Transfer Settlement nicht mehr editierbar.
 
+Umsetzung Phase 9: `apps/api/test/accounting-transfer.integration.test.ts`
+(Transfer-Boundary: paralleles prepare/execute, Snapshot-Unveränderlichkeit,
+transienter Fehler + Retry, Disabled-Gateway, Mock-Steuerung nur mit
+system.settings und nicht in production), `settlement-*.integration.test.ts`
+(Pflichttests 1–60, 130–135, 138–142, 146–149), `cancellation-*.integration.test.ts`
+(86–115, 136/137, 143/144, Storno-vs.-Ausgabe-Race), `packages/domain/test/
+settlement.test.ts` (Summen, Kommissionsregel, Storno-Grenzen 15/14/7/6/0,
+Berlin-Kalendertage, half-up-Rundung), E2E `tests/e2e/specs/settlement-flow.spec.ts`
+(A–M).
+
 ## Gutschein
 - nur nach paid + schadenfrei
 - nur einmal

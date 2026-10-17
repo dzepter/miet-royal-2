@@ -196,6 +196,9 @@ export class AccountingTransferService {
           .update(accountingTransfers)
           .set({
             status: 'succeeded',
+            // Provider des tatsächlich erfolgreichen Gateways (eine in production
+            // mit „disabled“ vorbereitete Zeile wird bei späterer Anbindung korrekt).
+            provider: result.provider,
             attempts: attempt,
             lastErrorCode: null,
             externalReference: result.externalReference,

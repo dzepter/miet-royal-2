@@ -5,6 +5,11 @@ import { parseOrThrow, z } from '@mietroyal/validation';
 import type { FastifyInstance } from 'fastify';
 import { requireAuth, requirePermission, sendAuthError } from '../auth/http.ts';
 import type { StaffAuthService } from '../auth/service.ts';
+import {
+  loadCancellationSummary,
+  loadProcessRelations,
+  type CancellationService,
+} from '../cancellation/cancellation-service.ts';
 import { CustomerService } from '../crm/customer-service.ts';
 import { isValidIsoDate } from '../crm/normalize.ts';
 import { ProcessService } from '../crm/process-service.ts';
@@ -12,6 +17,7 @@ import { SearchService } from '../crm/search-service.ts';
 import { getCompletedVisibilityDays, setCompletedVisibilityDays } from '../crm/settings-service.ts';
 import { buildVisibilityContext } from '../crm/visibility.ts';
 import { UUID_PATTERN } from './auth.ts';
+import { sendCancellationError } from './cancellation.ts';
 
 const uuidSchema = z.string().regex(UUID_PATTERN, 'muss eine UUID sein');
 const idParams = z.object({ id: uuidSchema });
@@ -49,10 +55,16 @@ interface CrmRouteOptions {
   db: Database;
   auth: StaffAuthService;
   config: AppConfig;
+  /**
+   * Phase 9: Storno-Pfad für Vorgänge MIT bestätigter Buchung. Ohne Instanz
+   * (z. B. reine CRM-Komposition) werden solche Vorgänge über die Legacy-
+   * Route mit 409 auf den Storno-Pfad verwiesen.
+   */
+  cancellationService?: CancellationService;
 }
 
 export function registerCrmRoutes(app: FastifyInstance, options: CrmRouteOptions): void {
-  const { db, auth, config } = options;
+  const { db, auth, config, cancellationService } = options;
   const customersService = new CustomerService(db);
   const processService = new ProcessService(db);
   const searchService = new SearchService(db);
@@ -234,6 +246,9 @@ export function registerCrmRoutes(app: FastifyInstance, options: CrmRouteOptions
         process.assignedUserId === null
           ? null
           : ((await auth.findUserById(process.assignedUserId)) ?? null);
+      // Phase 9: Storno-Kurzinfo und Verknüpfung Storno ↔ Folgevorgang.
+      const cancellation = await loadCancellationSummary(db, process.id);
+      const relations = await loadProcessRelations(db, process.id);
       return {
         process,
         customer,
@@ -242,6 +257,8 @@ export function registerCrmRoutes(app: FastifyInstance, options: CrmRouteOptions
           assignee === null
             ? null
             : { id: assignee.id, firstName: assignee.firstName, lastName: assignee.lastName },
+        cancellation,
+        relations,
       };
     } catch (error) {
       if (sendAuthError(request, reply, error)) return;
@@ -307,7 +324,7 @@ export function registerCrmRoutes(app: FastifyInstance, options: CrmRouteOptions
       return;
     const params = parseOrThrow(idParams, request.params, 'params');
     try {
-      await processService.reopen(params.id);
+      await processService.reopen(params.id, context.user.id);
       return { reopened: true };
     } catch (error) {
       if (sendAuthError(request, reply, error)) return;
@@ -322,10 +339,26 @@ export function registerCrmRoutes(app: FastifyInstance, options: CrmRouteOptions
     const params = parseOrThrow(idParams, request.params, 'params');
     try {
       const effective = await auth.effectivePermissions(context.user.id);
-      await processService.cancel(params.id, await visibilityCtxFor(effective));
-      return { cancelled: true };
+      const visibility = await visibilityCtxFor(effective);
+      // Phase 9: Vorgänge MIT bestätigter Buchung laufen über den Storno-Pfad
+      // (Stornoberechnung, Ressourcenfreigabe, Stornorechnung) – zusätzlich
+      // booking.cancel erforderlich. Vorgänge ohne Buchung wie bisher.
+      const process = await processService.getVisibleProcess(params.id, visibility);
+      const booking = await processService.bookingForProcess(process.id);
+      if (booking !== null && cancellationService !== undefined) {
+        if (!(await requirePermission(request, reply, auth, context, 'booking.cancel'))) return;
+        const isAdmin = await auth.isSystemAdmin(context.user.id);
+        const cancellation = await cancellationService.cancel(
+          process.id,
+          { id: context.user.id, type: isAdmin ? 'admin' : 'employee' },
+          { permissions: effective, isAdmin },
+        );
+        return { cancelled: true, cancellation };
+      }
+      await processService.cancel(params.id, visibility);
+      return { cancelled: true, cancellation: null };
     } catch (error) {
-      if (sendAuthError(request, reply, error)) return;
+      if (sendCancellationError(request, reply, error)) return;
       throw error;
     }
   });

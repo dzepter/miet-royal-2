@@ -12,7 +12,7 @@ import { getCompletedVisibilityDays } from '../crm/settings-service.ts';
 import { buildVisibilityContext } from '../crm/visibility.ts';
 import { AssignmentService } from '../handover/assignment-service.ts';
 import { DamageService } from '../returns/damage-service.ts';
-import { ReturnService } from '../returns/return-service.ts';
+import { ReturnService, type ReturnFinalizedListener } from '../returns/return-service.ts';
 import { SchedulingService } from '../scheduling/scheduling-service.ts';
 import { InventoryService } from '../warehouse/inventory-service.ts';
 import { MachineService } from '../warehouse/machine-service.ts';
@@ -86,6 +86,8 @@ interface ReturnRouteOptions {
   auth: StaffAuthService;
   config: AppConfig;
   storage: StorageProvider;
+  /** Phase 9: Nachlauf nach erfolgreicher Finalisierung (Abrechnung anlegen) – verdrahtet in app.ts. */
+  finalizedListeners?: readonly ReturnFinalizedListener[];
 }
 
 function decodeBase64(value: string, maxBytes: number): Uint8Array | null {
@@ -100,7 +102,7 @@ function decodeBase64(value: string, maxBytes: number): Uint8Array | null {
 }
 
 export function registerReturnRoutes(app: FastifyInstance, options: ReturnRouteOptions): void {
-  const { db, auth, config, storage } = options;
+  const { db, auth, config, storage, finalizedListeners } = options;
   const machineService = new MachineService(db, storage);
   const assignments = new AssignmentService(db, machineService, storage);
   const inventory = new InventoryService(db);
@@ -116,6 +118,7 @@ export function registerReturnRoutes(app: FastifyInstance, options: ReturnRouteO
     scheduling,
     damages,
     assignments,
+    finalizedListeners ?? [],
   );
   const processService = new ProcessService(db);
 
