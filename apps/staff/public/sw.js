@@ -100,11 +100,17 @@ async function staleWhileRevalidate(request, cacheName) {
   return Response.error();
 }
 
+/** QR-Deep-Link (`/qr/<token>`): trägt den Rohtoken im Pfad – nie im Seitencache ablegen. */
+function isQrDeepLink(url) {
+  return url.pathname.startsWith('/qr/');
+}
+
 async function networkFirstPage(request, url) {
   const cache = await caches.open(PAGES_CACHE);
   try {
     const response = await withTimeout(fetch(request), NAVIGATION_TIMEOUT_MS);
-    if (response.ok && response.type === 'basic') await cache.put(request, response.clone());
+    if (response.ok && response.type === 'basic' && !isQrDeepLink(url))
+      await cache.put(request, response.clone());
     return response;
   } catch {
     const cached = await cache.match(request, { ignoreSearch: !isRscRequest(request, url) });
@@ -126,7 +132,10 @@ async function clearIdentifiedPages() {
   const requests = await cache.keys();
   await Promise.all(
     requests
-      .filter((request) => RECORD_ID_PATTERN.test(new URL(request.url).pathname))
+      .filter((request) => {
+        const pathname = new URL(request.url).pathname;
+        return RECORD_ID_PATTERN.test(pathname) || pathname.startsWith('/qr/');
+      })
       .map((request) => cache.delete(request)),
   );
 }

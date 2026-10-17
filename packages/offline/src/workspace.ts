@@ -77,10 +77,29 @@ export interface WorkspaceOptions {
    * Schlüssel akzeptiert; ungesetzt gilt der im Grant/Datensatz gelieferte.
    */
   trustedVerificationKey?: string | null;
+  /**
+   * Fail-closed: ohne gepinnten Schlüssel wird KEINE Lease akzeptiert (staging/
+   * production – der Staff-Server liefert den Schlüssel aus seiner Umgebung).
+   */
+  requireTrustedKey?: boolean;
 }
 
 export type UnlockFailureReason =
-  'no_workspace' | 'wrong_password' | 'lease_expired' | 'lease_tampered' | 'too_many_attempts';
+  | 'no_workspace'
+  | 'wrong_password'
+  | 'lease_expired'
+  | 'lease_tampered'
+  /** WebCrypto ohne Ed25519 – Lease offline nicht prüfbar. */
+  | 'lease_unsupported'
+  /** Kein (passender) hinterlegter Serverschlüssel – Lease nicht vertrauenswürdig. */
+  | 'lease_untrusted'
+  | 'too_many_attempts';
+
+function unlockReasonFor(reason: LeaseClaimFailure | 'record_mismatch'): UnlockFailureReason {
+  if (reason === 'unsupported') return 'lease_unsupported';
+  if (reason === 'untrusted_key') return 'lease_untrusted';
+  return 'lease_tampered';
+}
 
 export type UnlockResult = { ok: true } | { ok: false; reason: UnlockFailureReason };
 
@@ -143,6 +162,7 @@ type LeaseCheck =
 export class OfflineWorkspace {
   private dek: CryptoKey | null = null;
   private readonly trustedVerificationKey: string | null;
+  private readonly requireTrustedKey: boolean;
 
   constructor(
     private readonly store: OfflineStore,
@@ -151,6 +171,7 @@ export class OfflineWorkspace {
     options: WorkspaceOptions = {},
   ) {
     this.trustedVerificationKey = options.trustedVerificationKey ?? null;
+    this.requireTrustedKey = options.requireTrustedKey ?? false;
   }
 
   get unlocked(): boolean {
@@ -201,7 +222,12 @@ export class OfflineWorkspace {
    * Läuft vollständig offline (WebCrypto Ed25519), ohne DEK.
    */
   private async checkLeaseClaim(lease: LeaseRecord): Promise<LeaseCheck> {
-    const verified = await verifyLeaseClaim(lease, this.identity, this.trustedVerificationKey);
+    const verified = await verifyLeaseClaim(
+      lease,
+      this.identity,
+      this.trustedVerificationKey,
+      this.requireTrustedKey,
+    );
     if (!verified.ok) return verified;
     const { claim } = verified;
     if (
@@ -224,7 +250,7 @@ export class OfflineWorkspace {
   private async unlockCheckedWith(dek: CryptoKey, record: WorkspaceRecord): Promise<UnlockResult> {
     if (record.lease === null) return { ok: false, reason: 'lease_expired' };
     const check = await this.checkLeaseClaim(record.lease);
-    if (!check.ok) return { ok: false, reason: 'lease_tampered' };
+    if (!check.ok) return { ok: false, reason: unlockReasonFor(check.reason) };
     if (!(await this.verifyLeaseMac(dek, record.lease, record.leaseMac))) {
       return { ok: false, reason: 'lease_tampered' };
     }
@@ -254,7 +280,12 @@ export class OfflineWorkspace {
   ): Promise<void> {
     // Autorisierungsgrenze (§1): Signatur, Struktur und Identität des Claims prüfen –
     // ein ungültiger Grant wird nicht übernommen, der bestehende Zustand bleibt.
-    const verified = await verifyLeaseClaim(grant, this.identity, this.trustedVerificationKey);
+    const verified = await verifyLeaseClaim(
+      grant,
+      this.identity,
+      this.trustedVerificationKey,
+      this.requireTrustedKey,
+    );
     if (!verified.ok) throw new LeaseInvalidError(verified.reason);
     const claim = verified.claim;
     if (this.claimExpired(claim)) throw new LeaseInvalidError('expired');

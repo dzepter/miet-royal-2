@@ -114,6 +114,7 @@ sein, sonst bricht der Start ab (siehe `docs/ENVIRONMENTS.md`). Danach:
 | `pnpm api` / `pnpm worker`             | API bzw. Worker einzeln starten                                                  |
 | `pnpm infra:up` / `infra:down`         | Lokale Infrastruktur (PostgreSQL) starten/stoppen                                |
 | `pnpm check:env-isolation a.env b.env` | Prüft, dass zwei Umgebungen DB/Storage/Secrets nicht teilen                      |
+| `pnpm offline:lease-key`               | Öffentlichen Offline-Lease-Verifikationsschlüssel der Umgebung ausgeben (Staff)  |
 
 Hinweis E2E: In Umgebungen mit vorinstalliertem Chromium
 `CHROMIUM_PATH=/pfad/zur/chromium pnpm test:e2e`; sonst einmalig

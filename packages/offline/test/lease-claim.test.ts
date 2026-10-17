@@ -223,11 +223,29 @@ describe('Lease-Claim im Arbeitsbereich: jede Entsperrung prüft erneut (offline
     });
     expect(await pinned.unlockWithPassword(PASSWORD)).toEqual({
       ok: false,
-      reason: 'lease_tampered',
+      reason: 'lease_untrusted',
     });
     expect(await pinned.leaseState()).toEqual({ kind: 'tampered', reason: 'untrusted_key' });
     expect(ws.unlocked).toBe(false);
     expect(pinned.unlocked).toBe(false);
+    // Fail-closed (staging/production): Pinning Pflicht – ohne hinterlegten Schlüssel gilt
+    // auch eine echte Server-Lease nicht (der im Grant gelieferte Schlüssel wäre Angreiferdaten).
+    const strictStore = await fresh();
+    const strict = new OfflineWorkspace(strictStore, IDENTITY, () => AT_ISSUE, {
+      trustedVerificationKey: null,
+      requireTrustedKey: true,
+    });
+    await expect(strict.authorizeOnline(await signer.grant(), PASSWORD)).rejects.toBeInstanceOf(
+      LeaseInvalidError,
+    );
+    expect(await verifyLeaseClaim(await signer.signedClaim({}), IDENTITY, null, true)).toEqual({
+      ok: false,
+      reason: 'untrusted_key',
+    });
+    expect(
+      (await verifyLeaseClaim(await signer.signedClaim({}), IDENTITY, signer.verificationKey, true))
+        .ok,
+    ).toBe(true);
   });
 
   it('9. abgelaufene Lease ⇒ lease_expired (Signatur gültig, Uhr monoton vom Aufrufer)', async () => {

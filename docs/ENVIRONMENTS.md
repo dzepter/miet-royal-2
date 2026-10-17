@@ -81,3 +81,24 @@ bei jedem Sync hart gegen `APP_ENV` prüft (Mismatch ⇒ 409 `ENVIRONMENT_MISMAT
 + Security-Event). Lokal liegt jede Umgebung in einer eigenen IndexedDB
 `mietroyal-offline-<env>-<userId>` mit eigenem Datenschlüssel – Demo-Daten
 können weder in Production-Stores gelangen noch dorthin synchronisiert werden.
+
+### Offline-Lease-Verifikationsschlüssel (Staff-Server)
+
+Die Offline-Lease ist vom API-Server Ed25519-signiert; der private Schlüssel
+wird je Umgebung aus `AUTH_SECRET_KEY` abgeleitet und verlässt die API nie.
+Damit der Client Leases nur gegen genau diesen Schlüssel akzeptiert, wird der
+**öffentliche** Schlüssel beim Staff-Server hinterlegt:
+
+```bash
+# in der API-Umgebung (gleiche Variablen wie der API-Prozess):
+pnpm offline:lease-key          # gibt den Base64url-Schlüssel aus (kein Secret)
+# beim Staff-Server (next start):
+STAFF_OFFLINE_LEASE_VERIFICATION_KEY=<ausgegebener Wert>
+```
+
+In `staging` und `production` ist das Pflicht (fail-closed: ohne Schlüssel
+akzeptiert die Staff-App keine Offline-Lease; Online-Betrieb läuft normal).
+Nach einer Rotation von `AUTH_SECRET_KEY` muss der Wert neu ausgegeben und
+gesetzt werden; bestehende Leases werden ungültig und beim nächsten
+Onlinekontakt neu ausgestellt. Production und Demo haben zwingend
+verschiedene Schlüssel (sie teilen kein `AUTH_SECRET_KEY`).

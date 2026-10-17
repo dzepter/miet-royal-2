@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { useEffect, useRef, useState } from 'react';
 import { AuthGuard } from '../../components/auth-guard';
 import { apiFetch } from '../../lib/api';
+import { useOffline } from '../../lib/offline/provider';
 import { formatEventDate, STATUS_BADGE_CLASS, STATUS_LABELS, type MainStatus } from '../../lib/crm';
 import { MACHINE_STATUS_LABELS } from '../../lib/warehouse';
 
@@ -28,6 +29,8 @@ function SearchView() {
   const [includeCompleted, setIncludeCompleted] = useState(false);
   const [results, setResults] = useState<SearchResponse | null>(null);
   const [searching, setSearching] = useState(false);
+  const offline = useOffline();
+  const offlineNow = offline?.state.connectivity === 'offline';
   const [error, setError] = useState<string | null>(null);
   const debounceRef = useRef<number | null>(null);
 
@@ -92,7 +95,7 @@ function SearchView() {
         )}
       </div>
 
-      {results?.offline === true && (
+      {(offlineNow || results?.offline === true) && (
         <p className="offline-banner" data-testid="search-offline-hint">
           Offline: Suche nur im geladenen Arbeitspaket
         </p>

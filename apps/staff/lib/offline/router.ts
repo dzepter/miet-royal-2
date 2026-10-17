@@ -187,6 +187,33 @@ function bookingBase(
   });
 }
 
+/** Terminart + Terminzeit laut Snapshot zum Erfassungszeitpunkt (Konfliktansicht, §4). */
+function appointmentBasis(snapshot: LocalSnapshot, side: 'outbound' | 'return'): string | null {
+  const appointment =
+    side === 'return'
+      ? (snapshot.appointments.find((a) => a.kind === 'return') ?? null)
+      : (snapshot.appointments.find((a) => a.kind !== 'return') ?? null);
+  if (appointment === null) return null;
+  const kind =
+    appointment.kind === 'return'
+      ? 'Rückgabe'
+      : appointment.kind === 'delivery'
+        ? 'Lieferung'
+        : 'Abholung / Ausgabe';
+  const when =
+    appointment.startAt !== null
+      ? `${new Intl.DateTimeFormat('de-DE', {
+          timeZone: 'Europe/Berlin',
+          day: '2-digit',
+          month: '2-digit',
+          year: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit',
+        }).format(new Date(appointment.startAt))} Uhr`
+      : 'ohne Uhrzeit';
+  return `${kind} ${when}`;
+}
+
 function openIds(mutations: readonly LocalMutation[]): string[] {
   return mutations.filter((m) => m.status !== 'synced').map((m) => m.clientMutationId);
 }
@@ -212,6 +239,7 @@ async function enqueueBooking<T extends OfflineMutationType>(
       processNumber: snapshot.processNumber,
       actionLabel: MUTATION_LABELS[type],
       detail: options.detail ?? null,
+      basis: appointmentBasis(snapshot, type.startsWith('return.') ? 'return' : 'outbound'),
     },
     baseVersion: options.baseVersion,
     mediaIds: options.mediaIds ?? [],

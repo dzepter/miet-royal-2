@@ -59,6 +59,22 @@ const REJECTION_LABELS: Record<string, string> = {
   PAYLOAD_TOO_LARGE: 'Die Übertragung ist zu groß (Fotos verkleinern).',
 };
 
+/** Serverseitige Offline-Zeile enthält bereits „Offline erfasst:/Offline gewählt:/Offline-Grundlage:“ – kein Doppelpräfix. */
+function stripOfflinePrefix(text: string) {
+  const match = /^(Offline erfasst|Offline gewählt|Offline-Grundlage):\s*/.exec(text);
+  if (match === null)
+    return (
+      <>
+        <strong>Offline erfasst:</strong> {text}
+      </>
+    );
+  return (
+    <>
+      <strong>{match[1]}:</strong> {text.slice(match[0].length)}
+    </>
+  );
+}
+
 function conflictText(code: string, fallback: string): string {
   if ((Object.keys(CONFLICT_LABELS) as string[]).includes(code)) {
     return CONFLICT_LABELS[code as ConflictCode];
@@ -100,20 +116,25 @@ function SyncView() {
       const processId = snapshot?.processId ?? null;
       let offlineBasis: string | null = null;
       const code = conflict?.code ?? mutation.lastErrorCode;
-      if (code === 'APPOINTMENT_CHANGED' && snapshot !== null) {
-        // Offline-Grundlage: Terminart + Terminzeit laut lokalem Snapshot (Termin-ID aus dem Basisstand).
-        const appointmentId = baseOf(mutation)?.appointmentId;
-        const appointment =
-          snapshot.appointments.find((a) => a.id === appointmentId) ??
-          snapshot.appointments.find((a) =>
-            mutation.type.startsWith('return.') ? a.kind === 'return' : a.kind !== 'return',
-          ) ??
-          null;
-        if (appointment !== null) {
-          const kind = KIND_LABELS[appointment.kind] ?? appointment.kind;
-          offlineBasis = `Offline-Grundlage: ${kind} ${
-            appointment.startAt !== null ? formatBerlinClock(appointment.startAt) : 'ohne Uhrzeit'
-          }`;
+      if (code === 'APPOINTMENT_CHANGED') {
+        // Offline-Grundlage: Terminart + Terminzeit zum Erfassungszeitpunkt (in der Summary
+        // eingefroren – der lokale Snapshot trägt nach dem Sync bereits den neuen Serverstand).
+        const frozen = mutation.summary.basis ?? null;
+        if (frozen !== null) offlineBasis = `Grundlage: ${frozen}`;
+        else if (snapshot !== null) {
+          const appointmentId = baseOf(mutation)?.appointmentId;
+          const appointment =
+            snapshot.appointments.find((a) => a.id === appointmentId) ??
+            snapshot.appointments.find((a) =>
+              mutation.type.startsWith('return.') ? a.kind === 'return' : a.kind !== 'return',
+            ) ??
+            null;
+          if (appointment !== null) {
+            const kind = KIND_LABELS[appointment.kind] ?? appointment.kind;
+            offlineBasis = `Grundlage: ${kind} ${
+              appointment.startAt !== null ? formatBerlinClock(appointment.startAt) : 'ohne Uhrzeit'
+            }`;
+          }
         }
       }
       if (offlineBasis === null) {
@@ -248,8 +269,14 @@ function SyncView() {
               <strong>{title(row)}</strong>
               <div className="muted">Offline erfasst am {formatBerlin(row.createdAt)}.</div>
               <div data-testid="conflict-offline">
-                <strong>Offline erfasst:</strong>{' '}
-                {row.conflict?.details?.offline ?? row.offlineBasis}
+                {row.conflict?.details?.offline !== null &&
+                row.conflict?.details?.offline !== undefined ? (
+                  stripOfflinePrefix(row.conflict.details.offline)
+                ) : (
+                  <>
+                    <strong>Offline erfasst:</strong> {row.offlineBasis}
+                  </>
+                )}
               </div>
               <div data-testid="conflict-server">
                 <strong>Serverstand:</strong>{' '}

@@ -174,8 +174,20 @@ export function fromBase64(value: string): Uint8Array {
  * Schlüssel – siehe docs/TECH_DECISIONS.md (Client-Lease-Verifikation).
  */
 function trustedLeaseVerificationKey(): string | null {
+  // Bevorzugt aus der Staff-Server-Umgebung (STAFF_OFFLINE_LEASE_VERIFICATION_KEY → Meta-Tag im
+  // Layout, zur Laufzeit je Umgebung), sonst zur Build-Zeit eingebettet.
+  if (typeof document !== 'undefined') {
+    const meta = document.querySelector('meta[name="mr-offline-lease-key"]');
+    const content = meta?.getAttribute('content')?.trim() ?? '';
+    if (content !== '') return content;
+  }
   const value = process.env.NEXT_PUBLIC_OFFLINE_LEASE_VERIFICATION_KEY;
   return typeof value === 'string' && value.trim() !== '' ? value.trim() : null;
+}
+
+/** In staging/production gilt eine Lease nur gegen den hinterlegten Serverschlüssel (fail-closed). */
+function leasePinningRequired(environment: string): boolean {
+  return environment === 'production' || environment === 'staging';
 }
 
 type Listener = (state: OfflineRuntimeState) => void;
@@ -326,7 +338,10 @@ export class OfflineRuntime {
       },
       // Monotone Zeit: Lease-Ablauf gegen die höchste je gesehene Zeit prüfen (§103).
       () => new Date(Math.max(Date.now(), this.clockMaxSeenMs)),
-      { trustedVerificationKey: trustedLeaseVerificationKey() },
+      {
+        trustedVerificationKey: trustedLeaseVerificationKey(),
+        requireTrustedKey: leasePinningRequired(identity.environment),
+      },
     );
     const seen = await this.store.getMeta(META_CLOCK_MAX_SEEN);
     const server = await this.store.getMeta(META_CLOCK_SERVER);

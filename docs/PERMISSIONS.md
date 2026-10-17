@@ -149,7 +149,10 @@ Admin kann Gate manuell übersteuern.
   Umgebung, issuedAt, expiresAt, Nonce; Schlüssel nur serverseitig aus
   `AUTH_SECRET_KEY` abgeleitet). Laufzeit und Identität bestimmt allein der
   Server; der Client kann ein Lease weder verlängern noch neu erzeugen, und
-  ein Claim einer anderen Umgebung verifiziert nicht. Der Claim trägt keine
+  ein Claim einer anderen Umgebung verifiziert nicht. Voraussetzung in
+  staging/production: der öffentliche Verifikationsschlüssel ist beim
+  Staff-Server hinterlegt (`STAFF_OFFLINE_LEASE_VERIFICATION_KEY`,
+  fail-closed – siehe ENVIRONMENTS.md). Der Claim trägt keine
   Rechte – die gelten weiterhin nur serverseitig je Mutation.
 - QR-Tokens reisen nur im Request-Body (`POST /staff/machines/qr/resolve`
   mit `machine.view`; `POST /staff/returns/resolve-qr` mit `return.view` +

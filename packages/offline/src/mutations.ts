@@ -434,4 +434,10 @@ export interface MutationSummary {
   processNumber: string | null;
   actionLabel: string;
   detail: string | null;
+  /**
+   * Fachliche Grundlage der Erfassung zum Zeitpunkt des Einreihens (z. B. Terminart +
+   * Terminzeit laut damaligem Snapshot) – für die Konfliktansicht, weil der lokale
+   * Snapshot nach dem Sync bereits den neuen Serverstand trägt. Lokal, nie gesendet.
+   */
+  basis?: string | null;
 }

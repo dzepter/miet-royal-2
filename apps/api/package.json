@@ -10,6 +10,7 @@
     "test": "vitest run",
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "bootstrap-admin": "tsx scripts/bootstrap-admin.ts",
+    "offline:lease-key": "tsx scripts/print-offline-lease-key.ts",
     "scheduling:ensure-booking-appointments": "tsx scripts/ensure-booking-appointments.ts"
   },
   "dependencies": {

@@ -46,6 +46,10 @@ const OFFLINE_UNLOCK_MESSAGES: Record<string, string> = {
   lease_expired:
     'Die Offline-Berechtigung dieses Geräts ist abgelaufen (max. 72 Stunden). Bitte online anmelden.',
   lease_tampered: 'Der Offline-Arbeitsbereich ist beschädigt. Bitte online anmelden.',
+  lease_unsupported:
+    'Dieser Browser unterstützt die Offline-Prüfung der Berechtigung nicht. Bitte online anmelden.',
+  lease_untrusted:
+    'Die Offline-Berechtigung konnte nicht gegen den hinterlegten Serverschlüssel geprüft werden. Bitte online anmelden.',
   no_workspace:
     'Auf diesem Gerät ist kein Offline-Arbeitsbereich eingerichtet. Bitte online anmelden.',
   too_many_attempts:
@@ -436,9 +440,17 @@ export function AuthGuard({ children }: { children: ReactNode }) {
       offlineRuntime().touchActivity();
     };
     const lock = () => {
-      offlineRuntime().lock();
+      const runtime = offlineRuntime();
+      runtime.lock();
+      // Ohne Verbindung (laut Statusprüfung oder Browser) zeigt der Sperrbildschirm die
+      // Offline-Entsperrung – unabhängig davon, ob die Sitzung online oder offline begann.
+      const offlineNow =
+        runtime.snapshot.connectivity === 'offline' ||
+        (typeof navigator !== 'undefined' && navigator.onLine === false);
       setState((current) =>
-        current === 'offline-ready' || current === 'offline-locked' ? 'offline-locked' : 'locked',
+        current === 'offline-ready' || current === 'offline-locked' || offlineNow
+          ? 'offline-locked'
+          : 'locked',
       );
     };
     const toLogin = () => {

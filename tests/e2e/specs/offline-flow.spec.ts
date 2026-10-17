@@ -795,8 +795,10 @@ test('E: Serveränderung während Offline-Arbeit → Konflikt, lokale Beweise bl
   });
   await expect(staff.getByTestId('offline-indicator')).toContainText('PRÜFUNG ERFORDERLICH');
   const conflict = staff.getByTestId('sync-conflict').first();
-  await expect(conflict).toContainText('Die Maschine wurde zwischenzeitlich anders zugewiesen.');
-  await expect(conflict).toContainText('Serverstand laden und die Eingabe prüfen');
+  // Fachliche Gegenüberstellung (Finalisierung §4): offline erfasste Maschine vs. Serverstand.
+  await expect(conflict.getByTestId('conflict-offline')).toContainText('MR-10-01-03');
+  await expect(conflict.getByTestId('conflict-server')).toContainText('MR-10-01-04');
+  await expect(conflict.getByTestId('conflict-action')).toContainText('Serverstand laden');
   await expect(conflict.getByRole('link', { name: 'Serverstand laden & prüfen' })).toHaveAttribute(
     'href',
     `/vorgaenge/${processE}/uebergabe`,
@@ -872,9 +874,9 @@ test('F: Zwei Geräte schließen denselben Vorgang offline ab → einer gewinnt,
       timeout: 60_000,
     },
   );
-  await expect(deviceB.getByTestId('sync-conflict').first()).toContainText(
-    'Bereits abgeschlossen – vermutlich von einem anderen Gerät.',
-  );
+  await expect(
+    deviceB.getByTestId('sync-conflict').first().getByTestId('conflict-server'),
+  ).toContainText('abgeschlossen');
   // Genau ein Fachabschluss, genau zwei Dokumente; lokale Beweise auf Gerät B bleiben (Tests 88/89).
   const detail = (await (await staff.request.get(`/api/staff/handover/${bookingF}`)).json()) as {
     detail: { handover: { status: string } };

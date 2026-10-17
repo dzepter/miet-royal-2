@@ -1306,10 +1306,20 @@ Keine spontanen Framework-/ORM-Wechsel (CLAUDE.md „Dependencies“).
   (HKDF aus dem DEK) über den Lease-Datensatz bleibt als Integritätsschutz
   für Rechte-Snapshot/Name und als Bindung des flüchtigen Schlüssels an
   genau diesen Arbeitsbereich, ist aber nicht mehr die Autorisierungsgrenze.
-  Optional lässt sich der öffentliche Serverschlüssel zur Build-Zeit pinnen
-  (`NEXT_PUBLIC_OFFLINE_LEASE_VERIFICATION_KEY`, Base64url, kein Secret;
-  `WorkspaceOptions.trustedVerificationKey`); ohne Pinning gilt der im Grant
-  gelieferte Schlüssel. Nach Ablauf ist der Offline-Arbeitsbereich gesperrt,
+  **Schlüssel-Pinning (Review-Befund S1)**: Der öffentliche Serverschlüssel
+  wird dem Client aus der Umgebung des Staff-Servers geliefert
+  (`STAFF_OFFLINE_LEASE_VERIFICATION_KEY` → `<meta name="mr-offline-lease-key">`
+  im Root-Layout, zur Laufzeit je Umgebung gerendert; Wert per
+  `pnpm offline:lease-key` aus der API-Umgebung, Base64url, kein Secret;
+  Fallback zur Build-Zeit `NEXT_PUBLIC_OFFLINE_LEASE_VERIFICATION_KEY`).
+  In `staging`/`production` ist das Pinning **fail-closed**
+  (`WorkspaceOptions.requireTrustedKey`): ohne hinterlegten Schlüssel wird
+  keine Lease akzeptiert (Sperrmeldung „… nicht gegen den hinterlegten
+  Serverschlüssel geprüft“, Online-Betrieb unberührt) – denn ohne Pinning
+  wäre der im Grant gelieferte Schlüssel für einen Angreifer mit DevTools und
+  Passwort austauschbar. In `development`/`demo` gilt ohne Pinning der im
+  Grant gelieferte Schlüssel (Komfort für lokale Entwicklung; dokumentiertes
+  Restrisiko nur dort). Nach Ablauf ist der Offline-Arbeitsbereich gesperrt,
   bis das Gerät online neu autorisiert. **Monotone Uhr (präzisierte Regel,
   `runtime.ts`)**: `meta.clock.serverMs` = höchste Serverzeit (Lease, Paket,
   Status), `meta.clock.maxSeenMs` = Untergrenze für `now()`. Serverzeit
@@ -1402,7 +1412,11 @@ Keine spontanen Framework-/ORM-Wechsel (CLAUDE.md „Dependencies“).
   POST-Body (`POST /staff/machines/qr/resolve`, `POST /staff/returns/
   resolve-qr`, Body `{ token }`), nie in einer URL oder in `console.*`; der
   Deep-Link `/qr/<token>` liest den Token einmal aus der Route, entfernt ihn
-  sofort per `history.replaceState` aus der Adressleiste und löst per POST auf.
+  sofort per `history.replaceState` aus der Adressleiste und löst per POST auf;
+  der Service Worker legt `/qr/*`-Navigationen nie im Seitencache ab und
+  entfernt sie beim Wipe (Review-Befund S2). Inhärent bleibt: Der Deep-Link
+  selbst erreicht den Staff-Server (Zugriffslog des Next-Servers/Proxys) – das
+  ist der Preis des Kamera-Scans ohne App; die API-Logs sind tokenfrei.
   Treffer nur für Maschinen des berechtigten Pakets; unbekannt/fremd ⇒
   neutrale Meldung „Dieser QR-Code ist nicht gültig.“; das Ergebnis führt
   in den passenden operativen Kontext (Ausgabe/Rückgabe/Maschine/Reinigung),

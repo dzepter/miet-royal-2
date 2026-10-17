@@ -125,7 +125,13 @@ export async function verifyLeaseClaim(
   signed: SignedLeaseClaim,
   identity: LeaseClaimIdentity,
   trustedVerificationKey: string | null = null,
+  requireTrustedKey = false,
 ): Promise<LeaseClaimVerification> {
+  // Fail-closed (staging/production): ohne hinterlegten Serverschlüssel ist der im Grant
+  // gelieferte Schlüssel Angreiferdaten – dann gilt keine Lease als verifiziert.
+  if (requireTrustedKey && trustedVerificationKey === null) {
+    return { ok: false, reason: 'untrusted_key' };
+  }
   if (trustedVerificationKey !== null && signed.verificationKey !== trustedVerificationKey) {
     return { ok: false, reason: 'untrusted_key' };
   }
