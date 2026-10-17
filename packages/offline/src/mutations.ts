@@ -404,9 +404,25 @@ export interface SyncOutcomeResponse {
   /** Konflikt-/Ablehnungscode (CONFLICT_CODES bzw. PERMISSION_REVOKED, VALIDATION, …). */
   code: string | null;
   message: string | null;
+  /**
+   * Fachlich verständliche Gegenüberstellung (Phase-8-Finalisierung §4): nur die für
+   * den Konflikt relevanten Felder als kurze Sätze, keine JSON-Dumps, keine
+   * Kundendaten, keine internen Rechte-Keys. `offline` kann null sein, wenn nur der
+   * Client die Offline-Grundlage kennt (z. B. alte Terminzeit aus dem Snapshot).
+   */
+  details: ConflictDetails | null;
   deduplicated: boolean;
   processedAt: string;
   serverTime: string;
+}
+
+export interface ConflictDetails {
+  /** Was offline erfasst wurde, z. B. „Offline gewählt: MR-10-01-02“. */
+  offline: string | null;
+  /** Was sich serverseitig geändert hat, z. B. „Maschine ist inzwischen MR-2026-0007 zugeordnet.“ */
+  server: string | null;
+  /** Was jetzt zu tun ist (kurz, handlungsleitend). */
+  action: string | null;
 }
 
 /**
