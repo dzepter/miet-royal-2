@@ -18,6 +18,7 @@ import { registerSchedulingRoutes } from './routes/scheduling.ts';
 import { registerWarehouseRoutes } from './routes/warehouse.ts';
 import { registerHandoverRoutes } from './routes/handover.ts';
 import { registerReturnRoutes } from './routes/returns.ts';
+import { registerOfflineRoutes } from './routes/offline.ts';
 import { AssignmentService } from './handover/assignment-service.ts';
 import { createRiskRefreshListener } from './handover/risk-refresh-listener.ts';
 import { MachineService } from './warehouse/machine-service.ts';
@@ -103,6 +104,12 @@ export function buildApp({
 
   app.addHook('onSend', async (request, reply) => {
     reply.header(CORRELATION_ID_HEADER, request.id);
+    // Phase 8 (Order §4): API-Antworten (Fachdaten, PDFs, Fotos) landen nie in
+    // einem HTTP-/Service-Worker-Cache – Offline-Daten liegen ausschließlich
+    // im verschlüsselten lokalen Store.
+    if (reply.getHeader('cache-control') === undefined) {
+      reply.header('cache-control', 'no-store');
+    }
   });
 
   void app.register(fastifyCookie);
@@ -278,6 +285,12 @@ export function buildApp({
         storage: storageProvider,
       });
       registerReturnRoutes(instance, {
+        db,
+        auth: authService,
+        config,
+        storage: storageProvider,
+      });
+      registerOfflineRoutes(instance, {
         db,
         auth: authService,
         config,

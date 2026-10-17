@@ -5,6 +5,8 @@ import { useParams } from 'next/navigation';
 import { useCallback, useEffect, useState } from 'react';
 import { AuthGuard, useMe } from '../../../../components/auth-guard';
 import { DamageDiagram } from '../../../../components/damage-diagram';
+import { DocumentLink } from '../../../../components/document-link';
+import { PhotoThumb } from '../../../../components/local-photo';
 import { QrScanner } from '../../../../components/qr-scanner';
 import { SignaturePad } from '../../../../components/signature-pad';
 import { apiFetch, hasPermission } from '../../../../lib/api';
@@ -28,6 +30,8 @@ import {
   type ReturnerKind,
   type ReturnMachineView,
 } from '../../../../lib/returns';
+import { CLEANUP_FEE_PENDING_TEXT } from '../../../../lib/offline/projection';
+import { useOffline } from '../../../../lib/offline/provider';
 import { fromBerlinInput, toBerlinInput } from '../../../../lib/scheduling';
 import { MACHINE_STATUS_ICONS, type MachineStatus } from '../../../../lib/warehouse';
 
@@ -38,6 +42,9 @@ import { MACHINE_STATUS_ICONS, type MachineStatus } from '../../../../lib/wareho
  * 6 Schäden/Fehlteile → 7 Zusammenfassung → 8 Unterschrift Kunde →
  * 9 Unterschrift Mitarbeiter → 10 Abschluss. Alle Pflichtprüfungen rechnet
  * der Server (Blocker-Liste); die UI ist kein Berechtigungsschutz.
+ * Phase 8: offline beantwortet der Offline-Router dieselben Routen aus dem
+ * lokalen Arbeitspaket; der lokale Abschluss heißt nur „Rückgabe offline
+ * erfasst – Synchronisierung ausstehend“, Gebühren rechnet allein der Server.
  */
 const STEPS = [
   'Vorgang',
@@ -76,6 +83,7 @@ const EMPTY_DRAFT: DamageDraft = {
 function ReturnWizard() {
   const params = useParams<{ id: string }>();
   const me = useMe();
+  const offline = useOffline();
   const [detail, setDetail] = useState<ReturnDetail | null>(null);
   const [bookingId, setBookingId] = useState<string | null>(null);
   const [canStart, setCanStart] = useState(false);
@@ -155,6 +163,9 @@ function ReturnWizard() {
             packetResult.data.packets.filter((packet) => packet.kind === 'return_completed'),
           );
         }
+      } else if (next.offline?.pendingFinalize === true) {
+        // Lokal abgeschlossen (§18): direkt den Abschluss-Schritt mit dem Hinweis zeigen.
+        setStep(STEPS.length - 1);
       }
     }
     setLoaded(true);
@@ -199,6 +210,11 @@ function ReturnWizard() {
         </p>
         <h1>Rückgabe</h1>
         {error !== null && <p className="error">{error}</p>}
+        {offline !== null && offline.state.connectivity === 'offline' && (
+          <div className="offline-banner" data-testid="wizard-offline-banner">
+            Offline – Erfassungen werden lokal verschlüsselt gespeichert und später synchronisiert.
+          </div>
+        )}
         {canStart && bookingId !== null ? (
           <div className="card">
             <p>Für diesen Vorgang sind Maschinen ausgegeben. Die Rückgabe kann jetzt beginnen.</p>
@@ -226,7 +242,10 @@ function ReturnWizard() {
 
   const { booking, machines, items } = detail;
   const ret = detail.return;
-  const finalized = ret.status === 'finalized';
+  const serverFinalized = ret.status === 'finalized';
+  /** Offline erfasst, Synchronisierung ausstehend (§18) – lokal nie „final“. */
+  const pendingFinalize = detail.offline?.pendingFinalize === true;
+  const finalized = serverFinalized || pendingFinalize;
   const returnerSet = ret.returnerKind !== null;
   const allAccessories = machines.every((m) => m.accessoryComplete !== null);
   const allCleanliness = machines.every((m) => m.cleanlinessCheckedAt !== null);
@@ -318,6 +337,11 @@ function ReturnWizard() {
         <p className="muted">
           Dir fehlt das Recht, Rückgaben durchzuführen – die Rückgabe ist hier nur einsehbar.
         </p>
+      )}
+      {offline !== null && offline.state.connectivity === 'offline' && !pendingFinalize && (
+        <div className="offline-banner" data-testid="wizard-offline-banner">
+          Offline – Erfassungen werden lokal verschlüsselt gespeichert und später synchronisiert.
+        </div>
       )}
 
       {step === 0 && (
@@ -667,7 +691,10 @@ function ReturnWizard() {
                   (machine.cleanupRequired ? (
                     <div className="conflict-box" data-testid={`cleanup-fact-${machine.slotNo}`}>
                       <strong>
-                        Reinigungsgebühr-Fakt: {formatEuroCents(machine.cleanupFeeCents ?? 0)}
+                        Reinigungsgebühr-Fakt:{' '}
+                        {machine.cleanupFeeCents === null
+                          ? CLEANUP_FEE_PENDING_TEXT
+                          : formatEuroCents(machine.cleanupFeeCents)}
                       </strong>{' '}
                       – {machine.cleanupReason} (kein Rechnungsbetrag, Abrechnung folgt später)
                       <br />
@@ -676,13 +703,13 @@ function ReturnWizard() {
                         ? 'fehlt (Pflicht)'
                         : `${machine.cleanupPhotos.length} vorhanden`}
                       {machine.cleanupPhotos.map((photo) => (
-                        <img
-                          key={photo.id}
-                          className="photo-thumb"
-                          src={`/api/staff/returns/photos/${photo.id}`}
-                          alt="Beweisfoto"
-                          style={{ display: 'block', marginTop: '0.4rem' }}
-                        />
+                        <span key={photo.id} style={{ display: 'block', marginTop: '0.4rem' }}>
+                          <PhotoThumb
+                            id={photo.id}
+                            src={`/api/staff/returns/photos/${photo.id}`}
+                            alt="Beweisfoto"
+                          />
+                        </span>
                       ))}
                       {editable && (
                         <p>
@@ -833,13 +860,13 @@ function ReturnWizard() {
                     testId={`damage-${damage.id}-diagram`}
                   />
                   {damage.photos.map((photo) => (
-                    <img
-                      key={photo.id}
-                      className="photo-thumb"
-                      src={`/api/staff/damages/photos/${photo.id}`}
-                      alt="Schadensfoto"
-                      style={{ marginRight: '0.4rem' }}
-                    />
+                    <span key={photo.id} style={{ marginRight: '0.4rem' }}>
+                      <PhotoThumb
+                        id={photo.id}
+                        src={`/api/staff/damages/photos/${photo.id}`}
+                        alt="Schadensfoto"
+                      />
+                    </span>
                   ))}
                   {damage.photos.length === 0 && (
                     <p className="error">Mindestens ein Foto ist Pflicht.</p>
@@ -1113,7 +1140,28 @@ function ReturnWizard() {
       {step === 9 && (
         <div className="card" data-testid="wizard-final">
           <h2>10. Rückgabe abschließen</h2>
-          {finalized ? (
+          {pendingFinalize ? (
+            <>
+              <p>
+                <span className="badge" data-testid="wizard-offline-pending">
+                  Rückgabe offline erfasst – Synchronisierung ausstehend.
+                </span>
+              </p>
+              <p className="muted">
+                Erfasst am {formatBerlin(detail.offline?.capturedAt ?? null)}. Rückgabeprotokoll,
+                Lagerrücknahme, Maschinenstatus „Reinigung“ und Gebühren entstehen erst bei der
+                Synchronisierung auf dem Server – bis dahin ist nichts final.
+              </p>
+              <p>
+                <Link href="/sync" className="button-like primary">
+                  Synchronisierung prüfen
+                </Link>{' '}
+                <Link href={`/vorgaenge/${params.id}`} className="button-like">
+                  Zum Vorgang
+                </Link>
+              </p>
+            </>
+          ) : finalized ? (
             <>
               <p>
                 <span className="badge ok">
@@ -1127,15 +1175,11 @@ function ReturnWizard() {
               </p>
               <p>
                 {documents.map((doc) => (
-                  <a
-                    key={doc.id}
-                    href={`/api/staff/documents/${doc.id}`}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="button-like"
-                  >
-                    {DOCUMENT_TYPE_LABELS[doc.type] ?? doc.type}
-                  </a>
+                  <span key={doc.id}>
+                    <DocumentLink documentId={doc.id}>
+                      {DOCUMENT_TYPE_LABELS[doc.type] ?? doc.type}
+                    </DocumentLink>{' '}
+                  </span>
                 ))}
               </p>
               {packets.map((packet) => (
@@ -1209,7 +1253,7 @@ function ReturnWizard() {
                       `/staff/returns/${booking.id}/finalize`,
                       'POST',
                       {},
-                      'Rückgabe abgeschlossen.',
+                      detail.offline === undefined ? 'Rückgabe abgeschlossen.' : undefined,
                     )
                   }
                 >

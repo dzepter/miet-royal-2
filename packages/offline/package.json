@@ -1,0 +1,24 @@
+{
+  "name": "@mietroyal/offline",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./shared": "./src/shared.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "zod": "4.5.4"
+  },
+  "devDependencies": {
+    "@mietroyal/permissions": "workspace:*",
+    "@types/node": "26.4.0",
+    "fake-indexeddb": "6.2.5",
+    "typescript": "6.0.3",
+    "vitest": "4.1.11"
+  }
+}

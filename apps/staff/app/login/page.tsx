@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
 import { apiFetch } from '../../lib/api';
+import { primeOfflineWorkspace } from '../../lib/offline/prime';
 
 type Phase =
   | { step: 'credentials' }
@@ -42,6 +43,8 @@ export default function LoginPage() {
     }
     const data = result.data;
     if (data.next === 'authenticated') {
+      // Phase 8: Passwort liegt nur hier vor – Schlüssel-Wrap, Offline-Lease, erstes Paket.
+      await primeOfflineWorkspace(password);
       router.replace('/');
       return;
     }
@@ -82,6 +85,7 @@ export default function LoginPage() {
       setError(result.errorMessage ?? 'Der Code ist ungültig.');
       return;
     }
+    await primeOfflineWorkspace(password);
     router.replace('/');
   }
 
@@ -234,7 +238,14 @@ export default function LoginPage() {
               einmal verwendbar, falls du dein 2FA-Gerät verlierst.
             </p>
             <p className="code-box">{phase.codes.join('\n')}</p>
-            <button className="primary" onClick={() => router.replace('/')}>
+            <button
+              className="primary"
+              disabled={busy}
+              onClick={() => {
+                setBusy(true);
+                void primeOfflineWorkspace(password).then(() => router.replace('/'));
+              }}
+            >
               Weiter zur App
             </button>
           </div>

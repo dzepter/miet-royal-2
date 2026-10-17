@@ -4,6 +4,8 @@ import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import { useCallback, useEffect, useState } from 'react';
 import { AuthGuard, useMe } from '../../../../components/auth-guard';
+import { DocumentLink } from '../../../../components/document-link';
+import { PhotoThumb } from '../../../../components/local-photo';
 import { QrScanner } from '../../../../components/qr-scanner';
 import { SignaturePad } from '../../../../components/signature-pad';
 import { apiFetch, hasPermission } from '../../../../lib/api';
@@ -16,6 +18,7 @@ import {
   type HandoverDetail,
   type HandoverDocument,
 } from '../../../../lib/handover';
+import { useOffline } from '../../../../lib/offline/provider';
 import { MACHINE_STATUS_ICONS } from '../../../../lib/warehouse';
 
 /**
@@ -25,6 +28,9 @@ import { MACHINE_STATUS_ICONS } from '../../../../lib/warehouse';
  * Artikel prüfen → je Maschine aktiv prüfen + Gesamtfoto → Kunde/Vertreter
  * → Zusammenfassung → Unterschrift Kunde → Unterschrift Mitarbeiter →
  * Abschluss. Alle Pflichtprüfungen rechnet der Server (Blocker-Liste).
+ * Phase 8: offline beantwortet der Offline-Router dieselben Routen aus dem
+ * lokalen Arbeitspaket; der lokale Abschluss heißt nur „Übergabe offline
+ * erfasst – Synchronisierung ausstehend“ (final wird allein der Server).
  */
 const STEPS = [
   'Vorgang',
@@ -47,6 +53,7 @@ const RECIPIENT_LABELS = {
 function HandoverWizard() {
   const params = useParams<{ id: string }>();
   const me = useMe();
+  const offline = useOffline();
   const [detail, setDetail] = useState<HandoverDetail | null>(null);
   const [documents, setDocuments] = useState<HandoverDocument[]>([]);
   const [packets, setPackets] = useState<DeliveryPacketView[]>([]);
@@ -89,6 +96,9 @@ function HandoverWizard() {
           `/staff/processes/${params.id}/delivery-packets`,
         );
         if (packetResult.data !== null) setPackets(packetResult.data.packets);
+      } else if (result.data.detail.offline?.pendingFinalize === true) {
+        // Lokal abgeschlossen (§15): direkt den Abschluss-Schritt mit dem Hinweis zeigen.
+        setStep(STEPS.length - 1);
       }
     }
   }, [params.id]);
@@ -124,7 +134,12 @@ function HandoverWizard() {
     );
   }
   const { booking, handover, slots } = detail;
-  const finalized = handover.status === 'finalized';
+  const serverFinalized = handover.status === 'finalized';
+  /** Offline erfasst, Synchronisierung ausstehend (§15) – lokal nie „final“. */
+  const pendingFinalize = detail.offline?.pendingFinalize === true;
+  const finalized = serverFinalized || pendingFinalize;
+  const offlineChosen = (slotId: string) =>
+    detail.offline?.offlineChosenSlots.includes(slotId) === true;
   const allAssigned = slots.length > 0 && slots.every((slot) => slot.machine !== null);
   const allPrepared =
     allAssigned && slots.every((slot) => slot.status === 'prepared' || slot.status === 'issued');
@@ -201,6 +216,19 @@ function HandoverWizard() {
           Dir fehlt das Recht, Ausgaben durchzuführen – die Übergabe ist hier nur einsehbar.
         </p>
       )}
+      {offline !== null && offline.state.connectivity === 'offline' && !pendingFinalize && (
+        <div className="offline-banner" data-testid="wizard-offline-banner">
+          Offline – Erfassungen werden lokal verschlüsselt gespeichert und später synchronisiert.
+        </div>
+      )}
+      {offline !== null && (detail.offline?.stockRisk.length ?? 0) > 0 && !finalized && (
+        <div className="conflict-box" data-testid="wizard-stock-risk">
+          <strong>Achtung – Bestand laut letztem Stand nicht ausreichend:</strong>{' '}
+          {detail.offline!.stockRisk.join(', ')}. Die Erfassung kann fortgesetzt werden; der Server
+          prüft den Bestand bei der Synchronisierung und meldet ggf. einen Konflikt (kein stiller
+          Negativbestand).
+        </div>
+      )}
 
       {step === 0 && (
         <div className="card">
@@ -258,6 +286,13 @@ function HandoverWizard() {
                       <span className="badge">
                         {MACHINE_STATUS_ICONS[slot.machine.status]} {slot.machine.machineCode}
                       </span>{' '}
+                      {offlineChosen(slot.id) && (
+                        <>
+                          <span className="badge" data-testid={`offline-chosen-${slot.slotNo}`}>
+                            Offline gewählt – Synchronisierung ausstehend
+                          </span>{' '}
+                        </>
+                      )}
                       {slot.status !== 'prepared' && slot.status !== 'issued' && (
                         <span className="badge locked">
                           Noch nicht vorbereitet – bitte in der Vorbereitung als vorbereitet
@@ -384,9 +419,9 @@ function HandoverWizard() {
                 </p>
                 <p>
                   {(state?.photos ?? []).map((photo) => (
-                    <img
+                    <PhotoThumb
                       key={photo.id}
-                      className="photo-thumb"
+                      id={photo.id}
                       src={`/api/staff/handover/photos/${photo.id}`}
                       alt={`Gesamtfoto ${slot.machine?.machineCode ?? ''}`}
                     />
@@ -605,7 +640,28 @@ function HandoverWizard() {
       {step === 8 && (
         <div className="card" data-testid="wizard-final">
           <h2>9. Übergabe abschließen</h2>
-          {finalized ? (
+          {pendingFinalize ? (
+            <>
+              <p>
+                <span className="badge" data-testid="wizard-offline-pending">
+                  Übergabe offline erfasst – Synchronisierung ausstehend.
+                </span>
+              </p>
+              <p className="muted">
+                Erfasst am {formatBerlin(detail.offline?.capturedAt ?? null)}. Lieferschein,
+                Übergabeprotokoll, Lagerbuchung und Maschinenstatus entstehen erst bei der
+                Synchronisierung auf dem Server – bis dahin ist nichts final.
+              </p>
+              <p>
+                <Link href="/sync" className="button-like primary">
+                  Synchronisierung prüfen
+                </Link>{' '}
+                <Link href={`/vorgaenge/${params.id}`} className="button-like">
+                  Zum Vorgang
+                </Link>
+              </p>
+            </>
+          ) : finalized ? (
             <>
               <p>
                 <span className="badge ok">
@@ -615,14 +671,9 @@ function HandoverWizard() {
               <p>
                 {documents.map((doc) => (
                   <span key={doc.id}>
-                    <a
-                      href={`/api/staff/documents/${doc.id}`}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="button-like"
-                    >
+                    <DocumentLink documentId={doc.id}>
                       {DOCUMENT_TYPE_LABELS[doc.type] ?? doc.type}
-                    </a>{' '}
+                    </DocumentLink>{' '}
                   </span>
                 ))}
               </p>
@@ -673,7 +724,7 @@ function HandoverWizard() {
                         `/staff/handover/${booking.id}/finalize`,
                         'POST',
                         {},
-                        'Übergabe abgeschlossen.',
+                        detail.offline === undefined ? 'Übergabe abgeschlossen.' : undefined,
                       )
                     }
                   >

@@ -1229,3 +1229,321 @@ Keine spontanen Framework-/ORM-Wechsel (CLAUDE.md „Dependencies“).
   (Asset-Schnittstelle vorhanden), Teilrückgaben, Offline (Phase 8), Push
   (Phase 12), Kamera-Scan mit echter `BarcodeDetector`-API (E2E nutzt den
   manuellen Fallback).
+
+## Phase 8: Offlinebetrieb, PWA-Sync & vereinfachter Lager-/Tabletmodus
+
+- **Grundprinzip**: PostgreSQL bleibt die einzige Autorität (DOMAIN_RULES
+  „Offline: Server ist Autorität“). Offline-Daten sind temporäre,
+  verschlüsselte Arbeitskopien plus eine Queue noch nicht synchronisierter
+  operativer Erfassungen – niemals eine zweite Geschäftsdatenbank. Lokal
+  abgeschlossene Vorgänge heißen in der UI ausschließlich „Übergabe/Rückgabe
+  offline erfasst – Synchronisierung ausstehend“; finale PDFs, Lagerbuchungen,
+  Maschinenstatus und Terminabschlüsse entstehen erst serverseitig beim Sync.
+- **Paketaufteilung**: `packages/offline` (`@mietroyal/offline`, reines TS,
+  kein React) enthält den Offline-Kern: WebCrypto-Bausteine, versioniertes
+  IndexedDB-Schema mit Migrationen, verschlüsselnden `OfflineStore`,
+  `OfflineWorkspace` (Schlüssel/Lease/Entsperrung), `SyncEngine` (Queue,
+  Abhängigkeiten, Backoff, Konflikte, Bereinigung) sowie unter
+  `@mietroyal/offline/shared` die DOM-freien, von API UND Staff-App
+  gemeinsam genutzten Mutationsverträge (zod, strict) und Paket-Wire-Typen.
+  `apps/api/src/offline/` bildet die serverseitige Boundary (Lease, Paket,
+  Sync-Orchestrator), `apps/staff/lib/offline/` die React-Bindung (Laufzeit-
+  Singleton, Offline-Router in `apiFetch`, lokale Projektion, Provider).
+  Unit-Tests laufen mit `fake-indexeddb` und Node-WebCrypto.
+- **PWA**: `public/manifest.webmanifest` (standalone, neutrale Platzhalter-
+  Icons SVG/PNG 192/512/maskable, drop-in ersetzbar), `public/sw.js` als
+  reiner Cache-/Lifecycle-Worker (Order §80): `/_next/static/*` cache-first,
+  Manifest/Icons/Schemata/Fonts stale-while-revalidate, Navigationen
+  network-first mit Timeout und Fallback auf die gecachte Seite bzw. die
+  Startseite; `/api/*` wird NIE abgefangen oder gecacht (Fachdaten, PDFs,
+  Fotos, Unterschriften laufen nur über den verschlüsselten Store). Die App
+  cacht nach jedem Paketabruf die Seiten-Shells der geladenen Vorgänge
+  (`PREFETCH_PAGES`, nur HTML ohne Fachdaten), damit Offline-Navigation in
+  Wizards möglich ist. Die Phase-7-Schadensschemata sind Inline-SVG im
+  Bundle (offline immer verfügbar); `public/sketches/` ist für echte
+  Grafiken vorbereitet und SW-cachebar.
+- **Schlüsselmodell (Order §§6/7)**: Je Arbeitsbereich (Benutzer × Umgebung ×
+  Gerät) ein zufälliger AES-256-GCM-Datenschlüssel (DEK). Alle fachlichen
+  Inhalte (Vorgangs-Snapshots, Maschinen, Dokument-Bytes, Mutationspayloads,
+  Medien, Konflikttexte) liegen als `{v, iv, ct}`-Blob mit datensatz-
+  spezifischer AAD (`booking:<id>`, `media:<id>` …) in IndexedDB; im Klartext
+  stehen nur technische Index-/Schlüsselfelder (IDs, Status, Zeitstempel,
+  SHA-256-Hashes). Der DEK wird zweifach gewrappt: **Wrap A** mit einem KEK
+  aus PBKDF2-SHA-256 (600 000 Iterationen, 16-Byte-Salt) über das
+  Mitarbeiterpasswort – erzeugt ausschließlich bei einer ONLINE bestätigten
+  Anmeldung/Entsperrung, bei der das Passwort ohnehin im Formular vorliegt
+  (kein zusätzlicher Prompt, keine Warehouse-PIN); **Wrap B** mit dem
+  serverseitigen Lease-Secret für die stille Entsperrung nach einem Reload
+  bei bestehender Verbindung. Passwörter, Passwort-Hashes und TOTP-Secrets
+  werden nie lokal gespeichert; ein falsches Passwort scheitert am GCM-Tag.
+  KDF-Wahl: PBKDF2 ist die einzige in WebCrypto überall (inkl. WebKit)
+  verfügbare Passwortableitung; Argon2 bliebe nur per WASM möglich und wurde
+  bewusst nicht als zweite Krypto-Implementierung eingeführt.
+- **Offline-Lease (Order §8)**: `offline_access_leases` – ein aktives Lease je
+  Benutzer × Gerät × Umgebung, `expires_at ≤ issued_at + 72 h` (DB-Check),
+  Secret nur AES-256-GCM-verschlüsselt mit `AUTH_SECRET_KEY` gespeichert,
+  Ausgabe/Verlängerung/Widerruf als Security-Events. Ausstellung nur über
+  eine entsperrte Session und nur für Konten mit operativen Rechten
+  (`handover.view`/`return.view`/`machine.view`); jede Verlängerung erzeugt
+  ein neues Secret (Client wickelt den DEK neu ein). Lokal liegt der Lease-
+  Datensatz (Ablauf, Rechte-Snapshot, Name) mit HMAC-SHA-256 (HKDF aus dem
+  DEK) – eine Manipulation der Ablaufzeit im Store wird erkannt. Nach
+  Ablauf ist der Offline-Arbeitsbereich gesperrt, bis das Gerät online neu
+  autorisiert. Gegen eine zurückgestellte Geräteuhr gilt eine monotone
+  Untergrenze (höchste je gesehene Server-/Gerätezeit, persistiert in `meta`;
+  lokale Zeit wird nur übernommen, wenn sie nicht mehr als 72 h 15 min vor
+  der bisherigen Grenze liegt – eine grob vorgehende, später korrigierte Uhr
+  sperrt sonst das Gerät). Meldet der Server beim Secret-Abruf 404/403
+  (Lease abgelaufen/widerrufen), wird Wrap B lokal entfernt; es bleibt nur
+  Wrap A (Passwort) bzw. eine neue Online-Autorisierung. Die lokale
+  Passwort-Entsperrung ist nach 5 Fehlversuchen gesperrt (Zähler in `meta`,
+  Reset nur durch erfolgreiche Entsperrung/Online-Autorisierung) – gegen
+  Ausprobieren auf einem gestohlenen Gerät zusätzlich zu PBKDF2.
+  Dokumentiertes Restrisiko: Wer Passwort UND Gerät besitzt, kann den
+  Client-Code verändern und – weil der Lease-HMAC aus dem DEK abgeleitet ist –
+  den lokalen Lease-Datensatz neu signieren; ein physisch offline
+  befindliches Gerät kann nicht sofort widerrufen werden. Das Lease begrenzt
+  also ehrliche Clients und Angreifer OHNE Passwort; gegen den Passwort-
+  inhaber schützt nur der Server (Widerruf beim nächsten Onlinekontakt).
+  Serverseitiger Widerruf greift beim nächsten Onlinekontakt: Session-
+  Widerruf oder Benutzersperre blockieren Secret, Paket UND Sync (jeder
+  Offline-Endpunkt verlangt eine gültige Session, Rechte werden je Mutation
+  frisch geprüft). Der Lease-Widerruf selbst (nur beim Abmelden, zusammen mit
+  der Session) blockiert Secret-Abruf und Paket; der Sync prüft bewusst kein
+  Lease, damit noch ausstehende Änderungen eines Geräts mit abgelaufenem
+  Lease nach erneuter Autorisierung nicht verloren gehen – die Sicherheit
+  hängt an der Session, nicht am Lease. Lokale Daten werden dabei nicht
+  heimlich vernichtet (§39).
+- **Arbeitspaket (Order §§9–12, 54)**: `OfflinePackageService` wendet Rechte
+  und Phase-2-Sichtbarkeit serverseitig an (`buildVisibilityContext`),
+  sammelt Kandidaten aus den bestehenden Listen (`HandoverService.listForDay`
+----
+1235:- **Grundprinzip**: PostgreSQL bleibt die einzige Autorität (DOMAIN_RULES
+1242:- **Paketaufteilung**: `packages/offline` (`@mietroyal/offline`, reines TS,
+1253:- **PWA**: `public/manifest.webmanifest` (standalone, neutrale Platzhalter-
+1265:- **Schlüsselmodell (Order §§6/7)**: Je Arbeitsbereich (Benutzer × Umgebung ×
+1282:- **Offline-Lease (Order §8)**: `offline_access_leases` – ein aktives Lease je
+1298:
+- **Arbeitspaket (Order §§9–12, 54)**: `OfflinePackageService` wendet Rechte
+  und Phase-2-Sichtbarkeit serverseitig an (`buildVisibilityContext`),
+  sammelt Kandidaten aus den bestehenden Listen (`HandoverService.listForDay`
+  für heute ±3 Berliner Kalendertage, `ReturnService.listOpen` für aktive
+  Vermietungen/überfällige Rückgaben, `extraBookingIds` mit gleicher
+  Rechteprüfung), deckelt auf 60 Vorgänge (`truncated`) und liefert je
+  Vorgang nur das Nötige: Übergabe-Detail, Rückgabe-Seed (spiegelt
+  `ReturnService.start`), Kandidaten-Maschinen mit `situationFingerprint`,
+  bestehende Schäden, jeweils neueste Dokumente je Typ als Bytes mit SHA-256,
+  minimale Kontaktdaten (Name, Telefon, Lieferadresse nur bei Lieferung) –
+  keine E-Mail, keine Admin-/Finanz-/Abrechnungsdaten. Maschinen tragen
+  `qrHash = SHA-256(Token)`; Rechte-Snapshot und Umgebungs-ID liegen im Paket.
+- **Lokaler Store (Order §§5, 59, 71)**: IndexedDB `mietroyal-offline-<env>-<userId>`
+  (getrennte Namespaces je Umgebung und Benutzer), Schemaversion 2 mit
+  expliziten Migrationsfunktionen (v1 Grundschema mit Stores workspace,
+  packages, bookings, machines, documents, mutations, media, conflicts,
+  receipts, meta; v2 Kontext-Index der Queue). Ein Downgrade bricht ab statt
+  zu löschen; Upgrades erhalten alle Datensätze (Tests: frisch, v1→v2,
+  pending Mutation überlebt). Keine Klartext-Indizes mit Kundenname/Telefon/
+  Adresse; die QR-Zuordnung liegt nur als SHA-256 des Tokens vor.
+- **Offline-QR (Order §13/§14)**: Der bestehende `QrScanner` erhält einen
+  `resolve`-Hook; offline wird `SHA-256(token.toLowerCase())` gegen den
+  lokalen Maschinen-Store verglichen (Token nie im Klartext gespeichert).
+  Treffer nur für Maschinen des berechtigten Pakets; unbekannt/fremd ⇒
+  neutrale Meldung „Dieser QR-Code ist nicht gültig.“; das Ergebnis führt
+  in den passenden operativen Kontext (Ausgabe/Rückgabe/Maschine/Reinigung),
+  nie in eine automatische Geschäftsaktion.
+- **Offline-Router statt zweiter Wizards (Order §§15, 18, 19)**: `apiFetch`
+  leitet offline – und online in Kontexten mit lokal ausstehenden Änderungen –
+  an `routeOffline`. GET-Routen werden aus Snapshot + lokalen Mutationen
+  projiziert (`projection.ts`, lokale IDs mit Präfix `local:`), Schreibrouten
+  werden als typisierte Mutationen eingereiht. Nicht modellierte Schreibrouten
+  liefern offline `ONLINE_REQUIRED`, online bei Pending-Kontext
+  `OFFLINE_PENDING_CONTEXT` („zuerst synchronisieren“). Der lokale Abschluss
+  heißt ausschließlich „Übergabe/Rückgabe offline erfasst – Synchronisierung
+  ausstehend“.
+- **Offline-Assignment/Override (Order §§16/17)**: Kandidaten samt
+  `situationFingerprint` kommen aus dem Paket; eine offline gewählte Maschine
+  wird mit Basisstand (`expectedMachineId`) und Fingerprint gesendet – der
+  Server meldet `MACHINE_REASSIGNED`, `MACHINE_UNAVAILABLE` (inzwischen
+  anderweitig ausgegeben/gesperrt) oder `SITUATION_CHANGED` statt still zu
+  überschreiben.
+- **Zeiten (Order §§68/69)**: Alle lokalen Zeitpunkte sind UTC-Instants, die
+  Gerätezeit ist nur Input. Der Server prüft `clientTime`, `createdAt` und
+  die getragene Erfassungszeit (Toleranz 15 Minuten, nicht in der Zukunft,
+  nicht älter als 72 h) ⇒ `CLOCK_IMPLAUSIBLE` („Gerätezeit prüfen“).
+- **Sync-Queue (Order §§27–31, 36)**: Mutationen tragen `clientMutationId`
+  (UUID), Umgebung, Kontext (Vorgang/Maschine), `dependsOn`, `baseVersion`
+  (Pflicht), Medien (SHA-256). Reihenfolge je Kontext, Medien vor
+  Finalisierung, Backoff bei transienten Fehlern, kein Retry bei Konflikt/
+  Ablehnung; Sitzungsverlust beendet den Lauf und lässt alles ausstehend.
+- **Konnektivität (Order §78)**: `navigator.onLine` ist nur ein Hinweis;
+  maßgeblich ist der authentifizierte Health-Check `/staff/offline/status`
+  (verlängert die Aktivität nicht), 60-s-Intervall plus online/offline-
+  Events; jeder Offline→Online-Übergang startet den Sync.
+- **Serverseitige Idempotenz (Order §§28, 63, 64)**: `offline_mutation_receipts`
+  (PK clientMutationId, Status processing/applied/conflict/rejected,
+  technische `result_ref`). Replay einer angewandten ID liefert dieselbe
+  Antwort ohne zweite Wirkung; Konflikt/Ablehnung erlaubt die Neubewertung;
+  fremde Mutations-IDs (anderer Benutzer) werden abgelehnt.
+- **Sync-Orchestrator (Order §§61, 62, 74)**: `OfflineSyncService` prüft je
+  Mutation Umgebung, Rechte (frisch aus der Datenbank), Sichtbarkeit,
+  Basisstand, Uhrzeit und Medien-Hashes und führt die Fachmutation über die
+  bestehenden Domainservices aus (Lager, PDFs, Maschinenstatus, Termine
+  entstehen nur dort). Die Mitarbeiter-Identität einer Unterschrift kommt aus
+  der Session, nie aus dem Client.
+- **Konflikte (Order §§32–35, 65–67)**: Kein Last-Write-Wins. Neutrale
+  Konfliktcodes, lokale Beweise (Fotos/Unterschriften) bleiben bis zur
+  bewussten Entscheidung erhalten; „Erneut anwenden“ läuft über die normalen
+  Domainservices, „Verwerfen“ nur mit Rückfrage. Es gibt keinen Force-
+  Update-Endpunkt.
+- **Bereinigung (Order §§36–38)**: Synchronisierte Mutationen und
+  ausschließlich von ihnen referenzierte Medien werden erst nach Ablauf einer
+  Frist (1 h) entfernt; ausstehende/konfliktierte Daten nie automatisch.
+  Logout ohne Pending löscht den lokalen Arbeitsbereich vollständig; Logout
+  mit Pending warnt und löscht nicht still.
+- **PWA-Update (Order §§70–72)**: kein automatisches `skipWaiting`; eine
+  wartende Version erzeugt den unaufdringlichen Hinweis „Neue Version
+  verfügbar“ nur außerhalb einer laufenden Erfassung (Wizard-Routen) und
+  ohne ausstehende Mutationen; „Jetzt aktualisieren“ sendet `SKIP_WAITING`,
+  `controllerchange` lädt neu. IndexedDB-Schemaänderungen laufen über
+  Migrationen (nie löschen); `SW_VERSION` in `sw.js` steuert die Cache-
+  Namen (alte Caches werden bei Aktivierung entfernt) und ist bei
+  Änderungen an der Cache-Strategie hochzuzählen; Registrierung mit
+  `updateViaCache: 'none'`.
+- **Speicher (Order §§43/44)**: `navigator.storage.persist()` wird nach dem
+  ersten Paketabruf angefragt (Ablehnung kein Fehler); `storage.estimate()`
+  warnt ab 90 % Belegung oder unter 50 MB frei – keine künstliche GB-Grenze.
+- **Lager-/Tabletmodus (Order §§46–52)**: `/tablet` mit vier großen Aktionen
+  AUSGABE / RÜCKGABE / QR SCANNEN / REINIGUNG (optional Lager), pro Gerät
+  aktivierbar (localStorage-Flag), reduzierte Navigation; reine Darstellung
+  ohne Rechteerweiterung, keine Rolle, keine PIN. `/reinigung` zeigt Maschinen
+  in Reinigung, länger als 24 h zuerst und rot.
+- **Berechtigungen**: keine neuen Keys. Offline-relevanter Rechte-Snapshot
+  nur für die Darstellung; jede Mutation wird serverseitig neu geprüft
+  (`MUTATION_PERMISSIONS`), siehe `docs/PERMISSIONS.md` → „Offline“.
+- **Entsperrter Schlüssel zwischen Navigationen (Order §§7, 38)**: Der DEK
+  liegt nach der Entsperrung nur im Arbeitsspeicher – im Seitenkontext und
+  als structured-clone im Speicher des Service Workers (`SET_KEY`/`GET_KEY`/
+  `TOUCH_KEY`/`CLEAR_KEY`, nie in Cache, IndexedDB oder Storage). Ein Reload
+  oder eine harte Navigation offline holt den Schlüssel per `MessageChannel`
+  aus dem Worker und übernimmt ihn nur, wenn die Lease-HMAC mit genau
+  diesem Schlüssel stimmt (fremder/alter Schlüssel ⇒ Sperrbildschirm). Der
+  Worker verwirft ihn nach 15 Minuten ohne Aktivitätssignal (gleiche Frist
+  wie die App-Sperre; `AuthGuard` meldet Aktivität gedrosselt weiter),
+  bei `lock()`/Logout/Wipe sofort (Wipe entfernt zusätzlich aus dem Seiten-
+  Shell-Cache `mr-pages-*` alle Einträge mit Datensatz-IDs in der URL; die
+  ID-freien Shells bleiben, damit die App offline weiterhin startet), und
+  beim Beenden des Workers durch den Browser ohnehin. Alternative „Schlüssel in sessionStorage/IndexedDB“ wurde
+  verworfen: das wäre eine Klartext-Ablage des DEK auf dem Datenträger. Ohne
+  aktiven Worker (erster Start, private Fenster) gilt schlicht die
+  Passwort-Entsperrung.
+
+
+- **Härtungen aus dem adversarialen Phase-8-Review (selbst verifiziert und
+  umgesetzt)**:
+  - *Unterbrochener Sync-Lauf*: Mutationen, die beim Schließen/Neuladen der
+    Seite im Status „syncing“ zurückbleiben, werden beim nächsten Lauf erneut
+    gesendet (serverseitige Quittungen machen die Wiederholung idempotent).
+  - *Zweiphasige Quittung* (Migration 0016, Status `processing`): die Quittung
+    wird VOR der Fachmutation reserviert. Ein Abbruch zwischen Fachmutation
+    und Abschluss hinterlässt „processing“; eine Wiederholung derselben ID
+    liefert dann 503 + `Retry-After` (Verarbeitung läuft, < 2 min) bzw. einen
+    Konflikt „Ergebnis der vorherigen Übertragung unklar – Serverstand prüfen“
+    (älter als 2 min) – nie eine stille zweite Ausführung (§28).
+  - *Serialisierung je Kontext*: zwei Geräte, die denselben Vorgang gleichzeitig
+    abschließen, laufen im Prozess nacheinander – das zweite sieht
+    ALREADY_FINALIZED statt eines scheinbaren Erfolgs (§67). Mehrere API-
+    Prozesse sichern die Exakt-einmal-Semantik weiterhin über die Advisory-
+    Locks der Domainservices.
+  - *Basisstand-Pflicht*: Mutationen ohne `baseVersion` werden abgelehnt
+    (die Konfliktprüfungen §33 sind nicht abschaltbar); die getragene
+    Erfassungszeit (`capturedAt`/`actualReturnAt`) unterliegt derselben
+    Plausibilität wie Gerätezeit und Erstellzeit (nicht in der Zukunft,
+    nicht älter als 72 h + Toleranz); beim Abschluss wird sie zur
+    tatsächlichen Ausgabe-/Rückgabezeit. Weicht sie mehr als 15 Minuten von
+    der Erstellzeit der Mutation ab (ein echter Client setzt beide im selben
+    Moment), gilt das wie online als Zeitkorrektur und verlangt
+    `handover.correct_actual_time` bzw. `return.correct_actual_time`
+    (sonst `PERMISSION_REVOKED`) – ein manipulierter Client kann die Zeit
+    nicht rückdatieren; eine Mutations-ID darf nicht für einen anderen
+    Typ/Kontext wiederverwendet werden (§63).
+  - *Session-Widerruf*: 401 beim Onlinekontakt (Health-Check, beliebiger
+    API-Aufruf, Sync) sperrt den Offline-Arbeitsbereich sofort (§39) – Daten
+    bleiben verschlüsselt erhalten. Der Sperrbildschirm nutzt bei erreichbarem
+    Server immer den normalen Re-Auth-Weg (§7), lokal nur bei Netzausfall.
+  - *Passwortwechsel*: Wrap A wird nach `/auth/password/change` sofort erneuert;
+    bei einer Online-Anmeldung mit neuem Passwort wird der bestehende DEK vor
+    der Lease-Erneuerung über das noch gültige Lease-Secret wiederhergestellt
+    (keine Sperrschleife, keine Neuverschlüsselung mit Pending-Daten). Ist
+    auch das Lease abgelaufen/widerrufen (Passwort-Reset während einer langen
+    Offline-Phase) und liegen Pending-Daten vor, bleibt der Arbeitsbereich
+    bewusst verschlossen: Der Sperrbildschirm erklärt das und bietet – nach
+    serverseitig akzeptiertem Passwort und expliziter Bestätigung – „Lokale
+    Offline-Erfassungen verwerfen und neu einrichten“ an (Order §38: nie
+    still vernichten, aber auch keine Sackgasse). Ohne Verbindung öffnet
+    weiterhin das bisherige Passwort (Wrap A).
+  - *Client-Reihenfolge*: der Offline-Router ist ab Modulstart registriert und
+    wartet auf eine laufende Initialisierung; der AuthGuard öffnet und
+    entsperrt die Laufzeit VOR dem Rendern der Seiten (erster Datenabruf sieht
+    lokale Pending-Daten); nicht offline modellierte Schreibrouten werden in
+    Kontexten mit ausstehenden Änderungen abgewiesen („zuerst
+    synchronisieren“); während eines Laufs eingereihte Mutationen lösen einen
+    Folgelauf aus; die Verbindungserkennung startet den Sync bei jedem
+    Offline→Online-Übergang (auch per 60-s-Prüfung).
+  - *Paketabruf*: gleichzeitige Abrufe (automatisch + manuell) teilen sich
+    einen Ingest – zwei verschränkte Ingests hätten sich gegenseitig als
+    veraltet bereinigt; der Paketstand wird nach Reload aus dem Store gelesen
+    (kein Neuabruf je Navigation); nach jedem Abruf werden die Seiten-Shells
+    vorab gecacht.
+  - *Konflikte in der Projektion*: konfliktierte Mutationen (und ihr
+    Schadenfoto) gelten lokal nicht mehr als „angewendet“ – die Seite zeigt den
+    Serverstand, die Konflikt-UI das offline Erfasste; „Serverstand laden“
+    führt direkt in den Wizard des Vorgangs. „Verwerfen“ kaskadiert nur auf
+    fachliche Kinder (Schadenfoto), reine Reihenfolge-Abhängigkeiten bleiben
+    sendebereit.
+  - *Absorption synchronisierter Mutationen* wird über die Serverzeit der
+    Quittung entschieden (nicht über die Gerätezeit, §68).
+  - *Knapper Bestand offline* (§24): keine Blockade, sondern starke Warnung im
+    Wizard + Konfliktrisiko; der Server prüft den Bestand beim Sync.
+  - *Service Worker*: `PREFETCH_PAGES` cacht nur `text/html` derselben Origin
+    und nie `/api`; die Update-Aktivierung prüft Pending-Daten frisch aus
+    IndexedDB. Rückgabemengen werden schon lokal gegen die ausgegebene Menge
+    geprüft (§20); der Tabletmodus-Wechsel wirkt sofort in der Navigation;
+    QR im Tabletmodus bietet auch den Ausgabe-Kontext an (§51); Speicher-
+    warnung im Kopfbereich und nach jedem gespeicherten Medium (§43);
+    Statusbezeichnungen SYNCHRONISIERUNG … / SYNCHRONISIERT (§40).
+- **Bewusst akzeptierte Restrisiken (dokumentiert, nicht gebaut)**: (1) Ein
+  offline geöffnetes PDF liegt in einem Browser-Tab außerhalb der App-Sperre
+  (wie online); (2) das Paket enthält die Preis-Snapshots der Lieferschein-
+  positionen und die vorläufigen Kommissions-/Reinigungsbeträge, weil die
+  bestehenden Wizards/Editoren sie anzeigen (§22 erlaubt die Anzeige, kein
+  Client übermittelt Beträge als autoritativ; keine Settlement-, Kautions-,
+  Gutschein- oder Admin-Daten); (3) Zwischenschritte zweier Geräte am selben
+  Vorgang (Empfänger/Unterschrift) werden serverseitig mit Ersetzungssemantik
+  angewendet – die Endkonsistenz entsteht an der Finalisierung (genau eine,
+  das andere Gerät sieht den Konflikt, lokale Beweise bleiben); (4) die
+  Update-Sperre ist je Tab, ein zweiter Tab desselben Geräts kann den neuen
+  Worker aktivieren (IndexedDB-Migrationen sind additiv, Daten bleiben);
+  (5) die Konfliktansicht zeigt je Konflikt Aktion, Erfassungszeit, Ursache
+  und die drei Handlungen „Serverstand laden & prüfen / Erneut anwenden /
+  Verwerfen“ (Order §73) – keine Feld-für-Feld-Gegenüberstellung lokaler und
+  Server-Werte (UX_RULES „Werte gegenüberstellen“ wird durch „Serverstand
+  laden & prüfen“ im Wizard erfüllt, nicht in der Liste); (6) die Fehlteil-
+  Obergrenze (Soll-Deckel/-Tropfschalen) wird offline als UX-Vorprüfung aus
+  dem Paket gespiegelt, die verbindliche Prüfung bleibt im `ReturnService`
+  beim Sync.
+
+
+- **E2E-Harness**: Die Staff-App läuft im E2E als Produktions-Build (`next
+  build && next start`), weil der Turbopack-Dev-Server ohne HMR-Verbindung
+  offline nicht hydratisiert. Playwright startet API, Web und Staff immer
+  frisch (`reuseExistingServer: false`): ein liegengebliebener Server würde
+  sonst unbemerkt alten Code testen. Die API-Ausgabe wird ins Testprotokoll
+  geleitet; stockende Synchronisierungen protokollieren die Queue-Zeilen.
+- **Bewusst offen (Deferred, Phase 8)**: Background Sync API (nur
+  opportunistisch, nicht verlässlich), WebAuthn/Face ID-Entsperrung
+  (Schlüsselmodell vorbereitet: zusätzlicher Wrap), Delta-Sync/Paket-Diffs,
+  Offline-Zusatzpositionen/Abholperson, Offline-Löschen serverseitiger
+  Schäden/Fehlteile, Konflikt-Vorschau mit Serverwerten nebeneinander
+  (aktuell Serverstand-Link + neutraler Grund), RSC-Payload-Prefetch für
+  nie besuchte Routen (Shell-Prefetch deckt die Paket-Vorgänge ab).
+Shell cwd was reset to /home/user/Sparkoffer.de

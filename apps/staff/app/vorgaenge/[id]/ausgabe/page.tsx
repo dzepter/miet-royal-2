@@ -308,6 +308,14 @@ function PreparationView() {
                     >
                       {ASSIGNMENT_STATUS_LABELS[slot.status]}
                     </span>
+                    {detail.offline?.offlineChosenSlots.includes(slot.id) === true && (
+                      <>
+                        {' '}
+                        <span className="badge" data-testid={`offline-chosen-${slot.slotNo}`}>
+                          Offline gewählt – Synchronisierung ausstehend
+                        </span>
+                      </>
+                    )}
                     <div className="muted">
                       Standort: {slot.machine.locationLabel}
                       {slot.machine.locationNote !== null ? ` – ${slot.machine.locationNote}` : ''}

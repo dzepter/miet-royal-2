@@ -352,8 +352,14 @@ export class StaffAuthService {
    * - 15 Minuten inaktiv → appLocked=true; Aktivität wird dann NICHT
    *   aktualisiert (sonst würde die Sperre sich selbst aufheben) –
    *   Entsperren nur über unlock() mit erneuter Authentifizierung.
+   * - touchActivity=false (Phase 8, Order §78): reine Status-/Health-Checks
+   *   der PWA verlängern die Aktivität nie – ein Hintergrund-Ping darf die
+   *   App-Sperre nicht aushebeln.
    */
-  async authenticate(sessionToken: string): Promise<AuthenticatedContext | null> {
+  async authenticate(
+    sessionToken: string,
+    options: { touchActivity?: boolean } = {},
+  ): Promise<AuthenticatedContext | null> {
     const rows = await this.db
       .select()
       .from(staffSessions)
@@ -376,7 +382,7 @@ export class StaffAuthService {
     }
 
     const appLocked = inactiveMs > APP_LOCK_MS;
-    if (!appLocked && inactiveMs > ACTIVITY_WRITE_THROTTLE_MS) {
+    if (options.touchActivity !== false && !appLocked && inactiveMs > ACTIVITY_WRITE_THROTTLE_MS) {
       await this.db
         .update(staffSessions)
         .set({ lastActivityAt: new Date() })

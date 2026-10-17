@@ -109,8 +109,14 @@ function ReturnListView() {
                         : `${formatBerlin(entry.plannedAt)} Uhr`}
                     </div>
                     {entry.overdue && <span className="badge locked">Überfällig</span>}{' '}
-                    {entry.returnStatus === 'draft' && (
-                      <span className="badge">Rückgabe begonnen</span>
+                    {entry.offlinePendingFinalize === true ? (
+                      <span className="badge" data-testid="offline-pending-badge">
+                        Rückgabe offline erfasst – Synchronisierung ausstehend
+                      </span>
+                    ) : (
+                      entry.returnStatus === 'draft' && (
+                        <span className="badge">Rückgabe begonnen</span>
+                      )
                     )}
                   </div>
                 </div>

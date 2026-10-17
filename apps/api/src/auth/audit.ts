@@ -30,6 +30,11 @@ export const SECURITY_EVENT_TYPES = [
   'session.new_device_login',
   'session.revoked',
   'session.revoked_all',
+  // Phase 8: Offline-Lease (Order §8) und Umgebungs-Hard-Reject (§76).
+  'offline.lease_issued',
+  'offline.lease_renewed',
+  'offline.lease_revoked',
+  'offline.environment_mismatch',
 ] as const;
 
 export type SecurityEventType = (typeof SECURITY_EVENT_TYPES)[number];

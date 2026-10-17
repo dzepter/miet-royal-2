@@ -1,5 +1,7 @@
 /** Phase 7: Typen und Labels der Rückgabe (Spiegel der API-Sichten). */
 
+import type { OfflineViewFlags } from './handover';
+
 export type ReturnerKind = 'customer' | 'representative' | 'other';
 
 export const RETURNER_LABELS: Record<ReturnerKind, string> = {
@@ -177,6 +179,8 @@ export interface ReturnDetail {
   };
   blockers: string[];
   nextAction: 'returner' | 'checks' | 'sign' | 'finalize' | 'done';
+  /** Phase 8: nur gesetzt, wenn die Sicht lokal aus dem Offline-Arbeitsbereich projiziert wurde. */
+  offline?: OfflineViewFlags;
 }
 
 export const RETURN_NEXT_ACTION_LABELS: Record<ReturnDetail['nextAction'], string> = {
@@ -200,6 +204,8 @@ export interface ReturnListEntry {
   overdue: boolean;
   returnStatus: 'none' | 'draft';
   group: 'overdue' | 'today' | 'upcoming' | 'unscheduled';
+  /** Phase 8: Rückgabe offline abgeschlossen, Synchronisierung ausstehend (§18). */
+  offlinePendingFinalize?: boolean;
 }
 
 export interface CleaningWarning {
@@ -236,6 +242,8 @@ export interface MachineCondition {
   };
   postReturnFindingOpen: boolean;
   defectLinkOpen: boolean;
+  /** Phase 8: Reinigungsabschluss offline erfasst, Synchronisierung ausstehend (§25). */
+  offlinePendingCleanComplete?: boolean;
 }
 
 export interface ReturnDocument {

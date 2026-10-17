@@ -194,6 +194,7 @@ export function registerAuthRoutes(app: FastifyInstance, options: AuthRouteOptio
       return {
         appLocked: true,
         user: { firstName: context.user.firstName, lastName: context.user.lastName },
+        environment: config.appEnv,
       };
     }
     const permissions = await auth.effectivePermissions(context.user.id);
@@ -201,6 +202,8 @@ export function registerAuthRoutes(app: FastifyInstance, options: AuthRouteOptio
       appLocked: false,
       user: publicUser(context.user),
       permissions: [...permissions].sort(),
+      // Umgebungs-ID (Phase 8): Namespace des lokalen Offline-Arbeitsbereichs.
+      environment: config.appEnv,
     };
   });
 

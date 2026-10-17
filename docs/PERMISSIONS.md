@@ -131,3 +131,19 @@ Keine Pflichtbegründung.
 Admin kann definieren, dass bestimmte Live-Funktionen zusätzlich
 eine bestandene Demo-Übung erfordern.
 Admin kann Gate manuell übersteuern.
+
+## Offline (Phase 8)
+
+- Keine neuen Permission-Keys. Offline-Mutationen bilden 1:1 auf die
+  bestehenden Keys ab (`MUTATION_PERMISSIONS` in
+  `packages/offline/src/mutations.ts`, z. B. `handover.finalize` →
+  `handover.view` + `process.view_all` + `handover.perform`); der Server prüft
+  jede Mutation beim Sync erneut gegen die AKTUELLEN Rechte – ein widerrufenes
+  Recht führt zur Ablehnung (`PERMISSION_REVOKED`), nie zur Anwendung.
+- Ein Offline-Lease (72 h) erhalten nur Konten mit operativen Rechten
+  (`handover.view`, `return.view` oder `machine.view`). Der lokale
+  Rechte-Snapshot enthält ausschließlich operative Keys
+  (`OFFLINE_RELEVANT_PERMISSIONS`); Admin-, Finanz- und Systemrechte werden
+  nie übertragen und steuern lokal nur die Darstellung.
+- Der Lager-/Tabletmodus ist eine Darstellungsvariante pro Gerät und erweitert
+  keine Rechte; es gibt keine zusätzliche Lager-PIN.

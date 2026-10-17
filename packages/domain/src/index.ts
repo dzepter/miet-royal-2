@@ -3,7 +3,10 @@
  * Implementierung je Fachregel – CLAUDE.md). Phase 3: Preisengine,
  * Angebotsgültigkeit und Rabatt-Schwellenregeln. Phase 4: Termin-,
  * Vertretungs-, Konflikt- und Überfälligkeitsregeln (scheduling.ts).
+ * Phase 8: operative Übergabe-/Rückgabe-Blocker und Reinigungsregeln
+ * (operations.ts) – eine Implementierung für Server und Offline-Projektion.
  */
+export * from './operations.ts';
 export * from './scheduling.ts';
 export {
   CANISTER_SLUG,

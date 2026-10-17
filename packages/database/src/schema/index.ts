@@ -6,3 +6,4 @@ export * from './scheduling.ts';
 export * from './warehouse.ts';
 export * from './handover.ts';
 export * from './returns.ts';
+export * from './offline.ts';

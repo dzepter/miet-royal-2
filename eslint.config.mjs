@@ -37,5 +37,26 @@ export default tseslint.config(
       'no-console': 'off',
     },
   },
+  {
+    // Phase 8: Service Worker der Staff-PWA – klassisches Script im Worker-Scope.
+    files: ['apps/staff/public/sw.js'],
+    languageOptions: {
+      sourceType: 'script',
+      globals: {
+        self: 'readonly',
+        caches: 'readonly',
+        fetch: 'readonly',
+        Request: 'readonly',
+        Response: 'readonly',
+        URL: 'readonly',
+        AbortController: 'readonly',
+        setTimeout: 'readonly',
+        clearTimeout: 'readonly',
+        CryptoKey: 'readonly',
+        Date: 'readonly',
+        MessageChannel: 'readonly',
+      },
+    },
+  },
   prettierConfig,
 );

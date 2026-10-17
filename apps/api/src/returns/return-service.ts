@@ -33,6 +33,7 @@ import {
   SignatureImageError,
   type ReturnProtocolMachineSection,
 } from '@mietroyal/documents';
+import { returnBlockers } from '@mietroyal/domain';
 import type { StorageProvider } from '@mietroyal/integrations';
 import { and, asc, eq, isNull, lt, ne, sql } from 'drizzle-orm';
 import { AuthError } from '../auth/service.ts';
@@ -770,49 +771,36 @@ export class ReturnService {
     };
   }
 
-  /** Serverseitige Vorbedingungen der Finalisierung (Order §47) – auch für die UI. */
+  /**
+   * Serverseitige Vorbedingungen der Finalisierung (Order §47) – auch für die
+   * UI. Die Regel lebt in @mietroyal/domain (`returnBlockers`); dieselbe
+   * Implementierung nutzt die Offline-Projektion der Staff-PWA (Phase 8).
+   */
   private computeBlockers(
     ret: RentalReturn,
     machinesView: ReturnMachineView[],
     customerSigned: boolean,
     staffSigned: boolean,
   ): string[] {
-    if (ret.status === 'finalized') return [];
-    const blockers: string[] = [];
-    if (machinesView.length === 0) {
-      blockers.push('Keine ausgegebene Maschine – Rückgabe nicht möglich.');
-    }
-    if (ret.returnerKind === null || (ret.returnerName ?? '').trim() === '') {
-      blockers.push('Rückgabeperson (Kunde oder Vertreter) noch nicht bestimmt.');
-    }
-    for (const m of machinesView) {
-      if (m.accessoryComplete === null) {
-        blockers.push(`Maschine ${m.machineCode}: Zubehörkontrolle noch nicht bestätigt.`);
-      }
-      if (m.cleanlinessCheckedAt === null) {
-        blockers.push(
-          `Maschine ${m.machineCode}: Rückgabevorbereitung (entleert / zweimal gespült / nichts demontiert) noch nicht geprüft.`,
-        );
-      }
-      if (m.cleanupRequired && m.cleanupPhotos.length === 0) {
-        blockers.push(`Maschine ${m.machineCode}: Beweisfoto für die Reinigungsgebühr fehlt.`);
-      }
-      for (const damage of m.damages) {
-        if (damage.photos.length === 0) {
-          blockers.push(
-            `Schaden „${damage.description}“ an ${m.machineCode}: mindestens ein Foto fehlt.`,
-          );
-        }
-        if (damage.markers.length === 0) {
-          blockers.push(
-            `Schaden „${damage.description}“ an ${m.machineCode}: Markierung am Schema fehlt.`,
-          );
-        }
-      }
-    }
-    if (!customerSigned) blockers.push('Unterschrift Kunde / Vertreter fehlt.');
-    if (!staffSigned) blockers.push('Unterschrift Mitarbeiter fehlt.');
-    return blockers;
+    return returnBlockers({
+      returnStatus: ret.status,
+      returnerKind: ret.returnerKind,
+      returnerName: ret.returnerName,
+      machines: machinesView.map((m) => ({
+        machineCode: m.machineCode,
+        accessoryComplete: m.accessoryComplete,
+        cleanlinessCheckedAt: m.cleanlinessCheckedAt,
+        cleanupRequired: m.cleanupRequired,
+        cleanupPhotoCount: m.cleanupPhotos.length,
+        damages: m.damages.map((damage) => ({
+          description: damage.description,
+          photoCount: damage.photos.length,
+          markerCount: damage.markers.length,
+        })),
+      })),
+      customerSigned,
+      staffSigned,
+    });
   }
 
   // ── Entwurfssperre ───────────────────────────────────────────────────────
