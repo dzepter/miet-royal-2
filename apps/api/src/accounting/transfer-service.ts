@@ -188,6 +188,7 @@ export class AccountingTransferService {
   private async notifyPaymentStatus(
     row: AccountingTransferRow,
     status: 'open' | 'paid' | 'overdue',
+    changedAt: Date,
   ): Promise<void> {
     for (const listener of this.paymentStatusListeners) {
       try {
@@ -196,6 +197,7 @@ export class AccountingTransferService {
           settlementId: row.settlementId,
           cancellationId: row.cancellationId,
           status,
+          changedAt,
         });
       } catch {
         // Listener protokollieren selbst; der Zahlungsstatus ist bereits festgeschrieben.
@@ -1093,7 +1095,7 @@ export class AccountingTransferService {
         transient: phase2.transient,
       };
     });
-    if (afterCommit.paid !== null) await this.notifyPaymentStatus(afterCommit.paid, 'paid');
+    if (afterCommit.paid !== null) await this.notifyPaymentStatus(afterCommit.paid, 'paid', now);
     return result;
   }
 
@@ -1155,7 +1157,7 @@ export class AccountingTransferService {
     status: 'open' | 'paid' | 'overdue',
     now = new Date(),
   ): Promise<AccountingTransferRow> {
-    const updatedRow = await this.db.transaction(async (tx) => {
+    const outcome = await this.db.transaction(async (tx) => {
       const locked = await tx
         .select()
         .from(accountingTransfers)
@@ -1187,10 +1189,14 @@ export class AccountingTransferService {
           })
           .where(eq(cancellations.id, row.cancellationId));
       }
-      return updated[0] ?? row;
+      return { row: updated[0] ?? row, previous: row.paymentStatus };
     });
-    // Phase 11: Trigger A nach dem Commit (Gutschein-Prüfjob bei „bezahlt“).
-    await this.notifyPaymentStatus(updatedRow, status);
-    return updatedRow;
+    // Phase 11: Trigger A nach dem Commit (Gutschein-Prüfjob bei „bezahlt“) –
+    // nur bei echtem Statuswechsel (paid → paid erneut ⇒ kein neuer Job;
+    // overdue → paid ⇒ neuer Job mit eigenem Schlüssel, Review-Fund F1).
+    if (outcome.previous !== status) {
+      await this.notifyPaymentStatus(outcome.row, status, now);
+    }
+    return outcome.row;
   }
 }

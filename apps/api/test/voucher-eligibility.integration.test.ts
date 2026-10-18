@@ -112,10 +112,15 @@ describe('Entstehung (Tests 1–6, 14–17)', () => {
     const { admin, cookie } = await adminSession(ctx);
     const paid = await payAndCompleteWorld(ctx, admin.id, cookie);
     for (let i = 0; i < 3; i += 1) await setPaymentViaRoute(ctx, cookie, paid.transferId, 'paid');
+    // paid → paid erneut: kein Statuswechsel ⇒ kein weiterer Job.
+    expect((await jobRows()).filter((job) => job.idempotency_key.includes(':paid:'))).toHaveLength(
+      1,
+    );
     await setPaymentViaRoute(ctx, cookie, paid.transferId, 'open');
     await setPaymentViaRoute(ctx, cookie, paid.transferId, 'paid');
+    // paid → open → paid: echter Wechsel ⇒ genau ein weiterer Job (Review F1), weiterhin ein Gutschein.
     const jobs = await jobRows();
-    expect(jobs.filter((job) => job.idempotency_key.includes(':paid:'))).toHaveLength(1);
+    expect(jobs.filter((job) => job.idempotency_key.includes(':paid:'))).toHaveLength(2);
     await drainJobs(ctx);
     expect(await vouchersForSettlement(ctx, paid.settlementId)).toHaveLength(1);
     // Parallele Service-Aufrufe (zwei Instanzen) ⇒ weiterhin genau einer.

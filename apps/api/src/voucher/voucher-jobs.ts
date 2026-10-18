@@ -84,6 +84,8 @@ export interface PaymentStatusChangedEvent {
   settlementId: string | null;
   cancellationId: string | null;
   status: 'open' | 'paid' | 'overdue';
+  /** Zeitpunkt des Statuswechsels – Teil des Job-Schlüssels, damit paid → overdue → paid erneut prüft. */
+  changedAt: Date;
 }
 
 /** Schnittstelle, die `AccountingTransferService` NACH Commit bedient. */
@@ -116,7 +118,11 @@ export function createVoucherPaymentListener(
         await enqueueVoucherEligibility(queue, {
           settlementId: event.settlementId,
           trigger: 'paid',
-          key: voucherEligibilityIdempotencyKey(event.settlementId, 'paid', event.transferId),
+          key: voucherEligibilityIdempotencyKey(
+            event.settlementId,
+            'paid',
+            `${event.transferId}:${event.changedAt.toISOString()}`,
+          ),
         });
       } catch (error) {
         logger?.error(

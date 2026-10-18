@@ -42,7 +42,7 @@ import {
   type PdfVoucherBlock,
 } from '@mietroyal/documents';
 import type { PermissionKey } from '@mietroyal/permissions';
-import { and, asc, eq, isNull } from 'drizzle-orm';
+import { and, asc, eq, isNull, sql } from 'drizzle-orm';
 import { AuthError } from '../auth/service.ts';
 import { customerDisplayName } from '../crm/customer-service.ts';
 import type { DocumentService } from './document-service.ts';
@@ -1344,6 +1344,20 @@ export class OfferService {
       // §30: Gutschein erneut prüfen – unzulässig (abgelaufen, eingelöst,
       // fremd reserviert) ⇒ entfernen und Reservierung freigeben.
       if (next.voucherId !== null) {
+        // §32/§28: War die ersetzte Version kein lebendes Angebot mehr
+        // (abgelaufen, abgelehnt, Rückfrage), gilt ihre Reservierung nicht
+        // weiter – der Entwurf behält den Gutschein, aber erst der nächste
+        // Versand reserviert erneut (ein Entwurf reserviert nie).
+        const previousLive =
+          current.status === 'sent' &&
+          current.expiresAt !== null &&
+          current.expiresAt.getTime() > Date.now();
+        if (!previousLive) {
+          await this.voucherService.releaseReservation(tx, {
+            voucherId: next.voucherId,
+            offerId,
+          });
+        }
         const { customerId } = await this.customerIdForOffer(tx, offerId);
         const usable = await this.voucherUsableFor(
           tx,
@@ -1367,10 +1381,20 @@ export class OfferService {
     await this.db.transaction(async (tx) => {
       // Bedingtes Update statt Read-then-Write: eine zeitgleiche Annahme
       // (Status → accepted) kann so nie von einer Ablehnung überschrieben werden.
+      // Nur die AKTUELLE, nicht ersetzte Version kann abgelehnt werden – eine
+      // superseded Version darf weder Status noch Gutschein-Reservierung der
+      // Nachfolgeversion beeinflussen (Phase 11, §28/§29).
       const updated = await tx
         .update(offerVersions)
         .set({ status: 'declined', declinedAt: new Date(), updatedAt: new Date() })
-        .where(and(eq(offerVersions.id, versionId), eq(offerVersions.status, 'sent')))
+        .where(
+          and(
+            eq(offerVersions.id, versionId),
+            eq(offerVersions.status, 'sent'),
+            isNull(offerVersions.supersededAt),
+            sql`${offerVersions.id} = (SELECT current_version_id FROM offers WHERE id = ${offerVersions.offerId})`,
+          ),
+        )
         .returning({
           id: offerVersions.id,
           offerId: offerVersions.offerId,
@@ -1378,9 +1402,13 @@ export class OfferService {
         });
       const declined = updated[0];
       if (declined === undefined) {
-        throw new AuthError('CONFLICT', 'Nur versendete Angebote können abgelehnt werden.');
+        throw new AuthError(
+          'CONFLICT',
+          'Nur die aktuelle, versendete Angebotsversion kann abgelehnt werden.',
+        );
       }
-      // Phase 11 (§32): Reservierung des Gutscheins sofort freigeben.
+      // Phase 11 (§32): Reservierung des Gutscheins sofort freigeben (die
+      // abgelehnte Version ist die aktuelle – kein lebendes Angebot trägt ihn mehr).
       if (declined.voucherId !== null) {
         await this.voucherService.releaseReservation(tx, {
           voucherId: declined.voucherId,

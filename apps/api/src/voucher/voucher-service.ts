@@ -329,6 +329,18 @@ export class VoucherService {
         .for('share');
       const settlement = settlementRows[0];
       if (settlement === undefined) return { outcome: 'ineligible', reasons: ['NO_BOOKING'] };
+      // Maschinen des Returns FOR SHARE sperren: serialisiert gegen Nachtrags-
+      // Schaden und Reinigungsabschluss (beide sperren die Maschine exklusiv),
+      // damit „Schaden vor Reinigungsende“ nie zwischen den Prüfungen landet.
+      if (settlement.returnId !== null) {
+        await tx.execute(sql`
+          SELECT m.id FROM machines m
+          INNER JOIN return_machines rm ON rm.machine_id = m.id
+          WHERE rm.return_id = ${settlement.returnId}
+          ORDER BY m.id
+          FOR SHARE OF m
+        `);
+      }
       const eligibility = await this.assessSettlement(tx, settlement, now);
       if (!eligibility.eligible || eligibility.context === undefined) {
         if (eligibility.reasons.includes('ALREADY_ISSUED')) {
@@ -480,33 +492,7 @@ export class VoucherService {
     now: Date,
   ): Promise<VoucherRow> {
     if (voucher.status !== 'reserved' || voucher.reservedOfferId === null) return voucher;
-    const offerRows = await tx
-      .select({ currentVersionId: offers.currentVersionId })
-      .from(offers)
-      .where(eq(offers.id, voucher.reservedOfferId));
-    const currentVersionId = offerRows[0]?.currentVersionId ?? null;
-    if (currentVersionId !== null) {
-      const versionRows = await tx
-        .select({
-          status: offerVersions.status,
-          supersededAt: offerVersions.supersededAt,
-          expiresAt: offerVersions.expiresAt,
-          voucherId: offerVersions.voucherId,
-        })
-        .from(offerVersions)
-        .where(eq(offerVersions.id, currentVersionId));
-      const version = versionRows[0];
-      if (version !== undefined) {
-        if (version.status === 'accepted') return voucher;
-        const carries = version.voucherId === voucher.id;
-        const sentAndValid =
-          version.status === 'sent' &&
-          version.supersededAt === null &&
-          version.expiresAt !== null &&
-          version.expiresAt.getTime() > now.getTime();
-        if (carries && (sentAndValid || version.status === 'draft')) return voucher;
-      }
-    }
+    if (await this.reservationStillHeld(tx, voucher, now)) return voucher;
     const updated = await tx
       .update(vouchers)
       .set({
@@ -519,6 +505,46 @@ export class VoucherService {
       .where(and(eq(vouchers.id, voucher.id), eq(vouchers.version, voucher.version)))
       .returning();
     return updated[0] ?? voucher;
+  }
+
+  /**
+   * Hält das reservierende Angebot die Reservierung noch? Ja, wenn seine
+   * aktuelle Version den Gutschein trägt und entweder ein Entwurf ist
+   * (Versionierung, §30) oder versendet, nicht superseded und nicht abgelaufen
+   * (§32). Eine angenommene Version hält immer (dann ist der Gutschein eingelöst).
+   * Reine Leseprüfung – wird von der Freigabe und von den Statusansichten genutzt.
+   */
+  private async reservationStillHeld(
+    executor: DatabaseExecutor,
+    voucher: VoucherRow,
+    now: Date,
+  ): Promise<boolean> {
+    if (voucher.reservedOfferId === null) return false;
+    const offerRows = await executor
+      .select({ currentVersionId: offers.currentVersionId })
+      .from(offers)
+      .where(eq(offers.id, voucher.reservedOfferId));
+    const currentVersionId = offerRows[0]?.currentVersionId ?? null;
+    if (currentVersionId === null) return false;
+    const versionRows = await executor
+      .select({
+        status: offerVersions.status,
+        supersededAt: offerVersions.supersededAt,
+        expiresAt: offerVersions.expiresAt,
+        voucherId: offerVersions.voucherId,
+      })
+      .from(offerVersions)
+      .where(eq(offerVersions.id, currentVersionId));
+    const version = versionRows[0];
+    if (version === undefined) return false;
+    if (version.status === 'accepted') return true;
+    const carries = version.voucherId === voucher.id;
+    const sentAndValid =
+      version.status === 'sent' &&
+      version.supersededAt === null &&
+      version.expiresAt !== null &&
+      version.expiresAt.getTime() > now.getTime();
+    return carries && (sentAndValid || version.status === 'draft');
   }
 
   // ── Reservierung / Freigabe (Order §§28–33) ────────────────────────────
@@ -620,6 +646,10 @@ export class VoucherService {
       input.machineSubtotalCents <= 0 ||
       voucherDiscountCents(input.machineSubtotalCents) !== input.expectedDiscountCents
     ) {
+      throw new VoucherError('VOUCHER_UNAVAILABLE');
+    }
+    if (Math.floor((voucher.expiresAt.getTime() - input.now.getTime()) / 1000) <= 0) {
+      // Letzte Sekunde vor Ablauf: keine positive Restgültigkeit mehr ⇒ nicht einlösbar (409, kein 500).
       throw new VoucherError('VOUCHER_UNAVAILABLE');
     }
     const remaining = remainingValiditySeconds(voucher.expiresAt, input.now);
@@ -726,8 +756,22 @@ export class VoucherService {
 
   // ── Views (Order §§52–53) ──────────────────────────────────────────────
 
-  private toSummary(row: VoucherRow, processNumber: string | null, now: Date): VoucherSummary {
-    const status = voucherEffectiveStatus(row.status, row.expiresAt, now);
+  /**
+   * Anzeige-Status: eine Reservierung, deren Angebot nicht mehr annehmbar ist
+   * (abgelaufen/abgelehnt ohne Nachfolgeversion), gilt als „Aktiv“ (§32 lazy);
+   * geschrieben wird hier nichts – die Freigabe erfolgt beim nächsten Zugriff.
+   */
+  private async toSummary(
+    row: VoucherRow,
+    processNumber: string | null,
+    now: Date,
+  ): Promise<VoucherSummary> {
+    let status = voucherEffectiveStatus(row.status, row.expiresAt, now);
+    let reservedOfferId = row.reservedOfferId;
+    if (status === 'reserved' && !(await this.reservationStillHeld(this.db, row, now))) {
+      status = 'active';
+      reservedOfferId = null;
+    }
     return {
       id: row.id,
       status,
@@ -736,7 +780,7 @@ export class VoucherService {
       maskedReference: maskVoucherCode(row.codeSuffix),
       deliveryStatus: row.deliveryStatus,
       deliveryLabel: VOUCHER_DELIVERY_LABELS[row.deliveryStatus],
-      reservedOfferId: row.reservedOfferId,
+      reservedOfferId,
       originProcessId: row.originProcessId,
       originProcessNumber: processNumber,
     };
