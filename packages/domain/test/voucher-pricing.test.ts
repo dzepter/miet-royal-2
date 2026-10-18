@@ -3,9 +3,14 @@
  * aller Maschinenmietpositionen, half-up auf ganze Cent, nur Maschinenmiete
  * (nicht Lieferung/Kanister/Kommission), Inklusiv-Artikel irrelevant,
  * Nicht-Kombinierbarkeit strukturell in der Preisengine. Reine Unit-Tests.
+ *
+ * Phase 11 Final (F1–F12): Nur ein MASCHINEN-Sonderpreis (auch 0 EUR) schließt
+ * den Gutschein aus; Sonderpreise auf Kaufartikeln/Kommissionsartikeln und der
+ * individuelle Lieferpreis bleiben erlaubt und ändern den Gutscheinbetrag nicht.
  */
 import { describe, expect, it } from 'vitest';
 import {
+  hasMachineSpecialPrice,
   priceOffer,
   PricingError,
   VOUCHER_DISCOUNT_PERCENT,
@@ -79,6 +84,16 @@ function base(machine = machine1x8, quantity = 1) {
     strawsProduct: straws,
     selections: [],
     fulfillment: 'pickup' as const,
+  };
+}
+
+function special(lineKey: string, unitPriceCents: number) {
+  return {
+    lineKey,
+    unitPriceCents,
+    previousStandardCents: 6000,
+    byUserId: 'u',
+    at: '2026-01-01T00:00:00.000Z',
   };
 }
 
@@ -184,42 +199,150 @@ describe('Gutschein-Preisregel (57–63)', () => {
     ).toThrow(PricingError);
   });
 
-  it('71–77 (strukturell). Gutschein + manueller Rabatt/Sonderpreis ⇒ VOUCHER_NOT_COMBINABLE_MESSAGE', () => {
+  it('71./72. (strukturell) Gutschein + manueller %-/EUR-Rabatt ⇒ VOUCHER_NOT_COMBINABLE_MESSAGE', () => {
     expect(() =>
       priceOffer({ ...base(machine1x8), discount: { type: 'percent', value: 500 }, voucher }),
     ).toThrow(VOUCHER_NOT_COMBINABLE_MESSAGE);
     expect(() =>
       priceOffer({ ...base(machine1x8), discount: { type: 'fixed', value: 100 }, voucher }),
     ).toThrow(VOUCHER_NOT_COMBINABLE_MESSAGE);
+  });
+
+  it('F1./F2. (strukturell, vormals 73/74/77) Gutschein + MASCHINEN-Sonderpreis (auch 0 EUR) ⇒ VOUCHER_NOT_COMBINABLE_MESSAGE', () => {
+    expect(() =>
+      priceOffer({ ...base(machine1x8), specialPrices: [special('machine', 5000)], voucher }),
+    ).toThrow(VOUCHER_NOT_COMBINABLE_MESSAGE);
+    expect(() =>
+      priceOffer({ ...base(machine1x8), specialPrices: [special('machine', 0)], voucher }),
+    ).toThrow(VOUCHER_NOT_COMBINABLE_MESSAGE);
+    // Ohne Gutschein ist der Maschinen-Sonderpreis regulär möglich.
+    const plain = priceOffer({ ...base(machine1x8), specialPrices: [special('machine', 5000)] });
+    expect(plain.machineSubtotalCents).toBe(5000);
+    expect(hasMachineSpecialPrice(plain.lineItems)).toBe(true);
+  });
+
+  it('F5. (strukturell) Gutschein + individueller Lieferpreis erlaubt', () => {
+    const result = priceOffer({
+      ...base(machine1x8),
+      fulfillment: 'delivery',
+      deliveryPriceCents: 4900,
+      voucher,
+    });
+    expect(result.voucherDiscountCents).toBe(1200);
+    expect(result.lineItems.find((line) => line.kind === 'delivery')?.priceSource).toBe('manual');
+    expect(hasMachineSpecialPrice(result.lineItems)).toBe(false);
+  });
+
+  it('F6. (strukturell) Gutschein + Kaufartikel-Sonderpreis (Mischkanister, auch 0 EUR) erlaubt', () => {
+    const result = priceOffer({
+      ...base(machine1x8),
+      selections: [{ product: canister, role: 'extra', quantity: 2 }],
+      specialPrices: [special(`extra:${canister.id}`, 400)],
+      voucher,
+    });
+    expect(result.voucherDiscountCents).toBe(1200);
+    expect(result.machineSubtotalAfterVoucherCents).toBe(4800);
+    const line = result.lineItems.find((item) => item.lineKey === `extra:${canister.id}`)!;
+    expect(line.kind).toBe('purchase');
+    expect(line.priceSource).toBe('special');
+    expect(line.totalCents).toBe(800);
+    expect(result.fixedTotalCents).toBe(5600); // 6000 − 1200 + 2 × 400
+    const zero = priceOffer({
+      ...base(machine1x8),
+      selections: [{ product: canister, role: 'extra', quantity: 1 }],
+      specialPrices: [special(`extra:${canister.id}`, 0)],
+      voucher,
+    });
+    expect(zero.voucherDiscountCents).toBe(1200);
+    expect(zero.fixedTotalCents).toBe(4800);
+  });
+
+  it('F7. (strukturell) Gutschein + Sonderpreis auf Kommissionsartikel (Sirup/Becher) erlaubt', () => {
+    const result = priceOffer({
+      ...base(machine1x8),
+      selections: [
+        { product: syrupKirsche, role: 'extra', quantity: 3 },
+        { product: cups, role: 'extra', quantity: 2 },
+      ],
+      specialPrices: [special(`extra:${syrupKirsche.id}`, 1000), special(`extra:${cups.id}`, 200)],
+      voucher,
+    });
+    expect(result.voucherDiscountCents).toBe(1200);
+    expect(result.commissionMaxCents).toBe(3400); // 3 × 1000 + 2 × 200
+    expect(result.fixedTotalCents).toBe(4800);
+    expect(
+      result.lineItems
+        .filter((item) => item.priceSource === 'special')
+        .map((item) => item.kind)
+        .sort(),
+    ).toEqual(['consumable', 'syrup']);
+  });
+
+  it('F10. (strukturell) Gemischt (Maschine + Nicht-Maschine) ⇒ blockiert; Inklusiv-Positionen nie Sonderpreis', () => {
     expect(() =>
       priceOffer({
         ...base(machine1x8),
-        specialPrices: [
-          {
-            lineKey: 'machine',
-            unitPriceCents: 5000,
-            previousStandardCents: 6000,
-            byUserId: 'u',
-            at: '2026-01-01T00:00:00.000Z',
-          },
-        ],
+        selections: [{ product: canister, role: 'extra', quantity: 1 }],
+        specialPrices: [special('machine', 5000), special(`extra:${canister.id}`, 400)],
         voucher,
       }),
     ).toThrow(VOUCHER_NOT_COMBINABLE_MESSAGE);
-    expect(() =>
-      priceOffer({
-        ...base(machine1x8),
-        specialPrices: [
-          {
-            lineKey: 'machine',
-            unitPriceCents: 0,
-            previousStandardCents: 6000,
-            byUserId: 'u',
-            at: '2026-01-01T00:00:00.000Z',
-          },
-        ],
-        voucher,
-      }),
-    ).toThrow(VOUCHER_NOT_COMBINABLE_MESSAGE);
+    // Ein verwaister Eintrag auf eine nicht vorhandene Position ist kein Maschinen-Sonderpreis.
+    const orphan = priceOffer({
+      ...base(machine1x8),
+      specialPrices: [special('extra:unbekannt', 1)],
+      voucher,
+    });
+    expect(orphan.voucherDiscountCents).toBe(1200);
+    // Ein "included:*"-Schlüssel kann nie eine Maschinen-Position treffen.
+    const included = priceOffer({
+      ...base(machine1x8),
+      specialPrices: [special('included:cups', 1)],
+      voucher,
+    });
+    expect(included.lineItems.find((item) => item.lineKey === 'included:cups')?.priceSource).toBe(
+      'included',
+    );
+    expect(included.voucherDiscountCents).toBe(1200);
+  });
+
+  it('F11./F12. Gutschein = exakt 20 % der Maschinenmietsumme; Nicht-Maschinen-Sonderpreis ändert den Betrag nicht', () => {
+    const without = priceOffer({
+      ...base(machine2x10, 3),
+      selections: [{ product: canister, role: 'extra', quantity: 2 }],
+      voucher,
+    });
+    const withSpecial = priceOffer({
+      ...base(machine2x10, 3),
+      selections: [{ product: canister, role: 'extra', quantity: 2 }],
+      specialPrices: [special(`extra:${canister.id}`, 100)],
+      voucher,
+    });
+    expect(without.machineSubtotalCents).toBe(36000);
+    expect(without.voucherDiscountCents).toBe(voucherDiscountCents(36000));
+    expect(without.voucherDiscountCents).toBe(7200);
+    expect(withSpecial.machineSubtotalCents).toBe(36000);
+    expect(withSpecial.voucherDiscountCents).toBe(7200);
+    expect(withSpecial.machineSubtotalAfterVoucherCents).toBe(28800);
+    // Nur der Kaufartikel-Anteil ändert sich (2 × (500 − 100) = 800).
+    expect(without.fixedTotalCents - withSpecial.fixedTotalCents).toBe(800);
+  });
+
+  it('hasMachineSpecialPrice entscheidet anhand Kind + Quelle, nicht anhand des lineKeys', () => {
+    expect(hasMachineSpecialPrice([])).toBe(false);
+    const result = priceOffer({
+      ...base(machine1x8),
+      selections: [{ product: canister, role: 'extra', quantity: 1 }],
+      specialPrices: [special(`extra:${canister.id}`, 400)],
+    });
+    expect(hasMachineSpecialPrice(result.lineItems)).toBe(false);
+    const machineLine = result.lineItems.find((item) => item.kind === 'machine')!;
+    expect(hasMachineSpecialPrice([{ ...machineLine, priceSource: 'special' }])).toBe(true);
+    expect(
+      hasMachineSpecialPrice([{ ...machineLine, lineKey: 'extra:x', priceSource: 'special' }]),
+    ).toBe(true);
+    expect(
+      hasMachineSpecialPrice([{ ...machineLine, kind: 'purchase', priceSource: 'special' }]),
+    ).toBe(false);
   });
 });

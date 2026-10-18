@@ -1448,7 +1448,11 @@ Keine spontanen Framework-/ORM-Wechsel (CLAUDE.md „Dependencies“).
 - **Konnektivität (Order §78)**: `navigator.onLine` ist nur ein Hinweis;
   maßgeblich ist der authentifizierte Health-Check `/staff/offline/status`
   (verlängert die Aktivität nicht), 60-s-Intervall plus online/offline-
-  Events; jeder Offline→Online-Übergang startet den Sync.
+  Events; jeder Offline→Online-Übergang startet den Sync. Jeder Offline-
+  Übergang erhöht eine Konnektivitäts-Epoche (`ConnectivityEpoch`): eine
+  Health-Check-Antwort, die erst nach dem Übergang ausgewertet wird (Antwort
+  lesen und Serverzeit persistieren sind asynchron), ist veraltet, setzt den
+  Zustand nicht auf „online“ und startet keinen Sync (Phase 11 §3, Flake L6a).
 - **Serverseitige Idempotenz (Order §§28, 63, 64)**: `offline_mutation_receipts`
   (PK clientMutationId, Status processing/applied/conflict/rejected,
   technische `result_ref`). Replay einer angewandten ID liefert dieselbe
@@ -2083,13 +2087,48 @@ Shell cwd was reset to /home/user/Sparkoffer.de
   (6) Kunden-/Vorgangsansicht zeigt eine Reservierung auf ein totes Angebot
   als „Aktiv“ (lazy, ohne Schreibzugriff); (7) `applyVoucher` prüft „bereits
   ein Gutschein angewendet“ vor der Code-Validierung (keine Rückschlüsse auf
-  einen zweiten Code). Bewusste Entscheidung: JEDER Sonderpreis am Angebot
-  (auch auf Zusatzartikeln) schließt den Gutschein aus – strenger als der
-  Wortlaut „Maschinen-Sonderpreis“, weil Sonderpreise auf Nicht-Maschinen nur
-  als Nebeneffekt der Preisengine existieren und eine zweite Rabattquelle
-  wären; der vereinbarte Lieferpreis ist kein Sonderpreis und bleibt möglich.
+  einen zweiten Code). (8, Phase 11 Final – ersetzt die frühere strengere
+  Entscheidung „jeder Sonderpreis blockiert“): NUR ein Sonderpreis auf einer
+  MASCHINEN-Position (auch 0 EUR) schließt den Gutschein aus. Sonderpreise auf
+  Kaufartikeln (Mischkanister) und Kommissionsartikeln sowie der vereinbarte
+  Lieferpreis bleiben mit dem Gutschein erlaubt, weil der Gutschein allein auf
+  der Maschinenmiet-Zwischensumme rechnet und diese Positionen sie nicht
+  berühren. Autoritative Stelle: `hasMachineSpecialPrice(lineItems)` in der
+  Preisengine (Kind `machine` + Quelle `special` der SERVERSEITIG berechneten
+  Positionen – nie der Client-lineKey). `priceOffer` wirft strukturell bei
+  Gutschein + Maschinen-Sonderpreis (greift damit in Recompute, Versand und
+  Versionierung); `applyVoucher` prüft per Probeberechnung ohne Gutschein,
+  `setSpecialPrice` löst die Zielposition per Probeberechnung auf und blockiert
+  bei gesetztem Gutschein nur `kind === 'machine'`. Gemischt ⇒ blockiert. Die
+  Staff-UI sperrt bei aktivem Gutschein nur die Sonderpreis-Bedienung der
+  Maschinenzeile (`special-price-blocked-by-voucher`).
 - **Bewusst offen (Phase 11, Kern)**: Versand (Phase 12), Konfigurator
   (Phase 16); Hinweis zur Neuausgabe-Variante des Reinigungs-Triggers: eine
   Maschine in Reinigung ist fachlich nicht zuweisbar, der Pfad ist heute nur
   defensiv vorhanden.
+- **Kein Klartextcode über stdout/CI-Logs (Phase 11 Final, Punkt 2)**: Das
+  frühere Testskript `apps/api/scripts/e2e-voucher-reveal.ts` (gab den
+  Klartextcode als JSON-Zeile auf stdout des Kindprozesses aus, damit die
+  E2E-Spec ihn lesen konnte) ist vollständig entfernt – stdout eines
+  Kindprozesses landet in CI-Protokollen. Die Phase-11-E2E-Spec erhält den
+  Code jetzt ausschließlich IN-PROCESS: `tests/e2e/helpers/voucher.ts`
+  (`revealVoucherCode`) importiert `decryptDeliveryCode` aus
+  `apps/api/src/voucher/voucher-crypto.ts` direkt (Playwright transpiliert
+  TS; das Modul hängt nur von `node:crypto` ab) und entschlüsselt die Spalte
+  `delivery_code_ciphertext` des in Szenario A automatisch erzeugten
+  Gutscheins mit dem Schlüssel der E2E-API (development-Default aus
+  `packages/config/src/load-config.ts`, bzw. ein in der Shell gesetztes
+  `AUTH_SECRET_KEY`, das die API ebenfalls erbt). Der Klartext lebt nur in
+  einer Spec-Variablen und wird nur in das Eingabefeld getippt, das sich nach
+  erfolgreichem Anwenden leert; Reporter ist `list`, Screenshots/Traces/Videos
+  sind nicht konfiguriert. Verworfen: ein (Test-)HTTP-Endpunkt (wäre eine
+  Produkt-Angriffsfläche), eine Klartextdatei, ein synthetischer Voucher per
+  DB-Insert (Szenario A würde dann nicht mehr die echte Kette prüfen).
+  `VoucherDeliveryService.revealCodeForDelivery` bleibt die serverinterne
+  Phase-12-Boundary ohne Route und ohne Ausgabe. Nachweise: Integrationstests
+  F16/F17/F19/F20 in `voucher-security.integration.test.ts` (API-Log über den
+  In-Prozess-Jobrunner der API, Worker-Log mit eigenem `JobRunner`-Logger,
+  Routentabelle `printRoutes` ohne reveal/code/vouchers-Pfad, kein
+  Schreib-/stdout-Zugriff, Script existiert nicht), F21 = Delivery-Tests
+  97–105 unverändert, F15/F18 = Voucher-E2E ohne Script.
 

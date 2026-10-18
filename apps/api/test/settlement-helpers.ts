@@ -109,6 +109,11 @@ export interface FinalizedReturnOptions {
    * im Entwurf VOR dem Versand angewendet wird (Agent O, voucher-offer-helpers).
    */
   voucherCodeFor?: (customerId: string) => Promise<string>;
+  /**
+   * Phase 11 (Final, F13/F14): Sonderpreise auf Zusatzartikeln (`extra:<productId>`,
+   * per Slug aufgelöst) – werden VOR dem Gutschein im Entwurf gesetzt.
+   */
+  specialPrices?: { slug: string; unitPriceCents: number }[];
 }
 
 export interface FinalizedReturn extends ScheduledBooking {
@@ -172,6 +177,13 @@ async function acceptedBookingWithOptions(
       reason: options.discount.reason ?? 'Testrabatt',
     });
     await services.offers.approveDiscount(adminId, versionId);
+  }
+  for (const special of options.specialPrices ?? []) {
+    const product = await products.getProductBySlug(special.slug);
+    await services.offers.setSpecialPrice(adminId, versionId, effective, {
+      lineKey: `extra:${product.id}`,
+      unitPriceCents: special.unitPriceCents,
+    });
   }
   if (options.voucherCodeFor !== undefined) {
     const code = await options.voucherCodeFor(world.customerId);

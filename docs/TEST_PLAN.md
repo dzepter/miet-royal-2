@@ -102,6 +102,31 @@ Phase-11-Tests (Angebot/Storno/Abrechnung/Security, Agent O):
   identische neutrale Antworten, keine Client-Steuerung von %/Betrag/Besitzer/
   Status/Reservierung, keine Reaktivierungsroute).
 
+Phase 11 Final, Punkt 2 (kein Klartextcode über stdout/CI-Logs; Pflichttests
+F15–F21):
+- F15 `tests/e2e/specs/voucher-flow.spec.ts` (A–J, L) und
+  `voucher-lexware.spec.ts` (K) laufen ohne Reveal-Script: der Klartext entsteht
+  in-process (`helpers/voucher.ts` `revealVoucherCode`, Entschlüsselung der
+  Versandkopie mit der Serverfunktion `decryptDeliveryCode`); Szenario A prüft
+  weiterhin die echte automatische Erzeugung und `sha256(code) == code_hash`.
+- F16/F17 `apps/api/test/voucher-security.integration.test.ts`: API-Log (In-
+  Prozess-Jobrunner der API über `run-due-jobs`, trace) und Worker-Log (eigener
+  `JobRunner` mit Logger wie `apps/worker`) enthalten nach
+  `voucher.eligibility_check` nur IDs/Outcome – nie Code, Hash, Versandkopie.
+- F18 E2E-Prozesslogs: der Helfer startet keinen Kindprozess für den Code,
+  gibt nichts aus und schreibt nichts; API-/Worker-stdout (Playwright-WebServer)
+  sind durch F16/F17 abgedeckt; `expectNoPlaintextCode` prüft UI/API-Texte.
+- F19 `voucher-security.integration.test.ts`: Routentabelle (`printRoutes`)
+  ohne reveal/code/vouchers-/test-Pfad, einziger Gutschein-Pfad ist
+  Apply/Remove am Entwurf; Kunden-/Vorgangs-/Angebots-/öffentliche Antworten
+  ohne Code/Hash/Kopie; denkbare Test-/Reveal-Endpunkte ⇒ 404.
+- F20 `voucher-security.integration.test.ts`: Script existiert nicht mehr,
+  `voucher-delivery.ts` ohne fs/console/stdout, `revealCodeForDelivery` ohne
+  stdout/stderr/Log; eine Klartextdatei entsteht nirgends (Helfer schreibt
+  keine Datei – statisch nachvollziehbar, kein eigener Laufzeittest sinnvoll).
+- F21 `apps/api/test/voucher-delivery.integration.test.ts` 97–105 unverändert
+  grün (`VoucherDeliveryService` bleibt serverinterne Boundary).
+
 ## Anzahlung/Kaution
 Anzahlung korrekt abziehen.
 Kaution separat, Teil-Einbehalt mit Grund.

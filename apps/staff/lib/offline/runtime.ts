@@ -1,6 +1,7 @@
 'use client';
 
 import {
+  ConnectivityEpoch,
   LeaseInvalidError,
   OFFLINE_LEASE_MAX_MS,
   OFFLINE_MIGRATIONS,
@@ -236,7 +237,9 @@ export class OfflineRuntime {
   private persistenceRequested = false;
   private initPromise: { key: string; promise: Promise<void> } | null = null;
   private packageRefresh: Promise<boolean> | null = null;
-  private connectivityCheck: Promise<ConnectivityResult> | null = null;
+  private connectivityCheck: { epoch: number; promise: Promise<ConnectivityResult> } | null = null;
+  /** Offline-Übergänge zählen: späte Antworten älterer Prüfungen melden kein „online“ mehr. */
+  private readonly connectivityEpoch = new ConnectivityEpoch();
   private clockMaxSeenMs = 0;
   private clockServerMs = 0;
   private syncRequested = false;
@@ -383,7 +386,10 @@ export class OfflineRuntime {
     if (this.monitorBound || typeof window === 'undefined') return;
     this.monitorBound = true;
     window.addEventListener('online', () => void this.checkConnectivity(true));
-    window.addEventListener('offline', () => this.emit({ connectivity: 'offline' }));
+    window.addEventListener('offline', () => {
+      this.connectivityEpoch.bump();
+      this.emit({ connectivity: 'offline' });
+    });
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'visible') void this.checkConnectivity(true);
     });
@@ -398,20 +404,44 @@ export class OfflineRuntime {
    * die Aktivität NICHT). navigator.onLine ist nur ein Hinweis.
    */
   async checkConnectivity(triggerSync = false): Promise<ConnectivityResult> {
-    // Gleichzeitige Prüfungen (Provider, Offline-Router, Timer) teilen sich EINEN Aufruf.
-    if (this.connectivityCheck !== null) return this.connectivityCheck;
-    const check = this.runConnectivityCheck(triggerSync).finally(() => {
-      this.connectivityCheck = null;
-    });
-    this.connectivityCheck = check;
-    return check;
+    // Gleichzeitige Prüfungen (Provider, Offline-Router, Timer) teilen sich EINEN Aufruf –
+    // außer die laufende Prüfung stammt aus einer Epoche vor dem letzten Offline-Übergang:
+    // deren Ergebnis ist veraltet, ein online-Event braucht eine frische Prüfung.
+    const epoch = this.connectivityEpoch.value;
+    if (this.connectivityCheck !== null && this.connectivityCheck.epoch === epoch) {
+      return this.connectivityCheck.promise;
+    }
+    const entry = {
+      epoch,
+      promise: this.runConnectivityCheck(triggerSync, epoch).finally(() => {
+        if (this.connectivityCheck === entry) this.connectivityCheck = null;
+      }),
+    };
+    this.connectivityCheck = entry;
+    return entry.promise;
   }
 
-  private async runConnectivityCheck(triggerSync: boolean): Promise<ConnectivityResult> {
-    if (typeof navigator !== 'undefined' && navigator.onLine === false) {
-      this.emit({ connectivity: 'offline' });
-      return { online: false, appLocked: false, unauthenticated: false };
-    }
+  private async runConnectivityCheck(
+    triggerSync: boolean,
+    epoch: number,
+  ): Promise<ConnectivityResult> {
+    const offlineResult: ConnectivityResult = {
+      online: false,
+      appLocked: false,
+      unauthenticated: false,
+    };
+    // Zwischen Start und Auswertung offline gegangen (offline-Event erhöht die Epoche
+    // oder der Browser meldet offline)? Dann darf diese Antwort den Zustand nicht mehr
+    // auf „online“ setzen und keinen Sync starten. Nur bei navigator.onLine === false
+    // wird „offline“ gemeldet – bei bloß überholter Epoche hat das Event das bereits
+    // getan, und eine jüngere Prüfung darf nicht nachträglich überschrieben werden.
+    const wentOffline = (): boolean => {
+      const navigatorOnLine = typeof navigator === 'undefined' ? undefined : navigator.onLine;
+      if (!this.connectivityEpoch.isStale(epoch, navigatorOnLine)) return false;
+      if (navigatorOnLine === false) this.emit({ connectivity: 'offline' });
+      return true;
+    };
+    if (wentOffline()) return offlineResult;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), STATUS_TIMEOUT_MS);
     try {
@@ -423,12 +453,7 @@ export class OfflineRuntime {
           signal: controller.signal,
         },
       );
-      if (typeof navigator !== 'undefined' && navigator.onLine === false) {
-        // Antwort eines noch laufenden Checks, das Gerät ist inzwischen offline: nicht
-        // mit einem veralteten „online“ überschreiben.
-        this.emit({ connectivity: 'offline' });
-        return { online: false, appLocked: false, unauthenticated: false };
-      }
+      if (wentOffline()) return offlineResult;
       const online = response.status < 500;
       const unauthenticated = response.status === 401;
       let appLocked = false;
@@ -442,6 +467,9 @@ export class OfflineRuntime {
         } | null;
         appLocked = body?.error?.code === 'APP_LOCKED';
       }
+      // Auch das Lesen der Antwort und das Persistieren der Serverzeit sind asynchron:
+      // erst unmittelbar vor dem Statuswechsel entscheiden, ob die Antwort noch gilt.
+      if (wentOffline()) return offlineResult;
       const previous = this.state.connectivity;
       this.emit({ connectivity: online ? 'online' : 'offline' });
       if (unauthenticated && !appLocked) {
@@ -458,8 +486,10 @@ export class OfflineRuntime {
       }
       return { online, appLocked, unauthenticated: false };
     } catch {
-      this.emit({ connectivity: 'offline' });
-      return { online: false, appLocked: false, unauthenticated: false };
+      // Fehlgeschlagen/abgebrochen: „offline“ nur melden, wenn keine jüngere Prüfung
+      // (nach einem Offline→Online-Übergang) den Zustand inzwischen bestimmt.
+      if (!wentOffline()) this.emit({ connectivity: 'offline' });
+      return offlineResult;
     } finally {
       clearTimeout(timer);
     }

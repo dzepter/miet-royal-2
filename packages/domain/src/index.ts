@@ -27,6 +27,7 @@ export {
   daysUntilEventBerlin,
   discountNeedsApproval,
   discountNeedsReason,
+  hasMachineSpecialPrice,
   offerExpiresAt,
   offerValidityDays,
   priceOffer,

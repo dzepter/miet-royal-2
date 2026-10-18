@@ -72,7 +72,10 @@ export interface PricingInput {
   /**
    * Wiedermieter-Gutschein (Phase 11, §24): 20 % auf die SUMME aller
    * Maschinenmietpositionen. Nicht kombinierbar mit manuellem Rabatt oder
-   * Sonderpreis (§22) – die Prüfung erfolgt hier strukturell UND im Service.
+   * einem MASCHINEN-Sonderpreis (§22, auch 0 EUR) – die Prüfung erfolgt hier
+   * strukturell UND im Service. Sonderpreise auf Nicht-Maschinen-Positionen
+   * (Kaufartikel, Kommissionsartikel) und der individuelle Lieferpreis sind
+   * mit dem Gutschein erlaubt; sie ändern die Maschinenmiet-Summe nicht.
    */
   voucher?: { discountPercent: 20 } | null;
 }
@@ -114,6 +117,17 @@ export interface PricingResult {
   /** Gratis-Sirup-Kontingent in Litern (Behälter × Maschinenanzahl). */
   freeSyrupBudgetLiters: number;
   notes: string[];
+}
+
+/**
+ * Liegt ein Sonderpreis auf einer MASCHINEN-Position vor? Entscheidung
+ * ausschließlich anhand der berechneten Positionen (Kind `machine` +
+ * Quelle `special`) – nie anhand eines Client-lineKeys allein. Das ist die
+ * eine autoritative Stelle für „Maschinen-Sonderpreis“ (Gutschein-Sperre,
+ * Phase 11 §22): Service und UI leiten davon ab.
+ */
+export function hasMachineSpecialPrice(lineItems: readonly PricedLineItem[]): boolean {
+  return lineItems.some((item) => item.kind === 'machine' && item.priceSource === 'special');
 }
 
 export class PricingError extends Error {
@@ -423,7 +437,10 @@ export function priceOffer(input: PricingInput): PricingResult {
     if (discountCents > 0 || input.discount) {
       throw new PricingError(VOUCHER_NOT_COMBINABLE_MESSAGE);
     }
-    if ((input.specialPrices ?? []).length > 0) {
+    // Nur ein Sonderpreis auf der MASCHINEN-Position (auch 0 EUR) schließt
+    // den Gutschein aus; Kaufartikel-/Kommissions-Sonderpreise und der
+    // Lieferpreis bleiben erlaubt (Rabattbasis ist allein die Maschinenmiete).
+    if (hasMachineSpecialPrice(lineItems)) {
       throw new PricingError(VOUCHER_NOT_COMBINABLE_MESSAGE);
     }
     if (machineSubtotalCents <= 0) {
