@@ -9,3 +9,4 @@ export * from './returns.ts';
 export * from './offline.ts';
 export * from './settlement.ts';
 export * from './lexware.ts';
+export * from './voucher.ts';

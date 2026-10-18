@@ -18,6 +18,12 @@
  *   Gesamtbetrag nie unter 0.
  */
 
+import {
+  VOUCHER_DISCOUNT_PERCENT,
+  VOUCHER_NOT_COMBINABLE_MESSAGE,
+  voucherDiscountCents as computeVoucherDiscountCents,
+} from './voucher.ts';
+
 export type BillingMode = 'fixed' | 'commission' | 'included';
 export type LineItemKind = 'machine' | 'syrup' | 'consumable' | 'purchase' | 'delivery';
 export type PriceSource = 'list' | 'special' | 'manual' | 'included';
@@ -63,6 +69,12 @@ export interface PricingInput {
   deliveryPriceCents?: number | null;
   discount?: { type: 'percent' | 'fixed'; value: number; reason?: string | null } | null;
   specialPrices?: readonly SpecialPriceEntry[];
+  /**
+   * Wiedermieter-Gutschein (Phase 11, §24): 20 % auf die SUMME aller
+   * Maschinenmietpositionen. Nicht kombinierbar mit manuellem Rabatt oder
+   * Sonderpreis (§22) – die Prüfung erfolgt hier strukturell UND im Service.
+   */
+  voucher?: { discountPercent: 20 } | null;
 }
 
 export interface PricedLineItem {
@@ -91,6 +103,10 @@ export interface PricingResult {
   discountCents: number;
   /** Effektiver Rabatt in Basispunkten gegen den Maschinen-Subtotal. */
   discountEffectiveBp: number;
+  /** Wiedermieter-Gutschein (Phase 11): 20 % der Maschinenmiet-Summe, half-up; 0 ohne Gutschein. */
+  voucherDiscountCents: number;
+  /** Maschinenmiete nach Gutschein (= machineSubtotalCents − voucherDiscountCents). */
+  machineSubtotalAfterVoucherCents: number;
   /** FESTER ANGEBOTSWERT (nach Rabatt, nie < 0 – erzwungen). */
   fixedTotalCents: number;
   /** Kommissionsartikel: möglicher Höchstwert bei vollem Verbrauch. */
@@ -398,7 +414,26 @@ export function priceOffer(input: PricingInput): PricingResult {
     }
   }
 
-  const fixedTotalCents = fixedSubtotalCents - discountCents;
+  // ── Wiedermieter-Gutschein (Phase 11, §22/§24/§25) ───────────────────────
+  let voucherDiscountCents = 0;
+  if (input.voucher !== null && input.voucher !== undefined) {
+    if (input.voucher.discountPercent !== VOUCHER_DISCOUNT_PERCENT) {
+      throw new PricingError('Unbekannte Gutscheinart.');
+    }
+    if (discountCents > 0 || input.discount) {
+      throw new PricingError(VOUCHER_NOT_COMBINABLE_MESSAGE);
+    }
+    if ((input.specialPrices ?? []).length > 0) {
+      throw new PricingError(VOUCHER_NOT_COMBINABLE_MESSAGE);
+    }
+    if (machineSubtotalCents <= 0) {
+      throw new PricingError('Ein Gutschein benötigt eine Maschinenmiete als Basis.');
+    }
+    voucherDiscountCents = computeVoucherDiscountCents(machineSubtotalCents);
+  }
+  const machineSubtotalAfterVoucherCents = machineSubtotalCents - voucherDiscountCents;
+
+  const fixedTotalCents = fixedSubtotalCents - discountCents - voucherDiscountCents;
   if (fixedTotalCents < 0) {
     // Strukturell unmöglich (Rabatt ≤ Maschinen-Subtotal ≤ fixedSubtotal),
     // aber als harte Invariante abgesichert: Gesamtbetrag nie unter 0.
@@ -411,6 +446,8 @@ export function priceOffer(input: PricingInput): PricingResult {
     fixedSubtotalCents,
     discountCents,
     discountEffectiveBp,
+    voucherDiscountCents,
+    machineSubtotalAfterVoucherCents,
     fixedTotalCents,
     commissionMaxCents,
     freeSyrupBudgetLiters,

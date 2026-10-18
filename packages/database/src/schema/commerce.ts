@@ -241,6 +241,17 @@ export const offerVersions = pgTable(
     machineSubtotalCents: integer('machine_subtotal_cents'),
     discountCents: integer('discount_cents'),
     fixedTotalCents: integer('fixed_total_cents'),
+    // Wiedermieter-Gutschein (Phase 11, §§20–31): angewendeter Gutschein (Entwurf)
+    // – kein FK auf vouchers (Importzyklus), Integrität im Service.
+    voucherId: uuid('voucher_id'),
+    /** 20 % der Maschinenmiet-Summe (half-up), 0 ohne Gutschein; beim Versand eingefroren. */
+    voucherDiscountCents: integer('voucher_discount_cents').notNull().default(0),
+    /**
+     * Beim Versand eingefrorener Gutschein-Snapshot (§27): { voucherId, voucherType,
+     * discountPercent, machineSubtotalBeforeVoucherCents, voucherDiscountCents,
+     * machineSubtotalAfterVoucherCents, maskedReference } – NIE der Klartextcode.
+     */
+    voucherSnapshot: jsonb('voucher_snapshot'),
     // Versand-/Lebenszyklus:
     sentAt: timestamp('sent_at', { withTimezone: true }),
     sentBy: uuid('sent_by').references(() => staffUsers.id),
@@ -385,6 +396,14 @@ export const bookings = pgTable('bookings', {
   fulfillment: fulfillmentType('fulfillment').notNull(),
   deliverySnapshot: jsonb('delivery_snapshot'),
   termsVersionId: uuid('terms_version_id').references(() => termsVersions.id),
+  /** Eingelöster Wiedermieter-Gutschein (Phase 11, §37) – kein FK (Importzyklus). */
+  voucherId: uuid('voucher_id'),
+  /**
+   * Unveränderlicher Gutschein-Snapshot (§37): { voucherId, voucherDiscountPercent: 20,
+   * voucherDiscountCents, machineSubtotalBeforeVoucherCents, machineSubtotalAfterVoucherCents }.
+   * Spätere Reaktivierung/Ablauf ändern ihn NIE. Kein Klartextcode.
+   */
+  voucherSnapshot: jsonb('voucher_snapshot'),
   acceptedAt: timestamp('accepted_at', { withTimezone: true }).notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });

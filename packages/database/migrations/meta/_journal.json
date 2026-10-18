@@ -141,6 +141,13 @@
       "when": 1792266005109,
       "tag": "0019_lexware_integration",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1792308537860,
+      "tag": "0020_voucher_returning_customer",
+      "breakpoints": true
     }
   ]
 }

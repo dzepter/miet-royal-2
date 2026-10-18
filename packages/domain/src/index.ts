@@ -6,7 +6,8 @@
  * Phase 8: operative Übergabe-/Rückgabe-Blocker und Reinigungsregeln
  * (operations.ts) – eine Implementierung für Server und Offline-Projektion.
  * Phase 9: Abrechnungs-Summen, Kommissionsregel, 24-h-Fenster und Storno-
- * Berechnung (settlement.ts).
+ * Berechnung (settlement.ts). Phase 11: Wiedermieter-Gutschein – 20 %-Regel,
+ * Kalendermonats-Gültigkeit, Code-Normalisierung (voucher.ts).
  */
 export * from './operations.ts';
 export * from './scheduling.ts';
@@ -40,3 +41,4 @@ export {
   type SpecialPriceEntry,
 } from './pricing.ts';
 export * from './settlement.ts';
+export * from './voucher.ts';
