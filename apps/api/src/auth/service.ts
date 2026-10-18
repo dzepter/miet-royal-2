@@ -58,7 +58,9 @@ export type AuthErrorCode =
   | 'NOT_FOUND'
   | 'CONFLICT'
   | 'LAST_ADMIN'
-  | 'FORBIDDEN';
+  | 'FORBIDDEN'
+  /** Phase 11: Gutschein beim Versand/bei der Annahme nicht (mehr) verfügbar – 409. */
+  | 'VOUCHER_UNAVAILABLE';
 
 export class AuthError extends Error {
   readonly code: AuthErrorCode;

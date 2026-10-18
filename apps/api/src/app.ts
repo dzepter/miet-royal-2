@@ -29,8 +29,10 @@ import type { AccountingGateway } from './accounting/gateway.ts';
 import {
   createAccountingGatewayFor,
   createAccountingTransferService,
+  createVoucherTriggers,
   registerFinanceJobHandlers,
 } from './jobs/finance.ts';
+import { VoucherService } from './voucher/voucher-service.ts';
 import { LexwareConnectionService } from './lexware/connection-service.ts';
 import { createLexwareContext, type LexwareContext } from './lexware/context.ts';
 import { createLexwareTransferDeps } from './lexware/lexware-gateway.ts';
@@ -335,12 +337,17 @@ export function buildApp({
       const notices = noticeGateway ?? createSettlementNoticeGateway(config);
       const queue = jobQueue ?? new PostgresJobQueue(pool);
       const connection = lexwareConnection ?? new LexwareConnectionService(lexware);
+      // Phase 11: Gutschein-Trigger (Zahlung → paid, Reinigungsende) reihen
+      // nur Jobs auf die PostgreSQL-Queue ein; Entscheidung im VoucherService.
+      const voucherTriggers = createVoucherTriggers({ db, queue, logger: app.log });
+      const voucherService = new VoucherService(db, config, app.log);
       const transfers = createAccountingTransferService({
         db,
         queue,
         accountingGateway: accounting,
         lexware,
         lexwareConnection: connection,
+        paymentStatusListeners: [voucherTriggers.paymentStatusListener],
       });
       // Eine Storno-Instanz für die Storno-Routen UND die Legacy-Storno-Route
       // (Vorgänge mit bestätigter Buchung werden nur über diesen Pfad storniert).
@@ -351,7 +358,13 @@ export function buildApp({
         transfers,
         logger: app.log,
       });
-      registerCrmRoutes(instance, { db, auth: authService, config, cancellationService });
+      registerCrmRoutes(instance, {
+        db,
+        auth: authService,
+        config,
+        cancellationService,
+        vouchers: voucherService,
+      });
       registerCommerceRoutes(instance, {
         db,
         auth: authService,
@@ -376,12 +389,14 @@ export function buildApp({
         auth: authService,
         config,
         storage: storageProvider,
+        cleaningEndedListener: voucherTriggers.cleaningEndedListener,
       });
       registerHandoverRoutes(instance, {
         db,
         auth: authService,
         config,
         storage: storageProvider,
+        cleaningEndedListener: voucherTriggers.cleaningEndedListener,
       });
       // Phase 9: nach erfolgreicher Finalisierung (online wie offline-sync)
       // entsteht die Abrechnung – idempotent, außerhalb der Finalisierungs-Transaktion.
@@ -403,6 +418,7 @@ export function buildApp({
         config,
         storage: storageProvider,
         finalizedListeners: [settlementListener],
+        cleaningEndedListener: voucherTriggers.cleaningEndedListener,
       });
       registerOfflineRoutes(instance, {
         db,
@@ -410,6 +426,7 @@ export function buildApp({
         config,
         storage: storageProvider,
         finalizedListeners: [settlementListener],
+        cleaningEndedListener: voucherTriggers.cleaningEndedListener,
       });
       // Nicht gestarteter Runner: verarbeitet Finanz-Jobs nur auf Anforderung
       // der Mock-Steuerung (nicht in production); den Dauerbetrieb übernimmt
@@ -424,6 +441,7 @@ export function buildApp({
         lexware,
         lexwareConnection: connection,
         logger: app.log,
+        paymentStatusListeners: [voucherTriggers.paymentStatusListener],
       });
       registerSettlementRoutes(instance, {
         db,

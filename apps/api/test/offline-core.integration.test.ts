@@ -1591,6 +1591,23 @@ describe('Sync-Sicherheit (Order §§21, 62, 74, 75; Tests 86, 99, 104–108)', 
       },
     });
     expect(finance.statusCode).toBe(400);
+    // Phase 11 (Test 127): Gutschein-Anwendung ist keine Offline-Mutation (strict Schema).
+    const voucherApply = await ctx.app.inject({
+      method: 'POST',
+      url: '/staff/offline/sync',
+      headers: { cookie: staff.cookie },
+      payload: {
+        deviceId: DEVICE,
+        environment: 'development',
+        clientTime: new Date().toISOString(),
+        mutation: mutation({
+          type: 'voucher.apply',
+          contextId: world.bookingId,
+          payload: { code: 'MR20-AAAA-BBBB-CCCC' },
+        }),
+      },
+    });
+    expect(voucherApply.statusCode).toBe(400);
     // Force-/Override-Flag auf Request-Ebene existiert nicht (Test 91).
     const forced = await ctx.app.inject({
       method: 'POST',

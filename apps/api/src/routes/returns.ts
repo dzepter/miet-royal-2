@@ -13,6 +13,7 @@ import { buildVisibilityContext } from '../crm/visibility.ts';
 import { AssignmentService } from '../handover/assignment-service.ts';
 import { DamageService } from '../returns/damage-service.ts';
 import { ReturnService, type ReturnFinalizedListener } from '../returns/return-service.ts';
+import type { CleaningEndedListener } from '../voucher/voucher-jobs.ts';
 import { SchedulingService } from '../scheduling/scheduling-service.ts';
 import { InventoryService } from '../warehouse/inventory-service.ts';
 import { MachineService } from '../warehouse/machine-service.ts';
@@ -88,6 +89,8 @@ interface ReturnRouteOptions {
   storage: StorageProvider;
   /** Phase 9: Nachlauf nach erfolgreicher Finalisierung (Abrechnung anlegen) – verdrahtet in app.ts. */
   finalizedListeners?: readonly ReturnFinalizedListener[];
+  /** Phase 11: Reinigungsende ⇒ Gutschein-Prüfjob (Trigger B). */
+  cleaningEndedListener?: CleaningEndedListener;
 }
 
 function decodeBase64(value: string, maxBytes: number): Uint8Array | null {
@@ -102,8 +105,8 @@ function decodeBase64(value: string, maxBytes: number): Uint8Array | null {
 }
 
 export function registerReturnRoutes(app: FastifyInstance, options: ReturnRouteOptions): void {
-  const { db, auth, config, storage, finalizedListeners } = options;
-  const machineService = new MachineService(db, storage);
+  const { db, auth, config, storage, finalizedListeners, cleaningEndedListener } = options;
+  const machineService = new MachineService(db, storage, cleaningEndedListener);
   const assignments = new AssignmentService(db, machineService, storage);
   const inventory = new InventoryService(db);
   const documentService = new DocumentService(db, storage);

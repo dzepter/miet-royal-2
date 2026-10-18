@@ -116,6 +116,7 @@ sein, sonst bricht der Start ab (siehe `docs/ENVIRONMENTS.md`). Danach:
 | `pnpm check:env-isolation a.env b.env` | Prüft, dass zwei Umgebungen DB/Storage/Secrets nicht teilen                                     |
 | `pnpm offline:lease-key`               | Öffentlichen Offline-Lease-Verifikationsschlüssel der Umgebung ausgeben (Staff)                 |
 | `pnpm settlement:ensure`               | Abrechnungen für finalisierte Rückgaben idempotent nachziehen (Phase 9)                         |
+| `pnpm voucher:ensure`                  | Wiedermieter-Gutscheine für bezahlte, berechtigte Abrechnungen idempotent nachziehen (Phase 11) |
 | `pnpm lexware:setup`                   | Lexware-Verbindung prüfen und Event-Subscriptions idempotent einrichten (Phase 10)              |
 | `pnpm lexware:reconcile`               | Zahlungs-/Rechnungsstatus offener Lexware-Rechnungen gezielt abgleichen (kein Polling)          |
 | `pnpm lexware:smoke`                   | Manueller Lese-Smoke gegen einen bewusst konfigurierten Lexware-Testaccount (`LEXWARE_SMOKE=1`) |

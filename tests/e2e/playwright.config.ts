@@ -94,8 +94,9 @@ export default defineConfig({
         ...chromiumLaunch,
       },
       // Der WebKit-Smoke ist iPhone/iPad-spezifisch; Chromium deckt ihn über offline-flow ab.
-      // Die Lexware-Spec läuft nur im Projekt `lexware` (zweite API-/Staff-Instanz).
-      testIgnore: [/pwa-smoke\.spec\.ts$/, /lexware-flow\.spec\.ts$/],
+      // Die Lexware-Specs laufen nur im Projekt `lexware` (zweite API-/Staff-Instanz);
+      // Phase 11: voucher-lexware.spec.ts (Szenario K – Zahlungs-Webhook ⇒ Gutschein).
+      testIgnore: [/pwa-smoke\.spec\.ts$/, /lexware-flow\.spec\.ts$/, /voucher-lexware\.spec\.ts$/],
     },
     ...(WEBKIT_ENABLED
       ? [
@@ -113,7 +114,7 @@ export default defineConfig({
         ...chromiumLaunch,
         baseURL: `http://127.0.0.1:${LEXWARE_STAFF_PORT}`,
       },
-      testMatch: /lexware-flow\.spec\.ts$/,
+      testMatch: /(lexware-flow|voucher-lexware)\.spec\.ts$/,
     },
   ],
   webServer: [

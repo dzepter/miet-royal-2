@@ -26,6 +26,7 @@ import { ReturnService, type ReturnFinalizedListener } from '../returns/return-s
 import { SchedulingService } from '../scheduling/scheduling-service.ts';
 import { InventoryService } from '../warehouse/inventory-service.ts';
 import { MachineService } from '../warehouse/machine-service.ts';
+import type { CleaningEndedListener } from '../voucher/voucher-jobs.ts';
 import { UUID_PATTERN } from './auth.ts';
 
 /** Ein Request je Mutation; Fotos (≤ 6 MB) + Unterschrift Base64-kodiert (Order §§27/30). */
@@ -42,6 +43,8 @@ interface OfflineRouteOptions {
   storage: StorageProvider;
   /** Phase 9: Nachlauf nach erfolgreicher Finalisierung (Abrechnung anlegen) – verdrahtet in app.ts. */
   finalizedListeners?: readonly ReturnFinalizedListener[];
+  /** Phase 11: Reinigungsende ⇒ Gutschein-Prüfjob (Trigger B) – verdrahtet in app.ts. */
+  cleaningEndedListener?: CleaningEndedListener;
 }
 
 /**
@@ -50,8 +53,8 @@ interface OfflineRouteOptions {
  * gültige Session; außer dem Statusendpunkt auch eine entsperrte.
  */
 export function registerOfflineRoutes(app: FastifyInstance, options: OfflineRouteOptions): void {
-  const { db, auth, config, storage } = options;
-  const machineService = new MachineService(db, storage);
+  const { db, auth, config, storage, cleaningEndedListener } = options;
+  const machineService = new MachineService(db, storage, cleaningEndedListener);
   const assignments = new AssignmentService(db, machineService, storage);
   const inventory = new InventoryService(db);
   const documentService = new DocumentService(db, storage);

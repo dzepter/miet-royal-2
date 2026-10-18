@@ -110,6 +110,9 @@ const draftSchema = z.object({
   selections: z.array(selectionSchema).max(50).optional(),
 });
 
+/** Phase 11 (§20/§59): nur der Code – Prozent/Beträge/Besitzer/Status sind nie Client-Eingaben. */
+const voucherApplySchema = z.object({ code: z.string().min(1).max(64) }).strict();
+
 const discountSchema = z
   .object({
     type: z.enum(['percent', 'fixed']),
@@ -471,6 +474,41 @@ export function registerCommerceRoutes(app: FastifyInstance, options: CommerceRo
       const effective = await auth.effectivePermissions(context.user.id);
       await offerService.setSpecialPrice(context.user.id, params.id, effective, body);
       return { updated: true };
+    } catch (error) {
+      if (sendAuthError(request, reply, error)) return;
+      throw error;
+    }
+  });
+
+  // ── Wiedermieter-Gutschein im Entwurf (Phase 11, §§20–23, §33) ──────────
+  // Normale Entwurfsrechte (offer.edit_draft) – kein discount.*-Recht (§23/§56).
+  // Der Request-Body (Code) wird nie geloggt (Fastify loggt keine Bodies).
+
+  app.post('/staff/offer-versions/:id/voucher', async (request, reply) => {
+    const context = await requireAuth(request, reply, auth, config);
+    if (context === null) return;
+    if (!(await requirePermission(request, reply, auth, context, 'offer.edit_draft'))) return;
+    const params = parseOrThrow(idParams, request.params, 'params');
+    const body = parseOrThrow(voucherApplySchema, request.body);
+    if (!(await requireVisibleVersion(request, reply, context, params.id))) return;
+    try {
+      await offerService.applyVoucher(context.user.id, params.id, body.code);
+      return { applied: true };
+    } catch (error) {
+      if (sendAuthError(request, reply, error)) return;
+      throw error;
+    }
+  });
+
+  app.delete('/staff/offer-versions/:id/voucher', async (request, reply) => {
+    const context = await requireAuth(request, reply, auth, config);
+    if (context === null) return;
+    if (!(await requirePermission(request, reply, auth, context, 'offer.edit_draft'))) return;
+    const params = parseOrThrow(idParams, request.params, 'params');
+    if (!(await requireVisibleVersion(request, reply, context, params.id))) return;
+    try {
+      await offerService.removeVoucher(context.user.id, params.id);
+      return { removed: true };
     } catch (error) {
       if (sendAuthError(request, reply, error)) return;
       throw error;

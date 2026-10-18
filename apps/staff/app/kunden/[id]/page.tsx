@@ -7,10 +7,12 @@ import { AuthGuard, useMe } from '../../../components/auth-guard';
 import { ConfirmDialog } from '../../../components/confirm-dialog';
 import { apiFetch, hasPermission, type Me } from '../../../lib/api';
 import {
+  formatBerlinDate,
   formatEventDate,
   STATUS_BADGE_CLASS,
   STATUS_LABELS,
   type ProcessRow,
+  type VoucherSummary,
 } from '../../../lib/crm';
 import { formatBerlin } from '../../../lib/handover';
 import {
@@ -44,6 +46,8 @@ interface CustomerDetail {
     orderReference: string | null;
   };
   processes: ProcessRow[];
+  /** Phase 11 (§52): Wiederkehrer-Gutschein – nur wenn vorhanden; nie der Code. */
+  voucher?: VoucherSummary | null;
 }
 
 function CustomerView() {
@@ -191,6 +195,38 @@ function CustomerView() {
       )}
 
       <LexwareContactBlock customerId={params.id} me={me} />
+
+      {detail.voucher ? (
+        <div className="card" data-testid="customer-voucher">
+          <h2>Wiederkehrer-Gutschein</h2>
+          <p>
+            <span
+              className={`badge ${detail.voucher.status === 'active' ? 'active' : detail.voucher.status === 'reserved' ? '' : 'locked'}`}
+              data-testid="customer-voucher-status"
+            >
+              {detail.voucher.statusLabel}
+              {detail.voucher.status === 'active' || detail.voucher.status === 'reserved'
+                ? ` – gültig bis ${formatBerlinDate(detail.voucher.expiresAt)}`
+                : ''}
+            </span>{' '}
+            <span className="muted" data-testid="customer-voucher-delivery">
+              {detail.voucher.deliveryLabel}
+            </span>
+          </p>
+          <p className="muted">
+            20 % auf die Maschinenmiete eines neuen Mietvorgangs · Referenz{' '}
+            <code data-testid="customer-voucher-reference">{detail.voucher.maskedReference}</code>
+            {detail.voucher.originProcessNumber !== null && (
+              <>
+                {' · '}aus Vorgang{' '}
+                <Link href={`/vorgaenge/${detail.voucher.originProcessId}`}>
+                  {detail.voucher.originProcessNumber}
+                </Link>
+              </>
+            )}
+          </p>
+        </div>
+      ) : null}
 
       <div className="card">
         <h2>Vorgänge</h2>

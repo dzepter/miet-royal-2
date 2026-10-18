@@ -27,6 +27,9 @@ try {
   await pool.query('TRUNCATE process_notes, processes, customers, system_settings CASCADE');
   // Phase 9: keine Finanz-Jobs früherer Specs (würden auf gelöschte Abrechnungen zeigen).
   await pool.query('TRUNCATE integration_jobs');
+  // Phase 11: Gutscheine/Einlösungen explizit leeren (hängen per FK an
+  // customers/processes/bookings und gingen oben per CASCADE mit – hier bewusst sichtbar).
+  await pool.query('TRUNCATE voucher_redemptions, vouchers CASCADE');
   // Phase 10: Lexware-Zustand und Steuerkonfiguration je Spec frisch (Fake-Account wechselt).
   await pool.query(
     'TRUNCATE lexware_webhook_events, lexware_invoice_mappings, lexware_contact_mappings, lexware_integration_state, lexware_rate_limit, accounting_tax_config',

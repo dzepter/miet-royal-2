@@ -32,6 +32,7 @@ import {
   type ProviderSnapshotV2,
 } from '../lexware/invoice-builder.ts';
 import { decimalToCents, MoneyConversionError } from '../lexware/money.ts';
+import type { PaymentStatusListener } from '../voucher/voucher-jobs.ts';
 import type { TaxConfigService } from '../lexware/tax-config-service.ts';
 import { assessTransferReadiness, type ReadinessBlocker } from '../lexware/transfer-readiness.ts';
 import {
@@ -175,7 +176,34 @@ export class AccountingTransferService {
     private readonly queue: JobQueue,
     /** Phase 10: nur beim Provider „lexware“ nötig (zweiphasiger Pfad). */
     private readonly lexware?: LexwareTransferDeps,
+    /**
+     * Phase 11 (Order §7): Zahlungsstatus-Listener (Gutschein-Trigger A),
+     * aufgerufen NACH dem Commit – nie innerhalb der Transaktion. Keine
+     * Gutscheinlogik hier; die Listener reihen nur Jobs ein.
+     */
+    private readonly paymentStatusListeners: readonly PaymentStatusListener[] = [],
   ) {}
+
+  /** Listener nach Commit benachrichtigen; Fehler dürfen den Aufrufer nicht stören. */
+  private async notifyPaymentStatus(
+    row: AccountingTransferRow,
+    status: 'open' | 'paid' | 'overdue',
+    changedAt: Date,
+  ): Promise<void> {
+    for (const listener of this.paymentStatusListeners) {
+      try {
+        await listener.paymentStatusChanged({
+          transferId: row.id,
+          settlementId: row.settlementId,
+          cancellationId: row.cancellationId,
+          status,
+          changedAt,
+        });
+      } catch {
+        // Listener protokollieren selbst; der Zahlungsstatus ist bereits festgeschrieben.
+      }
+    }
+  }
 
   get provider(): AccountingGateway['provider'] {
     return this.gateway.provider;
@@ -866,7 +894,9 @@ export class AccountingTransferService {
     hooks: TransferHooks,
     now: Date,
   ): Promise<ExecuteTransferResult> {
-    return this.db.transaction(async (tx): Promise<ExecuteTransferResult> => {
+    // Phase 11: bereits bezahlte Rechnung beim Anlegen ⇒ Listener NACH dem Commit.
+    const afterCommit: { paid: AccountingTransferRow | null } = { paid: null };
+    const result = await this.db.transaction(async (tx): Promise<ExecuteTransferResult> => {
       let phase2 = phase2Input;
       const row = await this.lockRow(tx, phase1.row.id);
       if (row.status === 'succeeded') return { outcome: 'already_succeeded', row };
@@ -954,6 +984,7 @@ export class AccountingTransferService {
           paymentStatus: 'open',
         });
         await this.mirrorDelivery(tx, successRow, now, paymentStatus);
+        if (paymentStatus === 'paid') afterCommit.paid = successRow;
         deps.context.logger.info(
           { lexware: { action: 'transfer_success', transferId: row.id, invoiceId: invoice.id } },
           'Lexware-Rechnung erstellt',
@@ -1064,6 +1095,8 @@ export class AccountingTransferService {
         transient: phase2.transient,
       };
     });
+    if (afterCommit.paid !== null) await this.notifyPaymentStatus(afterCommit.paid, 'paid', now);
+    return result;
   }
 
   private normalizedStatus(
@@ -1124,7 +1157,7 @@ export class AccountingTransferService {
     status: 'open' | 'paid' | 'overdue',
     now = new Date(),
   ): Promise<AccountingTransferRow> {
-    return this.db.transaction(async (tx) => {
+    const outcome = await this.db.transaction(async (tx) => {
       const locked = await tx
         .select()
         .from(accountingTransfers)
@@ -1156,7 +1189,14 @@ export class AccountingTransferService {
           })
           .where(eq(cancellations.id, row.cancellationId));
       }
-      return updated[0] ?? row;
+      return { row: updated[0] ?? row, previous: row.paymentStatus };
     });
+    // Phase 11: Trigger A nach dem Commit (Gutschein-Prüfjob bei „bezahlt“) –
+    // nur bei echtem Statuswechsel (paid → paid erneut ⇒ kein neuer Job;
+    // overdue → paid ⇒ neuer Job mit eigenem Schlüssel, Review-Fund F1).
+    if (outcome.previous !== status) {
+      await this.notifyPaymentStatus(outcome.row, status, now);
+    }
+    return outcome.row;
   }
 }

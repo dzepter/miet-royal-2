@@ -104,6 +104,11 @@ export interface FinalizedReturnOptions {
   missing?: { machineIndex?: number; accessoryType: 'lid' | 'drip_tray'; quantity: number }[];
   /** Zeitpunkt der Rückgabe-Finalisierung (Default: jetzt). */
   now?: Date;
+  /**
+   * Phase 11: liefert einen Gutscheincode des (gerade erzeugten) Kunden, der
+   * im Entwurf VOR dem Versand angewendet wird (Agent O, voucher-offer-helpers).
+   */
+  voucherCodeFor?: (customerId: string) => Promise<string>;
 }
 
 export interface FinalizedReturn extends ScheduledBooking {
@@ -167,6 +172,10 @@ async function acceptedBookingWithOptions(
       reason: options.discount.reason ?? 'Testrabatt',
     });
     await services.offers.approveDiscount(adminId, versionId);
+  }
+  if (options.voucherCodeFor !== undefined) {
+    const code = await options.voucherCodeFor(world.customerId);
+    await services.offers.applyVoucher(adminId, versionId, code);
   }
   const { token } = await services.offers.send(adminId, versionId, effective);
   const { bookingId } = await services.offers.accept(token);

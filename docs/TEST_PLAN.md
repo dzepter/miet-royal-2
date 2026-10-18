@@ -85,6 +85,23 @@ Versand „ausstehend“, Zahlungsstatus, IDOR/Key-Leaks), E2E
 - nur Maschinenmiete
 - nicht kombinierbar
 
+Phase-11-Tests (Angebot/Storno/Abrechnung/Security, Agent O):
+- `packages/domain/test/voucher-pricing.test.ts`: 57–63 (eine/mehrere Maschinen,
+  half-up, Lieferung/Kanister/Kommission/Inklusiv unberührt, Nicht-Kombinierbarkeit
+  strukturell).
+- `apps/api/test/voucher-offer.integration.test.ts`: 42–56 (Entwurf/Reservierung/
+  Versionierung/Freigabe/Cap/Annahme/Races/Booking-Snapshot), 64–68 (Staff, öffentlich,
+  PDF + AB, Snapshot friert ein), 71–80 (nicht kombinierbar, keine Rabattrechte,
+  Lieferpreis unabhängig).
+- `apps/api/test/voucher-cancellation.integration.test.ts`: 81–96 (0 % reaktiviert
+  denselben Gutschein, Restgültigkeit, Retry/Replay, 50/100 % verbraucht, Stornobasis
+  100 EUR + Gutschein + 50 % ⇒ 50 EUR, Folgevorgang).
+- `apps/api/test/voucher-settlement.integration.test.ts` (Lexware-Fake): 69/70
+  (Rabattzeile exakt einmal, Lexware negative Position mit Mietsteuersatz).
+- `apps/api/test/voucher-offer-security.integration.test.ts`: 114–123 (IDOR,
+  identische neutrale Antworten, keine Client-Steuerung von %/Betrag/Besitzer/
+  Status/Reservierung, keine Reaktivierungsroute).
+
 ## Anzahlung/Kaution
 Anzahlung korrekt abziehen.
 Kaution separat, Teil-Einbehalt mit Grund.

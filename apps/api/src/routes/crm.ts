@@ -16,6 +16,7 @@ import { ProcessService } from '../crm/process-service.ts';
 import { SearchService } from '../crm/search-service.ts';
 import { getCompletedVisibilityDays, setCompletedVisibilityDays } from '../crm/settings-service.ts';
 import { buildVisibilityContext } from '../crm/visibility.ts';
+import type { VoucherService } from '../voucher/voucher-service.ts';
 import { UUID_PATTERN } from './auth.ts';
 import { sendCancellationError } from './cancellation.ts';
 
@@ -61,10 +62,16 @@ interface CrmRouteOptions {
    * Route mit 409 auf den Storno-Pfad verwiesen.
    */
   cancellationService?: CancellationService;
+  /**
+   * Phase 11: Wiedermieter-Gutschein in Kundenprofil/Vorgang (nur Status,
+   * Gültigkeit, maskierte Referenz – nie Code/Hash/Versandkopie). Ohne
+   * Instanz liefern die Routen `voucher: null`.
+   */
+  vouchers?: VoucherService;
 }
 
 export function registerCrmRoutes(app: FastifyInstance, options: CrmRouteOptions): void {
-  const { db, auth, config, cancellationService } = options;
+  const { db, auth, config, cancellationService, vouchers } = options;
   const customersService = new CustomerService(db);
   const processService = new ProcessService(db);
   const searchService = new SearchService(db);
@@ -114,7 +121,10 @@ export function registerCrmRoutes(app: FastifyInstance, options: CrmRouteOptions
       const processesForCustomer = effective.has('process.view_all')
         ? await processService.listForCustomer(params.id, await visibilityCtxFor(effective))
         : [];
-      return { customer, processes: processesForCustomer };
+      // Phase 11 (Order §52): Kundensichtbarkeit genügt; nur maskierte Referenz.
+      const voucher =
+        vouchers === undefined ? null : await vouchers.customerVoucherSummary(customer.id);
+      return { customer, processes: processesForCustomer, voucher };
     } catch (error) {
       if (sendAuthError(request, reply, error)) return;
       throw error;
@@ -249,6 +259,9 @@ export function registerCrmRoutes(app: FastifyInstance, options: CrmRouteOptions
       // Phase 9: Storno-Kurzinfo und Verknüpfung Storno ↔ Folgevorgang.
       const cancellation = await loadCancellationSummary(db, process.id);
       const relations = await loadProcessRelations(db, process.id);
+      // Phase 11 (Order §53): Gutschein aus DIESEM Ursprungsvorgang (Vorgangssichtbarkeit genügt).
+      const voucher =
+        vouchers === undefined ? null : await vouchers.processVoucherSummary(process.id);
       return {
         process,
         customer,
@@ -259,6 +272,7 @@ export function registerCrmRoutes(app: FastifyInstance, options: CrmRouteOptions
             : { id: assignee.id, firstName: assignee.firstName, lastName: assignee.lastName },
         cancellation,
         relations,
+        voucher,
       };
     } catch (error) {
       if (sendAuthError(request, reply, error)) return;

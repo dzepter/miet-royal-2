@@ -63,6 +63,8 @@ export const settlementLineSourceType = pgEnum('settlement_line_source_type', [
   'booking_item',
   'booking_delivery',
   'booking_discount',
+  /** Wiedermieter-Gutschein aus dem Buchungs-Snapshot (Phase 11, §38) – Typ discount. */
+  'booking_voucher',
   'delivery_note_item',
   'return_inventory_item',
   'return_machine',

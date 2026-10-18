@@ -26,6 +26,7 @@ const AUTH_ERROR_STATUS: Record<AuthError['code'], number> = {
   CONFLICT: 409,
   LAST_ADMIN: 409,
   FORBIDDEN: 403,
+  VOUCHER_UNAVAILABLE: 409,
 };
 
 /** Mappt AuthError auf eine strukturierte Antwort; andere Fehler laufen weiter. */

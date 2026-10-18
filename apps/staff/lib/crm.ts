@@ -46,3 +46,29 @@ export function formatEventDate(value: string | null): string {
   const [year, month, day] = value.split('-');
   return `${day}.${month}.${year}`;
 }
+
+/**
+ * Wiederkehrer-Gutschein (Phase 11, §52/§53) aus der Customer-/Process-API:
+ * Status, Gültigkeit, Versandstatus und maskierte Referenz – nie der Code.
+ */
+export interface VoucherSummary {
+  id: string;
+  status: 'active' | 'reserved' | 'redeemed' | 'expired';
+  statusLabel: string;
+  expiresAt: string;
+  maskedReference: string;
+  deliveryStatus: 'pending' | 'sent';
+  deliveryLabel: string;
+  reservedOfferId: string | null;
+  originProcessId: string;
+  originProcessNumber: string | null;
+}
+
+export function formatBerlinDate(value: string | null | undefined): string {
+  if (value === null || value === undefined || value === '') return '–';
+  return new Date(value).toLocaleString('de-DE', {
+    timeZone: 'Europe/Berlin',
+    dateStyle: 'medium',
+    timeStyle: 'short',
+  });
+}
