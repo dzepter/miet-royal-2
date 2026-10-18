@@ -27,6 +27,7 @@ import {
   computeSettlementTotals,
   customerNoticeWaitUntil,
   SETTLEMENT_CREDIT_LINE_TYPES,
+  VOUCHER_LABEL,
   type SettlementLineType,
 } from '@mietroyal/domain';
 import type { JobQueue, JobRunnerLogger } from '@mietroyal/integrations';
@@ -167,6 +168,7 @@ const FACT_SOURCE_TYPES: readonly SettlementLineRow['sourceType'][] = [
   'booking_item',
   'booking_delivery',
   'booking_discount',
+  'booking_voucher',
   'delivery_note_item',
   'return_inventory_item',
   'return_machine',
@@ -793,7 +795,10 @@ export class SettlementService {
         snapshot: delivery,
       });
     }
-    const totals = (booking.totalsSnapshot ?? {}) as { discountCents?: unknown };
+    const totals = (booking.totalsSnapshot ?? {}) as {
+      discountCents?: unknown;
+      voucherDiscountCents?: unknown;
+    };
     const discountCents = asInt(totals.discountCents);
     if (discountCents > 0) {
       facts.push({
@@ -807,6 +812,23 @@ export class SettlementService {
         unitPriceCents: discountCents,
         amountCents: discountCents,
         snapshot: totals,
+      });
+    }
+    // Phase 11 (§38): Wiedermieter-Gutschein EXAKT EINMAL als Rabatt auf die
+    // Maschinenmiete – aus dem unveränderlichen Buchungs-Snapshot (kein Code).
+    const voucherDiscountCents = asInt(totals.voucherDiscountCents);
+    if (booking.voucherId !== null && voucherDiscountCents > 0) {
+      facts.push({
+        type: 'discount',
+        sourceType: 'booking_voucher',
+        sourceKey: 'voucher',
+        sourceId: booking.voucherId,
+        description: VOUCHER_LABEL,
+        quantity: 1,
+        unit: 'pauschal',
+        unitPriceCents: voucherDiscountCents,
+        amountCents: voucherDiscountCents,
+        snapshot: booking.voucherSnapshot ?? { voucherDiscountCents },
       });
     }
     // Kaufartikel: tatsächlich ausgegebene finale Lieferscheinmenge, eingefrorener Preis (§7).

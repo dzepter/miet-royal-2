@@ -20,6 +20,15 @@ import { createLexwareEventHandler } from '../lexware/event-job.ts';
 import { LEXWARE_EVENT_PROCESS_JOB_TYPE } from '../lexware/webhook-service.ts';
 import { createLexwareTransferDeps, LexwareAccountingGateway } from '../lexware/lexware-gateway.ts';
 import { createSettlementAccountingTransferHandler } from '../settlement/jobs.ts';
+import {
+  createVoucherCleaningListener,
+  createVoucherEligibilityHandler,
+  createVoucherPaymentListener,
+  VOUCHER_ELIGIBILITY_JOB_TYPE,
+  type CleaningEndedListener,
+  type PaymentStatusListener,
+} from '../voucher/voucher-jobs.ts';
+import { VoucherService } from '../voucher/voucher-service.ts';
 
 /**
  * Finanz-Jobs (Phase 9 §44) auf der bestehenden PostgreSQL-Queue. Der Worker
@@ -40,13 +49,33 @@ export interface FinanceJobDeps {
   /** Phase 10: Kennung des Prozesses für Transfer-Claims (Default api:<pid>). */
   workerId?: string;
   logger?: JobRunnerLogger;
+  /** Phase 11: Zahlungsstatus-Listener (Default: Gutschein-Trigger A auf derselben Queue). */
+  paymentStatusListeners?: readonly PaymentStatusListener[];
 }
 
 export {
   SETTLEMENT_ACCOUNTING_TRANSFER_JOB_TYPE,
   CANCELLATION_ACCOUNTING_TRANSFER_JOB_TYPE,
   LEXWARE_EVENT_PROCESS_JOB_TYPE,
+  VOUCHER_ELIGIBILITY_JOB_TYPE,
 };
+export type { CleaningEndedListener, PaymentStatusListener };
+
+/**
+ * Phase 11 (Order §7): Gutschein-Trigger für API und Worker – Listener reihen
+ * nur Jobs ein (Idempotenzschlüssel je Settlement/Trigger); die Entscheidung
+ * trifft der `VoucherService` im Job. Eine Stelle für beide Prozesse.
+ */
+export function createVoucherTriggers(deps: {
+  db: Database;
+  queue: JobQueue;
+  logger?: JobRunnerLogger;
+}): { paymentStatusListener: PaymentStatusListener; cleaningEndedListener: CleaningEndedListener } {
+  return {
+    paymentStatusListener: createVoucherPaymentListener(deps.queue, deps.logger),
+    cleaningEndedListener: createVoucherCleaningListener(deps.db, deps.queue, deps.logger),
+  };
+}
 export type { AccountingGateway, LexwareContext };
 export { createLexwareContext };
 
@@ -69,6 +98,9 @@ export function createAccountingTransferService(deps: {
   lexware: LexwareContext;
   lexwareConnection?: LexwareConnectionService;
   workerId?: string;
+  logger?: JobRunnerLogger;
+  /** Phase 11: Default = Gutschein-Trigger A (`createVoucherTriggers`). */
+  paymentStatusListeners?: readonly PaymentStatusListener[];
 }): AccountingTransferService {
   return new AccountingTransferService(
     deps.db,
@@ -80,6 +112,7 @@ export function createAccountingTransferService(deps: {
           ...(deps.workerId === undefined ? {} : { workerId: deps.workerId }),
         })
       : undefined,
+    deps.paymentStatusListeners ?? [createVoucherTriggers(deps).paymentStatusListener],
   );
 }
 
@@ -98,6 +131,14 @@ export function registerFinanceJobHandlers(runner: JobRunner, deps: FinanceJobDe
   runner.register(
     LEXWARE_EVENT_PROCESS_JOB_TYPE,
     createLexwareEventHandler({ ...deps, transfers }),
+  );
+  // Phase 11: Gutschein-Prüfung (Order §7) – idempotent je Settlement.
+  runner.register(
+    VOUCHER_ELIGIBILITY_JOB_TYPE,
+    createVoucherEligibilityHandler(
+      new VoucherService(deps.db, deps.config, deps.logger),
+      deps.logger,
+    ),
   );
 }
 

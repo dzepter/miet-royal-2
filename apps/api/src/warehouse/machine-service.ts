@@ -12,6 +12,7 @@ import {
 import type { StorageProvider } from '@mietroyal/integrations';
 import { and, asc, eq, isNull, sql } from 'drizzle-orm';
 import { AuthError } from '../auth/service.ts';
+import type { CleaningEndedListener } from '../voucher/voucher-jobs.ts';
 
 /**
  * Zentrale Maschinenverwaltung (Phase-5-Order §§3–13): ID-Vergabe,
@@ -88,7 +89,32 @@ export class MachineService {
   constructor(
     private readonly db: Database,
     private readonly storage: StorageProvider,
+    /**
+     * Phase 11 (Order §7, Trigger B): wird benachrichtigt, sobald eine
+     * Maschine die Reinigungsphase nach Rückgabe verlässt (Reinigungs-
+     * abschluss, anderer Status, Neuausgabe). Keine Gutscheinlogik hier.
+     */
+    private readonly cleaningEndedListener?: CleaningEndedListener,
   ) {}
+
+  private async notifyCleaningEnded(
+    machineId: string,
+    endedAt: Date,
+    reason: 'cleaned' | 'status' | 'rented',
+    executor?: DatabaseExecutor,
+  ): Promise<void> {
+    if (this.cleaningEndedListener === undefined) return;
+    try {
+      await this.cleaningEndedListener.cleaningEnded({
+        machineId,
+        endedAt,
+        reason,
+        ...(executor === undefined ? {} : { executor }),
+      });
+    } catch {
+      // Der Listener protokolliert selbst; der Maschinenstatus ist bereits gesetzt.
+    }
+  }
 
   private async machineProduct(productId: string): Promise<Product> {
     const rows = await this.db.select().from(products).where(eq(products.id, productId));
@@ -231,7 +257,7 @@ export class MachineService {
         '„Reserviert“ und „Vermietet“ werden durch die Fachprozesse späterer Phasen gesetzt und sind kein manueller Status.',
       );
     }
-    return this.db.transaction(async (tx) => {
+    const { machine, cleaningEnded } = await this.db.transaction(async (tx) => {
       const rows = await tx
         .select()
         .from(machines)
@@ -262,8 +288,15 @@ export class MachineService {
         })
         .where(eq(machines.id, machineId))
         .returning();
-      return updated[0]!;
+      return {
+        machine: updated[0]!,
+        cleaningEnded:
+          current.status === 'cleaning' && current.cleaningSince !== null && status !== 'cleaning',
+      };
     });
+    // Phase 11: Reinigungsphase nach Rückgabe anderweitig beendet ⇒ nach Commit melden.
+    if (cleaningEnded) await this.notifyCleaningEnded(machineId, now, 'status');
+    return machine;
   }
 
   /**
@@ -279,6 +312,16 @@ export class MachineService {
     location?: { locationKind: Machine['locationKind']; locationNote: string | null },
     now = new Date(),
   ): Promise<void> {
+    // Phase 11: Neuausgabe aus einer laufenden Reinigungsphase heraus (heute
+    // fachlich ausgeschlossen – Maschinen in Reinigung sind nicht zuweisbar)
+    // beendet das Nachtragsfenster; dann Listener mit Verzögerung (fremde Tx).
+    const before =
+      status === 'rented' && this.cleaningEndedListener !== undefined
+        ? await tx
+            .select({ status: machines.status, cleaningSince: machines.cleaningSince })
+            .from(machines)
+            .where(eq(machines.id, machineId))
+        : [];
     const updated = await tx
       .update(machines)
       .set({
@@ -294,6 +337,10 @@ export class MachineService {
       .where(eq(machines.id, machineId))
       .returning({ id: machines.id });
     if (updated.length === 0) throw new AuthError('NOT_FOUND', 'Maschine nicht gefunden.');
+    const prev = before[0];
+    if (prev !== undefined && prev.status === 'cleaning' && prev.cleaningSince !== null) {
+      await this.notifyCleaningEnded(machineId, now, 'rented', tx);
+    }
   }
 
   /**
@@ -324,7 +371,7 @@ export class MachineService {
    * Abschluss. Nur aus dem Status Reinigung heraus möglich.
    */
   async completeCleaning(actorId: string, machineId: string, now = new Date()): Promise<Machine> {
-    return this.db.transaction(async (tx) => {
+    const machine = await this.db.transaction(async (tx) => {
       const rows = await tx
         .select()
         .from(machines)
@@ -351,6 +398,9 @@ export class MachineService {
         .returning();
       return updated[0]!;
     });
+    // Phase 11 (Trigger B): Reinigungsende NACH dem Commit melden.
+    await this.notifyCleaningEnded(machineId, now, 'cleaned');
+    return machine;
   }
 
   /** Zentrale Standortlogik (Order §8) – auch spätere Phasen nutzen SIE. */

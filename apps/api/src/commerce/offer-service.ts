@@ -17,6 +17,7 @@ import {
   type DatabaseTransaction,
   type Offer,
   type OfferVersion,
+  vouchers,
 } from '@mietroyal/database';
 import type { AppConfig } from '@mietroyal/config';
 import {
@@ -28,8 +29,18 @@ import {
   type PricingResult,
   type PricingSelection,
   type SpecialPriceEntry,
+  isVoucherExpired,
+  maskVoucherCode,
+  VOUCHER_DISCOUNT_PERCENT,
+  VOUCHER_INVALID_MESSAGE,
+  VOUCHER_NOT_COMBINABLE_MESSAGE,
 } from '@mietroyal/domain';
-import { renderOfferPdf, formatEuro, type PdfLineItem } from '@mietroyal/documents';
+import {
+  renderOfferPdf,
+  formatEuro,
+  type PdfLineItem,
+  type PdfVoucherBlock,
+} from '@mietroyal/documents';
 import type { PermissionKey } from '@mietroyal/permissions';
 import { and, asc, eq, isNull } from 'drizzle-orm';
 import { AuthError } from '../auth/service.ts';
@@ -38,6 +49,7 @@ import type { DocumentService } from './document-service.ts';
 import type { OfferDeliveryGateway } from './delivery-gateway.ts';
 import { ProductService } from './product-service.ts';
 import { TermsService } from './terms-service.ts';
+import { VoucherError, VoucherService } from '../voucher/voucher-service.ts';
 
 /**
  * Angebot mit Versionierung (Phase-3-Vorgaben Nr. 20–28):
@@ -59,6 +71,32 @@ export interface DraftInput {
   deliveryPriceCents?: number | null | undefined;
   selections?:
     readonly { productId: string; role: 'free' | 'extra'; quantity: number }[] | undefined;
+}
+
+/**
+ * Gutschein-Informationen einer Angebotsversion für Staff/Public/PDF
+ * (Phase 11, Order §§26/27/54): nur Prozentsatz, Beträge, maskierte
+ * Referenz und Gültigkeit – NIE Code, Hash oder Besitzerdaten.
+ */
+export interface OfferVoucherInfo {
+  voucherId: string;
+  discountPercent: number;
+  machineSubtotalBeforeVoucherCents: number;
+  voucherDiscountCents: number;
+  machineSubtotalAfterVoucherCents: number;
+  maskedReference: string;
+  expiresAt: Date | null;
+}
+
+/** Eingefrorener Gutschein-Snapshot der versendeten Version (§27) – kein Klartext. */
+export interface OfferVoucherSnapshot {
+  voucherId: string;
+  voucherType: string;
+  discountPercent: number;
+  machineSubtotalBeforeVoucherCents: number;
+  voucherDiscountCents: number;
+  machineSubtotalAfterVoucherCents: number;
+  maskedReference: string;
 }
 
 export type EffectiveOfferStatus =
@@ -96,18 +134,45 @@ function hashToken(token: string): string {
   return createHash('sha256').update(token).digest('hex');
 }
 
+/**
+ * Gutscheinblock für Angebots-PDFs (§26): versendete Version aus dem
+ * eingefrorenen Snapshot, Entwurf (Vorschau) aus der aktuellen Berechnung.
+ */
+function pdfVoucherFor(version: OfferVersion): PdfVoucherBlock | null {
+  if (version.voucherId === null) return null;
+  const snapshot = (version.voucherSnapshot ?? null) as OfferVoucherSnapshot | null;
+  if (snapshot !== null) {
+    return {
+      discountPercent: snapshot.discountPercent,
+      machineSubtotalBeforeVoucherCents: snapshot.machineSubtotalBeforeVoucherCents,
+      voucherDiscountCents: snapshot.voucherDiscountCents,
+      machineSubtotalAfterVoucherCents: snapshot.machineSubtotalAfterVoucherCents,
+    };
+  }
+  const before = version.machineSubtotalCents ?? 0;
+  return {
+    discountPercent: VOUCHER_DISCOUNT_PERCENT,
+    machineSubtotalBeforeVoucherCents: before,
+    voucherDiscountCents: version.voucherDiscountCents,
+    machineSubtotalAfterVoucherCents: before - version.voucherDiscountCents,
+  };
+}
+
 export class OfferService {
   private readonly productService: ProductService;
   private readonly termsService: TermsService;
+  private readonly voucherService: VoucherService;
 
   constructor(
     private readonly db: Database,
     private readonly config: AppConfig,
     private readonly documentService: DocumentService,
     private readonly gateway: OfferDeliveryGateway,
+    voucherService?: VoucherService,
   ) {
     this.productService = new ProductService(db);
     this.termsService = new TermsService(db, config);
+    this.voucherService = voucherService ?? new VoucherService(db, config);
   }
 
   // ── Laden ────────────────────────────────────────────────────────────────
@@ -142,9 +207,49 @@ export class OfferService {
         effectiveStatus: effectiveStatus(version, now),
         lineItems,
         selections,
+        voucher: await this.voucherInfoFor(this.db, version),
       });
     }
     return { offer, versions: detailed };
+  }
+
+  /**
+   * Gutschein-Anzeige einer Version (§26/§54): Entwurf aus der aktuellen
+   * Berechnung + Gutscheinzeile, versendete Version aus dem eingefrorenen
+   * Snapshot. Liefert nie Code/Hash.
+   */
+  private async voucherInfoFor(
+    executor: DatabaseTransaction | Database,
+    version: OfferVersion,
+  ): Promise<OfferVoucherInfo | null> {
+    if (version.voucherId === null) return null;
+    const rows = await executor
+      .select({ codeSuffix: vouchers.codeSuffix, expiresAt: vouchers.expiresAt })
+      .from(vouchers)
+      .where(eq(vouchers.id, version.voucherId));
+    const voucher = rows[0];
+    const snapshot = (version.voucherSnapshot ?? null) as OfferVoucherSnapshot | null;
+    if (snapshot !== null) {
+      return {
+        voucherId: snapshot.voucherId,
+        discountPercent: snapshot.discountPercent,
+        machineSubtotalBeforeVoucherCents: snapshot.machineSubtotalBeforeVoucherCents,
+        voucherDiscountCents: snapshot.voucherDiscountCents,
+        machineSubtotalAfterVoucherCents: snapshot.machineSubtotalAfterVoucherCents,
+        maskedReference: snapshot.maskedReference,
+        expiresAt: voucher?.expiresAt ?? null,
+      };
+    }
+    const before = version.machineSubtotalCents ?? 0;
+    return {
+      voucherId: version.voucherId,
+      discountPercent: VOUCHER_DISCOUNT_PERCENT,
+      machineSubtotalBeforeVoucherCents: before,
+      voucherDiscountCents: version.voucherDiscountCents,
+      machineSubtotalAfterVoucherCents: before - version.voucherDiscountCents,
+      maskedReference: voucher === undefined ? '' : maskVoucherCode(voucher.codeSuffix),
+      expiresAt: voucher?.expiresAt ?? null,
+    };
   }
 
   async getVersion(versionId: string): Promise<OfferVersion> {
@@ -476,6 +581,7 @@ export class OfferService {
             ? null
             : { type: version.discountType, value: version.discountValue },
         specialPrices,
+        voucher: version.voucherId === null ? null : { discountPercent: VOUCHER_DISCOUNT_PERCENT },
       });
     } catch (error) {
       if (error instanceof PricingError) throw new AuthError('VALIDATION', error.message);
@@ -515,6 +621,7 @@ export class OfferService {
       .set({
         machineSubtotalCents: result.machineSubtotalCents,
         discountCents: result.discountCents,
+        voucherDiscountCents: result.voucherDiscountCents,
         fixedTotalCents: result.fixedTotalCents,
         updatedAt: new Date(),
       })
@@ -533,6 +640,10 @@ export class OfferService {
     await this.db.transaction(async (tx) => {
       const locked = await this.lockDraft(tx, versionId);
 
+      if (input !== null && locked.voucherId !== null) {
+        // Phase 11 (§22): Gutschein und manueller Rabatt schließen sich aus.
+        throw new AuthError('VALIDATION', VOUCHER_NOT_COMBINABLE_MESSAGE);
+      }
       if (input !== null) {
         // Probeberechnung UNTER der Sperre – der geprüfte Stand ist genau
         // der Stand, der anschließend gespeichert wird (kein TOCTOU).
@@ -622,6 +733,10 @@ export class OfferService {
         (entry) => entry.lineKey !== input.lineKey,
       );
 
+      if (input.unitPriceCents !== null && locked.voucherId !== null) {
+        // Phase 11 (§22): Gutschein und Sonderpreis (auch 0 EUR) schließen sich aus.
+        throw new AuthError('VALIDATION', VOUCHER_NOT_COMBINABLE_MESSAGE);
+      }
       if (input.unitPriceCents !== null) {
         if (!Number.isInteger(input.unitPriceCents) || input.unitPriceCents < 0) {
           throw new AuthError(
@@ -688,6 +803,111 @@ export class OfferService {
     return max;
   }
 
+  // ── Wiedermieter-Gutschein (Phase 11, §§20–23, §33) ─────────────────────
+
+  /** Kunden-ID des Vorgangs zu einem Angebot (Gutschein-Besitzprüfung, §18). */
+  private async customerIdForOffer(
+    executor: DatabaseTransaction | Database,
+    offerId: string,
+  ): Promise<{ offerId: string; customerId: string }> {
+    const rows = await executor
+      .select({ customerId: processes.customerId })
+      .from(offers)
+      .innerJoin(processes, eq(processes.id, offers.processId))
+      .where(eq(offers.id, offerId));
+    const row = rows[0];
+    if (row === undefined) throw new AuthError('NOT_FOUND', 'Angebot nicht gefunden.');
+    return { offerId, customerId: row.customerId };
+  }
+
+  /**
+   * Gutschein im ENTWURF anwenden (§20): Code wird serverseitig neutral
+   * validiert (Hash, Besitzer, Status, Ablauf – immer dieselbe Antwort,
+   * §55), nicht mit Rabatt/Sonderpreis kombinierbar (§22), höchstens ein
+   * Gutschein je Angebot (§21). Der Entwurf reserviert NICHT (§28); die
+   * Reservierung erfolgt atomar beim Versand. Kein Rabatt-Recht nötig (§23).
+   */
+  async applyVoucher(actorId: string, versionId: string, code: string): Promise<void> {
+    void actorId;
+    await this.db.transaction(async (tx) => {
+      const locked = await this.lockDraft(tx, versionId);
+      if (
+        locked.discountType !== null ||
+        ((locked.specialPrices ?? []) as SpecialPriceEntry[]).length > 0
+      ) {
+        throw new AuthError('VALIDATION', VOUCHER_NOT_COMBINABLE_MESSAGE);
+      }
+      const { customerId } = await this.customerIdForOffer(tx, locked.offerId);
+      const validation = await this.voucherService.validateForOffer({
+        code,
+        customerId,
+        offerId: locked.offerId,
+      });
+      if (!validation.ok) throw new AuthError('VALIDATION', VOUCHER_INVALID_MESSAGE);
+      if (locked.voucherId !== null && locked.voucherId !== validation.voucher.id) {
+        throw new AuthError(
+          'CONFLICT',
+          'Für dieses Angebot ist bereits ein Gutschein angewendet – bitte zuerst entfernen.',
+        );
+      }
+      await tx
+        .update(offerVersions)
+        .set({ voucherId: validation.voucher.id, updatedAt: new Date() })
+        .where(eq(offerVersions.id, versionId));
+      await this.recomputeDraft(tx, versionId);
+    });
+  }
+
+  /** Gutschein aus dem Entwurf entfernen (§33): Reservierung ggf. freigeben, Preise neu. */
+  async removeVoucher(actorId: string, versionId: string): Promise<void> {
+    void actorId;
+    await this.db.transaction(async (tx) => {
+      const locked = await this.lockDraft(tx, versionId);
+      if (locked.voucherId === null) return;
+      await this.detachVoucher(tx, locked);
+    });
+  }
+
+  /** Gutschein von einer (gesperrten) Entwurfsversion lösen + Reservierung des Angebots freigeben. */
+  private async detachVoucher(tx: DatabaseTransaction, locked: OfferVersion): Promise<void> {
+    if (locked.voucherId === null) return;
+    await tx
+      .update(offerVersions)
+      .set({
+        voucherId: null,
+        voucherDiscountCents: 0,
+        voucherSnapshot: null,
+        updatedAt: new Date(),
+      })
+      .where(eq(offerVersions.id, locked.id));
+    await this.voucherService.releaseReservation(tx, {
+      voucherId: locked.voucherId,
+      offerId: locked.offerId,
+    });
+    await this.recomputeDraft(tx, locked.id);
+  }
+
+  /**
+   * Ist der an der Version hängende Gutschein für dieses Angebot (noch)
+   * verwendbar? Besitzer, Ablauf, nicht eingelöst, nicht für ein fremdes
+   * Angebot reserviert (§19/§30).
+   */
+  private async voucherUsableFor(
+    tx: DatabaseTransaction,
+    voucherId: string,
+    offerId: string,
+    customerId: string,
+    now: Date,
+  ): Promise<boolean> {
+    const rows = await tx.select().from(vouchers).where(eq(vouchers.id, voucherId));
+    const voucher = rows[0];
+    if (voucher === undefined) return false;
+    if (voucher.customerId !== customerId) return false;
+    if (isVoucherExpired(voucher.expiresAt, now)) return false;
+    if (voucher.status === 'active') return true;
+    return voucher.status === 'reserved' && voucher.reservedOfferId === offerId;
+  }
+
   // ── Versand (§22/§24) ───────────────────────────────────────────────────
 
   async send(
@@ -744,7 +964,7 @@ export class OfferService {
 
     const terms = await this.termsService.activeForSending();
 
-    const expiresAt = offerExpiresAt(eventDate, now);
+    let expiresAt = offerExpiresAt(eventDate, now);
     const customerSnapshot = {
       id: customer.id,
       type: customer.type,
@@ -820,6 +1040,41 @@ export class OfferService {
         throw new AuthError('VALIDATION', 'Für Rabatte über 10 % ist ein interner Grund Pflicht.');
       }
 
+      // Phase 11 (§§27–31): Gutschein ATOMAR reservieren (Voucher-Zeile
+      // gesperrt), Gültigkeit kappen und den Snapshot einfrieren – ohne
+      // Klartextcode. Ein zweites Angebot mit demselben Gutschein scheitert
+      // hier mit 409 VOUCHER_UNAVAILABLE.
+      let voucherSnapshot: OfferVoucherSnapshot | null = null;
+      if (locked.voucherId !== null) {
+        let voucher;
+        try {
+          voucher = await this.voucherService.reserveForOffer(tx, {
+            voucherId: locked.voucherId,
+            offerId: offer.id,
+            customerId: customer.id,
+            now,
+          });
+        } catch (error) {
+          if (error instanceof VoucherError) {
+            throw new AuthError(
+              'VOUCHER_UNAVAILABLE',
+              'Der Gutschein ist bereits für ein anderes Angebot reserviert oder nicht mehr verwendbar.',
+            );
+          }
+          throw error;
+        }
+        if (voucher.expiresAt.getTime() < expiresAt.getTime()) expiresAt = voucher.expiresAt;
+        voucherSnapshot = {
+          voucherId: voucher.id,
+          voucherType: voucher.voucherType,
+          discountPercent: VOUCHER_DISCOUNT_PERCENT,
+          machineSubtotalBeforeVoucherCents: result.machineSubtotalCents,
+          voucherDiscountCents: result.voucherDiscountCents,
+          machineSubtotalAfterVoucherCents: result.machineSubtotalAfterVoucherCents,
+          maskedReference: maskVoucherCode(voucher.codeSuffix),
+        };
+      }
+
       await tx
         .update(offerVersions)
         .set({
@@ -830,6 +1085,7 @@ export class OfferService {
           customerSnapshot,
           eventSnapshot,
           termsVersionId: terms.id,
+          voucherSnapshot,
           updatedAt: now,
         })
         .where(eq(offerVersions.id, versionId));
@@ -914,6 +1170,7 @@ export class OfferService {
       discountCents: version.discountCents ?? 0,
       // Der Rabattgrund ist INTERN (§18) und erscheint nie im Kundendokument.
       discountLabel: null,
+      voucher: pdfVoucherFor(version),
       fixedTotalCents: version.fixedTotalCents ?? 0,
       commissionMaxCents: commissionMax,
       validUntilLabel:
@@ -987,6 +1244,7 @@ export class OfferService {
       discountCents: version.discountCents ?? 0,
       // Der Rabattgrund ist INTERN (§18) und erscheint nie im Kundendokument.
       discountLabel: null,
+      voucher: pdfVoucherFor(version),
       fixedTotalCents: version.fixedTotalCents ?? 0,
       commissionMaxCents: lineItems
         .filter((item) => item.billingMode === 'commission')
@@ -1050,6 +1308,9 @@ export class OfferService {
           discountValue: current.discountValue,
           discountReason: current.discountReason,
           specialPrices: current.specialPrices,
+          // Phase 11 (§30): Gutschein in die neue Version übernehmen – die
+          // Reservierung hängt am Angebot und bleibt bestehen.
+          voucherId: current.voucherId,
           changeNote,
           createdBy: actorId,
         })
@@ -1080,6 +1341,22 @@ export class OfferService {
         .update(offers)
         .set({ currentVersionId: next.id, updatedAt: new Date() })
         .where(eq(offers.id, offerId));
+      // §30: Gutschein erneut prüfen – unzulässig (abgelaufen, eingelöst,
+      // fremd reserviert) ⇒ entfernen und Reservierung freigeben.
+      if (next.voucherId !== null) {
+        const { customerId } = await this.customerIdForOffer(tx, offerId);
+        const usable = await this.voucherUsableFor(
+          tx,
+          next.voucherId,
+          offerId,
+          customerId,
+          new Date(),
+        );
+        if (!usable) {
+          await this.detachVoucher(tx, next);
+          return { versionId: next.id, versionNumber: next.versionNumber };
+        }
+      }
       await this.recomputeDraft(tx, next.id);
       return { versionId: next.id, versionNumber: next.versionNumber };
     });
@@ -1087,16 +1364,30 @@ export class OfferService {
 
   /** Ablehnung wird intern vermerkt (Kunde meldet sich außerhalb des Systems). */
   async markDeclined(versionId: string): Promise<void> {
-    // Bedingtes Update statt Read-then-Write: eine zeitgleiche Annahme
-    // (Status → accepted) kann so nie von einer Ablehnung überschrieben werden.
-    const updated = await this.db
-      .update(offerVersions)
-      .set({ status: 'declined', declinedAt: new Date(), updatedAt: new Date() })
-      .where(and(eq(offerVersions.id, versionId), eq(offerVersions.status, 'sent')))
-      .returning({ id: offerVersions.id });
-    if (updated.length === 0) {
-      throw new AuthError('CONFLICT', 'Nur versendete Angebote können abgelehnt werden.');
-    }
+    await this.db.transaction(async (tx) => {
+      // Bedingtes Update statt Read-then-Write: eine zeitgleiche Annahme
+      // (Status → accepted) kann so nie von einer Ablehnung überschrieben werden.
+      const updated = await tx
+        .update(offerVersions)
+        .set({ status: 'declined', declinedAt: new Date(), updatedAt: new Date() })
+        .where(and(eq(offerVersions.id, versionId), eq(offerVersions.status, 'sent')))
+        .returning({
+          id: offerVersions.id,
+          offerId: offerVersions.offerId,
+          voucherId: offerVersions.voucherId,
+        });
+      const declined = updated[0];
+      if (declined === undefined) {
+        throw new AuthError('CONFLICT', 'Nur versendete Angebote können abgelehnt werden.');
+      }
+      // Phase 11 (§32): Reservierung des Gutscheins sofort freigeben.
+      if (declined.voucherId !== null) {
+        await this.voucherService.releaseReservation(tx, {
+          voucherId: declined.voucherId,
+          offerId: declined.offerId,
+        });
+      }
+    });
   }
 
   // ── Öffentlicher Zugang (§25/§26) ───────────────────────────────────────
@@ -1150,6 +1441,7 @@ export class OfferService {
       })),
       machineSubtotalCents: version.machineSubtotalCents,
       discountCents: version.discountCents,
+      voucher: pdfVoucherFor(version),
       fixedTotalCents: version.fixedTotalCents,
       commissionMaxCents: lineItems
         .filter((item) => item.billingMode === 'commission')
@@ -1327,8 +1619,24 @@ export class OfferService {
           totalsSnapshot: {
             machineSubtotalCents: version.machineSubtotalCents,
             discountCents: version.discountCents,
+            voucherDiscountCents: version.voucherDiscountCents,
+            machineSubtotalAfterVoucherCents:
+              (version.machineSubtotalCents ?? 0) - version.voucherDiscountCents,
             fixedTotalCents: version.fixedTotalCents,
           },
+          // Phase 11 (§37): unveränderlicher Gutschein-Snapshot, kein Klartext.
+          voucherId: version.voucherId,
+          voucherSnapshot:
+            version.voucherId === null
+              ? null
+              : {
+                  voucherId: version.voucherId,
+                  voucherDiscountPercent: VOUCHER_DISCOUNT_PERCENT,
+                  voucherDiscountCents: version.voucherDiscountCents,
+                  machineSubtotalBeforeVoucherCents: version.machineSubtotalCents ?? 0,
+                  machineSubtotalAfterVoucherCents:
+                    (version.machineSubtotalCents ?? 0) - version.voucherDiscountCents,
+                },
           fulfillment: version.fulfillment,
           deliverySnapshot:
             version.fulfillment === 'delivery'
@@ -1345,6 +1653,33 @@ export class OfferService {
         .returning({ id: bookings.id });
       const booking = bookingInserted[0];
       if (booking === undefined) throw new AuthError('CONFLICT', 'Buchung fehlgeschlagen.');
+
+      // Phase 11 (§34): Die ANNAHME verbraucht den Gutschein – atomar in
+      // dieser Transaktion (Voucher-Zeile gesperrt, Redemption erzeugt).
+      // Scheitert die Einlösung, scheitert die gesamte Annahme; der
+      // Gutschein bleibt reserviert/aktiv.
+      if (version.voucherId !== null) {
+        try {
+          await this.voucherService.redeem(tx, {
+            voucherId: version.voucherId,
+            offerId: offer.id,
+            bookingId: booking.id,
+            processId: offer.processId,
+            customerId: customer.id,
+            expectedDiscountCents: version.voucherDiscountCents,
+            machineSubtotalCents: version.machineSubtotalCents ?? 0,
+            now,
+          });
+        } catch (error) {
+          if (error instanceof VoucherError) {
+            throw new AuthError(
+              'VOUCHER_UNAVAILABLE',
+              'Der Gutschein dieses Angebots ist nicht mehr verwendbar – bitte Miet-Royal kontaktieren.',
+            );
+          }
+          throw error;
+        }
+      }
 
       await tx
         .update(offerVersions)

@@ -89,6 +89,24 @@ Claude Code deployt niemals eigenmächtig auf Produktion.
   stehen in Lexware (Deeplink) und tragen in Miet-Royal „Versand ausstehend“
   bis Phase 12 den zentralen Mailadapter liefert.
 
+## Wiedermieter-Gutschein (Phase 11)
+
+- Entstehung läuft automatisch über Jobs auf der PostgreSQL-Queue (Worker
+  muss laufen): Zahlungsstatus „bezahlt“ (Webhook/Reconcile/Mock) und
+  Reinigungsabschluss der letzten Maschine reihen `voucher.eligibility_check`
+  ein. Kein Cron.
+- `pnpm voucher:ensure`: idempotenter Backfill für alle übertragenen, als
+  bezahlt gemeldeten regulären Abrechnungen ohne Gutschein (z. B. nach
+  Worker-Ausfall oder nach dem Rollout). Mehrfaches Ausführen erzeugt keine
+  Duplikate; Ausgabe nur Zähler.
+- Die verschlüsselte Versandkopie hängt an `AUTH_SECRET_KEY` (HKDF, eigener
+  Zweck). Nach einer Rotation sind noch nicht versendete Kopien
+  unentschlüsselbar – Phase 12 meldet das als Versandproblem; die
+  Einlösbarkeit (Hash) bleibt. Rotation daher möglichst ohne offene
+  Zustellungen (`delivery_status = pending`) durchführen.
+- Phase 11 versendet nichts; `delivery_status` bleibt `pending`, bis Phase 12
+  den Versand übernimmt.
+
 ## Healthchecks
 
 - `/health`: Prozess lebt (ohne Abhängigkeiten) – für Prozessmanager/Uptime.

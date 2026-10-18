@@ -17,6 +17,7 @@ import { DamageService } from '../returns/damage-service.ts';
 import { SchedulingService } from '../scheduling/scheduling-service.ts';
 import { InventoryService } from '../warehouse/inventory-service.ts';
 import { MachineService } from '../warehouse/machine-service.ts';
+import type { CleaningEndedListener } from '../voucher/voucher-jobs.ts';
 import { UUID_PATTERN } from './auth.ts';
 
 const uuidSchema = z.string().regex(UUID_PATTERN, 'muss eine UUID sein');
@@ -71,6 +72,8 @@ interface HandoverRouteOptions {
   auth: StaffAuthService;
   config: AppConfig;
   storage: StorageProvider;
+  /** Phase 11: Reinigungsende ⇒ Gutschein-Prüfjob (Trigger B) – verdrahtet in app.ts. */
+  cleaningEndedListener?: CleaningEndedListener;
 }
 
 function decodeBase64(value: string, maxBytes: number): Uint8Array | null {
@@ -85,8 +88,8 @@ function decodeBase64(value: string, maxBytes: number): Uint8Array | null {
 }
 
 export function registerHandoverRoutes(app: FastifyInstance, options: HandoverRouteOptions): void {
-  const { db, auth, config, storage } = options;
-  const machineService = new MachineService(db, storage);
+  const { db, auth, config, storage, cleaningEndedListener } = options;
+  const machineService = new MachineService(db, storage, cleaningEndedListener);
   const assignments = new AssignmentService(db, machineService, storage);
   const inventory = new InventoryService(db);
   const documentService = new DocumentService(db, storage);

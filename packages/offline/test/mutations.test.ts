@@ -238,9 +238,9 @@ describe('Offline-Mutationen: Typen, Rechte, Basisstände', () => {
     // Keine Admin-/Finanzrechte als Voraussetzung einer Offline-Mutation.
     const allKeys = new Set(Object.values(MUTATION_PERMISSIONS).flat());
     for (const key of allKeys) {
-      expect(/^(settlement|deposit|lexware|employee|permission|system|price)\./.test(key)).toBe(
-        false,
-      );
+      expect(
+        /^(settlement|deposit|lexware|employee|permission|system|price|voucher)\./.test(key),
+      ).toBe(false);
     }
     // Basisstände: Buchungsmutationen tragen Vorgangsstatus + Terminversion, Slot-Mutationen die erwartete Maschine.
     const bookingBase = { processStatus: 'open', appointmentId: UUID, appointmentVersion: 3 };

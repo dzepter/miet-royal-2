@@ -2,6 +2,7 @@ import { hostname } from 'node:os';
 import {
   createAccountingGatewayFor,
   createLexwareContext,
+  createVoucherTriggers,
   registerFinanceJobHandlers,
 } from '@mietroyal/api/jobs';
 import { loadConfig } from '@mietroyal/config';
@@ -35,6 +36,8 @@ runner.register(SYSTEM_HEARTBEAT_JOB_TYPE, systemHeartbeatHandler);
 // und jeder Transfer wird sauber als nicht konfiguriert abgewiesen.
 const db = createDb(pool);
 const lexware = createLexwareContext(config, db, logger);
+// Phase 11: Zahlungsstatus „bezahlt“ (Webhook/Reconcile im Worker) ⇒ Gutschein-Prüfjob.
+const voucherTriggers = createVoucherTriggers({ db, queue, logger });
 registerFinanceJobHandlers(runner, {
   db,
   config,
@@ -43,6 +46,7 @@ registerFinanceJobHandlers(runner, {
   accountingGateway: createAccountingGatewayFor(config, lexware),
   lexware,
   logger,
+  paymentStatusListeners: [voucherTriggers.paymentStatusListener],
 });
 
 // Harmloser System-Job beim Start: beweist enqueue → process in jeder

@@ -145,6 +145,8 @@ export async function bookedProcess(
     discount?: { type: 'percent' | 'fixed'; value: number; reason?: string };
     specialMachinePriceCents?: number;
     deliveryPriceCents?: number;
+    /** Phase 11: Gutscheincode des erzeugten Kunden, im Entwurf vor dem Versand angewendet. */
+    voucherCodeFor?: (customerId: string) => Promise<string>;
   } = {},
 ): Promise<BookedProcess> {
   const fulfillment = options.fulfillment ?? 'pickup';
@@ -195,6 +197,10 @@ export async function bookedProcess(
       reason: options.discount.reason ?? 'Testrabatt',
     });
     await services.offers.approveDiscount(adminId, versionId);
+  }
+  if (options.voucherCodeFor !== undefined) {
+    const code = await options.voucherCodeFor(world.customerId);
+    await services.offers.applyVoucher(adminId, versionId, code);
   }
   const { token } = await services.offers.send(adminId, versionId, effective);
   const { bookingId } = await services.offers.accept(token);

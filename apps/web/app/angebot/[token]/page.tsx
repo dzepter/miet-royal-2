@@ -33,6 +33,13 @@ interface PublicOffer {
   lineItems: PublicLineItem[];
   machineSubtotalCents: number | null;
   discountCents: number | null;
+  /** Wiedermieter-Gutschein (Phase 11): nur Prozentsatz und Beträge – nie der Code. */
+  voucher?: {
+    discountPercent: number;
+    machineSubtotalBeforeVoucherCents: number;
+    voucherDiscountCents: number;
+    machineSubtotalAfterVoucherCents: number;
+  } | null;
   fixedTotalCents: number | null;
   commissionMaxCents: number;
   expiresAt: string | null;
@@ -244,6 +251,28 @@ export default function PublicOfferPage() {
             </tbody>
           </table>
         </div>
+        {offer.voucher ? (
+          <div style={{ textAlign: 'right', margin: '0.6rem 0 0' }}>
+            <p style={{ margin: 0 }}>
+              Maschinenmiete regulär:{' '}
+              <span data-testid="offer-machine-regular">
+                {euro(offer.voucher.machineSubtotalBeforeVoucherCents)}
+              </span>
+            </p>
+            <p style={{ margin: 0 }}>
+              Gutschein {offer.voucher.discountPercent} %:{' '}
+              <span data-testid="offer-voucher-discount">
+                -{euro(offer.voucher.voucherDiscountCents)}
+              </span>
+            </p>
+            <p style={{ margin: 0 }}>
+              Maschinenmiete nach Gutschein:{' '}
+              <span data-testid="offer-machine-after-voucher">
+                {euro(offer.voucher.machineSubtotalAfterVoucherCents)}
+              </span>
+            </p>
+          </div>
+        ) : null}
         {offer.discountCents !== null && offer.discountCents > 0 && (
           <p style={{ textAlign: 'right', margin: '0.6rem 0 0' }}>
             Rabatt: -{euro(offer.discountCents)}

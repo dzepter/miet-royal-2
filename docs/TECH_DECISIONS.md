@@ -1983,3 +1983,94 @@ Shell cwd was reset to /home/user/Sparkoffer.de
   am Webhook-Endpunkt (Signaturprüfung vor jedem DB-Zugriff genügt vorerst),
   Nutzung von `Retry-After` im Queue-Backoff (Lexware dokumentiert den Header
   nicht), Live-Verifikation von Steuerrundung und Scope-Namen am Testaccount.
+
+## Phase 11: Wiedermieter-Gutschein (Kern: Eligibility, Trigger, Code/Krypto, Versandvorbereitung)
+
+- **Genau eine Gutscheinart, zentraler Service**: `apps/api/src/voucher/`
+  (`VoucherService`) ist der einzige Ort für Entstehung, Validierung,
+  Reservierung, Einlösung und Reaktivierung. Kein Coupon-/Kampagnen-/
+  Guthaben-System; 20 % und 12 Kalendermonate sind serverseitige Konstanten
+  aus `@mietroyal/domain` (`voucher.ts`), nie Client-Eingaben.
+- **Eligibility (Order §§3–5, 47)**: `assessEligibility(settlementId)` prüft
+  unter einer Sperre ALLE Bedingungen und liefert interne Gründe
+  (`NO_BOOKING`, `PROCESS_CANCELLED`, `RETURN_NOT_FINALIZED`,
+  `SETTLEMENT_NOT_TRANSFERRED`, `TRANSFER_NOT_SUCCEEDED`, `PAYMENT_NOT_PAID`,
+  `CANCELLATION_EXISTS`, `DAMAGE_DOCUMENTED`, `POST_RETURN_WINDOW_OPEN`,
+  `ALREADY_ISSUED`). Schadenfrei heißt: KEIN `machine_damages`-Datensatz zum
+  Return (Rückgabe oder Nachtrag), unabhängig von Berechnung, Auflösung oder
+  „nicht mehr aktuell“. Technische Defekte, Reinigungsgebühr, Fehlteile,
+  Verspätung und manuelle Nachbelastungen sind kein Ausschluss. Das
+  Nachtragsfenster gilt als offen, solange eine Maschine des Returns
+  `status = cleaning` mit `cleaning_since` hat, ihr letzter finalisierter
+  Return dieser Return ist und sie seitdem nicht erneut ausgegeben wurde
+  (dieselbe Logik wie `damage-service.ts`). Stornorechnungen haben kein
+  Settlement und erzeugen nie einen Gutschein; ein Storno der Buchung
+  schließt den Gutschein aus.
+- **Idempotente Entstehung (Order §§6, 10, 48)**: `ensureVoucherForSettlement`
+  nimmt `pg_advisory_xact_lock(hashtext('voucher-ensure:'||settlementId))`,
+  liest das Settlement `FOR SHARE`, prüft unter der Sperre und fügt mit
+  `ON CONFLICT (origin_settlement_id) DO NOTHING` ein – UNIQUE als
+  DB-Backstop. Ergebnis `created | exists | ineligible`; Logs enthalten nur
+  IDs, Outcome und Gründe.
+- **Trigger ohne Importzyklen (Order §7)**: Voucher importiert nichts aus
+  lexware/, handover/ oder commerce/. `AccountingTransferService` erhält
+  optionale `paymentStatusListeners`, die NACH dem Commit von
+  `setPaymentStatus` (Mock-Steuerung, Webhook, Reconcile) und nach dem
+  Lexware-Commit einer bereits bezahlten Rechnung aufgerufen werden.
+  `MachineService` erhält einen optionalen `cleaningEndedListener`
+  (Reinigungsabschluss, Statuswechsel aus der Reinigung, Neuausgabe – letztere
+  innerhalb fremder Transaktion mit `runAt = +60 s`). Beide Listener reihen
+  nur Jobs `voucher.eligibility_check` ein (Idempotenzschlüssel
+  `voucher-eligibility:<settlementId>:paid:<transferId>` bzw.
+  `…:cleaning:<machineId>:<endedAt>`); die Entscheidung trifft der Job über
+  den Service. Komposition in `jobs/finance.ts` (`createVoucherTriggers`),
+  verdrahtet in `app.ts` und `apps/worker/src/main.ts`. Kein Cron, kein
+  künstlicher Zeit-Delay; Backfill `pnpm voucher:ensure`.
+- **Code (Order §§11–12)**: `MR20` + 12 Zeichen aus einem Alphabet ohne
+  0/O/1/I/L, erzeugt mit `crypto.randomInt` (≈ 59 Bit Entropie), nicht
+  fortlaufend, ohne Bezug zu IDs/Kunde. Persistiert wird ausschließlich der
+  SHA-256-Hash der kompakten Form plus die letzten vier Zeichen für die
+  Maske `MR20-••••-••••-XXXX`. Eingabe wird normalisiert (case-insensitiv,
+  Bindestriche/Leerzeichen), die Form bleibt streng. Fehler nach außen immer
+  neutral (`VOUCHER_INVALID_MESSAGE`).
+- **Versandkopie (Order §13)**: zusätzlich eine verschlüsselte temporäre Kopie
+  `delivery_code_ciphertext` (AES-256-GCM, 12-Byte-Zufallsnonce, AAD =
+  Gutschein-ID, base64 `iv|tag|ct`). Der Schlüssel wird per HKDF-SHA256 aus
+  `AUTH_SECRET_KEY` mit eigenem Salt/Info (`mietroyal/voucher-delivery/v1`)
+  abgeleitet – Purpose Separation gegenüber TOTP-Secrets und Offline-Leases,
+  keine eigene Kryptografie. **Rotation von `AUTH_SECRET_KEY`**: noch nicht
+  versendete Kopien werden unentschlüsselbar; Phase 12 muss das als
+  Versandproblem melden (kein Datenverlust der Einlösbarkeit – der Hash bleibt
+  gültig). Umgebungen mit verschiedenen Schlüsseln können einander Kopien
+  nicht entschlüsseln (Env-Isolation).
+- **Versandvorbereitung (Order §§15, 50, 51)**: Phase 11 setzt nur
+  `delivery_status = pending` (UI „Versand ausstehend“, nie „gesendet“). Die
+  Phase-12-Schnittstelle `VoucherDeliveryService` (`listPendingDeliveries`,
+  `revealCodeForDelivery` – nur serverseitig –, `markDelivered`: sent,
+  `delivered_at`, Kopie entfernt, Hash bleibt) hat KEINE Route. Kunde ohne
+  E-Mail ⇒ Gutschein mit `delivery_problem_code = NO_EMAIL`, nichts erfunden.
+- **Gültigkeit (Order §§16–17, 36, 40)**: `activated_at` = Erzeugung,
+  `expires_at` = +12 Kalendermonate Europe/Berlin bei gleicher Wanduhrzeit
+  (DST-sicher, Monatsende gekappt); Ablauf lazy (`now >= expires_at`),
+  effektiver Status aus `voucherEffectiveStatus`. Einlösung speichert die
+  exakte Restdauer in Sekunden; kostenloses Storno reaktiviert DENSELBEN
+  Gutschein mit `expires_at = Stornozeit + Restdauer`.
+- **Reservierung/Einlösung/Reaktivierung**: in der Transaktion des Aufrufers
+  mit `FOR UPDATE` auf der Gutscheinzeile und `version`-Zähler;
+  `releaseStaleReservation` gibt Reservierungen lazy frei, wenn das Angebot
+  keine aktuelle gesendete, gültige Version (oder einen Entwurf) mit diesem
+  Gutschein mehr hat; `reactivateForFreeCancellation` ist idempotent
+  (Redemption einmalig markiert) und replay-sicher: ist der Gutschein nicht
+  mehr `redeemed` oder existiert eine neuere Redemption, wird nur die alte
+  Redemption markiert, der Gutschein bleibt unberührt (Order §§43–45).
+- **Views/Rechte (Order §§52–56)**: `GET /staff/customers/:id` und
+  `GET /staff/processes/:id` liefern `voucher` (Status, Label, Gültigkeit,
+  maskierte Referenz, Versandstatus) unter den bestehenden Rechten
+  (`customer.view` bzw. Vorgangssichtbarkeit) – nie Hash, Kopie oder
+  Klartext; keine Gutschein-Routen, keine manuelle Erstellung/Verlängerung/
+  Übertragung, kein Hard Delete. Offline-Sync kennt keine Gutschein-Mutation.
+- **Bewusst offen (Phase 11, Kern)**: Versand (Phase 12), Konfigurator
+  (Phase 16); Hinweis zur Neuausgabe-Variante des Reinigungs-Triggers: eine
+  Maschine in Reinigung ist fachlich nicht zuweisbar, der Pfad ist heute nur
+  defensiv vorhanden.
+

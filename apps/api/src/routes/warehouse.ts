@@ -15,6 +15,7 @@ import {
 } from '../warehouse/machine-service.ts';
 import { InventoryService } from '../warehouse/inventory-service.ts';
 import { AssignmentService } from '../handover/assignment-service.ts';
+import type { CleaningEndedListener } from '../voucher/voucher-jobs.ts';
 import { UUID_PATTERN } from './auth.ts';
 
 const uuidSchema = z.string().regex(UUID_PATTERN, 'muss eine UUID sein');
@@ -106,6 +107,8 @@ interface WarehouseRouteOptions {
   auth: StaffAuthService;
   config: AppConfig;
   storage: StorageProvider;
+  /** Phase 11: Reinigungsende ⇒ Gutschein-Prüfjob (Trigger B) – verdrahtet in app.ts. */
+  cleaningEndedListener?: CleaningEndedListener;
 }
 
 /**
@@ -145,8 +148,8 @@ export function registerWarehouseRoutes(
   app: FastifyInstance,
   options: WarehouseRouteOptions,
 ): void {
-  const { db, auth, config, storage } = options;
-  const machineService = new MachineService(db, storage);
+  const { db, auth, config, storage, cleaningEndedListener } = options;
+  const machineService = new MachineService(db, storage, cleaningEndedListener);
   // Risikohinweise (Phase 6) entstehen sofort bei Status-/Sperränderungen.
   const assignments = new AssignmentService(db, machineService, storage);
   const availability = new MachineAvailabilityService(db);

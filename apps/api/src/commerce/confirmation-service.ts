@@ -224,6 +224,23 @@ export class OrderConfirmationService {
       // Interner Rabattgrund bleibt intern – Kundendokument nur mit Betrag.
       discountCents: Number(totals.discountCents ?? 0),
       discountLabel: null,
+      // Phase 11 (§26/§37): Gutschein aus dem unveränderlichen Buchungs-Snapshot.
+      voucher:
+        booking.voucherId === null || Number(totals.voucherDiscountCents ?? 0) <= 0
+          ? null
+          : {
+              discountPercent: Number(
+                ((booking.voucherSnapshot ?? {}) as Record<string, unknown>)
+                  .voucherDiscountPercent ?? 20,
+              ),
+              machineSubtotalBeforeVoucherCents: Number(totals.machineSubtotalCents ?? 0),
+              voucherDiscountCents: Number(totals.voucherDiscountCents ?? 0),
+              machineSubtotalAfterVoucherCents: Number(
+                totals.machineSubtotalAfterVoucherCents ??
+                  Number(totals.machineSubtotalCents ?? 0) -
+                    Number(totals.voucherDiscountCents ?? 0),
+              ),
+            },
       fixedTotalCents: Number(totals.fixedTotalCents ?? 0),
       commissionMaxCents: items
         .filter((item) => item.billingMode === 'commission')

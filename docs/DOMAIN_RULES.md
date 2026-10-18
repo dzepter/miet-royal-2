@@ -96,6 +96,37 @@ Nur wenn:
 - noch kein Gutschein für Vorgang
 20 %, Maschinenmiete, 12 Monate, einmalig, personenbezogen, nicht kombinierbar.
 
+Anwendung im Angebot (Phase 11):
+- Eingabe nur durch Mitarbeitende im Angebots-ENTWURF (`offer.edit_draft`); kein
+  öffentlicher Endpunkt, kein Portal.
+- Genau EIN Gutschein je Angebot; nur der Code wird gesendet – Prozentsatz (20),
+  Betrag, Besitzer, Status und Reservierung sind ausschließlich serverseitig.
+- Ungültig/fremd/eingelöst/abgelaufen ⇒ immer dieselbe neutrale Antwort
+  „Gutschein ist ungültig oder nicht verwendbar.“ (400).
+- Nicht kombinierbar in beide Richtungen mit manuellem %-/EUR-Rabatt und
+  Maschinen-/Artikel-Sonderpreis (auch 0 EUR); Lieferpreis/Zusatzartikel sind kein
+  Rabatt. Meldung: „Gutschein kann nicht mit einem weiteren Rabatt oder
+  Sonderpreis kombiniert werden.“
+- 20 % der SUMME aller Maschinenmietpositionen, Integer-Cent, half-up; Lieferung,
+  Kanister, Kommission, Inklusiv-Artikel, Nachbelastungen bleiben unberührt.
+- Darstellung (Staff, öffentliches Angebot, PDF, AB): „Maschinenmiete regulär /
+  Gutschein 20 % / Maschinenmiete nach Gutschein“, dann Gesamtsumme.
+- Entwurf reserviert nicht. Versand reserviert atomar auf Angebotsebene; ein
+  zweites Angebot kann mit demselben Gutschein nicht versendet werden (409).
+  Angebotsgültigkeit = min(normale Gültigkeit, Gutschein-Ablauf).
+- Neue Version im selben Angebot behält die Reservierung; wird der Gutschein
+  unzulässig, wird er entfernt und freigegeben. Abgelehnt/abgelaufen ⇒ Reservierung
+  entfällt (lazy, kein Cron). „Gutschein entfernen“ im Entwurf ohne Begründung.
+- Die ANNAHME verbraucht den Gutschein (Redemption mit Restgültigkeit); der
+  Buchungs-Snapshot ist unveränderlich (kein Klartextcode).
+- Storno: 0 % ⇒ DERSELBE Gutschein wird reaktiviert, neues Ablaufdatum =
+  Stornozeitpunkt + gespeicherte Restdauer (einmalig, replay-sicher);
+  50/100 % ⇒ bleibt verbraucht. Stornobasis bleibt der reguläre Listenpreis VOR
+  Gutschein (100 EUR + Gutschein + 50 % ⇒ 50 EUR). Folgevorgang setzt nichts ein.
+- Abrechnung: Gutscheinrabatt exakt EINMAL als Rabattposition (Typ discount,
+  Quelle booking_voucher, „20-%-Wiedermieter-Gutschein“), Lexware-Steuer wie
+  Maschinenmiete.
+
 ## Storno
 - >=15 Tage → 0 %
 - 7–14 Tage → 50 %

@@ -35,6 +35,7 @@
     "staff:bootstrap-admin": "pnpm --filter @mietroyal/api bootstrap-admin",
     "offline:lease-key": "pnpm --filter @mietroyal/api offline:lease-key",
     "settlement:ensure": "pnpm --filter @mietroyal/api settlement:ensure",
+    "voucher:ensure": "pnpm --filter @mietroyal/api voucher:ensure",
     "scheduling:ensure-booking-appointments": "pnpm --filter @mietroyal/api scheduling:ensure-booking-appointments",
     "lexware:setup": "pnpm --filter @mietroyal/api lexware:setup",
     "lexware:reconcile": "pnpm --filter @mietroyal/api lexware:reconcile",

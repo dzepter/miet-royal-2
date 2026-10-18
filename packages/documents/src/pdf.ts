@@ -18,6 +18,17 @@ export interface PdfLineItem {
   billingMode: 'fixed' | 'commission' | 'included';
 }
 
+/**
+ * Wiedermieter-Gutschein im Kundendokument (Phase 11, Order §26): nur
+ * Prozentsatz und Beträge – nie Code oder Referenz.
+ */
+export interface PdfVoucherBlock {
+  discountPercent: number;
+  machineSubtotalBeforeVoucherCents: number;
+  voucherDiscountCents: number;
+  machineSubtotalAfterVoucherCents: number;
+}
+
 export interface OfferPdfData {
   processNumber: string;
   versionNumber: number;
@@ -30,6 +41,7 @@ export interface OfferPdfData {
   machineSubtotalCents: number;
   discountCents: number;
   discountLabel: string | null;
+  voucher?: PdfVoucherBlock | null;
   fixedTotalCents: number;
   commissionMaxCents: number;
   validUntilLabel: string | null;
@@ -55,6 +67,7 @@ export interface OrderConfirmationPdfData {
   machineSubtotalCents: number;
   discountCents: number;
   discountLabel: string | null;
+  voucher?: PdfVoucherBlock | null;
   fixedTotalCents: number;
   commissionMaxCents: number;
   acceptedAtLabel: string;
@@ -165,12 +178,30 @@ function totals(
     machineSubtotalCents?: number;
     discountCents: number;
     discountLabel?: string | null;
+    voucher?: PdfVoucherBlock | null;
     fixedTotalCents: number;
     commissionMaxCents: number;
   },
 ): void {
   doc.moveDown(0.5);
   doc.font('Helvetica').fontSize(10);
+  const voucher = data.voucher ?? null;
+  if (voucher !== null) {
+    // Phase 11 (§26): regulär / Gutschein / nach Gutschein, dann Gesamtsumme.
+    doc.text(`Maschinenmiete regulär: ${formatEuro(voucher.machineSubtotalBeforeVoucherCents)}`, {
+      align: 'right',
+    });
+    doc.text(
+      `Gutschein ${voucher.discountPercent} %: -${formatEuro(voucher.voucherDiscountCents)}`,
+      {
+        align: 'right',
+      },
+    );
+    doc.text(
+      `Maschinenmiete nach Gutschein: ${formatEuro(voucher.machineSubtotalAfterVoucherCents)}`,
+      { align: 'right' },
+    );
+  }
   if (data.discountCents > 0) {
     if (data.machineSubtotalCents !== undefined) {
       doc.text(`Maschinenmiete: ${formatEuro(data.machineSubtotalCents)}`, { align: 'right' });
@@ -255,6 +286,7 @@ export function renderOrderConfirmationPdf(data: OrderConfirmationPdfData): Prom
       machineSubtotalCents: data.machineSubtotalCents,
       discountCents: data.discountCents,
       discountLabel: data.discountLabel,
+      voucher: data.voucher ?? null,
       fixedTotalCents: data.fixedTotalCents,
       commissionMaxCents: data.commissionMaxCents,
     });

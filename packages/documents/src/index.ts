@@ -25,4 +25,5 @@ export {
   type OfferPdfData,
   type OrderConfirmationPdfData,
   type PdfLineItem,
+  type PdfVoucherBlock,
 } from './pdf.ts';

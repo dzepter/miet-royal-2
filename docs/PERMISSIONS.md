@@ -21,6 +21,13 @@ Admin vergibt granulare Rechte; Rollen nur Vorlagen.
 `discount.up_to_10`, `discount.over_10_with_reason`,
 `discount.over_20_request`, `discount.over_20_approve`
 
+Wiedermieter-Gutschein (Phase 11): KEINE neuen Rechte. Anwenden/Entfernen im
+Entwurf (`POST`/`DELETE /staff/offer-versions/:id/voucher`) = `offer.edit_draft`;
+kein `discount.*` (der 20-%-Gutschein ist kein manueller Rabatt, keine
+>10-%-Begründung, keine >20-%-Freigabe). Kundenprofil-Karte = `customer.view`,
+Vorgangszeile = `process.view_all`. Automatische Erzeugung ohne Recht (Job).
+Kein `voucher.*`, keine Erstellungs-/Verlängerungs-/Übertragungs-/Löschrechte.
+
 ### Buchung/Kalender
 `booking.confirm`, `booking.cancel`,
 `calendar.view_all`, `calendar.drag_drop`,

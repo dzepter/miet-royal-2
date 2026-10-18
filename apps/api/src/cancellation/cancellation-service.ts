@@ -42,6 +42,7 @@ import { ProcessService } from '../crm/process-service.ts';
 import { AssignmentService } from '../handover/assignment-service.ts';
 import { SchedulingService } from '../scheduling/scheduling-service.ts';
 import { MachineService } from '../warehouse/machine-service.ts';
+import { VoucherService } from '../voucher/voucher-service.ts';
 import {
   createCancellationConfirmationGateway,
   type CancellationConfirmationGateway,
@@ -222,6 +223,8 @@ export interface CancellationServiceDeps {
   processes: ProcessService;
   confirmations: CancellationConfirmationGateway;
   logger?: CancellationLogger;
+  /** Phase 11: Gutschein-Reaktivierung/-Verbrauch beim Storno (Default: eigene Instanz). */
+  vouchers?: VoucherService;
 }
 
 /** Komposition wie in den Routen (ein Aufbau für Routen, Jobs und Tests). */
@@ -298,6 +301,7 @@ export class CancellationService {
   private readonly processes: ProcessService;
   private readonly confirmations: CancellationConfirmationGateway;
   private readonly logger: CancellationLogger;
+  private readonly vouchers: VoucherService;
 
   constructor(deps: CancellationServiceDeps) {
     this.db = deps.db;
@@ -307,6 +311,7 @@ export class CancellationService {
     this.processes = deps.processes;
     this.confirmations = deps.confirmations;
     this.logger = deps.logger ?? noopLogger;
+    this.vouchers = deps.vouchers ?? new VoucherService(deps.db, deps.config);
   }
 
   // ── Laden ───────────────────────────────────────────────────────────────
@@ -647,6 +652,27 @@ export class CancellationService {
       // 7. Vorgang storniert (eine Stelle für den Statusübergang); bookings
       //    hat keine Statusspalte – die Buchung bleibt als Snapshot bestehen.
       await this.processes.markCancelledWithin(tx, processId, now);
+
+      // 7a. Phase 11 (§§40–45): Wiedermieter-Gutschein der Buchung. 0 % ⇒
+      //     derselbe Gutschein wird mit gespeicherter Restgültigkeit
+      //     reaktiviert; 50/100 % ⇒ bleibt verbraucht. Beides in DIESER
+      //     Transaktion (atomar); Doppelstorno kehrt oben als `existing`
+      //     zurück und reaktiviert nie ein zweites Mal. Die Stornobasis
+      //     (reguläre Listenpreise) ist vom Gutschein unberührt (§42).
+      if (booking.voucherId !== null) {
+        if (calculation.feePercent === 0) {
+          await this.vouchers.reactivateForFreeCancellation(tx, {
+            bookingId: booking.id,
+            cancellationId: row.id,
+            cancelledAt: now,
+          });
+        } else {
+          await this.vouchers.markConsumedByPaidCancellation(tx, {
+            bookingId: booking.id,
+            cancellationId: row.id,
+          });
+        }
+      }
 
       // 8. Gebühr > 0: Transferzeile mit eingefrorenem Payload (Order §58/§81).
       let transfer: AccountingTransferRow | null = null;

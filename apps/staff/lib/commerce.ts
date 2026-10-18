@@ -102,6 +102,23 @@ export interface OfferLineItemRow {
   productId: string | null;
 }
 
+/**
+ * Wiedermieter-Gutschein an einer Angebotsversion (Phase 11, §54): nur
+ * Prozentsatz, Beträge, maskierte Referenz, Gültigkeit – nie der Code.
+ */
+export interface OfferVoucherInfo {
+  voucherId: string;
+  discountPercent: number;
+  machineSubtotalBeforeVoucherCents: number;
+  voucherDiscountCents: number;
+  machineSubtotalAfterVoucherCents: number;
+  maskedReference: string;
+  expiresAt: string | null;
+}
+
+export const VOUCHER_NOT_COMBINABLE_MESSAGE =
+  'Gutschein kann nicht mit einem weiteren Rabatt oder Sonderpreis kombiniert werden.';
+
 export interface OfferVersionRow {
   id: string;
   versionNumber: number;
@@ -120,6 +137,9 @@ export interface OfferVersionRow {
   discountApprovedBy: string | null;
   machineSubtotalCents: number | null;
   discountCents: number | null;
+  voucherId?: string | null;
+  voucherDiscountCents?: number;
+  voucher?: OfferVoucherInfo | null;
   fixedTotalCents: number | null;
   sentAt: string | null;
   expiresAt: string | null;

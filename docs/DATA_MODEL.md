@@ -113,7 +113,22 @@ entsteht erst, wenn Phase 10+ sie braucht (heute: `applied_cents` + Credit-
 Position). Keine Lexware-spezifischen Tabellen.
 
 ### Voucher
-Kunde, Ursprungsvorgang, Code-Hash, 20 %, Gültigkeit, Benutzung.
+Phase 11: `vouchers` (genau eine Art `returning_customer_20`; Kunde,
+Ursprungsvorgang/-buchung/-rückgabe/-abrechnung mit UNIQUE
+`origin_settlement_id`; `discount_percent` konstant 20 (CHECK); `code_hash`
+SHA-256 UNIQUE + `code_suffix` für die Maske; Status active/reserved/redeemed
+(„abgelaufen“ lazy aus `expires_at`); `activated_at`, `expires_at`
+(12 Kalendermonate Berlin); `reserved_offer_id` (unique partial) +
+`reserved_at` (Reservierung beim Senden, Offer-Ebene); Versand
+`delivery_status` pending/sent, `delivery_problem_code` (z. B. NO_EMAIL),
+`delivered_at`, `delivery_code_ciphertext` (AES-256-GCM-Kopie, Phase 12
+löscht sie); `version`). `voucher_redemptions` (je Einlösung: Gutschein,
+Angebot, Buchung UNIQUE, Vorgang, `redeemed_at`,
+`expires_at_before_redemption`, `remaining_validity_seconds` > 0,
+`cancellation_id`, `reactivated_at`, `final_consumption_reason`).
+Snapshots: `offer_versions.voucher_id/voucher_discount_cents/voucher_snapshot`,
+`bookings.voucher_id/voucher_snapshot` (ohne Klartext). Kein Klartextcode in
+irgendeiner Spalte.
 
 ### Document
 Typ, Version, Storage-Key, Hash, created/finalized, immutable, kunden-sichtbar.

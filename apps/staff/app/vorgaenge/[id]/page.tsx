@@ -17,6 +17,7 @@ import {
   STATUS_BADGE_CLASS,
   STATUS_LABELS,
   type MainStatus,
+  type VoucherSummary,
 } from '../../../lib/crm';
 import {
   ACCOUNTING_NOT_CONFIGURED_HINT,
@@ -112,6 +113,8 @@ interface ProcessDetail {
   /** Phase 9 (Agent C): Storno-Kurzinfo und Verknüpfungen – optional, bis die API sie liefert. */
   cancellation?: ProcessCancellationSummary | null;
   relations?: ProcessRelations | null;
+  /** Phase 11 (§53): aus diesem Vorgang entstandener Wiedermieter-Gutschein (nie der Code). */
+  voucher?: VoucherSummary | null;
 }
 
 interface StaffOption {
@@ -583,6 +586,15 @@ function ProcessView() {
           Zuständig:{' '}
           {assignee !== null ? `${assignee.firstName} ${assignee.lastName}` : 'Nicht zugewiesen'}
         </p>
+        {detail.voucher ? (
+          <p className="muted" data-testid="process-voucher">
+            20-%-Wiedermieter-Gutschein erstellt – {detail.voucher.deliveryLabel}
+            {' · '}
+            {detail.voucher.statusLabel}
+            {' · '}
+            <code>{detail.voucher.maskedReference}</code>
+          </p>
+        ) : null}
         {(previousProcess !== null || followUpProcess !== null) && (
           <p className="muted">
             {previousProcess !== null && (

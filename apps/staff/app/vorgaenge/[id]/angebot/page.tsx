@@ -11,6 +11,7 @@ import {
   formatBerlin,
   OFFER_STATUS_LABELS,
   parseEuroToCents,
+  VOUCHER_NOT_COMBINABLE_MESSAGE,
   type OfferVersionRow,
 } from '../../../../lib/commerce';
 
@@ -106,6 +107,7 @@ function OfferView() {
   const isSent = current?.effectiveStatus === 'sent';
   const isAccepted = current?.effectiveStatus === 'accepted';
   const canEditDraft = hasPermission(me, 'offer.edit_draft');
+  const hasVoucher = (current?.voucher ?? null) !== null;
 
   const commissionMax =
     current?.lineItems
@@ -208,7 +210,12 @@ function OfferView() {
                       <td>{BILLING_LABELS[item.billingMode]}</td>
                       {isDraft && hasPermission(me, 'offer.apply_special_price') && (
                         <td>
-                          {item.billingMode !== 'included' &&
+                          {hasVoucher ? (
+                            <span className="muted" title={VOUCHER_NOT_COMBINABLE_MESSAGE}>
+                              –
+                            </span>
+                          ) : (
+                            item.billingMode !== 'included' &&
                             lineKey !== null &&
                             lineKey !== 'delivery' && (
                               <SpecialPriceCell
@@ -220,7 +227,8 @@ function OfferView() {
                                 setSpecialInputs={setSpecialInputs}
                                 run={run}
                               />
-                            )}
+                            )
+                          )}
                         </td>
                       )}
                     </tr>
@@ -230,15 +238,32 @@ function OfferView() {
             </table>
           </div>
 
-          <p style={{ textAlign: 'right', marginBottom: 0 }}>
-            Maschinenmiete: {euro(current.machineSubtotalCents ?? 0)}
-            {(current.discountCents ?? 0) > 0 && (
-              <>
-                {' · '}Rabatt: -{euro(current.discountCents ?? 0)}
-                {current.discountReason ? ` (${current.discountReason})` : ''}
-              </>
-            )}
-          </p>
+          {current.voucher ? (
+            <p style={{ textAlign: 'right', marginBottom: 0 }} data-testid="offer-totals-voucher">
+              Maschinenmiete regulär:{' '}
+              <span data-testid="voucher-machine-regular">
+                {euro(current.voucher.machineSubtotalBeforeVoucherCents)}
+              </span>
+              {' · '}Gutschein {current.voucher.discountPercent} %:{' '}
+              <span data-testid="voucher-discount">
+                -{euro(current.voucher.voucherDiscountCents)}
+              </span>
+              {' · '}Maschinenmiete nach Gutschein:{' '}
+              <span data-testid="voucher-machine-after">
+                {euro(current.voucher.machineSubtotalAfterVoucherCents)}
+              </span>
+            </p>
+          ) : (
+            <p style={{ textAlign: 'right', marginBottom: 0 }}>
+              Maschinenmiete: {euro(current.machineSubtotalCents ?? 0)}
+              {(current.discountCents ?? 0) > 0 && (
+                <>
+                  {' · '}Rabatt: -{euro(current.discountCents ?? 0)}
+                  {current.discountReason ? ` (${current.discountReason})` : ''}
+                </>
+              )}
+            </p>
+          )}
           <p style={{ textAlign: 'right', fontSize: '1.2rem', fontWeight: 700 }}>
             Fester Angebotswert: {euro(current.fixedTotalCents ?? 0)}
           </p>
@@ -268,7 +293,24 @@ function OfferView() {
             />
           )}
 
-          {isDraft && hasPermission(me, 'offer.apply_discount') && (
+          {(isDraft ? canEditDraft : hasVoucher) && (
+            <VoucherSection
+              current={current}
+              editable={isDraft && canEditDraft}
+              busy={busy}
+              reload={load}
+            />
+          )}
+
+          {isDraft && hasPermission(me, 'offer.apply_discount') && hasVoucher && (
+            <div style={{ borderTop: '1px solid #eee', paddingTop: '0.8rem' }}>
+              <h3>Rabatt (auf die Maschinenmiete)</h3>
+              <p className="muted" data-testid="discount-blocked-by-voucher">
+                {VOUCHER_NOT_COMBINABLE_MESSAGE}
+              </p>
+            </div>
+          )}
+          {isDraft && hasPermission(me, 'offer.apply_discount') && !hasVoucher && (
             <div style={{ borderTop: '1px solid #eee', paddingTop: '0.8rem' }}>
               <h3>Rabatt (auf die Maschinenmiete)</h3>
               <div className="grid-2">
@@ -495,6 +537,111 @@ function OfferView() {
         </div>
       )}
     </main>
+  );
+}
+
+/**
+ * Bereich „Gutschein“ (Phase 11, §54): Code eingeben, anwenden/entfernen;
+ * nach Erfolg regulär/Abzug/reduziert + Gültigkeit. Keine Besitzerinfos,
+ * nie der Code (nur maskierte Referenz). Fehler neutral (§55).
+ */
+function VoucherSection({
+  current,
+  editable,
+  busy,
+  reload,
+}: {
+  current: OfferVersionRow;
+  editable: boolean;
+  busy: boolean;
+  reload: () => Promise<void>;
+}) {
+  const [code, setCode] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [working, setWorking] = useState(false);
+  const voucher = current.voucher ?? null;
+
+  async function call(method: 'POST' | 'DELETE', body?: unknown) {
+    setWorking(true);
+    setError(null);
+    const result = await apiFetch(`/staff/offer-versions/${current.id}/voucher`, { method, body });
+    setWorking(false);
+    if (!result.ok) {
+      setError(result.errorMessage ?? 'Aktion fehlgeschlagen.');
+      return;
+    }
+    setCode('');
+    await reload();
+  }
+
+  return (
+    <div
+      style={{ borderTop: '1px solid #eee', paddingTop: '0.8rem' }}
+      data-testid="voucher-section"
+    >
+      <h3>Gutschein</h3>
+      {voucher === null ? (
+        editable && (
+          <div className="grid-2">
+            <div>
+              <label htmlFor="voucher-code">Gutscheincode</label>
+              <input
+                id="voucher-code"
+                data-testid="voucher-code-input"
+                value={code}
+                autoComplete="off"
+                onChange={(e) => setCode(e.target.value)}
+                placeholder="MR20-XXXX-XXXX-XXXX"
+              />
+            </div>
+            <div style={{ alignSelf: 'end' }}>
+              <button
+                data-testid="voucher-apply"
+                disabled={busy || working || code.trim() === ''}
+                onClick={() => void call('POST', { code: code.trim() })}
+              >
+                Gutschein anwenden
+              </button>
+            </div>
+          </div>
+        )
+      ) : (
+        <div data-testid="voucher-applied">
+          <p>
+            <span className="badge active">20-%-Wiederkehrer-Gutschein</span>{' '}
+            <span className="muted" data-testid="voucher-reference">
+              {voucher.maskedReference}
+            </span>
+          </p>
+          <p style={{ margin: 0 }}>
+            Maschinenmiete regulär: {euro(voucher.machineSubtotalBeforeVoucherCents)}
+            {' · '}Gutschein {voucher.discountPercent} %: -{euro(voucher.voucherDiscountCents)}
+            {' · '}Maschinenmiete nach Gutschein:{' '}
+            <strong>{euro(voucher.machineSubtotalAfterVoucherCents)}</strong>
+          </p>
+          <p className="muted" data-testid="voucher-valid-until">
+            Gutschein gültig bis {formatBerlin(voucher.expiresAt)}
+            {' – '}
+            die Angebotsgültigkeit endet spätestens mit dem Gutschein.
+          </p>
+          <p className="muted">{VOUCHER_NOT_COMBINABLE_MESSAGE}</p>
+          {editable && (
+            <button
+              data-testid="voucher-remove"
+              disabled={busy || working}
+              onClick={() => void call('DELETE')}
+            >
+              Gutschein entfernen
+            </button>
+          )}
+        </div>
+      )}
+      {error !== null && (
+        <p className="error" data-testid="voucher-error">
+          {error}
+        </p>
+      )}
+    </div>
   );
 }
 
