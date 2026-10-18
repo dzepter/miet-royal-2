@@ -20,7 +20,6 @@ import { sql } from 'drizzle-orm';
 import {
   check,
   integer,
-  jsonb,
   pgEnum,
   pgTable,
   text,
