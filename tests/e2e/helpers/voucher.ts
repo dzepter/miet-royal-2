@@ -178,7 +178,11 @@ export function revealVoucherCode(
     voucher.id,
     E2E_AUTH_SECRET_KEY,
   );
-  expect(code).toMatch(/^MR20[ABCDEFGHJKMNPQRSTUVWXYZ23456789]{12}$/);
+  // Boolescher Vergleich: ein Fehlschlag darf den Klartext nie in die Reporter-Ausgabe bringen.
+  expect(
+    /^MR20[ABCDEFGHJKMNPQRSTUVWXYZ23456789]{12}$/.test(code),
+    'Entschlüsselter Code hat nicht das erwartete Format',
+  ).toBe(true);
   return code;
 }
 
@@ -195,9 +199,12 @@ export function unknownVoucherCode(): string {
 
 /** Prüft, dass ein Text den Code in keiner Form (kompakt, formatiert, Körper) enthält. */
 export function expectNoPlaintextCode(text: string, compact: string): void {
-  expect(text).not.toContain(compact);
-  expect(text).not.toContain(formatVoucherCode(compact));
-  expect(text).not.toContain(compact.slice(4));
+  // Boolesche Prüfungen: auch bei Fehlschlag erscheint der Code nicht in der Reporter-Ausgabe.
+  expect(text.includes(compact), 'Klartextcode (kompakt) gefunden').toBe(false);
+  expect(text.includes(formatVoucherCode(compact)), 'Klartextcode (formatiert) gefunden').toBe(
+    false,
+  );
+  expect(text.includes(compact.slice(4)), 'Code-Körper gefunden').toBe(false);
 }
 
 // ── API (Staff-Session des Browsers) ────────────────────────────────────
