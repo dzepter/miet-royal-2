@@ -40,6 +40,10 @@ Die jeweils benötigten Zugangsdaten/Stammdaten stehen in `OPEN_ITEMS.md`.
   bietet keine Abschlagsrechnungen) – bis dahin werden solche Abrechnungen
   blockiert.
 - Für demo: KEIN Lexware-Key (Demo bucht nie in Lexware).
+- Verbindliche Go-Live-Blocker Buchhaltung (Preisbasis brutto/netto,
+  Steuerbehandlung je Kategorie, Anzahlung, angewendete Kaution, manueller
+  Testaccount-Smoke): siehe `docs/OPEN_ITEMS.md` → „GO-LIVE-BLOCKER
+  Buchhaltung“.
 
 ## Sicherheitsregel
 Echte Zugangsdaten nie in Chat-Prompts oder Git-Dateien kopieren, wenn sie als

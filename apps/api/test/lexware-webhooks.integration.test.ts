@@ -444,24 +444,28 @@ describe('Job lexware.event.process – Worker (§48–51, Tests 132–136)', ()
     });
   });
 
-  it('136. token.revoked ⇒ Verbindung getrennt (TOKEN_REVOKED), Transfers blockiert, nichts gelöscht', async () => {
+  it('136./A1. token.revoked wird nicht mehr verarbeitet: Webhook ⇒ 202 ignored, Verbindung bleibt verbunden; API-Key-401 ⇒ getrennt', async () => {
     const { admin } = await adminSession(ctx);
     const invoice = await createFakeInvoice(ctx);
     await createMappedTransfer(ctx, admin.id, invoice);
-    const signed = fake.signWebhook({ eventType: 'token.revoked', resourceId: fake.connectionId });
-    await postWebhook(ctx, signed.body, signed.signature);
-    expect(await ctx.jobs.runOnce()).toBe('processed');
     const connection = new LexwareConnectionService(ctx.lexware);
+    await connection.check();
+    const signed = fake.signWebhook({ eventType: 'token.revoked', resourceId: fake.connectionId });
+    const response = await postWebhook(ctx, signed.body, signed.signature);
+    expect(response.statusCode).toBe(202);
+    expect(response.json()).toMatchObject({ status: 'ignored' });
+    expect(await ctx.jobs.runOnce()).toBe('idle');
+    expect(await events()).toHaveLength(0);
     const state = await connection.getState();
-    expect(state?.status).toBe('disconnected');
-    expect(state?.lastErrorCode).toBe('TOKEN_REVOKED');
-    expect(state?.disconnectedAt).not.toBeNull();
-    await expect(connection.assertReady()).rejects.toMatchObject({ code: 'LEXWARE_NOT_CONNECTED' });
+    expect(state?.status).toBe('connected');
+    expect(state?.lastErrorCode).toBeNull();
+    // API-Key-Gesundheit kommt aus der Profilprüfung: 401 ⇒ getrennt, Transfers blockiert.
+    fake.revoked = true;
+    await expect(connection.check()).resolves.toMatchObject({ state: { status: 'disconnected' } });
+    await expect(connection.assertReady()).rejects.toMatchObject({ code: 'LEXWARE_UNAUTHORIZED' });
     expect(await ctx.db.select().from(lexwareInvoiceMappings)).toHaveLength(1);
     expect(await ctx.db.select().from(accountingTransfers)).toHaveLength(1);
-    const [event] = await events();
-    expect(event).toMatchObject({ status: 'processed', resultCode: 'TOKEN_REVOKED' });
-    // Erneute Prüfung nach Key-Erneuerung stellt die Verbindung wieder her.
+    fake.revoked = false;
     const again = await connection.check();
     expect(again.state.status).toBe('connected');
   });

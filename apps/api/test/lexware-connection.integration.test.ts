@@ -191,10 +191,10 @@ describe('LexwareConnectionService (§7, Tests 1–4, 7–12)', () => {
     await expect(service().assertReady()).rejects.toMatchObject({ code: 'LEXWARE_UNAUTHORIZED' });
     fake.revoked = false;
     await service().check();
-    await service().markDisconnected('TOKEN_REVOKED');
+    await service().markDisconnected('LEXWARE_DISCONNECTED_TEST');
     const state = await service().getState();
     expect(state?.status).toBe('disconnected');
-    expect(state?.lastErrorCode).toBe('TOKEN_REVOKED');
+    expect(state?.lastErrorCode).toBe('LEXWARE_DISCONNECTED_TEST');
     await expect(service().assertReady()).rejects.toMatchObject({ code: 'LEXWARE_NOT_CONNECTED' });
   });
 

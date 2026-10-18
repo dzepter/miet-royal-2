@@ -9,7 +9,9 @@ import { syncLexwareInvoice } from './invoice-sync.ts';
 /**
  * Job `lexware.event.process` (Payload { eventId }, Order §§48–51): Der
  * Webhook-Payload ist nur ein Trigger – der Worker liest den aktuellen Stand
- * bei Lexware über `syncLexwareInvoice`. token.revoked ⇒ Verbindung getrennt
+ * bei Lexware über `syncLexwareInvoice`. (`token.revoked` wird seit der
+ * Phase-10-Finalisierung nicht mehr abonniert/verarbeitet – API-Key-Gesundheit
+ * ergibt sich aus Profilprüfung/401/403.)
  * (keine Auto-Retries, nichts löschen). Ohne Mapping ⇒ Event ignoriert.
  * Idempotent: ein bereits verarbeitetes Event wird nicht erneut angefasst.
  * Transiente Lexware-Fehler werden geworfen (Queue-Retry mit Backoff);
@@ -51,12 +53,6 @@ export function createLexwareEventHandler(deps: FinanceHandlerDeps): JobHandler 
         'lexware.event.process verarbeitet',
       );
     };
-
-    if (event.eventType === 'token.revoked') {
-      await connection.markDisconnected('TOKEN_REVOKED');
-      await finish('processed', 'TOKEN_REVOKED');
-      return;
-    }
 
     const mappings = await deps.db
       .select()

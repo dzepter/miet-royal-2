@@ -201,7 +201,7 @@ export class LexwareConnectionService {
     return { state, ok: true, code: null };
   }
 
-  /** 401/token.revoked ⇒ „Verbindung getrennt“ (keine Auto-Retries, nichts wird gelöscht). */
+  /** 401 (API-Key ungültig/widerrufen) ⇒ „Verbindung getrennt“ (keine Auto-Retries, nichts wird gelöscht). */
   async markDisconnected(reason: string): Promise<void> {
     const now = new Date();
     await this.upsert({

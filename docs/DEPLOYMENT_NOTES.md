@@ -79,8 +79,12 @@ Claude Code deployt niemals eigenmächtig auf Produktion.
   `LEXWARE_SMOKE=1 pnpm lexware:smoke` (liest nur Profil und Subscriptions).
 - Betrieb: Webhooks sind der primäre Rückkanal; `pnpm lexware:reconcile`
   bzw. „Zahlungsstatus abgleichen“ nur für Ausnahmefälle (kein Polling).
-  Bei `token.revoked`/401 zeigt die Adminansicht „Verbindung getrennt“ –
-  Key erneuern, Setup wiederholen.
+  Bei 401 (Key ungültig/widerrufen – erkannt über Profilprüfung oder einen
+  fehlgeschlagenen Aufruf) zeigt die Adminansicht „Verbindung getrennt“ –
+  Key erneuern, Setup wiederholen. `token.revoked` wird nicht abonniert: es
+  beschreibt laut Doku einen widerrufenen OAuth-Refresh-Token, Miet-Royal
+  nutzt einen API-Key; eine früher selbst angelegte Subscription dieses Typs
+  entfernt `pnpm lexware:setup` (nur die eigene, nie fremde).
 - Der Rechnungsversand per E-Mail ist NICHT Teil der Public API: Rechnungen
   stehen in Lexware (Deeplink) und tragen in Miet-Royal „Versand ausstehend“
   bis Phase 12 den zentralen Mailadapter liefert.
