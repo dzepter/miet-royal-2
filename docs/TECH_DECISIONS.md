@@ -2069,6 +2069,25 @@ Shell cwd was reset to /home/user/Sparkoffer.de
   (`customer.view` bzw. Vorgangssichtbarkeit) – nie Hash, Kopie oder
   Klartext; keine Gutschein-Routen, keine manuelle Erstellung/Verlängerung/
   Übertragung, kein Hard Delete. Offline-Sync kennt keine Gutschein-Mutation.
+- **Review-Härtungen (adversarialer Review Phase 11)**: (1) Zahlungs-Trigger
+  benachrichtigt nur bei echtem Statuswechsel, der Job-Schlüssel trägt den
+  Wechselzeitpunkt – paid → overdue → paid prüft erneut, paid → paid nicht;
+  (2) `markDeclined` wirkt nur auf die aktuelle, nicht ersetzte Version (eine
+  superseded Version kann die Reservierung der Nachfolgeversion nicht
+  freigeben); (3) Versionierung aus einem abgelaufenen/abgelehnten Angebot
+  gibt die Reservierung frei – der Entwurf behält den Gutschein, erst der
+  nächste Versand reserviert; (4) Einlösung in der letzten Sekunde vor Ablauf
+  ⇒ 409 statt Serverfehler; (5) `ensureVoucherForSettlement` sperrt die
+  Maschinen des Returns `FOR SHARE`, damit Nachtrags-Schaden und
+  Reinigungsabschluss nicht zwischen Schadens- und Fensterprüfung fallen;
+  (6) Kunden-/Vorgangsansicht zeigt eine Reservierung auf ein totes Angebot
+  als „Aktiv“ (lazy, ohne Schreibzugriff); (7) `applyVoucher` prüft „bereits
+  ein Gutschein angewendet“ vor der Code-Validierung (keine Rückschlüsse auf
+  einen zweiten Code). Bewusste Entscheidung: JEDER Sonderpreis am Angebot
+  (auch auf Zusatzartikeln) schließt den Gutschein aus – strenger als der
+  Wortlaut „Maschinen-Sonderpreis“, weil Sonderpreise auf Nicht-Maschinen nur
+  als Nebeneffekt der Preisengine existieren und eine zweite Rabattquelle
+  wären; der vereinbarte Lieferpreis ist kein Sonderpreis und bleibt möglich.
 - **Bewusst offen (Phase 11, Kern)**: Versand (Phase 12), Konfigurator
   (Phase 16); Hinweis zur Neuausgabe-Variante des Reinigungs-Triggers: eine
   Maschine in Reinigung ist fachlich nicht zuweisbar, der Pfad ist heute nur

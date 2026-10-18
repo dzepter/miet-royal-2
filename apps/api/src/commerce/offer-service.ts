@@ -34,6 +34,7 @@ import {
   VOUCHER_DISCOUNT_PERCENT,
   VOUCHER_INVALID_MESSAGE,
   VOUCHER_NOT_COMBINABLE_MESSAGE,
+  normalizeVoucherCode,
 } from '@mietroyal/domain';
 import {
   renderOfferPdf,
@@ -43,6 +44,7 @@ import {
 } from '@mietroyal/documents';
 import type { PermissionKey } from '@mietroyal/permissions';
 import { and, asc, eq, isNull, sql } from 'drizzle-orm';
+import { hashVoucherCode } from '../voucher/voucher-codes.ts';
 import { AuthError } from '../auth/service.ts';
 import { customerDisplayName } from '../crm/customer-service.ts';
 import type { DocumentService } from './document-service.ts';
@@ -837,6 +839,22 @@ export class OfferService {
       ) {
         throw new AuthError('VALIDATION', VOUCHER_NOT_COMBINABLE_MESSAGE);
       }
+      // Max. ein Gutschein je Angebot (§21): VOR der Validierung prüfen, damit
+      // die Antwort nichts über die Gültigkeit eines zweiten Codes verrät.
+      if (locked.voucherId !== null) {
+        const compact = normalizeVoucherCode(code);
+        const existing = await tx
+          .select({ codeHash: vouchers.codeHash })
+          .from(vouchers)
+          .where(eq(vouchers.id, locked.voucherId));
+        const sameCode = compact !== null && existing[0]?.codeHash === hashVoucherCode(compact);
+        if (!sameCode) {
+          throw new AuthError(
+            'CONFLICT',
+            'Für dieses Angebot ist bereits ein Gutschein angewendet – bitte zuerst entfernen.',
+          );
+        }
+      }
       const { customerId } = await this.customerIdForOffer(tx, locked.offerId);
       const validation = await this.voucherService.validateForOffer({
         code,
@@ -844,12 +862,6 @@ export class OfferService {
         offerId: locked.offerId,
       });
       if (!validation.ok) throw new AuthError('VALIDATION', VOUCHER_INVALID_MESSAGE);
-      if (locked.voucherId !== null && locked.voucherId !== validation.voucher.id) {
-        throw new AuthError(
-          'CONFLICT',
-          'Für dieses Angebot ist bereits ein Gutschein angewendet – bitte zuerst entfernen.',
-        );
-      }
       await tx
         .update(offerVersions)
         .set({ voucherId: validation.voucher.id, updatedAt: new Date() })

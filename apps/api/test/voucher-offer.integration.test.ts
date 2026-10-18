@@ -49,6 +49,14 @@ async function applyViaRoute(cookie: string, versionId: string, code: string) {
   });
 }
 
+async function removeViaRoute(cookie: string, versionId: string) {
+  return ctx.app.inject({
+    method: 'DELETE',
+    url: `/staff/offer-versions/${versionId}/voucher`,
+    headers: { cookie },
+  });
+}
+
 async function sendViaRoute(cookie: string, versionId: string) {
   return ctx.app.inject({
     method: 'POST',
@@ -657,12 +665,19 @@ describe('Nicht kombinierbar (71–80)', () => {
     expect(updated.fixedTotalCents).toBe(15500);
   });
 
-  it('Max. ein Gutschein je Angebot: zweiter (anderer) Code wird mit 409 abgelehnt; ungültiger Code neutral 400', async () => {
+  it('Max. ein Gutschein je Angebot: jeder andere Code wird mit 409 abgelehnt – gültig wie ungültig identisch (keine Rückschlüsse)', async () => {
     const { admin, cookie } = await adminSession(ctx);
     const world = await voucherWorld(ctx, admin.id);
     expect((await applyViaRoute(cookie, world.versionId, world.code)).statusCode).toBe(200);
     // Derselbe Code erneut: idempotent.
     expect((await applyViaRoute(cookie, world.versionId, world.code)).statusCode).toBe(200);
+    // Zweiter Code (hier ungültig): 409 wie bei einem gültigen zweiten Code – die
+    // Prüfung „bereits angewendet“ läuft VOR der Validierung (Review F9).
+    const other = await applyViaRoute(cookie, world.versionId, 'MR20-AAAA-BBBB-CCCC');
+    expect(other.statusCode).toBe(409);
+    expect(other.json().error.message).not.toContain(VOUCHER_INVALID_MESSAGE);
+    // Ohne angewendeten Gutschein bleibt ein ungültiger Code neutral 400.
+    expect((await removeViaRoute(cookie, world.versionId)).statusCode).toBe(200);
     const invalid = await applyViaRoute(cookie, world.versionId, 'MR20-AAAA-BBBB-CCCC');
     expect(invalid.statusCode).toBe(400);
     expect(invalid.json().error.message).toBe(VOUCHER_INVALID_MESSAGE);
