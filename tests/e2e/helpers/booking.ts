@@ -1,4 +1,5 @@
 import { expect, type Page } from '@playwright/test';
+import { runDueJobsViaApi } from './jobs.ts';
 import { WEB_ORIGIN } from './seed.ts';
 
 export interface AcceptedBookingOptions {
@@ -12,7 +13,10 @@ export interface AcceptedBookingOptions {
   freeSyrupLiters?: number;
   /** Maschinenanzahl > 1 über den Angebots-Entwurf (Staff-API, gleiche Session). */
   machineQuantity?: number;
-  /** Auftragsbestätigung freigeben + versenden (Phase 3). */
+  /**
+   * Auftragsbestätigung freigeben + versenden (Phase 3); Phase 12: danach
+   * fällige Jobs (mail.send) ausführen, bis die AB „Versendet“ ist.
+   */
   confirmOrder?: boolean;
   /**
    * Eventdatum der Anfrage (YYYY-MM-DD, Berliner Kalendertag). Standard:
@@ -151,6 +155,12 @@ export async function acceptedBooking(
     await staff.getByRole('button', { name: 'Auftragsbestätigung freigeben' }).click();
     await expect(staff.getByText('Freigegeben')).toBeVisible();
     await staff.getByRole('button', { name: 'Auftragsbestätigung versenden' }).click();
+    // Phase 12: „versenden“ reiht die AB-Mail (mit finalem PDF) in die Outbox ein;
+    // „Versendet“ erst nach bestätigtem SMTP-Versand im Job mail.send.
+    await expect(staff.getByTestId('confirmation-status')).toHaveText('Versand eingeplant');
+    await runDueJobsViaApi(staff);
+    await staff.reload();
+    await expect(staff.getByRole('heading', { name: 'Auftragsbestätigung' })).toBeVisible();
     await expect(staff.getByText('Versendet', { exact: true })).toBeVisible();
   }
   return { processId, processNumber };

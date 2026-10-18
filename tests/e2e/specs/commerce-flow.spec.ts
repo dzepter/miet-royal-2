@@ -14,6 +14,7 @@
  */
 import { execSync } from 'node:child_process';
 import { expect, test, type Page } from '@playwright/test';
+import { runDueJobsViaApi } from '../helpers/jobs.ts';
 import { resetE2eDatabase } from '../helpers/seed.ts';
 
 const ADMIN_EMAIL = 'admin@e2e.example';
@@ -124,7 +125,7 @@ test('A: Angebot erstellen → PDF-Vorschau → versenden → Outbox + Online-Li
   await expect(staff.getByRole('link', { name: 'PDF-Vorschau öffnen' })).toBeVisible();
   publicPathA = await sendOffer(staff);
 
-  // Versand liegt in der Dev/Test-Outbox (kein echter Mailversand).
+  // Versand liegt in der Mail-Outbox (Phase 12: Zustellung erst im Job mail.send).
   const outbox = await staff.request.get('/api/staff/outbox');
   expect(outbox.ok()).toBe(true);
   const body = (await outbox.json()) as { deliveries: { kind: string; recipient: string }[] };
@@ -163,6 +164,11 @@ test('C: Auftragsbestätigung ist vorbereitet und wird freigegeben und versendet
   await staff.getByRole('button', { name: 'Auftragsbestätigung freigeben' }).click();
   await expect(staff.getByText('Freigegeben')).toBeVisible();
   await staff.getByRole('button', { name: 'Auftragsbestätigung versenden' }).click();
+  // Phase 12: Versand über die Mail-Outbox – erst nach dem Job mail.send (echte
+  // SMTP-Zustellung an die Test-Senke) gilt die AB als „Versendet“.
+  await expect(staff.getByTestId('confirmation-status')).toHaveText('Versand eingeplant');
+  await runDueJobsViaApi(staff);
+  await staff.reload();
   await expect(staff.getByText('Versendet', { exact: true })).toBeVisible();
 });
 

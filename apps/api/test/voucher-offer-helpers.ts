@@ -11,6 +11,7 @@ import {
 import { formatVoucherCode } from '@mietroyal/domain';
 import { eq } from 'drizzle-orm';
 import type { TestContext } from './auth-helpers.ts';
+import { settleOfferMailJobs } from './mail-job-helpers.ts';
 import {
   commerceServices,
   ensureTestTerms,
@@ -49,6 +50,7 @@ export async function originChainFor(
   const services = commerceServices(ctx);
   const effective = await ctx.auth.effectivePermissions(adminId);
   const { token } = await services.offers.send(adminId, draft.versionId, effective);
+  await settleOfferMailJobs(ctx); // Phase 12: Angebotsmail-Job abarbeiten
   const { bookingId } = await services.offers.accept(token);
   const returnRows = await ctx.db
     .insert(rentalReturns)

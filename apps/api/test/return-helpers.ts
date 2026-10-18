@@ -1,6 +1,7 @@
 import { machineAssignments } from '@mietroyal/database';
 import { eq } from 'drizzle-orm';
 import type { TestContext } from './auth-helpers.ts';
+import { settleMailJobs } from './mail-job-helpers.ts';
 import {
   handoverServicesFor,
   initializeAllInventory,
@@ -66,6 +67,7 @@ export async function issuedBooking(
   await readyHandover(ctx, adminId, world.bookingId, codes);
   const services = handoverServicesFor(ctx);
   await services.handover.finalize(adminId, world.bookingId);
+  await settleMailJobs(ctx); // Phase 12: Übergabeprotokoll-Mail abarbeiten
   const rows = await ctx.db
     .select({ id: machineAssignments.id, slotNo: machineAssignments.slotNo })
     .from(machineAssignments)

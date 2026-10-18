@@ -15,22 +15,32 @@ Diese Punkte blockieren Phase 0–2 nicht.
 - Anzahlung/Kaution
 Keine Funktion annehmen, bevor aktuelle Doku geprüft wurde.
 
-## E-Mail (vor Phase 12)
-- Absenderadresse
-- SMTP/Transactional Provider
-- SPF/DKIM/DMARC
-- Inbound Reply
+## E-Mail (Phase 12 – technisch umgesetzt, Betrieb offen)
+Umgesetzt: provider-neutral SMTP (Versand) + IMAP (Eingang), Outbox, Vorlagen,
+Antwort-Zuordnung (docs/COMMUNICATION_INTEGRATIONS.md). Vor Live noch offen:
+- konkretes Postfach/Provider und Absenderadresse (`MAIL_FROM_ADDRESS`, `MAIL_REPLY_ADDRESS`)
+- SPF/DKIM/DMARC der Absenderdomain (Aufgabe des Mailservers, nicht der Anwendung)
+- `MAIL_PUBLIC_WEB_BASE_URL` der öffentlichen Web-App
+- ein Live-Test mit echtem Konto (`pnpm mail:smoke`) – im Gate bewusst nicht ausgeführt
 
-## WhatsApp (vor Phase 12)
-- Meta Business / WABA
-- Telefonnummer
-- direkter Meta-Zugang oder BSP
-- notwendige Templates
+## WhatsApp (Phase 12 – technisch umgesetzt, Betrieb offen)
+Umgesetzt: ausschließlich offizielle Meta Cloud API, Webhook mit Signaturprüfung,
+Text + Bilder eingehend, freie Staff-Antwort nur im 24-h-Fenster, keine Templates.
+Vor Live noch offen:
+- Meta Business / WABA, Telefonnummer, System-User-Token, App-Secret, Webhook-Registrierung
+- Live-Test mit Testnummer (`pnpm whatsapp:smoke`)
 
-## Apple Kalender (vor Phase 12)
-- konkreter Account/Kalender
-- CalDAV/API-Weg
-- Schreibrechte
+## Apple Kalender (Phase 12 – entschieden: privater ICS-Feed)
+Umgesetzt: read-only ICS-Abo je Mitarbeiter (kein CalDAV, keine Apple-ID).
+Vor Live noch offen: manueller Abo-Test auf iPhone/Mac mit echter HTTPS-Domain
+(Staff-Basis-URL in den Einstellungen).
+
+## Kommunikation – offene Fachfragen (Phase 12)
+- Löschfristen für Kommunikation stornierter Vorgänge (Auftrag regelt nur „Abschluss“).
+- Löschfristen für nicht zugeordnete/ignorierte Nachrichten und deren Fotos.
+- Aufbewahrung von `mail_deliveries.context` (Empfänger/Adresse im Kontext) über 12 Monate.
+- Gültigkeit des Dokument-Links zum Rückgabeprotokoll (umgesetzt: 90 Tage).
+- Abholadresse in Erinnerungen nur, wenn `pickup_exact_address` gesetzt ist.
 
 ## Routing (vor Phase 13)
 Provider, Kosten, Limits, Datenschutz, DE-Geocoding.

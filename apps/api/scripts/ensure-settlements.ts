@@ -13,7 +13,6 @@ import { PostgresJobQueue } from '@mietroyal/integrations';
 import { createAccountingGateway } from '../src/accounting/gateway.ts';
 import { AccountingTransferService } from '../src/accounting/transfer-service.ts';
 import { ProcessService } from '../src/crm/process-service.ts';
-import { createSettlementNoticeGateway } from '../src/settlement/notice-gateway.ts';
 import { SettlementService } from '../src/settlement/settlement-service.ts';
 
 const config = loadConfig();
@@ -25,7 +24,8 @@ try {
   const service = new SettlementService({
     db,
     transfers: new AccountingTransferService(db, createAccountingGateway(config), queue),
-    noticeGateway: createSettlementNoticeGateway(config),
+    // Phase 12: Script sendet keine Kundeninformationen – kein Mailer nötig.
+    notices: null,
     queue,
     processes: new ProcessService(db),
     appEnv: config.appEnv,

@@ -1,0 +1,15 @@
+From: Angreifer <xss@example.org>
+To: buero@miet-royal.test
+Subject: <b>HTML</b> Nachricht
+Date: Sat, 18 Oct 2026 12:00:00 +0200
+Message-ID: <html-1@example.org>
+MIME-Version: 1.0
+Content-Type: text/html; charset=utf-8
+Content-Transfer-Encoding: 8bit
+
+<html><head><style>body{color:red}</style></head><body>
+<p>Hallo <b>Team</b>,</p><script>alert("xss")</script>
+<img src="http://evil.example/pixel.png?track=1" alt="x">
+<p>Bitte &amp; danke &lt;3 f&uuml;r die R&uuml;ckmeldung.</p>
+<a href="javascript:alert(1)">Link</a><br>Ende
+</body></html>

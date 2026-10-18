@@ -1,5 +1,6 @@
 'use client';
 
+import Link from 'next/link';
 import { useCallback, useEffect, useState } from 'react';
 import { AuthGuard, useMe } from '../../components/auth-guard';
 import { apiFetch } from '../../lib/api';
@@ -174,6 +175,21 @@ function Account() {
             </button>
           </div>
         )}
+      </div>
+
+      {/* Phase 12 (push+calendar): persönliche Einstellungen je Mitarbeiter */}
+      <div className="card">
+        <h2>Benachrichtigungen &amp; Kalender</h2>
+        <p className="muted">
+          <Link href="/einstellungen/benachrichtigungen" data-testid="konto-link-push">
+            Push-Benachrichtigungen auf diesem Gerät
+          </Link>
+        </p>
+        <p className="muted">
+          <Link href="/einstellungen/kalender" data-testid="konto-link-calendar">
+            Kalender-Feed (Apple Kalender &amp; Co.)
+          </Link>
+        </p>
       </div>
 
       <div className="card">

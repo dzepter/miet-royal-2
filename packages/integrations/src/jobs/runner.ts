@@ -15,6 +15,46 @@ const noopLogger: JobRunnerLogger = {
   error: () => undefined,
 };
 
+/** Maximale Länge der gespeicherten/geloggten Fehlerzusammenfassung eines Jobs. */
+export const JOB_ERROR_SUMMARY_MAX_CHARS = 500;
+
+/* eslint-disable-next-line no-control-regex */
+const CONTROL_CHARS = /[\u0000-\u001f\u007f]+/g;
+
+function errorCodeOf(error: unknown): string | null {
+  for (const candidate of [error, (error as { cause?: unknown } | null)?.cause]) {
+    const code = (candidate as { code?: unknown } | null | undefined)?.code;
+    if (typeof code === 'string' && /^[A-Za-z0-9_.-]{1,40}$/.test(code)) return code;
+  }
+  return null;
+}
+
+/**
+ * Fehlerzusammenfassung für `integration_jobs.last_error` und das Log
+ * (Phase 12, Härtung RA-10/H3): nur Fehlerklasse, Code und ERSTE Zeile der
+ * Meldung – Drizzle hängt in Zeile 2 die SQL-Parameter an (Kundendaten,
+ * Token, im Fall RA-10 ein NUL-Byte, das schon das Speichern von markFailed
+ * scheitern ließ). Rohe PostgreSQL-Fehler (SQLSTATE + severity) ohne Meldung,
+ * denn sie zitieren Werte („invalid input syntax …: "<wert>"“). Steuerzeichen
+ * werden entfernt, Länge ≤ 500 Zeichen.
+ */
+export function summarizeJobError(error: unknown): string {
+  const name = error instanceof Error ? error.name : typeof error;
+  const code = errorCodeOf(error);
+  const message = error instanceof Error ? error.message : String(error);
+  const isRawPgError =
+    error instanceof Error &&
+    typeof (error as { severity?: unknown }).severity === 'string' &&
+    code !== null &&
+    /^[0-9A-Z]{5}$/.test(code);
+  const firstLine = isRawPgError ? '' : (message.split(/\r?\n/)[0] ?? '');
+  const summary = `${name}${code === null ? '' : ` [${code}]`}${firstLine === '' ? '' : `: ${firstLine}`}`;
+  const cleaned = summary.replace(CONTROL_CHARS, ' ').trim();
+  return cleaned.length <= JOB_ERROR_SUMMARY_MAX_CHARS
+    ? cleaned
+    : `${cleaned.slice(0, JOB_ERROR_SUMMARY_MAX_CHARS - 1)}…`;
+}
+
 /**
  * Verarbeitet Jobs aus einer JobQueue: pro Tick werden zuerst verwaiste
  * Jobs (abgelaufene Leases nach Worker-Absturz) wieder freigegeben, danach
@@ -71,7 +111,8 @@ export class JobRunner {
       );
       return 'processed';
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      // Härtung RA-10/H3: nie Rohmeldung (SQL-Parameter, NUL-Bytes) speichern/loggen.
+      const message = summarizeJobError(error);
       await this.queue.markFailed(job, message);
       this.logger.error(
         { jobId: job.id, jobType: job.type, attempt: job.attempts, error: message },
@@ -118,7 +159,7 @@ export class JobRunner {
           // behandelt runOnce selbst. Runner läuft weiter und versucht es
           // beim nächsten Tick erneut.
           this.logger.error(
-            { error: error instanceof Error ? error.message : String(error) },
+            { error: summarizeJobError(error) },
             'Queue-Verarbeitung fehlgeschlagen',
           );
         })

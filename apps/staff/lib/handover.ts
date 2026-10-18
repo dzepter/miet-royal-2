@@ -212,7 +212,8 @@ export interface DeliveryPacketView {
   kind: string;
   recipient: string;
   subject: string;
-  status: 'ready' | 'sent';
+  /** Phase 12: queued = Mail in der Outbox, failed = Versand endgültig gescheitert. */
+  status: 'ready' | 'queued' | 'sent' | 'failed';
   sentAt: string | null;
   documentIds: string[];
   createdAt: string;
@@ -221,7 +222,10 @@ export interface DeliveryPacketView {
 /** Outbox-Status (Order §39): in Dev/Test sichtbar, nie „versendet“ ohne Gateway. */
 export const PACKET_STATUS_LABELS: Record<string, string> = {
   ready: 'versandbereit',
+  // Phase 12 (UI): Zustände der echten Mail-Outbox.
+  queued: 'Versand eingeplant',
   sent: 'versendet',
+  failed: 'Versand fehlgeschlagen',
 };
 
 export const DOCUMENT_TYPE_LABELS: Record<string, string> = {

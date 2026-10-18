@@ -51,11 +51,10 @@ function fail(code: string, message: string, status = 400): ApiResult<unknown> {
   return { ok: false, status, data: null, errorCode: code, errorMessage: message };
 }
 
-const ONLINE_REQUIRED = fail(
-  'ONLINE_REQUIRED',
-  'Diese Aktion ist offline nicht verfügbar – bitte mit Verbindung erneut versuchen.',
-  409,
-);
+/** Phase 12 (UI): auch als Hinweistext für offline deaktivierte Online-Aktionen exportiert. */
+export const ONLINE_REQUIRED_MESSAGE =
+  'Diese Aktion ist offline nicht verfügbar – bitte mit Verbindung erneut versuchen.';
+const ONLINE_REQUIRED = fail('ONLINE_REQUIRED', ONLINE_REQUIRED_MESSAGE, 409);
 const NOT_CACHED = fail(
   'OFFLINE_NOT_CACHED',
   'Dieser Vorgang ist auf diesem Gerät nicht für Offline-Nutzung gespeichert.',

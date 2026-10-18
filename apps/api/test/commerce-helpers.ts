@@ -5,7 +5,6 @@ import { termsVersions, type Database } from '@mietroyal/database';
 import { FilesystemStorageProvider } from '@mietroyal/integrations';
 import type pg from 'pg';
 import { OrderConfirmationService } from '../src/commerce/confirmation-service.ts';
-import { OutboxDeliveryGateway } from '../src/commerce/delivery-gateway.ts';
 import { DocumentService } from '../src/commerce/document-service.ts';
 import { InquiryService } from '../src/commerce/inquiry-service.ts';
 import { OfferService } from '../src/commerce/offer-service.ts';
@@ -40,7 +39,7 @@ export const SEED_SLUGS = [
  */
 export async function truncateCommerceTables(pool: pg.Pool): Promise<void> {
   await pool.query(
-    `TRUNCATE offer_deliveries, documents, order_confirmations, bookings,
+    `TRUNCATE mail_deliveries, customer_action_tokens, offer_deliveries, documents, order_confirmations, bookings,
      offer_access_tokens, offer_line_items, offer_version_selections,
      offer_versions, offers, inquiry_selections, inquiries, terms_versions CASCADE`,
   );
@@ -169,7 +168,8 @@ export function commerceServices(ctx: TestContext): {
   documents: DocumentService;
 } {
   const documents = new DocumentService(ctx.db, ctx.storage);
-  const gateway = new OutboxDeliveryGateway(ctx.db);
+  // Phase 12: Versand über die Mail-Outbox des Test-Runners (FakeMailGateway).
+  const gateway = ctx.transactional.offerGateway;
   return {
     offers: new OfferService(ctx.db, ctx.config, documents, gateway),
     confirmations: new OrderConfirmationService(ctx.db, ctx.config, documents, gateway),

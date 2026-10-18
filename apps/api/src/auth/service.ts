@@ -36,6 +36,24 @@ import { buildOtpauthUri, generateTotpSecret, verifyTotpCode } from './totp.ts';
 
 /** 30 Tage Inaktivität → Session endgültig ungültig (ARCHITECTURE.md). */
 export const SESSION_INACTIVITY_MS = 30 * 24 * 60 * 60 * 1000;
+
+/**
+ * Phase 12 Härtung (B11): die EINE Inaktivitätsregel für Sessions – genutzt
+ * von `authenticate` und vom Push-Versand (eine nie wieder vorgezeigte
+ * Session ist abgelaufen, auch wenn sie noch nicht widerrufen wurde).
+ * Gültig ⇔ lastActivityAt ≥ Cutoff.
+ */
+export function sessionInactivityCutoff(now: Date | number = Date.now()): Date {
+  const nowMs = typeof now === 'number' ? now : now.getTime();
+  return new Date(nowMs - SESSION_INACTIVITY_MS);
+}
+
+export function isSessionExpiredByInactivity(
+  lastActivityAt: Date,
+  now: Date | number = Date.now(),
+): boolean {
+  return lastActivityAt.getTime() < sessionInactivityCutoff(now).getTime();
+}
 /** 15 Minuten Inaktivität → App-Sperre; Session bleibt bestehen. */
 export const APP_LOCK_MS = 15 * 60 * 1000;
 /** Login-Challenge (zwischen Passwort und 2. Faktor): 5 Minuten. */
@@ -89,11 +107,24 @@ export function normalizeEmail(email: string): string {
   return email.trim().toLowerCase();
 }
 
+/**
+ * Phase 12 (push): Lebenszyklus-Ereignisse von Sessions für nachgelagerte
+ * Module (Push-Subscriptions deaktivieren, Admin-Hinweis „neues Gerät“).
+ * Listener laufen NACH der Auth-Mutation und können Login/Logout nie brechen.
+ */
+export interface SessionLifecycleListener {
+  newDeviceLogin?(event: { userId: string; sessionId: string }): Promise<void>;
+  sessionRevoked?(event: { userId: string; sessionId: string }): Promise<void>;
+  sessionsRevoked?(event: { userId: string; sessionIds: readonly string[] }): Promise<void>;
+}
+
 export class StaffAuthService {
   readonly db: Database;
   private readonly config: AppConfig;
   private readonly mail: StaffMailPort;
   private dummyHashPromise: Promise<string> | undefined;
+  // Phase 12 (push)
+  private readonly sessionListeners: SessionLifecycleListener[] = [];
 
   constructor(db: Database, config: AppConfig, mail: StaffMailPort) {
     this.db = db;
@@ -108,6 +139,23 @@ export class StaffAuthService {
 
   private audit(event: SecurityEventInput): Promise<void> {
     return recordSecurityEvent(this.db, event);
+  }
+
+  // Phase 12 (push)
+  addSessionListener(listener: SessionLifecycleListener): void {
+    this.sessionListeners.push(listener);
+  }
+
+  private async emitSessionEvent(
+    call: (listener: SessionLifecycleListener) => Promise<void> | undefined,
+  ): Promise<void> {
+    for (const listener of this.sessionListeners) {
+      try {
+        await call(listener);
+      } catch {
+        // Nachgelagerte Module dürfen Login/Logout nie scheitern lassen.
+      }
+    }
   }
 
   // ── Rechte ────────────────────────────────────────────────────────────────
@@ -344,6 +392,12 @@ export class StaffAuthService {
         sessionId: inserted[0]?.id ?? null,
         details: { deviceLabel },
       });
+      const sessionId = inserted[0]?.id;
+      if (sessionId !== undefined) {
+        await this.emitSessionEvent((listener) =>
+          listener.newDeviceLogin?.({ userId: user.id, sessionId }),
+        );
+      }
     }
     return token;
   }
@@ -371,7 +425,7 @@ export class StaffAuthService {
 
     const now = Date.now();
     const inactiveMs = now - session.lastActivityAt.getTime();
-    if (inactiveMs > SESSION_INACTIVITY_MS) {
+    if (isSessionExpiredByInactivity(session.lastActivityAt, now)) {
       await this.revokeSessionById(session.id, 'expired_inactivity', null);
       return null;
     }
@@ -423,6 +477,9 @@ export class StaffAuthService {
         sessionId: row.id,
         details: { reason },
       });
+      await this.emitSessionEvent((listener) =>
+        listener.sessionRevoked?.({ userId: row.userId, sessionId: row.id }),
+      );
     }
   }
 
@@ -449,6 +506,11 @@ export class StaffAuthService {
       targetUserId: userId,
       details: { reason, count: toRevoke.length, keptCurrent: exceptSessionId !== undefined },
     });
+    if (toRevoke.length > 0) {
+      await this.emitSessionEvent((listener) =>
+        listener.sessionsRevoked?.({ userId, sessionIds: toRevoke }),
+      );
+    }
     return toRevoke.length;
   }
 

@@ -26,6 +26,7 @@ import { ReturnService, type ReturnFinalizedListener } from '../returns/return-s
 import { SchedulingService } from '../scheduling/scheduling-service.ts';
 import { InventoryService } from '../warehouse/inventory-service.ts';
 import { MachineService } from '../warehouse/machine-service.ts';
+import type { DeliveryPacketMailer } from '../communication/transactional/mailers.ts';
 import type { CleaningEndedListener } from '../voucher/voucher-jobs.ts';
 import { UUID_PATTERN } from './auth.ts';
 
@@ -45,6 +46,8 @@ interface OfflineRouteOptions {
   finalizedListeners?: readonly ReturnFinalizedListener[];
   /** Phase 11: Reinigungsende ⇒ Gutschein-Prüfjob (Trigger B) – verdrahtet in app.ts. */
   cleaningEndedListener?: CleaningEndedListener;
+  /** Phase 12 (Order §11): Protokollmails nach Finalisierung über die Mail-Outbox. */
+  packetMailer?: DeliveryPacketMailer;
 }
 
 /**
@@ -71,6 +74,7 @@ export function registerOfflineRoutes(app: FastifyInstance, options: OfflineRout
     productService,
     scheduling,
     damages,
+    options.packetMailer ?? null,
   );
   const returns = new ReturnService(
     db,
@@ -82,6 +86,7 @@ export function registerOfflineRoutes(app: FastifyInstance, options: OfflineRout
     damages,
     assignments,
     options.finalizedListeners ?? [],
+    options.packetMailer ?? null,
   );
   const processes = new ProcessService(db);
   const leases = new OfflineLeaseService(db, config);

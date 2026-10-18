@@ -12,6 +12,7 @@
  */
 import { expect, test, type Page } from '@playwright/test';
 import { acceptedBooking } from '../helpers/booking.ts';
+import { clearSink, expectMailCount, waitForMail } from '../helpers/mail.ts';
 import { ADMIN_EMAIL, ADMIN_PASSWORD, resetE2eDatabase } from '../helpers/seed.ts';
 import {
   assignAndPrepare,
@@ -49,6 +50,9 @@ const LABEL_CLARIFICATION = 'Klärung erforderlich';
 const LABEL_NOTICE_REQUIRED = 'Kundeninformation erforderlich';
 /** Vor dem Worker-Lauf: bereit oder (optional) „Übertragung geplant“. */
 const READY_OR_PLANNED = /Bereit zur Buchhaltung|Übertragung geplant/;
+/** Phase 12: Rückmeldung nach „Freigeben und senden“ (Versand über die Mail-Outbox). */
+const NOTICE_QUEUED_TEXT =
+  'Kundeninformation freigegeben – das Wartefenster beginnt mit bestätigtem Mailversand.';
 
 let staff: Page; // Erika (Admin – alle Rechte inkl. system.settings für die Mock-Steuerung)
 let customerPage: Page;
@@ -59,6 +63,7 @@ let numberI = '';
 
 test.beforeAll(async ({ browser }) => {
   resetE2eDatabase();
+  await clearSink(); // Phase 12: Mail-Zählungen nur für diese Spec
   staff = await browser.newPage();
   customerPage = await browser.newPage();
 });
@@ -255,6 +260,19 @@ test('C: Schaden: Klärung → Betrag festlegen → Kundeninformation prüfen �
   await expect(send).toContainText('Freigeben und senden');
   await send.click();
 
+  // Phase 12 (Order §12): Freigabe reiht die Information in die Mail-Outbox ein –
+  // das 24-h-Wartefenster beginnt erst mit BESTÄTIGTEM Mailversand (Job mail.send).
+  await expect(staff.getByText(NOTICE_QUEUED_TEXT)).toBeVisible();
+  await expect(status()).not.toContainText(LABEL_WAITING);
+  await expect(staff.getByTestId('settlement-wait-hint')).toHaveCount(0);
+  await expect(staff.getByTestId('notice-send')).toHaveCount(0);
+  await runDueJobs(staff);
+  const noticeMail = await waitForMail({
+    to: 'carla@e2e.example',
+    subject: `Information zur Rückgabe – Vorgang ${numberC}`,
+  });
+  expect(noticeMail.text).toContain('120,00');
+
   // Wartezustand ohne Countdown; Auto-Transfer ist erst nach Ablauf fällig.
   await expect(status()).toContainText(LABEL_WAITING);
   const hint = staff.getByTestId('settlement-wait-hint');
@@ -315,6 +333,10 @@ test('E: Kundenrückmeldung: markieren → Auto-Transfer blockiert → Betrag ä
   await staff.getByTestId('notice-review').click();
   await expect(staff.getByTestId('notice-preview')).toBeVisible();
   await staff.getByTestId('notice-send').click();
+  // Phase 12: Wartefenster erst nach bestätigtem Mailversand (Job mail.send).
+  await expect(staff.getByText(NOTICE_QUEUED_TEXT)).toBeVisible();
+  await expect(status()).not.toContainText(LABEL_WAITING);
+  await runDueJobs(staff);
   await expect(status()).toContainText(LABEL_WAITING);
   await expect(staff.getByTestId('notice-send')).toHaveCount(0);
 
@@ -358,6 +380,8 @@ test('E: Kundenrückmeldung: markieren → Auto-Transfer blockiert → Betrag ä
   await expectLocked();
   // Genau EIN Versand je Abrechnung: kein erneutes Angebot „Freigeben und senden“.
   await expect(staff.getByTestId('notice-send')).toHaveCount(0);
+  // Phase 12: … und genau EINE zugestellte Kundeninformation (Betragsänderung startet nichts neu).
+  await expectMailCount({ to: 'emil@e2e.example', subject: 'Information zur Rückgabe' }, 1);
   await expectProcessCompleted(processId);
 });
 

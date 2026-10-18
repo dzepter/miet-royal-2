@@ -87,6 +87,8 @@ export interface CalendarEntry {
     customerContactedAt: string | null;
   } | null;
   customerInfoRequiredAt: string | null;
+  /** Phase 12: Kunde über die letzte Terminänderung informiert (Mail zugestellt). */
+  customerInformedAt: string | null;
   acknowledgementPending: boolean;
   acknowledgementRequestedFor: string | null;
   completedAt: string | null;
@@ -450,6 +452,20 @@ export class SchedulingService {
     // (Order §17); interne Neuzuweisungen erzeugen sie nie.
     const customerInfoRequiredAt =
       locked.startAt !== null ? now : (locked.customerInfoRequiredAt ?? null);
+    // Phase 12 (Order §19): den dem Kunden bekannten Termin festhalten – nur
+    // beim ersten Verschieben einer vereinbarten Zeit; weitere Verschiebungen
+    // vor der Kundeninformation behalten den ursprünglich bekannten Termin.
+    const keepKnown = locked.customerKnownStartAt !== null;
+    const customerKnownStartAt = keepKnown
+      ? locked.customerKnownStartAt
+      : locked.startAt !== null
+        ? locked.startAt
+        : null;
+    const customerKnownEndAt = keepKnown
+      ? locked.customerKnownEndAt
+      : locked.startAt !== null
+        ? locked.endAt
+        : null;
 
     if (locked.kind === 'return') {
       // Neubewertung der Überfälligkeit (Order §27): alte Incidents enden;
@@ -472,6 +488,8 @@ export class SchedulingService {
         startAt,
         endAt,
         customerInfoRequiredAt,
+        customerKnownStartAt,
+        customerKnownEndAt,
         version: locked.version + 1,
         updatedAt: now,
       })
@@ -1056,6 +1074,7 @@ export class SchedulingService {
               customerContactedAt: overdueIncident.customerContactedAt?.toISOString() ?? null,
             },
       customerInfoRequiredAt: appointment.customerInfoRequiredAt?.toISOString() ?? null,
+      customerInformedAt: appointment.customerInformedAt?.toISOString() ?? null,
       acknowledgementPending:
         appointment.acknowledgementRequestedAt !== null && appointment.acknowledgedAt === null,
       acknowledgementRequestedFor: appointment.acknowledgementRequestedFor,

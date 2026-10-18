@@ -48,6 +48,8 @@ export interface CalendarEntry {
     customerContactedAt: string | null;
   } | null;
   customerInfoRequiredAt: string | null;
+  /** Phase 12 (Order §19): Zeitpunkt der zuletzt erfolgreich versendeten Terminänderungsmail. */
+  customerInformedAt?: string | null;
   acknowledgementPending: boolean;
   acknowledgementRequestedFor: string | null;
   completedAt: string | null;

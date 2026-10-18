@@ -153,7 +153,10 @@ describe('Kein Klartext (Tests 21, 25–29, 27)', () => {
     });
     expect(Object.keys(json.voucher!).sort()).toEqual(
       [
+        // Phase 12 (Order §15): Versandproblem + „jetzt senden“ möglich – keine Geheimnisse.
+        'canSendNow',
         'deliveryLabel',
+        'deliveryProblemCode',
         'deliveryStatus',
         'expiresAt',
         'id',
@@ -161,6 +164,8 @@ describe('Kein Klartext (Tests 21, 25–29, 27)', () => {
         'originProcessId',
         'originProcessNumber',
         'reservedOfferId',
+        // Härtung RA-9/H6: neutraler Grund, warum „jetzt senden“ gesperrt ist (kein Geheimnis).
+        'sendNowBlock',
         'status',
         'statusLabel',
       ].sort(),
@@ -330,18 +335,27 @@ describe('Logging, Frontend, Offline (Tests 124–127)', () => {
     }
   });
 
-  it('126. Umgebungsisolation: anderer AUTH_SECRET_KEY entschlüsselt die Kopie nicht (siehe auch Unit 24/126); Hash bleibt prüfbar', async () => {
+  it('126. Umgebungsisolation: anderer COMMUNICATION_PAYLOAD_KEY entschlüsselt die Kopie nicht (siehe auch Unit 24/126); Hash bleibt prüfbar', async () => {
     const { voucher, code, paid } = await issuedWorld();
-    const { decryptDeliveryCode } = await import('../src/voucher/voucher-crypto.ts');
+    // Phase 12 (Order §8): Kopie ist eine Communication-Payload v2 (eigener Schlüssel, Umgebung im AAD).
+    const { PayloadCrypto } = await import('../src/communication/payload-crypto.ts');
+    const foreign = new PayloadCrypto({
+      appEnv: 'demo',
+      communication: {
+        payloadKey: 'demo-environment-communication-key-zzzzzzzzzzzzzz',
+        payloadKeyPrevious: null,
+      },
+      auth: { secretKey: 'demo-environment-secret-key-zzzzzzzzzzzzzzzzzzzz', allowedOrigins: [] },
+    });
     expect(() =>
-      decryptDeliveryCode(
-        voucher.deliveryCodeCiphertext!,
-        voucher.id,
-        'demo-environment-secret-key-zzzzzzzzzzzzzzzzzzzz',
-      ),
+      foreign.decrypt(voucher.deliveryCodeCiphertext!, 'voucher-delivery', voucher.id),
     ).toThrow();
     expect(
-      decryptDeliveryCode(voucher.deliveryCodeCiphertext!, voucher.id, ctx.config.auth.secretKey),
+      new PayloadCrypto(ctx.config).decrypt(
+        voucher.deliveryCodeCiphertext!,
+        'voucher-delivery',
+        voucher.id,
+      ),
     ).toBe(code);
     const validated = await voucherServiceFor(ctx).validateForOffer({
       code,

@@ -10,6 +10,7 @@ import { machineDamages, settlementLines } from '@mietroyal/database';
 import { eq } from 'drizzle-orm';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createTestContext, destroyTestContext, type TestContext } from './auth-helpers.ts';
+import { settleMailJobs } from './mail-job-helpers.ts';
 import { createStaffWithPermissions } from './crm-helpers.ts';
 import { pngBytes } from './handover-helpers.ts';
 import { jpegBytes, POINT_MARKER, readyReturn } from './return-helpers.ts';
@@ -200,6 +201,7 @@ describe('Schäden (§88)', () => {
         version: current.settlement.version,
       },
     );
+    await settleMailJobs(ctx); // Phase 12: Frist beginnt erst nach bestätigtem Mailversand
     current = await settlementViewFor(ctx.app, cookie, world.processId);
     await post(ctx.app, cookie, `/staff/settlements/${current.settlement.id}/end-wait`, {
       version: current.settlement.version,

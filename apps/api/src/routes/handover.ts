@@ -17,6 +17,7 @@ import { DamageService } from '../returns/damage-service.ts';
 import { SchedulingService } from '../scheduling/scheduling-service.ts';
 import { InventoryService } from '../warehouse/inventory-service.ts';
 import { MachineService } from '../warehouse/machine-service.ts';
+import type { DeliveryPacketMailer } from '../communication/transactional/mailers.ts';
 import type { CleaningEndedListener } from '../voucher/voucher-jobs.ts';
 import { UUID_PATTERN } from './auth.ts';
 
@@ -74,6 +75,8 @@ interface HandoverRouteOptions {
   storage: StorageProvider;
   /** Phase 11: Reinigungsende ⇒ Gutschein-Prüfjob (Trigger B) – verdrahtet in app.ts. */
   cleaningEndedListener?: CleaningEndedListener;
+  /** Phase 12 (Order §11): Protokollmails nach Finalisierung über die Mail-Outbox. */
+  packetMailer?: DeliveryPacketMailer;
 }
 
 function decodeBase64(value: string, maxBytes: number): Uint8Array | null {
@@ -106,6 +109,7 @@ export function registerHandoverRoutes(app: FastifyInstance, options: HandoverRo
     scheduling,
     // Phase 7 (Order §35): aktuelle Maschinenschäden als eingefrorener Snapshot.
     new DamageService(db, storage),
+    options.packetMailer ?? null,
   );
   const processService = new ProcessService(db);
 

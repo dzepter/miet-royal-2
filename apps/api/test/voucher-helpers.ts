@@ -8,6 +8,7 @@ import { encryptDeliveryCode } from '../src/voucher/voucher-crypto.ts';
 import { VoucherDeliveryService } from '../src/voucher/voucher-delivery.ts';
 import { VoucherService } from '../src/voucher/voucher-service.ts';
 import type { TestContext } from './auth-helpers.ts';
+import { settleMailJobs } from './mail-job-helpers.ts';
 import {
   openClarifications,
   post,
@@ -198,6 +199,8 @@ export async function paidSettledWorld(
       { version: current.settlement.version },
     );
     if (sent.status !== 200) throw new Error(`Kundeninformation nicht sendbar: ${sent.status}`);
+    // Phase 12: Freigabe reiht nur ein – erst der bestätigte Mailversand startet die Frist.
+    await settleMailJobs(ctx);
     current = await settlementViewFor(ctx.app, cookie, world.processId);
     const ended = await post(
       ctx.app,

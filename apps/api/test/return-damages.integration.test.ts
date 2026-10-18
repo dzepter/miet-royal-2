@@ -9,6 +9,7 @@
  */
 import { documents } from '@mietroyal/database';
 import { eq } from 'drizzle-orm';
+import { finalizationFingerprint } from '../src/returns/return-service.ts';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import {
   ADMIN_EMAIL,
@@ -158,6 +159,30 @@ describe('51.–68. Schadensdokumentation', () => {
     expect(damage.markers).toHaveLength(3);
     expect(damage.markers.map((m) => m.viewLabel)).toEqual(['Vorne', 'Links', 'Hinten']);
     expect(damage.markers[1]).toMatchObject({ markerType: 'area', width: 0.3, height: 0.2 });
+    // Finalisierungs-Fingerprint ist reihenfolgeunabhängig: Gleichstände der
+    // Zeitstempel (gleiche Transaktion) dürfen nie als Änderung gelten.
+    const reversed = {
+      ...view,
+      machines: [...view.machines].reverse().map((m) => ({
+        ...m,
+        damages: [...m.damages].reverse().map((d) => ({
+          ...d,
+          markers: [...d.markers].reverse(),
+          photos: [...d.photos].reverse(),
+        })),
+        cleanupPhotos: [...m.cleanupPhotos].reverse(),
+        missingCases: [...m.missingCases].reverse(),
+      })),
+      items: [...view.items].reverse(),
+    };
+    expect(finalizationFingerprint(reversed)).toBe(finalizationFingerprint(view));
+    const changed = {
+      ...view,
+      machines: view.machines.map((m, i) =>
+        i === 0 ? { ...m, damages: m.damages.map((d) => ({ ...d, description: 'geändert' })) } : m,
+      ),
+    };
+    expect(finalizationFingerprint(changed)).not.toBe(finalizationFingerprint(view));
   });
 
   it('58. Mehrere Schäden derselben Maschine sind möglich (und jeweils löschbar im Entwurf)', async () => {

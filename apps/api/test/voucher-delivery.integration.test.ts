@@ -58,7 +58,8 @@ describe('Versand vorbereitet, nicht ausgeführt (Tests 97–104)', () => {
     expect(voucher.deliveredAt).toBeNull();
     expect(voucher.deliveryProblemCode).toBeNull();
     expect(voucher.deliveryCodeCiphertext).not.toBeNull();
-    expect(voucher.deliveryCodeCiphertext).toMatch(/^[A-Za-z0-9+/=]+$/);
+    // Phase 12 (Order §8): Kopie als Communication-Payload v2 (Key-ID + base64).
+    expect(voucher.deliveryCodeCiphertext).toMatch(/^v2:[0-9a-f]{12}:[A-Za-z0-9+/=]+$/);
     // Die Kopie ist kein Klartextcode und enthält auch das Suffix nicht im Klartext.
     expect(normalizeVoucherCode(voucher.deliveryCodeCiphertext!)).toBeNull();
     expect(voucher.deliveryCodeCiphertext).not.toContain(`MR20`);
@@ -114,12 +115,13 @@ describe('Versand vorbereitet, nicht ausgeführt (Tests 97–104)', () => {
     expect(summary).toMatchObject({ deliveryStatus: 'sent', deliveryLabel: 'Versendet' });
   });
 
-  it('126. Kopie ist an den Umgebungsschlüssel gebunden: anderer AUTH_SECRET_KEY kann nicht entschlüsseln', async () => {
+  it('126. Kopie ist an den Umgebungsschlüssel gebunden: anderer COMMUNICATION_PAYLOAD_KEY kann nicht entschlüsseln', async () => {
     const { voucher } = await issuedVoucher();
     const otherConfig = loadConfig({
       APP_ENV: 'development',
       DATABASE_URL: TEST_DATABASE_URL,
       AUTH_SECRET_KEY: 'another-environment-secret-key-xxxxxxxxxxxxxxxx',
+      COMMUNICATION_PAYLOAD_KEY: 'another-environment-communication-key-xxxxxxxxxx',
     });
     const foreign = new VoucherDeliveryService(ctx.db, otherConfig);
     await expect(foreign.revealCodeForDelivery(voucher.id)).rejects.toThrow();

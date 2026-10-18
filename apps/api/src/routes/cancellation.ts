@@ -14,7 +14,7 @@ import {
   type CancellationService,
   type CancellationViewer,
 } from '../cancellation/cancellation-service.ts';
-import type { CancellationConfirmationGateway } from '../cancellation/confirmation-gateway.ts';
+import type { CancellationConfirmationMailer } from '../communication/transactional/mailers.ts';
 import { ProcessService } from '../crm/process-service.ts';
 import { getCompletedVisibilityDays } from '../crm/settings-service.ts';
 import { buildVisibilityContext } from '../crm/visibility.ts';
@@ -38,8 +38,8 @@ export interface CancellationRouteOptions {
   queue: JobQueue;
   accountingGateway: AccountingGateway;
   transfers: AccountingTransferService;
-  /** Test-Injection des Bestätigungs-Versandwegs (Default: Outbox außerhalb von production). */
-  confirmationGateway?: CancellationConfirmationGateway;
+  /** Phase 12 (Order §14): Stornobestätigung über die Mail-Outbox (ohne Mailer: blocked). */
+  confirmations?: CancellationConfirmationMailer;
   /** Optional geteilte Instanz (z. B. mit der Legacy-Storno-Route). */
   cancellationService?: CancellationService;
 }
@@ -78,9 +78,7 @@ export function registerCancellationRoutes(
       config,
       storage,
       transfers,
-      ...(options.confirmationGateway === undefined
-        ? {}
-        : { confirmations: options.confirmationGateway }),
+      ...(options.confirmations === undefined ? {} : { confirmations: options.confirmations }),
       logger: app.log,
     });
   const processService = new ProcessService(db);

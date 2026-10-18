@@ -199,3 +199,92 @@ Admin kann Gate manuell übersteuern.
   erweitert keine Rechte; unbekannte/fremde Tokens werden neutral abgelehnt.
 - Der Lager-/Tabletmodus ist eine Darstellungsvariante pro Gerät und erweitert
   keine Rechte; es gibt keine zusätzliche Lager-PIN.
+
+## Web Push & Kalender-Feed (Phase 12)
+
+- **Kein neues Recht für Push-Geräte.** Jede gültige Session darf das EIGENE
+  Gerät registrieren (`POST /staff/push/subscriptions`), abmelden
+  (`DELETE /staff/push/subscriptions/current`) und die eigenen Geräte sehen
+  (`GET /staff/push/subscriptions`, nur Label/Zeiten – nie Endpoint/Keys).
+  Push ist ein Werkzeug, keine Datenfreigabe: Nachrichten enthalten nur
+  Vorgangsnummer/Terminart und öffnen die Staff-App, deren Rechteprüfung
+  unverändert greift.
+- **Empfänger operativer Pushes:** 1h-Termin/Vertretungsbeginn ⇒ die
+  effektiv zuständige Person; überfällige Rückgabe und Maschinenrisiko
+  (initial + 6 h) ⇒ alle aktiven Nutzer mit `calendar.view_all` oder
+  `employee.manage` (Planung/Admin, frisch berechnet, Systemadmins immer);
+  neues Gerät (`session.new_device_login`) ⇒ nur `employee.manage`.
+- **Kalender-Feed:** `calendar.view` (eigene Termine) für Erzeugen/
+  Regenerieren/Status (`POST`/`GET /staff/calendar/feed`); der Feed zeigt
+  ausschließlich die eigenen effektiven Termine – auch mit
+  `calendar.view_all` nie fremde (Feed = Person, nicht Rolle). Der
+  öffentliche Abruf `GET /public/calendar/<token>.ics` ist read-only,
+  rate-limitiert und antwortet neutral 404; der Token ist der einzige
+  Zugang (nur Hash gespeichert). Deaktivierte Nutzer ⇒ 404.
+- **Admin-Status** (`system.settings`, Einstellungen → Kommunikation):
+  `pushStatusSummary` liefert nur enabled/öffentlichen VAPID-Key/aktive
+  Geräte – nie den privaten Schlüssel.
+
+## Kommunikation: Konversation, Unmatched-Inbox, WhatsApp (Phase 12)
+
+- **Konversation je Vorgang** (`GET /staff/processes/:id/conversation`,
+  `GET /staff/messages/:id/photos/:photoId`): Sichtbarkeit = Vorgangs-
+  sichtbarkeit (`process.view_all` + zentrale Regel für Abgeschlossene;
+  unsichtbar = neutrales 404). Fotos sind nur über ihre eigene Nachricht
+  erreichbar; Fotos unzugeordneter Nachrichten nur mit
+  `message.reply_customer` (wie die Inbox).
+- **Antwort per E-Mail** (`POST /staff/processes/:id/conversation/reply`,
+  `channel: 'email'`): `message.reply_customer` + Vorgangssichtbarkeit.
+  Empfänger ist NIE frei wählbar – immer die E-Mail des Vorgangskunden.
+- **Antwort per WhatsApp** (`channel: 'whatsapp'`): `whatsapp.reply` +
+  Vorgangssichtbarkeit (`message.reply_customer` genügt NICHT); nur
+  innerhalb des 24-h-Fensters, Empfänger = Nummer der letzten
+  Kundennachricht des Vorgangs.
+- **Unmatched-Inbox** (`GET /staff/communication/unmatched`,
+  `POST …/:id/assign`, `POST …/:id/ignore`): `message.reply_customer`.
+  Begründung: Es ist das administrative Kommunikationsrecht „Kunden
+  antworten“ – wer Kundennachrichten beantworten darf, darf sie auch
+  sichten und einem Vorgang zuordnen. `system.settings` ist reine Admin-
+  Infrastruktur, `email.approve_prepared` betrifft nur ausgehende Freigaben;
+  ein neues Recht wäre ohne fachlichen Mehrwert (Order §36: minimal neue).
+  Zuordnen setzt nur `process_id`/`customer_id`/`assigned_by` der
+  Konversationszeile – nie eine Fachmutation am Vorgang.
+- **Webhook** `GET/POST /webhooks/whatsapp`: öffentlich, ohne Staff-Login;
+  Schutz ausschließlich über Verify-Token bzw. HMAC-Signatur, Rate-Limit,
+  neutrale 401/403/404.
+
+## Erinnerungen, Terminänderung, Kunden-Aktionslinks (Phase 12)
+
+- **Keine neue Permission.** `POST /staff/appointments/:id/inform-customer`
+  (bewusste Mail „Kunden über Terminänderung informieren“) verlangt
+  `email.approve_prepared` – dieselbe Freigabe einer vorbereiteten Kundenmail
+  wie die Stornobestätigung – UND die Terminsichtbarkeit der Terminplanung
+  (`calendar.view_all` oder eigener/effektiver Termin, sonst neutral 404).
+- **Kundenkontakte im Vorgang:** `GET /staff/processes/:id/customer-contacts`
+  (Abholperson/Kontakt vor Ort aus dem Aktionslink) folgt der Vorgangs-
+  sichtbarkeit (`process.view_all` + zentrale Sichtbarkeitsregel, neutral 404).
+  Antworten enthalten nie Token oder Hashes.
+- **Öffentlich ohne Login:** `GET/POST /public/actions/:token` – Zugang nur
+  über den Token (nur Hash gespeichert, exakt bis 1 h vor Termin, je
+  Termin/Zweck ein aktiver Link), IP-Rate-Limit, immer dasselbe neutrale 404
+  bei jedem Fehlerfall, Pfad im Log maskiert. Erinnerungsmails (7 Tage/1 Tag)
+  werden automatisch vom Scheduler versendet – keine Staff-Aktion, keine
+  Permission.
+
+
+## Transaktionsmails (Phase 12, transactional)
+- Keine neuen Permissions. Angebotsversand bleibt `offer.send`, AB-Freigabe/
+  -Versand `booking.confirm`, Kundeninformation (Schaden/Fehlteil)
+  `settlement.release`, Stornobestätigung `email.approve_prepared` – jeweils
+  als bewusste Staff-Aktion; die Mail selbst versendet der Job `mail.send`.
+- **„Gutschein jetzt senden“** `POST /staff/customers/:id/send-voucher` (Body `{ voucherId }`, Gutschein muss zum Kunden gehören):
+  `customer.view` + `email.approve_prepared` (wie die Stornobestätigung);
+  409, wenn der Mailversand nicht konfiguriert ist, keine E-Mail-Adresse oder
+  keine Versandkopie vorliegt. Antwort nur `{ queued, voucherId }` – Staff
+  sieht nie Code, Hash oder Kopie.
+- Übergabe-/Rückgabeprotokoll, Gutschein- und Rechnungsmail laufen
+  automatisch (keine Staff-Aktion, keine Permission); erneut senden nur über
+  die Outbox (`system.settings`).
+- **Öffentlich ohne Login:** `GET /public/documents/:token` – genau ein
+  Dokument je Token (nur Hash gespeichert, 90 Tage), IP-Rate-Limit 30/min,
+  immer dasselbe neutrale 404, Pfad im Log maskiert.

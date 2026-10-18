@@ -615,6 +615,12 @@ export function AuthGuard({ children }: { children: ReactNode }) {
                 {hasPermission(me, 'permission.manage') && (
                   <Link href="/rollen">Rollen &amp; Rechte</Link>
                 )}
+                {/* Phase 12 (UI): Mehr → Kommunikation → Nicht zugeordnet (message.reply_customer). */}
+                {hasPermission(me, 'message.reply_customer') && (
+                  <Link href="/kommunikation/nicht-zugeordnet" data-testid="nav-communication">
+                    Kommunikation
+                  </Link>
+                )}
                 {hasPermission(me, 'system.settings') && (
                   <Link href="/einstellungen">Einstellungen</Link>
                 )}

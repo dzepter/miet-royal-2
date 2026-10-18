@@ -10,6 +10,10 @@ import {
 } from '../../../components/accounting-block';
 import { AuthGuard, useMe } from '../../../components/auth-guard';
 import { ConfirmDialog } from '../../../components/confirm-dialog';
+import {
+  ProcessCommunicationCard,
+  VoucherDeliveryActions,
+} from '../../../components/communication';
 import { apiFetch, hasPermission, type ApiResult } from '../../../lib/api';
 import { RETRY_TRANSFER_LABEL_LEXWARE, TRANSFER_CHECK_TEXT } from '../../../lib/lexware';
 import {
@@ -595,6 +599,16 @@ function ProcessView() {
             <code>{detail.voucher.maskedReference}</code>
           </p>
         ) : null}
+        {/* Phase 12 (UI): Versandproblem + „Gutschein jetzt senden“ (Order §15). */}
+        {detail.voucher ? (
+          <VoucherDeliveryActions
+            customerId={process.customerId}
+            voucher={detail.voucher}
+            me={me}
+            testIdPrefix="process-voucher"
+            onChanged={load}
+          />
+        ) : null}
         {(previousProcess !== null || followUpProcess !== null) && (
           <p className="muted">
             {previousProcess !== null && (
@@ -634,8 +648,21 @@ function ProcessView() {
               ? ' Für eine neue Buchung einen neuen Vorgang aus dem Storno erstellen (siehe Storno).'
               : ''}
           </p>
-        ) : commerce.confirmationStatus === 'sent' ? (
+        ) : commerce.confirmationStatus === 'failed' ? (
+          // Phase 12 (UI): AB-Mail endgültig gescheitert – bewusst erneut versenden.
+          <p>
+            <Link href={`/vorgaenge/${params.id}/angebot`} data-testid="next-action-ab-resend">
+              <strong>Auftragsbestätigung erneut versenden</strong>
+            </Link>{' '}
+            <span className="badge locked">Versand fehlgeschlagen</span>
+          </p>
+        ) : commerce.confirmationStatus === 'sent' || commerce.confirmationStatus === 'queued' ? (
           <>
+            {commerce.confirmationStatus === 'queued' && (
+              <p className="muted" data-testid="next-action-ab-queued">
+                Auftragsbestätigung: Versand eingeplant.
+              </p>
+            )}
             {/* Terminplanung bleibt an fester Stelle (kein Umbau beim Nachladen der Ausgabe). */}
             <p>
               <Link href={`/vorgaenge/${params.id}/termine`}>
@@ -844,6 +871,9 @@ function ProcessView() {
         ))}
       </div>
 
+      {/* Phase 12 (UI): kompakter Kommunikationsstatus, Kundenkontakte, Einstieg Nachrichten. */}
+      <ProcessCommunicationCard processId={params.id} />
+
       <div className="card">
         <h2>Aktionen</h2>
         <p>
@@ -929,6 +959,14 @@ function ProcessView() {
         <p>
           <Link href={`/vorgaenge/${params.id}/termine`}>Terminplanung</Link>
         </p>
+        <p>
+          <Link
+            href={`/vorgaenge/${params.id}/kommunikation`}
+            data-testid="process-link-communication"
+          >
+            Kommunikation
+          </Link>
+        </p>
       </div>
 
       {handover !== null && (
@@ -991,13 +1029,17 @@ function ProcessView() {
           {packets.map((packet) => (
             <p className="muted" key={packet.id} data-testid="delivery-packet">
               Dokumentpaket:{' '}
-              <span className="badge ok">
-                {PACKET_STATUS_LABELS[packet.status] ?? packet.status}
+              <span
+                className={`badge ${packet.status === 'sent' ? 'ok' : packet.status === 'failed' ? 'locked' : ''}`}
+              >
+                {PACKET_STATUS_LABELS[packet.status] ?? 'Unbekannt'}
               </span>{' '}
               an {packet.recipient !== '' ? packet.recipient : '– (keine E-Mail hinterlegt)'} ·{' '}
               {packet.subject} · {packet.documentIds.length}{' '}
-              {packet.documentIds.length === 1 ? 'Dokument' : 'Dokumente'} (Outbox, kein echter
-              Versand ohne Mailadapter)
+              {packet.documentIds.length === 1 ? 'Dokument' : 'Dokumente'}
+              {packet.status === 'sent' && packet.sentAt !== null
+                ? ` · gesendet am ${formatBerlin(packet.sentAt)}`
+                : ''}
             </p>
           ))}
         </div>
@@ -1464,11 +1506,17 @@ function ProcessView() {
           )}
           <p className="muted">
             Kundenbestätigung:{' '}
-            {cancellation.confirmationStatus === 'sent'
-              ? `gesendet am ${formatBerlin(cancellation.confirmationSentAt)}`
-              : cancellation.confirmationStatus === 'blocked'
-                ? 'Versand nicht möglich (kein Kommunikationsadapter)'
-                : 'vorbereitet, noch nicht gesendet'}
+            <span data-testid="cancellation-confirmation-status">
+              {cancellation.confirmationStatus === 'sent'
+                ? `gesendet am ${formatBerlin(cancellation.confirmationSentAt)}`
+                : cancellation.confirmationStatus === 'queued'
+                  ? 'Versand eingeplant'
+                  : cancellation.confirmationStatus === 'failed'
+                    ? 'Versand fehlgeschlagen'
+                    : cancellation.confirmationStatus === 'blocked'
+                      ? 'Versand nicht möglich (E-Mail-Versand blockiert)'
+                      : 'vorbereitet, noch nicht gesendet'}
+            </span>
           </p>
           {cancellationError !== null && <p className="error">{cancellationError}</p>}
           {cancellationNotice !== null && <p className="success">{cancellationNotice}</p>}
@@ -1530,8 +1578,10 @@ function ProcessView() {
                   </button>{' '}
                 </>
               )}
+            {/* Phase 12 (UI): erneutes Senden nach failed/blocked – der Server entscheidet. */}
             {cancellation.permissions.canSendConfirmation &&
-              cancellation.confirmationStatus === 'prepared' && (
+              cancellation.confirmationStatus !== 'sent' &&
+              cancellation.confirmationStatus !== 'queued' && (
                 <>
                   <button
                     type="button"
@@ -1540,11 +1590,18 @@ function ProcessView() {
                     onClick={() =>
                       void runCancellationAction(
                         () => sendCancellationConfirmation(cancellation.id),
-                        'Bestätigung gesendet.',
-                      )
+                        'Bestätigung zum Versand eingeplant.',
+                      ).then((data) => {
+                        if (data?.confirmationStatus === 'blocked') {
+                          setCancellationNotice(null);
+                          setCancellationError('Versand nicht möglich (E-Mail-Versand blockiert).');
+                        }
+                      })
                     }
                   >
-                    Bestätigung senden
+                    {cancellation.confirmationStatus === 'prepared'
+                      ? 'Bestätigung senden'
+                      : 'Bestätigung erneut senden'}
                   </button>{' '}
                 </>
               )}

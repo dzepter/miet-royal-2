@@ -113,6 +113,12 @@ function PlanningView() {
                   <span className="badge">Mitarbeiter zuweisen</span>
                 )}{' '}
                 {entry.overdue && <span className="badge locked">Überfällig</span>}{' '}
+                {/* Phase 12 (UI): offene Kundeninformation nach Terminänderung (Order §19). */}
+                {entry.customerInfoRequiredAt !== null && entry.status === 'scheduled' && (
+                  <span className="badge" data-testid="appointment-row-info-required">
+                    Kundeninformation erforderlich
+                  </span>
+                )}{' '}
                 {entry.status === 'completed' && (
                   <span className="badge active">Abgeschlossen</span>
                 )}

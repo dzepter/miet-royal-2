@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { expect, type Page } from '@playwright/test';
-import { decryptDeliveryCode } from '../../../apps/api/src/voucher/voucher-crypto.ts';
+import { PayloadCrypto } from '../../../apps/api/src/communication/payload-crypto.ts';
 import { TEST_DATABASE_URL, WEB_ORIGIN } from './seed.ts';
 
 /**
@@ -11,11 +11,17 @@ import { TEST_DATABASE_URL, WEB_ORIGIN } from './seed.ts';
  *   verschlüsselte Versandkopie; UI und API zeigen ihn nie (Order §§12/14).
  *   Für die Angebots-Szenarien entschlüsselt `revealVoucherCode` die
  *   Versandkopie AUSSCHLIESSLICH im Testprozess (Phase-11-Finale, Punkt 2):
- *   dieselbe Funktion wie der Server (`decryptDeliveryCode`, AES-256-GCM/
- *   HKDF aus AUTH_SECRET_KEY) wird direkt importiert – kein Kindprozess,
+ *   dieselbe Klasse wie der Server (`PayloadCrypto`, AES-256-GCM v2 aus
+ *   COMMUNICATION_PAYLOAD_KEY, Legacy v1 aus AUTH_SECRET_KEY) wird direkt
+ *   importiert – kein Kindprozess,
  *   kein stdout/stderr, kein Serverlog, kein HTTP-Endpunkt, keine Datei.
  *   Der Klartext lebt nur in einer Variablen der Spec und wird dort nur in
  *   das Eingabefeld getippt (das Feld leert sich nach erfolgreichem Anwenden).
+ *   Phase 12: Mit konfiguriertem Mailversand wird der Gutschein automatisch
+ *   versendet und die Versandkopie danach gelöscht – Specs lesen den Code
+ *   dann aus der zugestellten Gutscheinmail (helpers/mail.ts
+ *   `voucherCodeFromMail`); `revealVoucherCode` bleibt für Zustände VOR dem
+ *   Versand (z. B. erster SMTP-Versuch abgelehnt ⇒ Retry).
  * - Datenbank-Lesezugriffe laufen wie in lexware.ts über `pg` aus dem
  *   API-Workspace (`queryTestDb`), nur gegen die Testdatenbank.
  * - UI-Wege (Vorgang/Anfrage/Angebot für einen BESTEHENDEN Kunden, Gutschein
@@ -28,10 +34,16 @@ export const VOUCHER_NOT_COMBINABLE_MESSAGE =
   'Gutschein kann nicht mit einem weiteren Rabatt oder Sonderpreis kombiniert werden.';
 export const VOUCHER_RESERVED_ELSEWHERE = /bereits für ein anderes Angebot reserviert/;
 export const LABEL_DELIVERY_PENDING = 'Versand ausstehend';
+/** Phase 12: nach bestätigtem SMTP-Versand der Gutscheinmail (markDelivered). */
+export const LABEL_DELIVERY_SENT = 'Versendet';
 export const LABEL_STATUS_ACTIVE = 'Aktiv';
 export const LABEL_STATUS_RESERVED = 'Für Angebot reserviert';
 export const LABEL_STATUS_REDEEMED = 'Eingelöst';
-/** Nie in der UI: Versand findet in Phase 11 nicht statt. */
+/**
+ * Phase 11: nie in der UI, solange der Gutschein NICHT versendet ist. Phase 12
+ * versendet pending Gutscheine automatisch (Order §15) – die Prüfung gilt
+ * daher nur noch für Zustände VOR dem Versand (Versand ausstehend).
+ */
 export const NEVER_SENT = /gesendet|versendet/i;
 
 const API_WORKSPACE_DIR = `${import.meta.dirname}/../../../apps/api`;
@@ -44,6 +56,17 @@ const API_WORKSPACE_DIR = `${import.meta.dirname}/../../../apps/api`;
  */
 const E2E_AUTH_SECRET_KEY =
   process.env.AUTH_SECRET_KEY ?? 'mietroyal-development-only-auth-secret-key';
+/** Phase 12: Communication-Key der E2E-API (development-Default, kein Geheimnis). */
+const E2E_COMMUNICATION_PAYLOAD_KEY =
+  process.env.COMMUNICATION_PAYLOAD_KEY ?? 'mietroyal-development-only-communication-payload-key';
+const e2ePayloadCrypto = new PayloadCrypto({
+  appEnv: 'development',
+  communication: {
+    payloadKey: E2E_COMMUNICATION_PAYLOAD_KEY,
+    payloadKeyPrevious: process.env.COMMUNICATION_PAYLOAD_KEY_PREVIOUS ?? null,
+  },
+  auth: { secretKey: E2E_AUTH_SECRET_KEY, allowedOrigins: [] },
+});
 
 // ── Datenbank (nur lesen) ───────────────────────────────────────────────
 
@@ -173,10 +196,10 @@ export function revealVoucherCode(
   voucher: Pick<VoucherDbRow, 'id' | 'delivery_code_ciphertext'>,
 ): string {
   expect(voucher.delivery_code_ciphertext, 'Versandkopie fehlt').not.toBeNull();
-  const code = decryptDeliveryCode(
+  const code = e2ePayloadCrypto.decrypt(
     voucher.delivery_code_ciphertext!,
+    'voucher-delivery',
     voucher.id,
-    E2E_AUTH_SECRET_KEY,
   );
   // Boolescher Vergleich: ein Fehlschlag darf den Klartext nie in die Reporter-Ausgabe bringen.
   expect(
@@ -500,10 +523,15 @@ export async function expectCustomerVoucherCard(
   const card = staff.getByTestId('customer-voucher');
   await expect(card).toBeVisible();
   await expect(card.getByTestId('customer-voucher-status')).toContainText(expected.statusLabel);
-  await expect(card.getByTestId('customer-voucher-delivery')).toContainText(
-    expected.deliveryLabel ?? LABEL_DELIVERY_PENDING,
-  );
-  await expect(card).not.toContainText(NEVER_SENT);
+  // Phase 12: Standard ist „Versendet“ (Mail konfiguriert, Kunde mit E-Mail ⇒ automatischer
+  // Versand, Order §15); „Versand ausstehend“ nur für Zustände vor dem Versand.
+  const deliveryLabel = expected.deliveryLabel ?? LABEL_DELIVERY_SENT;
+  await expect(card.getByTestId('customer-voucher-delivery')).toContainText(deliveryLabel);
+  if (deliveryLabel === LABEL_DELIVERY_PENDING) {
+    await expect(card).not.toContainText(NEVER_SENT);
+  } else {
+    await expect(card).not.toContainText(LABEL_DELIVERY_PENDING);
+  }
   const reference = card.getByTestId('customer-voucher-reference');
   await expect(reference).toHaveText(/^MR20-••••-••••-[A-Z2-9]{4}$/);
   if (expected.maskedReference !== undefined) {

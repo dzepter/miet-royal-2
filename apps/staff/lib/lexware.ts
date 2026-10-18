@@ -488,9 +488,17 @@ export const PAYMENT_STATUS_LABELS_LEXWARE: Record<string, string> = {
   overdue: 'Überfällig',
 };
 
-/** Versandstatus: nie „gesendet“ behaupten (Order §3/§40) – die API kann nicht mailen. */
+/**
+ * Versandstatus der Rechnungsmail. Phase 10: nie „gesendet“ behaupten (Order
+ * §3/§40). Phase 12 (E2E-Agent 1): die API versendet Rechnungen jetzt per Mail
+ * (Order §16) – „Versendet“ NUR nach bestätigtem SMTP-Versand (API-Status
+ * `sent`); Fehler/Blockade sichtbar statt „Ausstehend“ (Order §3).
+ */
 export const DELIVERY_STATUS_LABELS = {
   pending: 'Ausstehend',
+  sent: 'Versendet',
+  failed: 'Fehlgeschlagen',
+  blocked: 'Blockiert',
 } as const satisfies Record<string, string>;
 
 export function deliveryStatusLabel(invoice: AccountingInvoiceInfo | null | undefined): string {

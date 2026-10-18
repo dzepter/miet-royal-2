@@ -332,10 +332,14 @@ describe('28.–32. Entwurf, Versand, Versionen', () => {
     expect(version.customerSnapshot).not.toBeNull();
     expect(version.termsVersionId).not.toBeNull();
 
-    // Outbox-Adapter hat den fachlichen Versand protokolliert:
-    const outbox = await ctx.pool.query(`SELECT kind, recipient FROM offer_deliveries`);
+    // Phase 12: Die Mail-Outbox hat genau eine Angebotszustellung (Token nur verschlüsselt).
+    const outbox = await ctx.pool.query(
+      `SELECT kind, recipient_email, status, context::text AS context FROM mail_deliveries`,
+    );
     expect(outbox.rows).toHaveLength(1);
     expect(outbox.rows[0].kind).toBe('offer');
+    expect(outbox.rows[0].status).toBe('pending');
+    expect(String(outbox.rows[0].context)).not.toContain(token);
 
     // 30: Mutationen an der gesendeten Version sind blockiert.
     const patch = await ctx.app.inject({

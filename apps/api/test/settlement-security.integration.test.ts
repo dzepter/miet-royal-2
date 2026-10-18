@@ -13,6 +13,7 @@ import { eq } from 'drizzle-orm';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { setCompletedVisibilityDays } from '../src/crm/settings-service.ts';
 import { createTestContext, destroyTestContext, type TestContext } from './auth-helpers.ts';
+import { settleMailJobs } from './mail-job-helpers.ts';
 import { createStaffWithPermissions } from './crm-helpers.ts';
 import {
   adminSession,
@@ -448,6 +449,7 @@ describe('Datenminimierung, Offline, Snapshot (146–149)', () => {
       `/staff/settlements/${current.settlement.id}/notice/approve-and-send`,
       { version: current.settlement.version },
     );
+    await settleMailJobs(ctx); // Phase 12: Frist beginnt erst nach bestätigtem Mailversand
     current = await settlementViewFor(ctx.app, cookie, world.processId);
     await post(ctx.app, cookie, `/staff/settlements/${current.settlement.id}/end-wait`, {
       version: current.settlement.version,
@@ -467,7 +469,13 @@ describe('Datenminimierung, Offline, Snapshot (146–149)', () => {
     expect(log).not.toContain('Kommerz');
     expect(log).not.toContain('XYZ123');
     expect(log).not.toContain(current.settlement.accountingReference!);
-    expect(log).not.toContain('4321');
+    // Kurze Ziffernfolge aus der Fixture: zufällige Request-/Entitäts-UUIDs können
+    // sie zufällig enthalten (z. B. „…-4321-…“) – UUIDs vor dieser Prüfung neutralisieren.
+    const logWithoutUuids = log.replace(
+      /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi,
+      '<uuid>',
+    );
+    expect(logWithoutUuids).not.toContain('4321');
     expect(log).not.toContain('Lieferweg');
     // IDs/Status dürfen vorkommen (Nachvollziehbarkeit).
     expect(log).toContain(current.settlement.id);

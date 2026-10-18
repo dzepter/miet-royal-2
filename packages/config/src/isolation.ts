@@ -51,6 +51,41 @@ export function assertConfigsIsolated(a: AppConfig, b: AppConfig): void {
     collisions.push('AUTH_SECRET_KEY: beide Umgebungen nutzen denselben Auth-Schlüssel');
   }
 
+  // Phase 12: Kommunikationsschlüssel, WhatsApp-Zugänge, Push-Schlüssel und
+  // das IMAP-Postfach dürfen nie in zwei Umgebungen gleichzeitig gelten.
+  const keysA = [a.communication.payloadKey, a.communication.payloadKeyPrevious];
+  const keysB = [b.communication.payloadKey, b.communication.payloadKeyPrevious];
+  if (keysA.some((key) => key !== null && keysB.includes(key))) {
+    collisions.push(
+      'COMMUNICATION_PAYLOAD_KEY: beide Umgebungen nutzen denselben Kommunikationsschlüssel',
+    );
+  }
+  if (a.whatsapp.accessToken !== null && a.whatsapp.accessToken === b.whatsapp.accessToken) {
+    collisions.push('WHATSAPP_ACCESS_TOKEN: beide Umgebungen nutzen denselben WhatsApp-Zugang');
+  }
+  if (a.whatsapp.appSecret !== null && a.whatsapp.appSecret === b.whatsapp.appSecret) {
+    collisions.push('WHATSAPP_APP_SECRET: beide Umgebungen nutzen dasselbe WhatsApp-App-Secret');
+  }
+  if (a.whatsapp.phoneNumberId !== null && a.whatsapp.phoneNumberId === b.whatsapp.phoneNumberId) {
+    collisions.push('WHATSAPP_PHONE_NUMBER_ID: beide Umgebungen nutzen dieselbe WhatsApp-Nummer');
+  }
+  if (
+    a.push.vapidPrivateKey !== null &&
+    (a.push.vapidPrivateKey === b.push.vapidPrivateKey ||
+      a.push.vapidPublicKey === b.push.vapidPublicKey)
+  ) {
+    collisions.push('PUSH_VAPID_PRIVATE_KEY: beide Umgebungen nutzen dasselbe VAPID-Schlüsselpaar');
+  }
+  if (
+    a.mail.imap !== null &&
+    b.mail.imap !== null &&
+    a.mail.imap.host.toLowerCase() === b.mail.imap.host.toLowerCase() &&
+    a.mail.imap.user.toLowerCase() === b.mail.imap.user.toLowerCase() &&
+    a.mail.imap.folder.toUpperCase() === b.mail.imap.folder.toUpperCase()
+  ) {
+    collisions.push('MAIL_IMAP_*: beide Umgebungen lesen dasselbe IMAP-Postfach');
+  }
+
   if (collisions.length > 0) {
     throw new EnvironmentIsolationError(a.appEnv, b.appEnv, collisions);
   }

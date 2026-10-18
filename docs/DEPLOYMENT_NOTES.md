@@ -121,3 +121,67 @@ Claude Code deployt niemals eigenmächtig auf Produktion.
   `invoice_delivery_status = pending`.
 - Backup-Automatisierung + Restore-Test (ARCHITECTURE.md).
 - CI-Pipeline (Lint/Typecheck/Tests auf jedem Push).
+
+## E-Mail-Versand und Kommunikations-Schlüssel (Phase 12, mail)
+
+- Variablen (nur API/Worker, nie Staff/Web): `MAIL_ENABLED` (`true` ⇒ SMTP
+  Pflicht: `MAIL_SMTP_HOST`, `MAIL_SMTP_USER`, `MAIL_SMTP_PASSWORD`,
+  `MAIL_FROM_ADDRESS`; optional `MAIL_SMTP_PORT` (Default 465 implizit /
+  587 STARTTLS), `MAIL_SMTP_SECURE` (`true` = implizites TLS, `false` =
+  STARTTLS-Pflicht; Klartext gibt es nicht), `MAIL_FROM_NAME`,
+  `MAIL_REPLY_ADDRESS`), `MAIL_IMAP_ENABLED` (`true` ⇒ Eingang aktiv; dann Pflicht `MAIL_IMAP_HOST`, `MAIL_IMAP_USER`, `MAIL_IMAP_PASSWORD`; optional `MAIL_IMAP_PORT` (Default 993/143), `MAIL_IMAP_SECURE`, `MAIL_IMAP_FOLDER` (Default INBOX)), `MAIL_DEMO_WHITELIST`
+  (nur demo, Pflicht bei `MAIL_ENABLED=true`; in production abgelehnt),
+  `MAIL_PUBLIC_WEB_BASE_URL` (absolute Basis der öffentlichen Web-App für
+  Angebots-/Dokument-/Kontaktlinks; production nur HTTPS; in staging/demo/
+  production Pflicht bei `MAIL_ENABLED=true` – sonst startet API/Worker nicht
+  (Härtung RA-11); nur in development gilt der lokale Default), `COMMUNICATION_PAYLOAD_KEY`
+  (≥ 32 Zeichen, Pflicht außerhalb development, je Umgebung EIGEN),
+  `COMMUNICATION_PAYLOAD_KEY_PREVIOUS` (nur während einer Rotation).
+- production/staging: `MAIL_SMTP_HOST`/`MAIL_IMAP_HOST` dürfen nicht
+  localhost sein; Zertifikate werden immer geprüft (keine Option zum
+  Abschalten). Ohne `MAIL_ENABLED=true` + vollständige SMTP-Daten bleibt der
+  Versand fail-closed deaktiviert: Zustellungen entstehen als `blocked
+  MAIL_NOT_CONFIGURED` und lassen sich nach Konfiguration über
+  Einstellungen → Kommunikation „erneut senden“.
+- Betrieb: Der Worker muss laufen (Job `mail.send`). Status/SMTP-Check/
+  Outbox/Resend unter Einstellungen → Kommunikation (`system.settings`).
+  `outcome_unknown` (Zustellung unklar: Timeout/Abbruch einer bestehenden
+  SMTP-Sitzung ohne Serverantwort, z. B. nach DATA) wird nie automatisch
+  wiederholt – Postfach/Provider prüfen und bewusst erneut senden (je
+  Zustellung genau ein Resend; der Fachstatus bleibt bis dahin „im Versand“).
+- Rotation von `COMMUNICATION_PAYLOAD_KEY`: (1) neuen Wert als
+  `COMMUNICATION_PAYLOAD_KEY`, bisherigen als
+  `COMMUNICATION_PAYLOAD_KEY_PREVIOUS` setzen, API+Worker neu starten;
+  (2) `pnpm communication:rewrap-secrets` ausführen (idempotent, Ausgabe nur
+  Zähler); (3) `COMMUNICATION_PAYLOAD_KEY_PREVIOUS` entfernen, neu starten.
+  Legacy-Gutscheinkopien aus Phase 11 (AUTH_SECRET_KEY) werden beim Rewrap
+  ebenfalls auf v2 gehoben – das Script daher einmal nach dem Phase-12-Rollout
+  ausführen, solange `AUTH_SECRET_KEY` unverändert ist. Nicht entschlüsselbare
+  Kopien werden nur markiert (`delivery_problem_code =
+  DELIVERY_COPY_UNDECRYPTABLE`, Mail: `blocked SECRET_UNDECRYPTABLE`); Codes
+  und Hashes ändern sich nie.
+- `pnpm mail:smoke`: manueller Live-Smoke (eine Testmail über das konfigurierte
+  Gateway) nur mit `MAIL_SMOKE=true MAIL_SMOKE_TO=<Adresse>`, nie in
+  production, nie im Quality Gate.
+
+<!-- Phase 12 (Härtung Review A, H8) -->
+## Öffentliche Token-Links hinter Proxy (Phase 12, Härtung H8)
+
+- `API_TRUST_PROXY_HOPS` MUSS hinter Web-/Staff-Proxy gesetzt sein: Die
+  öffentlichen Rate-Limits (Kontakt-/Aktionslinks, Dokumentlinks,
+  Kalender-Feed, Angebotslinks; `publicLimit` je Client-IP) und das
+  Login-Limit greifen sonst auf die IP des Proxys – alle Kunden teilen sich
+  ein Limit (Sperre für alle) bzw. ein Angreifer wird nicht getrennt
+  begrenzt. Wert = Anzahl der vertrauenswürdigen Proxies zwischen Client und
+  API, z. B. nginx → Next-Server (`apps/web`/`apps/staff`, Rewrite `/api/*`)
+  → API = `2`; nur Next-Server → API = `1`. Alle Wege zur API (Web, Staff,
+  ggf. direkt freigegebener Kalender-Feed) müssen dieselbe Hop-Zahl haben;
+  nie pauschal vertrauen (X-Forwarded-For wäre fälschbar).
+- Reverse-Proxy-Access-Logs (nginx o. Ä. vor Web/Staff/API) müssen die
+  Token-Pfade maskieren, denn das Token steht im Pfad: `/kontakt/<token>`,
+  `/dokument/<token>`, `/angebot/<token>` und `/api/public/**`
+  (z. B. `/api/public/offers/<token>/pdf`, `/api/public/actions/<token>`,
+  `/api/public/documents/<token>`, `/api/public/calendar/<token>.ics`). Die
+  API selbst maskiert ihre Request-Logs (`maskLoggedPath`); Proxy-Logs
+  liegen außerhalb und brauchen eine eigene Regel (z. B. nginx `map` auf
+  `$request_uri` ⇒ `…/***`) oder Access-Log für diese Pfade abschalten.

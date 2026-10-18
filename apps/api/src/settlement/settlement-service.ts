@@ -49,7 +49,10 @@ import { buildAccountingBlock, type AccountingBlockView } from '../lexware/trans
 import type { ProcessService } from '../crm/process-service.ts';
 import { ACCESSORY_LABELS } from '../returns/return-service.ts';
 import { SEVERITY_LABELS } from '../returns/damage-service.ts';
-import type { SettlementNoticeGateway } from './notice-gateway.ts';
+import type {
+  EnqueuedMail,
+  SettlementNoticeMailer,
+} from '../communication/transactional/mailers.ts';
 import { buildCustomerNoticeText, type NoticePosition } from './notice-text.ts';
 
 /**
@@ -89,6 +92,8 @@ export type SettlementErrorReason =
   | 'NOTICE_ALREADY_SENT'
   | 'NOTICE_RECIPIENT_MISSING'
   | 'NOTICE_NOT_CONFIGURED'
+  | 'NOTICE_ALREADY_QUEUED'
+  | 'NOTICE_DOCUMENT_MISSING'
   | 'NOTICE_NOT_SENT'
   | 'CUSTOMER_RESPONSE_ALREADY_RECORDED'
   | 'NO_CUSTOMER_RESPONSE'
@@ -418,7 +423,8 @@ export interface PaymentsView {
 export interface SettlementServiceDeps {
   db: Database;
   transfers: AccountingTransferService;
-  noticeGateway: SettlementNoticeGateway;
+  /** Phase 12 (Order §12): Kundeninformation über die Mail-Outbox; null = kein Versandweg (z. B. Worker-Transferjob). */
+  notices: SettlementNoticeMailer | null;
   queue: JobQueue;
   processes: ProcessService;
   appEnv: string;
@@ -473,7 +479,7 @@ function lineDirection(type: SettlementLineType): 'charge' | 'credit' {
 export class SettlementService {
   private readonly db: Database;
   private readonly transfers: AccountingTransferService;
-  private readonly noticeGateway: SettlementNoticeGateway;
+  private readonly notices: SettlementNoticeMailer | null;
   private readonly queue: JobQueue;
   private readonly processes: ProcessService;
   private readonly appEnv: string;
@@ -482,7 +488,7 @@ export class SettlementService {
   constructor(deps: SettlementServiceDeps) {
     this.db = deps.db;
     this.transfers = deps.transfers;
-    this.noticeGateway = deps.noticeGateway;
+    this.notices = deps.notices;
     this.queue = deps.queue;
     this.processes = deps.processes;
     this.appEnv = deps.appEnv;
@@ -1185,7 +1191,12 @@ export class SettlementService {
           .where(
             and(
               eq(settlementCustomerNotices.settlementId, settlement.id),
-              inArray(settlementCustomerNotices.status, ['prepared', 'approved', 'blocked']),
+              inArray(settlementCustomerNotices.status, [
+                'prepared',
+                'approved',
+                'blocked',
+                'failed',
+              ]),
             ),
           );
       }
@@ -1846,91 +1857,223 @@ export class SettlementService {
     version: number,
     now: Date,
   ): Promise<SettlementRow> {
-    const { settlement } = await this.mutate(settlementId, version, now, async (tx, s) => {
-      if (s.noticeSentAt !== null) {
-        throw new SettlementError(
-          'NOTICE_ALREADY_SENT',
-          'Die Kundeninformation wurde bereits gesendet – nur einmal je Abrechnung.',
+    const { settlement, result } = await this.mutate<EnqueuedMail>(
+      settlementId,
+      version,
+      now,
+      async (tx, s) => {
+        if (s.noticeSentAt !== null) {
+          throw new SettlementError(
+            'NOTICE_ALREADY_SENT',
+            'Die Kundeninformation wurde bereits gesendet – nur einmal je Abrechnung.',
+          );
+        }
+        if (!s.noticeRequired) {
+          throw new SettlementError(
+            'NOTICE_NOT_REQUIRED',
+            'Für diese Abrechnung ist keine Kundeninformation erforderlich.',
+          );
+        }
+        if (s.status === 'clarification_required') {
+          throw new SettlementError(
+            'CLARIFICATION_OPEN',
+            'Bitte zuerst alle offenen Kostenklärungen erledigen – die Information wird einmal kombiniert gesendet.',
+          );
+        }
+        const noticeRows = await tx
+          .select()
+          .from(settlementCustomerNotices)
+          .where(eq(settlementCustomerNotices.settlementId, s.id))
+          .for('update');
+        const notice = noticeRows[0];
+        if (notice === undefined) {
+          throw new SettlementError('NOTICE_NOT_FOUND', 'Kundeninformation nicht vorbereitet.');
+        }
+        const recipient = (notice.recipientEmail ?? '').trim();
+        if (recipient === '') {
+          throw new SettlementError(
+            'NOTICE_RECIPIENT_MISSING',
+            'Im Buchungs-Snapshot fehlt eine E-Mail-Adresse des Kunden.',
+          );
+        }
+        if (notice.status === 'queued') {
+          throw new SettlementError(
+            'NOTICE_ALREADY_QUEUED',
+            'Die Kundeninformation ist bereits im Versand – die Frist beginnt mit bestätigtem Mailversand.',
+          );
+        }
+        if (this.notices === null || !this.notices.isConfigured()) {
+          // Der Status „blocked“ wird außerhalb dieser (zurückgerollten) Transaktion festgehalten.
+          throw new SettlementError(
+            'NOTICE_NOT_CONFIGURED',
+            'Kundeninformation nicht versendbar: Es ist kein Versandadapter konfiguriert.',
+          );
+        }
+        // Link auf GENAU das Rückgabeprotokoll dieser Abrechnung (Order §§12/13).
+        const returnRows =
+          s.returnId === null
+            ? []
+            : await tx
+                .select({ protocolDocumentId: rentalReturns.protocolDocumentId })
+                .from(rentalReturns)
+                .where(eq(rentalReturns.id, s.returnId));
+        const protocolDocumentId = returnRows[0]?.protocolDocumentId ?? null;
+        if (protocolDocumentId === null) {
+          throw new SettlementError(
+            'NOTICE_DOCUMENT_MISSING',
+            'Für die Kundeninformation fehlt das finale Rückgabeprotokoll.',
+          );
+        }
+        const bookingRows = await tx
+          .select({ customerId: bookings.customerId, customerSnapshot: bookings.customerSnapshot })
+          .from(bookings)
+          .where(eq(bookings.id, s.bookingId));
+        const booking = bookingRows[0];
+        if (booking === undefined) {
+          throw new SettlementError('NOTICE_NOT_FOUND', 'Buchung der Abrechnung nicht gefunden.');
+        }
+        const process = await this.processById(s.processId, tx);
+        const customer = booking.customerSnapshot as Record<string, unknown>;
+        const positions = Array.isArray(notice.positionsSnapshot)
+          ? (notice.positionsSnapshot as NoticePosition[])
+          : [];
+        // Phase 12 (Order §12): Freigabe = Einreihen in die Outbox (in dieser
+        // Transaktion). notice_sent_at/wait_until und die Klärung setzt ERST der
+        // Sent-Listener nach bestätigtem Mailversand (`noticeMailSent`).
+        const enqueued = await this.notices.enqueueWithin(tx, {
+          noticeId: notice.id,
+          settlementId: s.id,
+          processId: s.processId,
+          processNumber: process.processNumber,
+          customerId: booking.customerId,
+          bookingId: s.bookingId,
+          returnProtocolDocumentId: protocolDocumentId,
+          recipient: { email: recipient, name: asString(customer.displayName) || null },
+          positions: positions.map((p) => ({ label: p.description, amountCents: p.amountCents })),
+          totalCents: notice.totalCents,
+          previousDeliveryId: notice.mailDeliveryId,
+          now,
+        });
+        await tx
+          .update(settlementCustomerNotices)
+          .set({ approvedBy: actorId, approvedAt: now, updatedAt: now })
+          .where(eq(settlementCustomerNotices.id, notice.id));
+        this.logger.info(
+          { settlementId: s.id, noticeId: notice.id, mailDeliveryId: enqueued.deliveryId },
+          'Kundeninformation freigegeben und eingereiht',
         );
-      }
-      if (!s.noticeRequired) {
-        throw new SettlementError(
-          'NOTICE_NOT_REQUIRED',
-          'Für diese Abrechnung ist keine Kundeninformation erforderlich.',
-        );
-      }
-      if (s.status === 'clarification_required') {
-        throw new SettlementError(
-          'CLARIFICATION_OPEN',
-          'Bitte zuerst alle offenen Kostenklärungen erledigen – die Information wird einmal kombiniert gesendet.',
-        );
-      }
-      const noticeRows = await tx
-        .select()
-        .from(settlementCustomerNotices)
-        .where(eq(settlementCustomerNotices.settlementId, s.id))
-        .for('update');
-      const notice = noticeRows[0];
-      if (notice === undefined) {
-        throw new SettlementError('NOTICE_NOT_FOUND', 'Kundeninformation nicht vorbereitet.');
-      }
-      const recipient = (notice.recipientEmail ?? '').trim();
-      if (recipient === '') {
-        throw new SettlementError(
-          'NOTICE_RECIPIENT_MISSING',
-          'Im Buchungs-Snapshot fehlt eine E-Mail-Adresse des Kunden.',
-        );
-      }
-      if (!this.noticeGateway.isConfigured()) {
-        // Der Status „blocked“ wird außerhalb dieser (zurückgerollten) Transaktion festgehalten.
-        throw new SettlementError(
-          'NOTICE_NOT_CONFIGURED',
-          'Kundeninformation nicht versendbar: Es ist kein Versandadapter konfiguriert.',
-        );
-      }
-      const result = await this.noticeGateway.send({
-        noticeId: notice.id,
-        settlementId: s.id,
-        recipientEmail: recipient,
-        subject: notice.subject,
-        bodyText: notice.bodyText,
-      });
-      await tx
-        .update(settlementCustomerNotices)
-        .set({
-          status: 'sent',
-          approvedBy: actorId,
-          approvedAt: now,
-          sentAt: now,
-          gateway: result.gateway,
-          gatewayReference: result.gatewayReference,
-          blockedReason: null,
-          updatedAt: now,
-        })
-        .where(eq(settlementCustomerNotices.id, notice.id));
-      await tx
-        .update(settlements)
-        .set({ noticeSentAt: now, waitUntil: customerNoticeWaitUntil(now), updatedAt: now })
-        .where(eq(settlements.id, s.id));
-      await tx
-        .update(settlementClarifications)
-        .set({
-          status: 'resolved',
-          resolution: 'sent',
-          resolvedBy: actorId,
-          resolvedAt: now,
-          updatedAt: now,
-        })
-        .where(
-          and(
-            eq(settlementClarifications.settlementId, s.id),
-            eq(settlementClarifications.type, 'customer_notice'),
-            eq(settlementClarifications.status, 'open'),
-          ),
-        );
-      this.logger.info({ settlementId: s.id, noticeId: notice.id }, 'Kundeninformation gesendet');
-    });
+        return enqueued;
+      },
+    );
+    await this.notices?.afterCommit(result, (error) =>
+      this.logger.error(
+        { settlementId, error: error instanceof Error ? error.name : 'unknown' },
+        'Versandjob der Kundeninformation konnte nicht geplant werden',
+      ),
+    );
     return settlement;
+  }
+
+  /**
+   * Sent-Listener (Phase 12, Order §12): Erst der bestätigte Mailversand
+   * startet die 24-h-Frist (notice_sent_at = Versandzeit, wait_until = +24 h)
+   * und erledigt die Klärung „Kundeninformation“. Idempotent: läuft der
+   * Listener erneut (Job-Wiederholung, manueller Resend), bleibt die einmal
+   * gesetzte Frist unverändert.
+   */
+  async noticeMailSent(noticeId: string, sentAt: Date, deliveryId: string): Promise<void> {
+    const rows = await this.db
+      .select({ settlementId: settlementCustomerNotices.settlementId })
+      .from(settlementCustomerNotices)
+      .where(eq(settlementCustomerNotices.id, noticeId));
+    const settlementId = rows[0]?.settlementId;
+    if (settlementId === undefined) return;
+    try {
+      await this.mutate(settlementId, null, sentAt, async (tx, s) => {
+        const noticeRows = await tx
+          .select()
+          .from(settlementCustomerNotices)
+          .where(eq(settlementCustomerNotices.id, noticeId))
+          .for('update');
+        const notice = noticeRows[0];
+        if (notice === undefined) return;
+        if (notice.status !== 'sent') {
+          await tx
+            .update(settlementCustomerNotices)
+            .set({
+              status: 'sent',
+              sentAt: notice.sentAt ?? sentAt,
+              mailDeliveryId: deliveryId,
+              gateway: 'mail',
+              blockedReason: null,
+              updatedAt: sentAt,
+            })
+            .where(eq(settlementCustomerNotices.id, notice.id));
+        }
+        if (s.noticeSentAt !== null) return;
+        await tx
+          .update(settlements)
+          .set({
+            noticeSentAt: sentAt,
+            waitUntil: customerNoticeWaitUntil(sentAt),
+            updatedAt: sentAt,
+          })
+          .where(eq(settlements.id, s.id));
+        await tx
+          .update(settlementClarifications)
+          .set({
+            status: 'resolved',
+            resolution: 'sent',
+            resolvedBy: notice.approvedBy,
+            resolvedAt: sentAt,
+            updatedAt: sentAt,
+          })
+          .where(
+            and(
+              eq(settlementClarifications.settlementId, s.id),
+              eq(settlementClarifications.type, 'customer_notice'),
+              eq(settlementClarifications.status, 'open'),
+            ),
+          );
+        this.logger.info({ settlementId: s.id, noticeId }, 'Kundeninformation gesendet');
+      });
+    } catch (error) {
+      // Gesperrte/übertragene Abrechnung: Zustellung ist erfolgt, Frist nicht mehr relevant.
+      if (error instanceof SettlementError) {
+        this.logger.warn(
+          { settlementId, noticeId, reason: error.reason },
+          'Kundeninformation gesendet, Abrechnung nicht mehr veränderbar',
+        );
+        return;
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Failed-/Blocked-Listener: keine Frist, Transfer bleibt blockiert; erneute Freigabe möglich.
+   * Härtung RA-12: eine UNKLARE Zustellung (outcome_unknown) bleibt `queued` – der Kunde
+   * kann die Mail erhalten haben; erneutes Senden nur bewusst über die Outbox (Resend).
+   */
+  async noticeMailFailed(
+    noticeId: string,
+    result: { status: 'failed' | 'outcome_unknown' | 'blocked'; errorCode: string | null },
+    now = new Date(),
+  ): Promise<void> {
+    if (result.status === 'outcome_unknown') return;
+    await this.db
+      .update(settlementCustomerNotices)
+      .set({
+        status: result.status === 'blocked' ? 'blocked' : 'failed',
+        blockedReason: result.errorCode ?? result.status,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(settlementCustomerNotices.id, noticeId),
+          eq(settlementCustomerNotices.status, 'queued'),
+        ),
+      );
   }
 
   /** Interne Aktion „Kundenrückmeldung eingegangen“ (§30): blockiert den Auto-Transfer. */

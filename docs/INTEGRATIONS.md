@@ -113,7 +113,8 @@ Miet-Royal ist Source of Truth.
 Synchronisieren: Abholung, Rückgabe, Lieferung.
 Keine Angebots-/Rechnungs-/Lagerereignisse.
 Ausfall → Miet-Royal bleibt gültig, Sync später.
-Apple-Technik vor Phase 12 konkret validieren.
+Apple-Technik: in Phase 12 als privater read-only ICS-Feed je Mitarbeiter umgesetzt
+(Details, Quellen und Grenzen: docs/COMMUNICATION_INTEGRATIONS.md).
 
 ## Routing
 Provider liefert Distanz/Fahrzeit/Route.

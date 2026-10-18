@@ -451,6 +451,11 @@ describe('Reconciliation – pnpm lexware:reconcile / Adminaktion (§53, Tests 1
     const handlers = (ctx.jobs as unknown as { handlers: Map<string, unknown> }).handlers;
     const types = [...handlers.keys()];
     expect(types).toContain('lexware.event.process');
-    expect(types.filter((t) => /reconcile|poll|cron|sync/i.test(t))).toEqual([]);
+    // Phase 12: der IMAP-Abruf `mail.inbound_poll` ist ein Kommunikationsjob
+    // (Order §21) – geprüft wird weiterhin, dass es keinen Lexware-/Buchhaltungs-
+    // Abgleich per Polling/Cron gibt.
+    expect(
+      types.filter((t) => /lexware|accounting/i.test(t) && /reconcile|poll|cron|sync/i.test(t)),
+    ).toEqual([]);
   });
 });

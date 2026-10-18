@@ -157,6 +157,8 @@ export const lexwareInvoiceMappings = pgTable(
     paidDate: date('paid_date'),
     /** 'pending' nach Erstellung; Phase 12 setzt 'sent'. Phase 10 setzt NIE 'sent'. */
     deliveryStatus: text('delivery_status').notNull().default('pending'),
+    /** Phase 12: Outbox-Zustellung der Rechnungsmail (mail_deliveries) – kein FK (Importzyklus). */
+    mailDeliveryId: uuid('mail_delivery_id'),
     lastSyncedAt: timestamp('last_synced_at', { withTimezone: true }),
     attentionCode: text('attention_code'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),

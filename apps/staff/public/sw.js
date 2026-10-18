@@ -244,3 +244,70 @@ self.addEventListener('message', (event) => {
     event.ports[0].postMessage({ key: sessionKey });
   }
 });
+
+// ── Phase 12 (push): Web Push (Order §§29–31) ────────────────────────────────
+// Reine Anzeige: die Nutzlast kommt datenminimiert vom Server ({kind, title,
+// body, url, tag}); der Worker interpretiert nichts, cacht nichts und ruft
+// keine API auf. Offline-/Cache-Logik oben bleibt unverändert.
+
+function readPushPayload(event) {
+  if (!event.data) return null;
+  try {
+    const data = event.data.json();
+    if (!data || typeof data !== 'object' || typeof data.title !== 'string') return null;
+    return data;
+  } catch {
+    return null;
+  }
+}
+
+/** Nur relative Staff-Pfade derselben Origin öffnen (nie fremde URLs aus einer Nachricht). */
+function safeNotificationUrl(raw) {
+  if (typeof raw !== 'string' || !raw.startsWith('/') || raw.startsWith('//')) return '/';
+  try {
+    const url = new URL(raw, self.location.origin);
+    return url.origin === self.location.origin ? url.pathname + url.search : '/';
+  } catch {
+    return '/';
+  }
+}
+
+self.addEventListener('push', (event) => {
+  const data = readPushPayload(event);
+  if (data === null) return;
+  const url = safeNotificationUrl(data.url);
+  event.waitUntil(
+    self.registration.showNotification(data.title, {
+      body: typeof data.body === 'string' ? data.body : '',
+      tag: typeof data.tag === 'string' ? data.tag : undefined,
+      icon: '/icons/icon-192.png',
+      badge: '/icons/icon-192.png',
+      data: { url },
+    }),
+  );
+});
+
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  const url = safeNotificationUrl(event.notification.data && event.notification.data.url);
+  const target = new URL(url, self.location.origin).href;
+  event.waitUntil(
+    (async () => {
+      const windows = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+      for (const client of windows) {
+        if (client.url === target && 'focus' in client) return client.focus();
+      }
+      const anyWindow = windows.find((client) => 'navigate' in client && 'focus' in client);
+      if (anyWindow) {
+        try {
+          await anyWindow.focus();
+          return await anyWindow.navigate(target);
+        } catch {
+          // Phase 12 Härtung: navigate() wirft bei nicht kontrollierten Clients
+          // (includeUncontrolled) ⇒ stattdessen ein neues Fenster öffnen.
+        }
+      }
+      return self.clients.openWindow(target);
+    })(),
+  );
+});

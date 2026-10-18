@@ -43,10 +43,6 @@ import { registerLexwareContactRoutes } from './routes/lexware-contacts.ts';
 import { registerCancellationRoutes } from './routes/cancellation.ts';
 import { createCancellationService } from './cancellation/cancellation-service.ts';
 import { registerSettlementRoutes } from './routes/settlement.ts';
-import {
-  createSettlementNoticeGateway,
-  type SettlementNoticeGateway,
-} from './settlement/notice-gateway.ts';
 import { createSettlementEnsureListener } from './settlement/return-listener.ts';
 import { SettlementService } from './settlement/settlement-service.ts';
 import { ProcessService } from './crm/process-service.ts';
@@ -56,6 +52,43 @@ import { MachineService } from './warehouse/machine-service.ts';
 import { registerStaffAdminRoutes } from './routes/staff-admin.ts';
 import { registerLexwareAdminRoutes } from './routes/lexware-admin.ts';
 import { registerLexwareWebhookRoutes } from './routes/lexware-webhooks.ts';
+// Phase 12 (transactional): Angebot/AB/Protokolle/Kundeninformation/Storno/
+// Gutschein/Rechnung über die Mail-Outbox; öffentlicher Dokument-Link.
+import {
+  createTransactionalMailModule,
+  registerTransactionalJobHandlers,
+} from './jobs/communication-transactional.ts';
+import { registerPublicDocumentRoutes } from './routes/public-documents.ts';
+// Phase 12 (mail)
+import { createCommunicationContext } from './communication/context.ts';
+import { COMMUNICATION_LOG_REDACT_PATHS } from './communication/logging.ts';
+import type { OutboundMailGateway } from './communication/types.ts';
+import { registerCommunicationJobHandlers } from './jobs/communication.ts';
+import { registerCommunicationAdminRoutes } from './routes/communication-admin.ts';
+// Phase 12 (push)
+import type { PushGateway } from './communication/types.ts';
+import { createPushModule, registerPushJobHandlers } from './jobs/communication-push.ts';
+import { registerPushRoutes } from './routes/push.ts';
+import { registerCalendarFeedRoutes } from './routes/calendar-feed.ts';
+// Phase 12 (inbound)
+import type { InboundMailSource, WhatsAppGateway } from './communication/types.ts';
+import {
+  createConversationDeliveryListeners,
+  createInboundMailSource,
+  createWhatsAppGateway,
+  registerInboundJobHandlers,
+} from './jobs/communication-inbound.ts';
+import { registerConversationRoutes } from './routes/communication-conversation.ts';
+import { registerCommunicationInboxRoutes } from './routes/communication-inbox.ts';
+import { registerWhatsAppWebhookRoutes } from './routes/whatsapp-webhook.ts';
+// Phase 12 (scan)
+import {
+  createRetentionCompletionListener,
+  registerScanDueJobHandlers,
+} from './jobs/communication-scan.ts';
+import { registerCommunicationActionRoutes } from './routes/communication-actions.ts';
+import { enqueuePendingVoucherDeliveries } from './communication/voucher-delivery-job.ts';
+import { enqueuePendingInvoiceDeliveries } from './communication/invoice-delivery-job.ts';
 
 export const API_VERSION = '0.1.0';
 
@@ -73,10 +106,18 @@ const CORRELATION_ID_PATTERN = /^[A-Za-z0-9_-]{8,64}$/;
  */
 export function maskLoggedPath(url: string): string {
   const path = url.split('?')[0] ?? url;
-  return path
-    .replace(/(\/public\/offers\/)[^/]+/, '$1***')
-    .replace(/(\/staff\/machines\/qr\/)(?!resolve(?:\/|$))[^/]+/, '$1***')
-    .replace(/(\/staff\/returns\/resolve-qr\/)[^/]+/, '$1***');
+  return (
+    path
+      .replace(/(\/public\/offers\/)[^/]+/, '$1***')
+      .replace(/(\/staff\/machines\/qr\/)(?!resolve(?:\/|$))[^/]+/, '$1***')
+      .replace(/(\/staff\/returns\/resolve-qr\/)[^/]+/, '$1***')
+      // Phase 12 (push): Kalender-Feed-Token (Order §33) nie im Log.
+      .replace(/(\/public\/calendar\/)[^/]+/, '$1***')
+      // Phase 12 (scan): Kunden-Aktions-Token (Order §20) nie im Log.
+      .replace(/(\/public\/actions\/)[^/]+/, '$1***')
+      // Phase 12 (transactional): Dokument-Token (Order §13) nie im Log.
+      .replace(/(\/public\/documents\/)[^/]+/, '$1***')
+  );
 }
 
 export interface AppOptions {
@@ -97,14 +138,20 @@ export interface AppOptions {
   logDestination?: NodeJS.WritableStream;
   /** Phase 9: Test-Injection der Buchhaltungsgrenze (Default: Mock außerhalb von production, sonst Disabled). */
   accountingGateway?: AccountingGateway;
-  /** Phase 9: Test-Injection des Kundeninformations-Versandwegs (Default: Outbox außerhalb von production). */
-  noticeGateway?: SettlementNoticeGateway;
   /** Phase 9: Test-Injection der Job-Queue (Default: PostgresJobQueue auf dem Pool). */
   jobQueue?: JobQueue;
   /** Phase 10: Test-Injection des Lexware-Kontexts (Default: aus config.lexware). */
   lexwareContext?: LexwareContext;
   /** Phase 10: Test-Injection der Verbindungsprüfung (Default: LexwareConnectionService). */
   lexwareConnection?: LexwareConnectionService;
+  /** Phase 12 (mail): Test-Injection des Mail-Gateways (Default: SMTP wenn konfiguriert, sonst Disabled; Fake in production verboten). */
+  mailGateway?: OutboundMailGateway;
+  /** Phase 12 (push): Test-Injection des Push-Gateways (Default: WebPush bei VAPID-Konfiguration, sonst Disabled; Fake nie in production). */
+  pushGateway?: PushGateway;
+  /** Phase 12 (inbound): Test-Injection der IMAP-Quelle (Default: aus config.mail.imap, sonst Disabled). */
+  inboundMailSource?: InboundMailSource;
+  /** Phase 12 (inbound): Test-Injection des WhatsApp-Gateways (Default: nach config.whatsapp.mode; Fake/Mock nie in production). */
+  whatsappGateway?: WhatsAppGateway;
 }
 
 /**
@@ -128,11 +175,32 @@ export function buildApp({
   storage,
   logDestination,
   accountingGateway,
-  noticeGateway,
   jobQueue,
   lexwareContext,
   lexwareConnection,
+  mailGateway,
+  pushGateway,
+  inboundMailSource,
+  whatsappGateway,
 }: AppOptions): FastifyInstance {
+  // Phase 12 (inbound): production startet nie mit Fake-/Mock-WhatsApp (Order §39).
+  if (
+    config.appEnv === 'production' &&
+    (whatsappGateway?.kind === 'fake' || whatsappGateway?.kind === 'mock')
+  ) {
+    throw new Error('Fake-/Mock-WhatsApp-Gateway ist in production nicht zulässig.');
+  }
+  if (config.appEnv === 'production' && inboundMailSource?.kind === 'fake') {
+    throw new Error('FakeInboundMailSource ist in production nicht zulässig.');
+  }
+  // Phase 12 (mail): production startet nie mit einem Fake-Gateway (Pflichttest „Production FakeMail blockiert“).
+  if (config.appEnv === 'production' && mailGateway?.kind === 'fake') {
+    throw new Error('FakeMailGateway ist in production nicht zulässig.');
+  }
+  // Phase 12 (push): dito für den Push-Fake (Pflichttest 120).
+  if (config.appEnv === 'production' && pushGateway?.kind === 'fake') {
+    throw new Error('FakePushGateway ist in production nicht zulässig.');
+  }
   const app = Fastify({
     logger: {
       level: config.logLevel,
@@ -149,6 +217,8 @@ export function buildApp({
           'lexware.apiKey',
           'headers.authorization',
           '*.headers.authorization',
+          // Phase 12 (mail): SMTP-/IMAP-Passwörter, WhatsApp-/Push-/Communication-Keys.
+          ...COMMUNICATION_LOG_REDACT_PATHS,
         ],
         censor: '[REDACTED]',
       },
@@ -334,8 +404,14 @@ export function buildApp({
       // Phase 10: ein Lexware-Kontext je Prozess (Client nur bei aktiver Konfiguration).
       const lexware = lexwareContext ?? createLexwareContext(config, db, app.log);
       const accounting = accountingGateway ?? createAccountingGatewayFor(config, lexware);
-      const notices = noticeGateway ?? createSettlementNoticeGateway(config);
       const queue = jobQueue ?? new PostgresJobQueue(pool);
+      // Phase 12 (mail): Kommunikationsschicht (Outbox, Gateway, Krypto) – eine
+      // Komposition für API und Worker; mail.send läuft im Finanz-Runner (unten).
+      const communication = createCommunicationContext(config, db, queue, {
+        gateway: mailGateway,
+        storage: storageProvider,
+        logger: app.log,
+      });
       const connection = lexwareConnection ?? new LexwareConnectionService(lexware);
       // Phase 11: Gutschein-Trigger (Zahlung → paid, Reinigungsende) reihen
       // nur Jobs auf die PostgreSQL-Queue ein; Entscheidung im VoucherService.
@@ -349,6 +425,17 @@ export function buildApp({
         lexwareConnection: connection,
         paymentStatusListeners: [voucherTriggers.paymentStatusListener],
       });
+      // Phase 12 (transactional): fachliche Auslöser auf die Mail-Outbox
+      // (Order §§11–16) – registriert Sent-/Failed-Listener + Rechnungsabruf.
+      const transactional = createTransactionalMailModule({
+        communication,
+        db,
+        config,
+        queue,
+        lexware,
+        transfers,
+        logger: app.log,
+      });
       // Eine Storno-Instanz für die Storno-Routen UND die Legacy-Storno-Route
       // (Vorgänge mit bestätigter Buchung werden nur über diesen Pfad storniert).
       const cancellationService = createCancellationService({
@@ -356,20 +443,34 @@ export function buildApp({
         config,
         storage: storageProvider,
         transfers,
+        confirmations: transactional.cancellationMailer, // Phase 12 (transactional)
         logger: app.log,
       });
+      // Phase 12 (scan): Vorgangsabschluss ⇒ Retention-Job für Chatfotos (Order §25).
+      const retentionListener = createRetentionCompletionListener(queue, app.log);
       registerCrmRoutes(instance, {
         db,
         auth: authService,
         config,
         cancellationService,
         vouchers: voucherService,
+        processCompletionListeners: [retentionListener],
+        voucherDelivery: { queue }, // Phase 12 (transactional)
       });
       registerCommerceRoutes(instance, {
         db,
         auth: authService,
         config,
         storage: storageProvider,
+        rateLimitEnabled,
+        // Phase 12 (transactional): Angebot/AB über die Mail-Outbox.
+        offerGateway: transactional.offerGateway,
+        mailOutbox: communication.outbox,
+      });
+      // Phase 12 (transactional): öffentlicher Dokument-Link (Order §13).
+      registerPublicDocumentRoutes(instance, {
+        config,
+        documentLinks: transactional.documentLinks,
         rateLimitEnabled,
       });
       // Phase-6-Finalisierung A2: Terminzeitänderungen bewerten die
@@ -397,6 +498,7 @@ export function buildApp({
         config,
         storage: storageProvider,
         cleaningEndedListener: voucherTriggers.cleaningEndedListener,
+        packetMailer: transactional.packetMailer, // Phase 12 (transactional)
       });
       // Phase 9: nach erfolgreicher Finalisierung (online wie offline-sync)
       // entsteht die Abrechnung – idempotent, außerhalb der Finalisierungs-Transaktion.
@@ -404,9 +506,9 @@ export function buildApp({
         new SettlementService({
           db,
           transfers,
-          noticeGateway: notices,
+          notices: transactional.noticeMailer, // Phase 12 (transactional)
           queue,
-          processes: new ProcessService(db),
+          processes: new ProcessService(db, [retentionListener]), // Phase 12 (scan)
           appEnv: config.appEnv,
           logger: app.log,
         }),
@@ -419,6 +521,7 @@ export function buildApp({
         storage: storageProvider,
         finalizedListeners: [settlementListener],
         cleaningEndedListener: voucherTriggers.cleaningEndedListener,
+        packetMailer: transactional.packetMailer, // Phase 12 (transactional)
       });
       registerOfflineRoutes(instance, {
         db,
@@ -427,6 +530,7 @@ export function buildApp({
         storage: storageProvider,
         finalizedListeners: [settlementListener],
         cleaningEndedListener: voucherTriggers.cleaningEndedListener,
+        packetMailer: transactional.packetMailer, // Phase 12 (transactional)
       });
       // Nicht gestarteter Runner: verarbeitet Finanz-Jobs nur auf Anforderung
       // der Mock-Steuerung (nicht in production); den Dauerbetrieb übernimmt
@@ -443,6 +547,116 @@ export function buildApp({
         logger: app.log,
         paymentStatusListeners: [voucherTriggers.paymentStatusListener],
       });
+      // Phase 12 (mail): mail.send im selben Runner (Kontext siehe oben bei der Queue).
+      registerCommunicationJobHandlers(financeRunner, { communication });
+      // Phase 12 (transactional): voucher.delivery + invoice.delivery (Order §37).
+      registerTransactionalJobHandlers(financeRunner, {
+        communication,
+        db,
+        config,
+        logger: app.log,
+      });
+      // Phase 12 (inbound): IMAP-Eingang, WhatsApp (Webhook, Antworten, Medien),
+      // Konversation je Vorgang, Unmatched-Inbox; Zustellstatus-Spiegelung.
+      const inboundSource = inboundMailSource ?? createInboundMailSource(config);
+      const whatsapp = whatsappGateway ?? createWhatsAppGateway(config);
+      registerInboundJobHandlers(financeRunner, {
+        db,
+        config,
+        queue,
+        storage: storageProvider,
+        inboundMailSource: inboundSource,
+        whatsappGateway: whatsapp,
+        logger: app.log,
+      });
+      const conversationListeners = createConversationDeliveryListeners(db, storageProvider);
+      communication.addMailSentListener(conversationListeners.sent);
+      communication.addMailFailedListener(conversationListeners.failed);
+      registerConversationRoutes(instance, {
+        db,
+        auth: authService,
+        config,
+        storage: storageProvider,
+        queue,
+        whatsappGateway: whatsapp,
+        mailOutbox: communication.outbox,
+      });
+      registerCommunicationInboxRoutes(instance, {
+        db,
+        auth: authService,
+        config,
+        storage: storageProvider,
+      });
+      registerWhatsAppWebhookRoutes(instance, {
+        db,
+        config,
+        queue,
+        storage: storageProvider,
+        rateLimitEnabled,
+      });
+      registerCommunicationAdminRoutes(instance, {
+        db,
+        auth: authService,
+        config,
+        communication,
+      });
+      // Phase 12 (push): Web Push (Subscriptions, Versandjob push.send, Regeln
+      // für communication.scan_due) und privater ICS-Feed.
+      const pushModule = createPushModule(
+        {
+          db,
+          config,
+          queue,
+          logger: app.log,
+          ...(pushGateway === undefined ? {} : { gateway: pushGateway }),
+        },
+        authService,
+      );
+      registerPushJobHandlers(financeRunner, {
+        db,
+        subscriptions: pushModule.subscriptions,
+        gateway: pushModule.gateway,
+        logger: app.log,
+      });
+      registerPushRoutes(instance, {
+        auth: authService,
+        config,
+        subscriptions: pushModule.subscriptions,
+        gateway: pushModule.gateway,
+      });
+      registerCalendarFeedRoutes(instance, { db, auth: authService, config, rateLimitEnabled });
+      // Phase 12 (scan): zentraler communication.scan_due (Erinnerungen 7d/1d,
+      // Push-Regeln, Outbox-/Retention-Backstop), cleanup_retention, Aktionslinks,
+      // Terminänderungs-Mail – dieselben Handler im Worker.
+      const scanModule = registerScanDueJobHandlers(financeRunner, {
+        db,
+        config,
+        queue,
+        storage: storageProvider,
+        communication,
+        scanners: [
+          { name: 'push_rules', scanDue: (now) => pushModule.rules.scanDue(now) },
+          // Gutschein-Sweep (Agent T): pending Gutscheinmails ohne Zustellung nachreihen.
+          {
+            name: 'voucher_sweep',
+            scanDue: (now) => enqueuePendingVoucherDeliveries({ db, queue, now, config }),
+          },
+          // Rechnungs-Sweep (Phase 12 §16): vor der Mailkonfiguration entstandene Rechnungen nachreihen.
+          {
+            name: 'invoice_sweep',
+            scanDue: (now) => enqueuePendingInvoiceDeliveries({ db, queue, now, config }),
+          },
+        ],
+        logger: app.log,
+      });
+      registerCommunicationActionRoutes(instance, {
+        db,
+        auth: authService,
+        config,
+        rateLimitEnabled,
+        actionLinks: scanModule.actionLinks,
+        appointmentInfo: scanModule.appointmentInfo,
+      });
       registerSettlementRoutes(instance, {
         db,
         auth: authService,
@@ -451,7 +665,7 @@ export function buildApp({
         queue,
         accountingGateway: accounting,
         transfers,
-        noticeGateway: notices,
+        notices: transactional.noticeMailer, // Phase 12 (transactional)
       });
       registerCancellationRoutes(instance, {
         db,

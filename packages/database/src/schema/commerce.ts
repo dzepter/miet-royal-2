@@ -76,7 +76,11 @@ export const discountType = pgEnum('discount_type', ['percent', 'fixed']);
 export const orderConfirmationStatus = pgEnum('order_confirmation_status', [
   'prepared',
   'approved',
+  /** Phase 12: Mail in der Outbox, noch nicht bestätigt zugestellt. */
+  'queued',
   'sent',
+  /** Phase 12: Versand endgültig gescheitert – bewusst erneut auslösen. */
+  'failed',
 ]);
 
 export const documentType = pgEnum('document_type', [
@@ -423,6 +427,8 @@ export const orderConfirmations = pgTable('order_confirmations', {
   approvedAt: timestamp('approved_at', { withTimezone: true }),
   sentAt: timestamp('sent_at', { withTimezone: true }),
   documentId: uuid('document_id'),
+  /** Phase 12: zugehörige Outbox-Zustellung (mail_deliveries) – kein FK (Importzyklus). */
+  mailDeliveryId: uuid('mail_delivery_id'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });

@@ -40,6 +40,7 @@ import { and, asc, eq, isNull, lt, ne, sql } from 'drizzle-orm';
 import { AuthError } from '../auth/service.ts';
 import { assertBookingNotCancelled } from '../cancellation/booking-guard.ts';
 import type { DocumentService } from '../commerce/document-service.ts';
+import type { DeliveryPacketMailer, EnqueuedMail } from '../communication/transactional/mailers.ts';
 import { visibleProcessesWhere, type ProcessVisibilityContext } from '../crm/visibility.ts';
 import type { AssignmentService } from '../handover/assignment-service.ts';
 import { KeyedMutex } from '../handover/keyed-mutex.ts';
@@ -251,30 +252,57 @@ function berlinDayOf(value: Date): string {
 }
 
 /** Fachlicher Inhalt, der ins Protokoll einfließt (Phase 1 ↔ Phase 2 Vergleich). */
-function finalizationFingerprint(view: ReturnDetailView): string {
+/**
+ * Reihenfolgeunabhängig: Listen werden vor dem Serialisieren nach ihrer ID
+ * sortiert. Abfragen mit gleichen Zeitstempeln (Zeilen derselben Transaktion)
+ * liefern Gleichstände in beliebiger Reihenfolge – das darf nie als
+ * „zwischenzeitlich geändert“ gelten.
+ */
+function sortedIds(ids: readonly string[]): string[] {
+  return [...ids].sort();
+}
+function sortedTuples<T extends readonly unknown[]>(tuples: readonly T[]): T[] {
+  return [...tuples].sort((a, b) => String(a[0]).localeCompare(String(b[0])));
+}
+
+export function finalizationFingerprint(view: ReturnDetailView): string {
   return JSON.stringify({
     returner: [view.return.returnerKind, view.return.returnerName],
     draftActualReturnAt: view.return.draftActualReturnAt,
-    machines: view.machines.map((machine) => [
-      machine.id,
-      machine.machineId,
-      machine.accessoryComplete,
-      machine.emptied,
-      machine.rinsedTwice,
-      machine.nothingDismantled,
-      machine.cleanupRequired,
-      machine.cleanupFeeCents,
-      machine.cleanupPhotos.map((photo) => photo.id),
-      machine.damages.map((damage) => [
-        damage.id,
-        damage.severity,
-        damage.description,
-        damage.markers.map((marker) => marker.id),
-        damage.photos.map((photo) => photo.id),
-      ]),
-      machine.missingCases.map((missing) => [missing.id, missing.missingQuantity]),
-    ]),
-    items: view.items.map((item) => [item.id, item.returnedUnopenedQuantity]),
+    machines: sortedTuples(
+      view.machines.map(
+        (machine) =>
+          [
+            machine.id,
+            machine.machineId,
+            machine.accessoryComplete,
+            machine.emptied,
+            machine.rinsedTwice,
+            machine.nothingDismantled,
+            machine.cleanupRequired,
+            machine.cleanupFeeCents,
+            sortedIds(machine.cleanupPhotos.map((photo) => photo.id)),
+            sortedTuples(
+              machine.damages.map(
+                (damage) =>
+                  [
+                    damage.id,
+                    damage.severity,
+                    damage.description,
+                    sortedIds(damage.markers.map((marker) => marker.id)),
+                    sortedIds(damage.photos.map((photo) => photo.id)),
+                  ] as const,
+              ),
+            ),
+            sortedTuples(
+              machine.missingCases.map((missing) => [missing.id, missing.missingQuantity] as const),
+            ),
+          ] as const,
+      ),
+    ),
+    items: sortedTuples(
+      view.items.map((item) => [item.id, item.returnedUnopenedQuantity] as const),
+    ),
   });
 }
 
@@ -308,6 +336,8 @@ export class ReturnService {
     private readonly damages: DamageService,
     private readonly assignments: AssignmentService,
     private readonly listeners: readonly ReturnFinalizedListener[] = [],
+    /** Phase 12 (Order §11): Rückgabeprotokoll-Mail nach Finalisierung (ohne Mailer bleibt das Paket `ready`). */
+    private readonly packetMailer: DeliveryPacketMailer | null = null,
   ) {}
 
   // ── Laden / Starten (Order §§3/4/6) ──────────────────────────────────────
@@ -1561,6 +1591,7 @@ export class ReturnService {
     // hochgeladene PDF nicht registriert (Idempotenz-Rückkehr, CONFLICT, DB-Fehler),
     // wird es wieder gelöscht – keine verwaisten Protokolle im Storage.
     let registered = false;
+    let enqueuedMail: EnqueuedMail | null = null;
     try {
       await this.db.transaction(async (tx) => {
         await tx.execute(
@@ -1749,7 +1780,7 @@ export class ReturnService {
           .where(eq(rentalReturns.id, ret.id));
         // Dokumentpaket (Order §57): genau EIN Paket je Rückgabe, versandbereit.
         const customer = booking.customerSnapshot as Record<string, unknown>;
-        await tx
+        const insertedPacket = await tx
           .insert(deliveryPackets)
           .values({
             kind: 'return_completed',
@@ -1768,11 +1799,36 @@ export class ReturnService {
           .onConflictDoNothing({
             target: [deliveryPackets.returnId, deliveryPackets.kind],
             where: sql`"return_id" IS NOT NULL`,
+          })
+          .returning({ id: deliveryPackets.id });
+        // Phase 12 (Order §11): Rückgabeprotokoll-Mail in derselben Transaktion
+        // einreihen; Versand erst nach dem Commit (Mailfehler rollen nie zurück).
+        if (this.packetMailer !== null && insertedPacket.length > 0) {
+          enqueuedMail = await this.packetMailer.enqueueWithin(tx, {
+            kind: 'return_completed',
+            entityId: ret.id,
+            processId: booking.processId,
+            bookingId,
+            customerId: booking.customerId,
+            processNumber,
+            recipient: {
+              email: typeof customer.email === 'string' ? customer.email : '',
+              name: typeof customer.displayName === 'string' ? customer.displayName : null,
+            },
+            finalizedAt,
+            documents: [
+              {
+                documentId: protocolDocument.id,
+                filename: `Rueckgabeprotokoll-${processNumber}.pdf`,
+              },
+            ],
           });
+        }
       });
     } finally {
       if (!registered) await this.deleteKeys([protocolKey]);
     }
+    await this.packetMailer?.afterCommit(enqueuedMail);
     await this.assignments.refreshRiskIncidents(now);
     // Phase 9: Listener NACH dem Commit (Abrechnung anlegen) – Fehler werden
     // vom Listener protokolliert und ändern am Rückgabeergebnis nichts.

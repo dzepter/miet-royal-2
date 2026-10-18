@@ -44,9 +44,9 @@ import { SchedulingService } from '../scheduling/scheduling-service.ts';
 import { MachineService } from '../warehouse/machine-service.ts';
 import { VoucherService } from '../voucher/voucher-service.ts';
 import {
-  createCancellationConfirmationGateway,
-  type CancellationConfirmationGateway,
-} from './confirmation-gateway.ts';
+  transactionalStatusOf,
+  type CancellationConfirmationMailer,
+} from '../communication/transactional/mailers.ts';
 
 /**
  * Storno einer bestätigten, noch nicht ausgegebenen Buchung (Phase-9-
@@ -221,7 +221,8 @@ export interface CancellationServiceDeps {
   assignments: AssignmentService;
   scheduling: SchedulingService;
   processes: ProcessService;
-  confirmations: CancellationConfirmationGateway;
+  /** Phase 12 (Order §14): Stornobestätigung über die Mail-Outbox; null = kein Versandweg (blocked). */
+  confirmations: CancellationConfirmationMailer | null;
   logger?: CancellationLogger;
   /** Phase 11: Gutschein-Reaktivierung/-Verbrauch beim Storno (Default: eigene Instanz). */
   vouchers?: VoucherService;
@@ -233,7 +234,7 @@ export function createCancellationService(input: {
   config: AppConfig;
   storage: StorageProvider;
   transfers: AccountingTransferService;
-  confirmations?: CancellationConfirmationGateway;
+  confirmations?: CancellationConfirmationMailer | null;
   logger?: CancellationLogger;
 }): CancellationService {
   const machineService = new MachineService(input.db, input.storage);
@@ -244,7 +245,7 @@ export function createCancellationService(input: {
     assignments: new AssignmentService(input.db, machineService, input.storage),
     scheduling: new SchedulingService(input.db),
     processes: new ProcessService(input.db),
-    confirmations: input.confirmations ?? createCancellationConfirmationGateway(input.config),
+    confirmations: input.confirmations ?? null,
     ...(input.logger === undefined ? {} : { logger: input.logger }),
   });
 }
@@ -299,7 +300,7 @@ export class CancellationService {
   private readonly assignments: AssignmentService;
   private readonly scheduling: SchedulingService;
   private readonly processes: ProcessService;
-  private readonly confirmations: CancellationConfirmationGateway;
+  private readonly confirmations: CancellationConfirmationMailer | null;
   private readonly logger: CancellationLogger;
   private readonly vouchers: VoucherService;
 
@@ -910,13 +911,22 @@ export class CancellationService {
     return { outcome: result.outcome, cancellation: await this.viewFor(row, viewer) };
   }
 
-  // ── Bestätigung (Order §61) ─────────────────────────────────────────────
+  // ── Bestätigung (Order §61, Phase 12 Order §14) ────────────────────────
 
+  /**
+   * Bewusste Staff-Aktion: Stornobestätigung in die Mail-Outbox einreihen
+   * (in dieser Transaktion, Status `queued`); versendet wird nach dem Commit
+   * durch `mail.send`, `sent`/`sentAt` setzt der Sent-Listener. 0 EUR ⇒ keine
+   * Rechnung; kostenpflichtig ⇒ die Stornorechnung geht getrennt über
+   * `invoice.delivery`. Ohne Versandweg: `blocked` – nie vorgetäuscht.
+   * Härtung RA-15: nach `failed`/`blocked` legt die erneute Aktion eine NEUE
+   * Zustellung an (Retry-Schlüssel); die Antwort meldet den echten Status.
+   */
   async sendConfirmation(
     cancellationId: string,
     now = new Date(),
   ): Promise<{ confirmationStatus: string; confirmationSentAt: string | null }> {
-    return this.db.transaction(async (tx) => {
+    const outcome = await this.db.transaction(async (tx) => {
       const locked = await tx
         .select()
         .from(cancellations)
@@ -925,8 +935,14 @@ export class CancellationService {
       const row = locked[0];
       if (row === undefined) throw new AuthError('NOT_FOUND', 'Stornierung nicht gefunden.');
       // Genau ein Versand je Storno – Doppelklick ist ein No-op.
-      if (row.confirmationStatus === 'sent') {
-        return { confirmationStatus: 'sent', confirmationSentAt: iso(row.confirmationSentAt) };
+      if (row.confirmationStatus === 'sent' || row.confirmationStatus === 'queued') {
+        return {
+          enqueued: null,
+          response: {
+            confirmationStatus: row.confirmationStatus,
+            confirmationSentAt: iso(row.confirmationSentAt),
+          },
+        };
       }
       const process = await this.processById(row.processId, tx);
       if (row.reopenedAt !== null || process.mainStatus !== 'cancelled') {
@@ -935,34 +951,53 @@ export class CancellationService {
           'Der Vorgang wurde nach dem Storno wieder geöffnet – die Stornobestätigung wird nicht versendet.',
         );
       }
-      if (!this.confirmations.isConfigured()) {
+      if (this.confirmations === null || !this.confirmations.isConfigured()) {
         await tx
           .update(cancellations)
           .set({ confirmationStatus: 'blocked', updatedAt: now })
           .where(eq(cancellations.id, row.id));
-        return { confirmationStatus: 'blocked', confirmationSentAt: null };
+        return {
+          enqueued: null,
+          response: { confirmationStatus: 'blocked', confirmationSentAt: null },
+        };
       }
       const bookingRows = await tx
-        .select({ customerSnapshot: bookings.customerSnapshot })
+        .select({
+          customerId: bookings.customerId,
+          customerSnapshot: bookings.customerSnapshot,
+          eventSnapshot: bookings.eventSnapshot,
+        })
         .from(bookings)
         .where(eq(bookings.id, row.bookingId));
-      const customer = record(bookingRows[0]?.customerSnapshot);
-      const result = await this.confirmations.send({
+      const booking = bookingRows[0];
+      const customer = record(booking?.customerSnapshot);
+      const event = record(booking?.eventSnapshot);
+      const enqueued = await this.confirmations.enqueueWithin(tx, {
         cancellationId: row.id,
+        processId: row.processId,
         processNumber: process.processNumber,
-        recipientEmail: str(customer.email),
+        customerId: booking?.customerId ?? process.customerId,
+        bookingId: row.bookingId,
+        recipient: { email: str(customer.email), name: str(customer.displayName) },
+        eventDate: event.eventDate ?? process.eventDate,
+        chargeCents: row.feeCents,
+        now,
       });
-      await tx
-        .update(cancellations)
-        .set({
-          confirmationStatus: 'sent',
-          confirmationSentAt: now,
-          confirmationGatewayReference: result.gatewayReference,
-          updatedAt: now,
-        })
-        .where(eq(cancellations.id, row.id));
-      return { confirmationStatus: 'sent', confirmationSentAt: now.toISOString() };
+      return {
+        enqueued,
+        response: {
+          confirmationStatus: transactionalStatusOf(enqueued),
+          confirmationSentAt: null,
+        },
+      };
     });
+    await this.confirmations?.afterCommit(outcome.enqueued, (error) =>
+      this.logger.error(
+        { cancellationId, error: error instanceof Error ? error.name : 'unknown' },
+        'Versandjob der Stornobestätigung konnte nicht geplant werden',
+      ),
+    );
+    return outcome.response;
   }
 
   // ── Folgevorgang (Order §64) ────────────────────────────────────────────
@@ -1129,6 +1164,7 @@ export class CancellationService {
         canSendConfirmation:
           viewer.permissions.has('email.approve_prepared') &&
           row.confirmationStatus !== 'sent' &&
+          row.confirmationStatus !== 'queued' &&
           row.reopenedAt === null &&
           process.mainStatus === 'cancelled',
         canCreateFollowUp:

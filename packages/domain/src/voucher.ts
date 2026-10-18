@@ -122,6 +122,26 @@ export function addBerlinCalendarMonths(date: Date, months: number): Date {
   return berlinWallClockToInstant({ ...parts, year, month, day });
 }
 
+/**
+ * `days` Kalendertage später/früher (negativ) bei derselben Berliner
+ * Wanduhrzeit (Phase 12, Order §17): 7 Kalendertage vor einem Termin am
+ * Tag nach der Zeitumstellung sind 7 Kalendertage – nicht 7 × 24 h. Nicht
+ * existierende Wanduhrzeiten (Frühjahrslücke) werden wie bei
+ * `addBerlinCalendarMonths` deterministisch auf die nächste gültige Zeit
+ * verschoben.
+ */
+export function addBerlinCalendarDays(date: Date, days: number): Date {
+  if (!Number.isInteger(days)) throw new RangeError('days muss eine ganze Zahl sein.');
+  const parts = berlinParts(date);
+  const shifted = new Date(Date.UTC(parts.year, parts.month - 1, parts.day + days));
+  return berlinWallClockToInstant({
+    ...parts,
+    year: shifted.getUTCFullYear(),
+    month: shifted.getUTCMonth() + 1,
+    day: shifted.getUTCDate(),
+  });
+}
+
 /** Ablaufzeitpunkt eines neu erzeugten Gutscheins. */
 export function voucherExpiresAt(activatedAt: Date): Date {
   return addBerlinCalendarMonths(activatedAt, VOUCHER_VALIDITY_MONTHS);

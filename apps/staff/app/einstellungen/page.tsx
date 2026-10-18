@@ -53,6 +53,18 @@ function SettingsView() {
   return (
     <main className="page">
       <h1>Einstellungen</h1>
+      {/* Phase 12 (UI): Statusseite der Kommunikation (E-Mail, IMAP, WhatsApp, Push). */}
+      <div className="card">
+        <h2>Kommunikation</h2>
+        <p className="muted">
+          E-Mail-Versand, Posteingang, WhatsApp, Push und die letzten Zustellungen.
+        </p>
+        <p>
+          <Link href="/einstellungen/kommunikation" data-testid="settings-link-communication">
+            <strong>Kommunikation öffnen</strong>
+          </Link>
+        </p>
+      </div>
       <div className="card">
         <h2>Sichtbarkeit abgeschlossener Vorgänge</h2>
         <p className="muted">

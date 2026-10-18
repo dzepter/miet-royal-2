@@ -21,7 +21,40 @@ import { LexwareConnectionService } from '../src/lexware/connection-service.ts';
 import { createLexwareContext, type LexwareContext } from '../src/lexware/context.ts';
 import { NoopLexwareThrottle } from '../src/lexware/rate-limiter.ts';
 import { FakeLexwareServer } from '../src/lexware/testing/fake-server.ts';
-import { OutboxSettlementNoticeGateway } from '../src/settlement/notice-gateway.ts';
+// Phase 12 (transactional)
+import {
+  createTransactionalMailModule,
+  registerTransactionalJobHandlers,
+  type TransactionalMailModule,
+} from '../src/jobs/communication-transactional.ts';
+// Phase 12 (mail)
+import {
+  createCommunicationContext,
+  type CommunicationContext,
+} from '../src/communication/context.ts';
+import { FakeMailGateway } from '../src/communication/mail/gateways.ts';
+import { registerCommunicationJobHandlers } from '../src/jobs/communication.ts';
+// Phase 12 (push)
+import { FakePushGateway } from '../src/communication/push/gateways.ts';
+import { PushSubscriptionService } from '../src/communication/push/subscription-service.ts';
+import { registerPushJobHandlers } from '../src/jobs/communication-push.ts';
+// Phase 12 (inbound)
+import { FakeInboundMailSource } from '../src/communication/inbound/sources.ts';
+import { FakeWhatsAppGateway } from '../src/communication/whatsapp/gateways.ts';
+import {
+  createConversationDeliveryListeners,
+  registerInboundJobHandlers,
+} from '../src/jobs/communication-inbound.ts';
+// Phase 12 (scan)
+import { createPushModule } from '../src/jobs/communication-push.ts';
+import { registerScanDueJobHandlers, type ScanModule } from '../src/jobs/communication-scan.ts';
+import { enqueuePendingVoucherDeliveries } from '../src/communication/voucher-delivery-job.ts';
+import { enqueuePendingInvoiceDeliveries } from '../src/communication/invoice-delivery-job.ts';
+
+// Phase 12 (inbound): feste Test-Geheimnisse (nur Tests; nie echte Werte).
+const WHATSAPP_TEST_ACCESS_TOKEN = 'test-whatsapp-access-token-never-real';
+const WHATSAPP_TEST_APP_SECRET = 'test-whatsapp-app-secret-0123456789';
+const WHATSAPP_TEST_VERIFY_TOKEN = 'test-whatsapp-verify-token-0123456789';
 
 export const TEST_DATABASE_URL =
   process.env.TEST_DATABASE_URL ??
@@ -38,8 +71,8 @@ export interface TestContext {
   storage: FilesystemStorageProvider;
   /** Phase 9: Mock-Buchhaltung (Aufrufe/Fehlersimulation abfragbar). */
   accounting: MockAccountingGateway;
-  /** Phase 9: Outbox der Kundeninformationen (nichts verlässt das System). */
-  notices: OutboxSettlementNoticeGateway;
+  /** Phase 12 (transactional): fachliche Mail-Auslöser des Test-Runners (Angebot/AB-Gateway, Mailer, Dokument-Links). */
+  transactional: TransactionalMailModule;
   /** Phase 9: dieselbe Queue wie die App; `jobs.runOnce()`/`drain()` verarbeitet Finanz-Jobs wie der Worker. */
   queue: PostgresJobQueue;
   jobs: JobRunner;
@@ -53,6 +86,20 @@ export interface TestContext {
   lexwareConnection: LexwareConnectionService;
   /** Phase 10: Transfer-Boundary wie in der App (inkl. Lexware-Zweiphasenpfad); `workerId` optional. */
   transfersFor: (workerId?: string) => AccountingTransferService;
+  /** Phase 12 (mail): Contract-Fake des Mailversands (zeichnet auf, simuliert Ergebnisse). */
+  mailGateway: FakeMailGateway;
+  /** Phase 12 (mail): Kommunikationskontext des Test-Runners (Outbox, Krypto, Listener-Registrierung). */
+  communication: CommunicationContext;
+  /** Phase 12 (push): Contract-Fake des Push-Gateways (Sendungen abfragbar, Verhalten je Endpoint). */
+  push: FakePushGateway;
+  /** Phase 12 (inbound): Contract-Fake des WhatsApp-Gateways (Requests, 429/Fehler, Medien-Fixtures). */
+  whatsapp: FakeWhatsAppGateway;
+  /** Phase 12 (inbound): Fake-IMAP-Quelle (RFC-822-Fixtures einstellen, `jobs.drain()` pollt). */
+  inboundMail: FakeInboundMailSource;
+  /** Phase 12 (inbound): Webhook-Geheimnisse der Live-Testkonfiguration (nur mit `whatsapp: true`). */
+  whatsappSecrets: { appSecret: string; verifyToken: string } | null;
+  /** Phase 12 (scan): Erinnerungen, Aktionslinks, Retention, Scan-Lauf (`scan.runOnce(now)`) des Test-Runners. */
+  scan: ScanModule;
 }
 
 export async function createTestContext(
@@ -71,6 +118,10 @@ export async function createTestContext(
           smallBusiness?: boolean;
           throttle?: 'postgres' | 'noop';
         };
+    /** Phase 12 (mail): zusätzliche Umgebungsvariablen (z. B. MAIL_PUBLIC_WEB_BASE_URL, MAIL_DEMO_WHITELIST). */
+    env?: Record<string, string>;
+    /** Phase 12 (inbound): WhatsApp als `live` konfigurieren (Webhook-Signatur/Verify prüfbar; Gateway bleibt der Fake). */
+    whatsapp?: boolean;
   } = {},
 ): Promise<TestContext> {
   const lexwareOptions =
@@ -105,6 +156,18 @@ export async function createTestContext(
           LEXWARE_WEBHOOK_PUBLIC_KEY_PEM: lexwareFake.publicKeyPem,
           LEXWARE_REQUEST_TIMEOUT_MS: '2000',
         }),
+    ...(options.whatsapp === true
+      ? {
+          WHATSAPP_ENABLED: 'true',
+          WHATSAPP_ACCESS_TOKEN: WHATSAPP_TEST_ACCESS_TOKEN,
+          WHATSAPP_PHONE_NUMBER_ID: '100000000000001',
+          WHATSAPP_BUSINESS_ACCOUNT_ID: '200000000000001',
+          WHATSAPP_APP_SECRET: WHATSAPP_TEST_APP_SECRET,
+          WHATSAPP_VERIFY_TOKEN: WHATSAPP_TEST_VERIFY_TOKEN,
+          WHATSAPP_BASE_URL: 'http://127.0.0.1:9/graph-never-called',
+        }
+      : {}),
+    ...(options.env ?? {}),
   });
   // TEST_POOL_MAX=1 macht jede verschachtelte Pool-Akquise unter einer
   // Transaktion als Verbindungs-Timeout sichtbar (Phase-6-Finalisierung A1).
@@ -118,7 +181,6 @@ export async function createTestContext(
   // Isolierter FS-Storage je Testkontext (PDF-/Dokumententests).
   const storage = new FilesystemStorageProvider(mkdtempSync(join(tmpdir(), 'mietroyal-test-')));
   const accounting = new MockAccountingGateway();
-  const notices = new OutboxSettlementNoticeGateway();
   const queue = new PostgresJobQueue(pool);
   const testLogger = {
     info: () => undefined,
@@ -133,6 +195,10 @@ export async function createTestContext(
   );
   const gateway = lexwareFake === null ? accounting : createAccountingGatewayFor(config, lexware);
   const lexwareConnection = new LexwareConnectionService(lexware);
+  const mailGateway = new FakeMailGateway();
+  const push = new FakePushGateway(); // Phase 12 (push)
+  const whatsapp = new FakeWhatsAppGateway(); // Phase 12 (inbound)
+  const inboundMail = new FakeInboundMailSource(config.mail.imap?.folder ?? 'INBOX');
   const app = buildApp({
     config,
     pool,
@@ -140,10 +206,13 @@ export async function createTestContext(
     rateLimitEnabled: options.rateLimitEnabled ?? false,
     storage,
     accountingGateway: gateway,
-    noticeGateway: notices,
     jobQueue: queue,
     lexwareContext: lexware,
     lexwareConnection,
+    mailGateway,
+    pushGateway: push,
+    whatsappGateway: whatsapp,
+    inboundMailSource: inboundMail,
     ...(options.logDestination === undefined ? {} : { logDestination: options.logDestination }),
   });
   await app.ready();
@@ -160,6 +229,53 @@ export async function createTestContext(
     lexwareConnection,
     workerId: 'test-worker',
   });
+  // Phase 12 (mail): derselbe Fake wie in der App; mail.send läuft über ctx.jobs.
+  const communication = createCommunicationContext(config, db, queue, {
+    gateway: mailGateway,
+    storage,
+    logger: testLogger,
+  });
+  registerCommunicationJobHandlers(jobs, { communication });
+  // Phase 12 (push): push.send im Test-Runner wie im Worker (Fake-Gateway der App).
+  registerPushJobHandlers(jobs, {
+    db,
+    subscriptions: new PushSubscriptionService(db),
+    gateway: push,
+  });
+  // Phase 12 (inbound): mail.inbound_poll / whatsapp.* im Test-Runner mit denselben Fakes wie die App.
+  registerInboundJobHandlers(jobs, {
+    db,
+    config,
+    queue,
+    storage,
+    inboundMailSource: inboundMail,
+    whatsappGateway: whatsapp,
+  });
+  const conversationListeners = createConversationDeliveryListeners(db, storage);
+  communication.addMailSentListener(conversationListeners.sent);
+  communication.addMailFailedListener(conversationListeners.failed);
+  // Phase 12 (scan): communication.scan_due / cleanup_retention im Test-Runner
+  // (Push-Regeln über ein eigenes Push-Modul mit demselben Fake-Gateway).
+  const testPushModule = createPushModule({ db, config, queue, gateway: push }, auth);
+  const scan = registerScanDueJobHandlers(jobs, {
+    db,
+    config,
+    queue,
+    storage,
+    communication,
+    scanners: [
+      { name: 'push_rules', scanDue: (now) => testPushModule.rules.scanDue(now) },
+      {
+        name: 'voucher_sweep',
+        scanDue: (now) => enqueuePendingVoucherDeliveries({ db, queue, now, config }),
+      },
+      // Rechnungs-Sweep (Phase 12 §16): vor der Mailkonfiguration entstandene Rechnungen nachreihen.
+      {
+        name: 'invoice_sweep',
+        scanDue: (now) => enqueuePendingInvoiceDeliveries({ db, queue, now, config }),
+      },
+    ],
+  });
   const transfersFor = (workerId = 'test-direct') =>
     createAccountingTransferService({
       db,
@@ -169,6 +285,18 @@ export async function createTestContext(
       lexwareConnection,
       workerId,
     });
+  // Phase 12 (transactional): Listener (AB/Pakete/Kundeninformation/Storno/
+  // Gutschein/Rechnung) + voucher.delivery/invoice.delivery im Test-Runner.
+  const transactional = createTransactionalMailModule({
+    communication,
+    db,
+    config,
+    queue,
+    lexware,
+    transfers: transfersFor('test-listener'),
+    logger: testLogger,
+  });
+  registerTransactionalJobHandlers(jobs, { communication, db, config, logger: testLogger });
   return {
     pool,
     db,
@@ -179,7 +307,7 @@ export async function createTestContext(
     admin,
     storage,
     accounting,
-    notices,
+    transactional,
     queue,
     jobs,
     lexware,
@@ -187,6 +315,16 @@ export async function createTestContext(
     gateway,
     lexwareConnection,
     transfersFor,
+    mailGateway,
+    communication,
+    push,
+    whatsapp,
+    inboundMail,
+    whatsappSecrets:
+      options.whatsapp === true
+        ? { appSecret: WHATSAPP_TEST_APP_SECRET, verifyToken: WHATSAPP_TEST_VERIFY_TOKEN }
+        : null,
+    scan,
   };
 }
 

@@ -8,7 +8,7 @@ import {
   type CancellationView,
   type CancellationViewer,
 } from '../src/cancellation/cancellation-service.ts';
-import { OutboxCancellationConfirmationGateway } from '../src/cancellation/confirmation-gateway.ts';
+import type { CancellationConfirmationMailer } from '../src/communication/transactional/mailers.ts';
 import { ProcessService } from '../src/crm/process-service.ts';
 import { AssignmentService } from '../src/handover/assignment-service.ts';
 import { SchedulingService } from '../src/scheduling/scheduling-service.ts';
@@ -21,6 +21,7 @@ import {
   truncateAuthTables,
   type TestContext,
 } from './auth-helpers.ts';
+import { settleOfferMailJobs } from './mail-job-helpers.ts';
 import {
   commerceServices,
   createCommerceWorld,
@@ -77,7 +78,7 @@ export interface CancellationTestServices {
   transfers: AccountingTransferService;
   assignments: AssignmentService;
   scheduling: SchedulingService;
-  confirmations: OutboxCancellationConfirmationGateway;
+  confirmations: CancellationConfirmationMailer;
 }
 
 /** Komposition wie in der App (Mock-Buchhaltung des TestContext, Outbox-Bestätigung). */
@@ -86,7 +87,7 @@ export function cancellationServicesFor(ctx: TestContext): CancellationTestServi
   const machineService = new MachineService(ctx.db, ctx.storage);
   const assignments = new AssignmentService(ctx.db, machineService, ctx.storage);
   const scheduling = new SchedulingService(ctx.db);
-  const confirmations = new OutboxCancellationConfirmationGateway();
+  const confirmations = ctx.transactional.cancellationMailer;
   const service = new CancellationService({
     db: ctx.db,
     config: ctx.config,
@@ -203,6 +204,7 @@ export async function bookedProcess(
     await services.offers.applyVoucher(adminId, versionId, code);
   }
   const { token } = await services.offers.send(adminId, versionId, effective);
+  await settleOfferMailJobs(ctx); // Phase 12: Angebotsmail-Job abarbeiten
   const { bookingId } = await services.offers.accept(token);
   await schedulingServiceFor(ctx).ensureAppointmentsForBooking(bookingId);
   const appointmentRows = await ctx.db

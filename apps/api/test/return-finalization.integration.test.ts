@@ -248,10 +248,13 @@ describe('95.–105. Folgen der Finalisierung', () => {
         documentIds: string[];
       }[]
     ).find((p) => p.kind === 'return_completed')!;
-    expect(returnPacket).toMatchObject({ status: 'ready', sentAt: null });
+    // Phase 12: Paket ist in der Mail-Outbox (queued); „sent“ erst nach bestätigtem Versand.
+    expect(returnPacket).toMatchObject({ status: 'queued', sentAt: null });
     expect(returnPacket.documentIds).toEqual([finalized.return.protocolDocumentId]);
+    // Das Rückgabepaket ist erst nach bestätigtem Mailversand „sent“ (Übergabepaket
+    // der Welt-Erstellung ist bereits versendet – hier nicht Gegenstand).
     const sent = await ctx.pool.query(
-      `SELECT count(*)::int AS n FROM delivery_packets WHERE status = 'sent'`,
+      `SELECT count(*)::int AS n FROM delivery_packets WHERE status = 'sent' AND kind = 'return_completed'`,
     );
     expect(sent.rows[0].n).toBe(0);
   });

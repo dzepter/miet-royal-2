@@ -97,30 +97,34 @@ sein, sonst bricht der Start ab (siehe `docs/ENVIRONMENTS.md`). Danach:
 
 ## Kommandos (Repo-Wurzel)
 
-| Kommando                               | Zweck                                                                                           |
-| -------------------------------------- | ----------------------------------------------------------------------------------------------- |
-| `pnpm install`                         | Abhängigkeiten installieren                                                                     |
-| `pnpm dev`                             | Alle Apps parallel im Watch-Modus                                                               |
-| `pnpm build`                           | Produktionsbuilds (Next-Apps)                                                                   |
-| `pnpm lint` / `lint:fix`               | ESLint                                                                                          |
-| `pnpm format` / `format:check`         | Prettier                                                                                        |
-| `pnpm typecheck`                       | `tsc --noEmit` über alle Pakete                                                                 |
-| `pnpm test`                            | Unit-Tests (ohne Infrastruktur lauffähig)                                                       |
-| `pnpm test:integration`                | Integrationstests gegen echtes PostgreSQL (`pnpm infra:up` zuerst)                              |
-| `pnpm test:e2e`                        | Playwright-E2E (startet Web + API auf Ports 3100/3101)                                          |
-| `pnpm db:generate`                     | Neue SQL-Migration aus Schemaänderung erzeugen                                                  |
-| `pnpm db:migrate`                      | Migrationen anwenden (`APP_ENV`/`DATABASE_URL` müssen gesetzt sein – für Server)                |
-| `pnpm db:migrate:dev`                  | Migrationen auf die lokale Entwicklungs-DB anwenden                                             |
-| `pnpm api` / `pnpm worker`             | API bzw. Worker einzeln starten                                                                 |
-| `pnpm infra:up` / `infra:down`         | Lokale Infrastruktur (PostgreSQL) starten/stoppen                                               |
-| `pnpm check:env-isolation a.env b.env` | Prüft, dass zwei Umgebungen DB/Storage/Secrets nicht teilen                                     |
-| `pnpm offline:lease-key`               | Öffentlichen Offline-Lease-Verifikationsschlüssel der Umgebung ausgeben (Staff)                 |
-| `pnpm settlement:ensure`               | Abrechnungen für finalisierte Rückgaben idempotent nachziehen (Phase 9)                         |
-| `pnpm voucher:ensure`                  | Wiedermieter-Gutscheine für bezahlte, berechtigte Abrechnungen idempotent nachziehen (Phase 11) |
-| `pnpm lexware:setup`                   | Lexware-Verbindung prüfen und Event-Subscriptions idempotent einrichten (Phase 10)              |
-| `pnpm lexware:reconcile`               | Zahlungs-/Rechnungsstatus offener Lexware-Rechnungen gezielt abgleichen (kein Polling)          |
-| `pnpm lexware:smoke`                   | Manueller Lese-Smoke gegen einen bewusst konfigurierten Lexware-Testaccount (`LEXWARE_SMOKE=1`) |
-| `pnpm lexware:fake`                    | Lokalen Lexware-Contract-Fake starten (Port 4555, nur Entwicklung/Tests)                        |
+| Kommando                               | Zweck                                                                                                                           |
+| -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `pnpm install`                         | Abhängigkeiten installieren                                                                                                     |
+| `pnpm dev`                             | Alle Apps parallel im Watch-Modus                                                                                               |
+| `pnpm build`                           | Produktionsbuilds (Next-Apps)                                                                                                   |
+| `pnpm lint` / `lint:fix`               | ESLint                                                                                                                          |
+| `pnpm format` / `format:check`         | Prettier                                                                                                                        |
+| `pnpm typecheck`                       | `tsc --noEmit` über alle Pakete                                                                                                 |
+| `pnpm test`                            | Unit-Tests (ohne Infrastruktur lauffähig)                                                                                       |
+| `pnpm test:integration`                | Integrationstests gegen echtes PostgreSQL (`pnpm infra:up` zuerst)                                                              |
+| `pnpm test:e2e`                        | Playwright-E2E (startet Web + API auf Ports 3100/3101)                                                                          |
+| `pnpm db:generate`                     | Neue SQL-Migration aus Schemaänderung erzeugen                                                                                  |
+| `pnpm db:migrate`                      | Migrationen anwenden (`APP_ENV`/`DATABASE_URL` müssen gesetzt sein – für Server)                                                |
+| `pnpm db:migrate:dev`                  | Migrationen auf die lokale Entwicklungs-DB anwenden                                                                             |
+| `pnpm api` / `pnpm worker`             | API bzw. Worker einzeln starten                                                                                                 |
+| `pnpm infra:up` / `infra:down`         | Lokale Infrastruktur (PostgreSQL) starten/stoppen                                                                               |
+| `pnpm check:env-isolation a.env b.env` | Prüft, dass zwei Umgebungen DB/Storage/Secrets nicht teilen                                                                     |
+| `pnpm offline:lease-key`               | Öffentlichen Offline-Lease-Verifikationsschlüssel der Umgebung ausgeben (Staff)                                                 |
+| `pnpm settlement:ensure`               | Abrechnungen für finalisierte Rückgaben idempotent nachziehen (Phase 9)                                                         |
+| `pnpm voucher:ensure`                  | Wiedermieter-Gutscheine für bezahlte, berechtigte Abrechnungen idempotent nachziehen (Phase 11)                                 |
+| `pnpm lexware:setup`                   | Lexware-Verbindung prüfen und Event-Subscriptions idempotent einrichten (Phase 10)                                              |
+| `pnpm lexware:reconcile`               | Zahlungs-/Rechnungsstatus offener Lexware-Rechnungen gezielt abgleichen (kein Polling)                                          |
+| `pnpm lexware:smoke`                   | Manueller Lese-Smoke gegen einen bewusst konfigurierten Lexware-Testaccount (`LEXWARE_SMOKE=1`)                                 |
+| `pnpm lexware:fake`                    | Lokalen Lexware-Contract-Fake starten (Port 4555, nur Entwicklung/Tests)                                                        |
+| `pnpm communication:rewrap-secrets`    | Kommunikations-Payloads/Gutschein-Versandkopien auf den aktuellen `COMMUNICATION_PAYLOAD_KEY` umschlüsseln (Rotation, Phase 12) |
+| `pnpm push:generate-vapid-keys`        | Neues VAPID-Schlüsselpaar für Web Push ausgeben (je Umgebung eigenes Paar, Phase 12)                                            |
+| `pnpm mail:smoke`                      | Optionaler Live-Smoke gegen ein echtes SMTP-Konto (`MAIL_SMOKE=true` + `MAIL_SMOKE_TO`), nie im Gate                            |
+| `pnpm whatsapp:smoke`                  | Optionaler Live-Smoke gegen die WhatsApp Cloud API (`WHATSAPP_SMOKE=true` + `WHATSAPP_SMOKE_TO`), nie im Gate                   |
 
 Hinweis E2E: In Umgebungen mit vorinstalliertem Chromium
 `CHROMIUM_PATH=/pfad/zur/chromium pnpm test:e2e`; sonst einmalig

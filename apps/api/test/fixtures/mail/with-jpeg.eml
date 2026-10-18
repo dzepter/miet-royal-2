@@ -1,0 +1,36 @@
+From: Max Mustermann <max.mustermann@example.com>
+To: Miet-Royal Mainz <buero@miet-royal.test>
+Subject: Foto vom Aufbau
+Date: Sat, 18 Oct 2026 11:00:00 +0200
+Message-ID: <jpeg-1@example.com>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="----=_MietRoyalFixture_118785"
+
+------=_MietRoyalFixture_118785
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: 8bit
+
+Anbei ein Foto.
+
+------=_MietRoyalFixture_118785
+Content-Type: image/jpeg; name="aufbau.jpg"
+Content-Transfer-Encoding: base64
+Content-Disposition: attachment; filename="aufbau.jpg"
+
+/9j/4AAQSkZJRgARERERERERERERERERERERERERERERERERERERERERERERERERERER/9k=
+
+------=_MietRoyalFixture_118785
+Content-Type: image/png; name="skizze.png"
+Content-Transfer-Encoding: base64
+Content-Disposition: attachment; filename="skizze.png"
+
+iVBORw0KGgoAAAANSUhEUgEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICAgICAg==
+
+------=_MietRoyalFixture_118785
+Content-Type: image/webp; name="modern.webp"
+Content-Transfer-Encoding: base64
+Content-Disposition: attachment; filename="modern.webp"
+
+UklGRigAAABXRUJQVlA4IAMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMD
+
+------=_MietRoyalFixture_118785--

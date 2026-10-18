@@ -13,6 +13,7 @@
  */
 import { expect, test, type Browser, type Page } from '@playwright/test';
 import { acceptedBooking } from '../helpers/booking.ts';
+import { clearSink, mailsMatching, pdfAttachment } from '../helpers/mail.ts';
 import {
   applySyntheticTax,
   checkLexwareConnection,
@@ -68,6 +69,13 @@ const MACHINE_1X10 = 7500;
 const LABEL_TRANSFERRED = 'An Buchhaltung übertragen';
 const LABEL_TRANSFER_CHECK = 'Lexware-Übertragung prüfen';
 const LABEL_DELIVERY_PENDING = 'Versand: Ausstehend';
+/**
+ * Phase 12 (Order §16): nach erfolgreicher Rechnung reiht die API die
+ * Rechnungsmail ein (invoice.delivery ⇒ mail.send, PDF transient aus Lexware);
+ * die E2E-Lexware-API versendet an die lokale SMTP-Senke. „Versendet“ erst nach
+ * bestätigtem SMTP-Versand – vorher (z. B. direkt nach manuellem Retry) „Ausstehend“.
+ */
+const LABEL_DELIVERY_SENT = 'Versand: Versendet';
 const LABEL_INVOICE_CREATED = 'Rechnung: erstellt';
 /** Vor dem Worker-Lauf: bereit oder (optional) „Übertragung geplant“. */
 const READY_OR_PLANNED = /Bereit zur Buchhaltung|Übertragung geplant/;
@@ -95,6 +103,7 @@ test.beforeAll(async ({ browser }) => {
   resetE2eDatabase();
   resetLexwareE2eState();
   await resetFake();
+  await clearSink(); // Phase 12: Mail-Zählungen nur für diese Spec
   browserRef = browser;
   staff = await browser.newPage();
   customerPage = await browser.newPage();
@@ -108,22 +117,35 @@ test.afterAll(async () => {
 const status = () => staff.getByTestId('settlement-status');
 const blocker = (code: string) => staff.getByTestId(`accounting-blocker-${code}`);
 
-/** Lexware-Transfer über den Worker; prüft den Buchhaltungsblock (Order §69) und liefert die Nummer. */
+/**
+ * Lexware-Transfer über den Worker; prüft den Buchhaltungsblock (Order §69) und liefert die Nummer.
+ * Phase 12: derselbe Job-Lauf versendet danach die Rechnungsmail ⇒ „Versendet“.
+ */
 async function transferViaJobs(): Promise<string> {
   await runDueJobs(staff);
   await expect(status()).toContainText(LABEL_TRANSFERRED);
-  await expectInvoiceBlock();
+  await expectInvoiceBlock('sent');
   return (await staff.getByTestId('accounting-reference').innerText()).trim();
 }
 
-/** Buchhaltungsblock nach erfolgreichem Transfer (Admin-Sicht). */
-async function expectInvoiceBlock() {
+/**
+ * Buchhaltungsblock nach erfolgreichem Transfer (Admin-Sicht). `delivery`:
+ * Rechnungsmail noch nicht verarbeitet (`pending`, nie „versendet“) oder per
+ * SMTP zugestellt (`sent`, Phase 12).
+ */
+async function expectInvoiceBlock(delivery: 'pending' | 'sent') {
   const block = staff.getByTestId('accounting-block');
   await expect(block).toBeVisible();
   await expect(staff.getByTestId('accounting-provider')).toContainText('Lexware');
   await expect(staff.getByTestId('accounting-invoice-status')).toContainText(LABEL_INVOICE_CREATED);
-  await expect(staff.getByTestId('invoice-delivery-status')).toContainText(LABEL_DELIVERY_PENDING);
-  await expect(block).not.toContainText(NEVER_SENT);
+  if (delivery === 'sent') {
+    await expect(staff.getByTestId('invoice-delivery-status')).toContainText(LABEL_DELIVERY_SENT);
+  } else {
+    await expect(staff.getByTestId('invoice-delivery-status')).toContainText(
+      LABEL_DELIVERY_PENDING,
+    );
+    await expect(block).not.toContainText(NEVER_SENT);
+  }
   await expect(staff.getByTestId('settlement-locked-hint')).toBeVisible();
   await expect(staff.getByTestId('mock-badge')).toHaveCount(0);
   const reference = staff.getByTestId('accounting-reference');
@@ -305,7 +327,7 @@ test('B: Return → Transfer → Kontakt angelegt → finale Rechnung → Nummer
     LABEL_INVOICE_CREATED,
   );
   await expect(seller.getByTestId('payment-status')).toContainText('Offen');
-  await expect(seller.getByTestId('invoice-delivery-status')).toContainText(LABEL_DELIVERY_PENDING);
+  await expect(seller.getByTestId('invoice-delivery-status')).toContainText(LABEL_DELIVERY_SENT);
   await expect(seller.getByTestId('accounting-reference')).toHaveCount(0);
   await expect(seller.getByTestId('lexware-open-invoice')).toHaveCount(0);
   expect(await seller.content()).not.toContain(reference);
@@ -390,7 +412,8 @@ test('E: Zahlung in Lexware → signierter payment.changed-Webhook → Job → �
   await runDueJobs(staff);
   await expect(staff.getByTestId('payment-status')).toContainText('Bezahlt');
   await expect(status()).toContainText(LABEL_TRANSFERRED);
-  await expect(staff.getByTestId('invoice-delivery-status')).toContainText(LABEL_DELIVERY_PENDING);
+  // Zahlung ändert den (in B bereits erfolgten) Rechnungsversand nicht.
+  await expect(staff.getByTestId('invoice-delivery-status')).toContainText(LABEL_DELIVERY_SENT);
   // Duplikat (gleicher Fingerprint) ändert nichts; Vorgang bleibt abgeschlossen.
   await staff.reload();
   await expect(staff.getByTestId('payment-status')).toContainText('Bezahlt');
@@ -449,8 +472,9 @@ test('G: 50 % Storno → genau eine Stornokostenrechnung in Lexware → „Storn
   await expect(cancellation.getByTestId('cancellation-invoice-status')).toContainText(
     LABEL_INVOICE_CREATED,
   );
+  // Phase 12: Stornorechnung im selben Job-Lauf per Mail versendet.
   await expect(cancellation.getByTestId('cancellation-delivery-status')).toContainText(
-    LABEL_DELIVERY_PENDING,
+    LABEL_DELIVERY_SENT,
   );
   const reference = cancellation.getByTestId('cancellation-reference');
   await expect(reference).toBeVisible();
@@ -496,7 +520,10 @@ test('H: Timeout NACH dem Rechnungs-Create → Unknown Outcome → Recovery verb
   // Retry ⇒ Recovery (Belegliste + Marker) ⇒ dieselbe Rechnung – kein zweiter Create.
   await retryTransfer();
   await expect(status()).toContainText(LABEL_TRANSFERRED);
-  await expectInvoiceBlock();
+  // Phase 12: Rechnungsmail erst im nächsten Job-Lauf (invoice.delivery ⇒ mail.send).
+  await expectInvoiceBlock('pending');
+  await runDueJobs(staff);
+  await expectInvoiceBlock('sent');
   const reference = (await staff.getByTestId('accounting-reference').innerText()).trim();
   const invoices = await fakeInvoices();
   expect(invoices).toHaveLength(before + 1);
@@ -556,7 +583,10 @@ test('I: Mehrdeutiger Lexware-Kontakt → Transfer blockiert → Admin wählt Ko
   await expect(blocker('CONTACT_REVIEW_REQUIRED')).toHaveCount(0);
   await retryTransfer();
   await expect(status()).toContainText(LABEL_TRANSFERRED);
-  await expectInvoiceBlock();
+  // Phase 12: Rechnungsmail erst im nächsten Job-Lauf (invoice.delivery ⇒ mail.send).
+  await expectInvoiceBlock('pending');
+  await runDueJobs(staff);
+  await expectInvoiceBlock('sent');
   const reference = (await staff.getByTestId('accounting-reference').innerText()).trim();
   const invoice = await expectSingleInvoiceFor(processNumber, reference);
   expect(invoice.address['contactId']).toBe(first);
@@ -592,7 +622,10 @@ test('J: Steuerkonfiguration fehlt → Transfer blockiert (kein Lexware-Aufruf) 
   await expect(blocker('TAX_CONFIG_INCOMPLETE')).toHaveCount(0);
   await retryTransfer();
   await expect(status()).toContainText(LABEL_TRANSFERRED);
-  await expectInvoiceBlock();
+  // Phase 12: Rechnungsmail erst im nächsten Job-Lauf (invoice.delivery ⇒ mail.send).
+  await expectInvoiceBlock('pending');
+  await runDueJobs(staff);
+  await expectInvoiceBlock('sent');
   const reference = (await staff.getByTestId('accounting-reference').innerText()).trim();
   await expectSingleInvoiceFor(processNumber, reference);
   expect(await fakeInvoices()).toHaveLength(invoicesBefore + 1);
@@ -729,23 +762,31 @@ test('M: Rechnung extern storniert (voided) → Webhook → „Buchhaltungsprüf
 
 // ── N: Versandstatus ─────────────────────────────────────────────────────
 
-test('N: Rechnungsversand: immer „Versand: Ausstehend“, nie „gesendet“ (Abrechnung und Storno)', async () => {
+test('N: Rechnungsversand (Phase 12): Miet-Royal mailt jede Rechnung genau einmal mit Lexware-PDF, „Versand: Versendet“ (Abrechnung und Storno); Lexware selbst versendet nichts', async () => {
   test.setTimeout(180_000);
   await openSettlement(staff, processB);
   await expect(staff.getByTestId('payment-status')).toContainText('Bezahlt');
-  await expect(staff.getByTestId('invoice-delivery-status')).toContainText(LABEL_DELIVERY_PENDING);
-  await expect(staff.getByTestId('accounting-block')).not.toContainText(NEVER_SENT);
+  await expect(staff.getByTestId('invoice-delivery-status')).toContainText(LABEL_DELIVERY_SENT);
   await expect(staff.getByTestId('settlement-page')).not.toContainText(/per Lexware versendet/i);
 
   await staff.goto(`/vorgaenge/${processG}`);
   const cancellation = staff.getByTestId('process-cancellation');
   await expect(cancellation.getByTestId('cancellation-delivery-status')).toContainText(
-    LABEL_DELIVERY_PENDING,
+    LABEL_DELIVERY_SENT,
   );
-  await expect(cancellation.getByTestId('cancellation-accounting-block')).not.toContainText(
-    NEVER_SENT,
-  );
-  // Fake-Prüfung: kein Mail-/Versand-Endpunkt wurde je aufgerufen (es gibt keinen).
+  // Genau EINE Rechnungsmail je Rechnung (B/C/D: Bernd, G: Storno Gisela) – trotz mehrfacher
+  // Job-Läufe und Webhooks (Order §16: automatisch nie doppelt); Anhang = Lexware-PDF.
+  const bernd = await mailsMatching({ to: 'bernd@e2e.example', subject: /^Rechnung / });
+  expect(bernd).toHaveLength(3);
+  const gisela = await mailsMatching({ to: 'gisela@e2e.example', subject: /^Rechnung / });
+  expect(gisela).toHaveLength(1);
+  for (const mail of [...bernd, ...gisela]) {
+    pdfAttachment(mail, /^Rechnung-.+\.pdf$/);
+  }
+  expect(new Set(bernd.map((mail) => mail.messageId)).size).toBe(3);
+  // Fake-Prüfung: Lexware wird nie zum Versenden aufgerufen (es gibt keinen Mail-Endpunkt);
+  // der Anhang kommt transient über GET /v1/invoices/{id}/file.
   const requests = await fakeRequestLog();
   expect(requests.some((request) => /mail|send|deliver/i.test(request.path))).toBe(false);
+  expect(requests.some((request) => /^\/v1\/invoices\/[^/]+\/file$/.test(request.path))).toBe(true);
 });

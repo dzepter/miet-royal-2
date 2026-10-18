@@ -7,6 +7,7 @@ import {
 } from '@mietroyal/database';
 import type { JobHandler, JobQueue } from '@mietroyal/integrations';
 import { and, eq, isNull } from 'drizzle-orm';
+import { enqueueVoucherDelivery } from '../communication/voucher-delivery-job.ts';
 import type { VoucherService, VoucherLogger } from './voucher-service.ts';
 
 /**
@@ -56,6 +57,8 @@ export async function enqueueVoucherEligibility(
 export function createVoucherEligibilityHandler(
   service: VoucherService,
   logger?: VoucherLogger,
+  /** Phase 12 (Order §15): neu erzeugter Gutschein ⇒ Versandjob `voucher.delivery` (nach Commit). */
+  queue?: JobQueue,
 ): JobHandler {
   return async (job) => {
     const payload = job.payload as Partial<VoucherEligibilityJobPayload> | null;
@@ -64,6 +67,9 @@ export function createVoucherEligibilityHandler(
       throw new Error('voucher.eligibility_check: Payload ohne settlementId');
     }
     const result = await service.ensureVoucherForSettlement(settlementId, new Date());
+    if (queue !== undefined && result.outcome === 'created' && result.voucherId !== undefined) {
+      await enqueueVoucherDelivery(queue, result.voucherId);
+    }
     logger?.info(
       {
         jobId: job.id,

@@ -716,35 +716,51 @@ function SettlementPage() {
               Versand nicht möglich: {noticePreview.blockedReason ?? 'kein Kommunikationsadapter'}.
             </p>
           )}
+          {/* Phase 12 (UI): Outbox-Zustände der Kundeninformation (Order §12). */}
+          {noticePreview.status === 'queued' && (
+            <p className="muted" data-testid="notice-queued">
+              Versand eingeplant – das 24-Stunden-Wartefenster beginnt erst mit bestätigtem
+              Mailversand.
+            </p>
+          )}
+          {noticePreview.status === 'failed' && (
+            <p className="error" data-testid="notice-failed">
+              Versand fehlgeschlagen – das Wartefenster hat nicht begonnen. Bitte erneut freigeben
+              und senden.
+            </p>
+          )}
           {noticePreview.status === 'sent' ? (
             <p className="muted">Bereits gesendet am {formatBerlin(noticePreview.sentAt)}.</p>
-          ) : (
+          ) : noticePreview.status === 'queued' ? null : (
             <p className="muted">
               Nach „Freigeben und senden“ beginnt das Wartefenster von 24 Stunden – nur einmal je
               Abrechnung.
             </p>
           )}
           <p>
-            {noticePreview.status !== 'sent' && perms.canRelease && (
-              <>
-                <button
-                  type="button"
-                  className="primary"
-                  data-testid="notice-send"
-                  disabled={busy}
-                  onClick={() =>
-                    void mutate(() => approveAndSendNotice(s.id, s.version), {
-                      pick: asView,
-                      okNotice: 'Kundeninformation gesendet – Kundenrückmeldung abwarten.',
-                    }).then((data) => {
-                      if (data !== null) setNoticePreview(null);
-                    })
-                  }
-                >
-                  Freigeben und senden
-                </button>{' '}
-              </>
-            )}
+            {noticePreview.status !== 'sent' &&
+              noticePreview.status !== 'queued' &&
+              perms.canRelease && (
+                <>
+                  <button
+                    type="button"
+                    className="primary"
+                    data-testid="notice-send"
+                    disabled={busy}
+                    onClick={() =>
+                      void mutate(() => approveAndSendNotice(s.id, s.version), {
+                        pick: asView,
+                        okNotice:
+                          'Kundeninformation freigegeben – das Wartefenster beginnt mit bestätigtem Mailversand.',
+                      }).then((data) => {
+                        if (data !== null) setNoticePreview(null);
+                      })
+                    }
+                  >
+                    Freigeben und senden
+                  </button>{' '}
+                </>
+              )}
             <button type="button" disabled={busy} onClick={() => setNoticePreview(null)}>
               Schließen
             </button>

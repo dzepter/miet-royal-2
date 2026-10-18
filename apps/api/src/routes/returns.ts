@@ -13,6 +13,7 @@ import { buildVisibilityContext } from '../crm/visibility.ts';
 import { AssignmentService } from '../handover/assignment-service.ts';
 import { DamageService } from '../returns/damage-service.ts';
 import { ReturnService, type ReturnFinalizedListener } from '../returns/return-service.ts';
+import type { DeliveryPacketMailer } from '../communication/transactional/mailers.ts';
 import type { CleaningEndedListener } from '../voucher/voucher-jobs.ts';
 import { SchedulingService } from '../scheduling/scheduling-service.ts';
 import { InventoryService } from '../warehouse/inventory-service.ts';
@@ -91,6 +92,8 @@ interface ReturnRouteOptions {
   finalizedListeners?: readonly ReturnFinalizedListener[];
   /** Phase 11: Reinigungsende ⇒ Gutschein-Prüfjob (Trigger B). */
   cleaningEndedListener?: CleaningEndedListener;
+  /** Phase 12 (Order §11): Protokollmails nach Finalisierung über die Mail-Outbox. */
+  packetMailer?: DeliveryPacketMailer;
 }
 
 function decodeBase64(value: string, maxBytes: number): Uint8Array | null {
@@ -122,6 +125,7 @@ export function registerReturnRoutes(app: FastifyInstance, options: ReturnRouteO
     damages,
     assignments,
     finalizedListeners ?? [],
+    options.packetMailer ?? null,
   );
   const processService = new ProcessService(db);
 

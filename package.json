@@ -40,7 +40,11 @@
     "lexware:setup": "pnpm --filter @mietroyal/api lexware:setup",
     "lexware:reconcile": "pnpm --filter @mietroyal/api lexware:reconcile",
     "lexware:smoke": "pnpm --filter @mietroyal/api lexware:smoke",
-    "lexware:fake": "pnpm --filter @mietroyal/api lexware:fake"
+    "lexware:fake": "pnpm --filter @mietroyal/api lexware:fake",
+    "communication:rewrap-secrets": "pnpm --filter @mietroyal/api communication:rewrap-secrets",
+    "mail:smoke": "pnpm --filter @mietroyal/api mail:smoke",
+    "whatsapp:smoke": "pnpm --filter @mietroyal/api whatsapp:smoke",
+    "push:generate-vapid-keys": "pnpm --filter @mietroyal/api push:generate-vapid-keys"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",

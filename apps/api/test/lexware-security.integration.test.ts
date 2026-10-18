@@ -138,6 +138,7 @@ describe('Security Phase 10 (Agent B)', () => {
       APP_ENV: 'production',
       DATABASE_URL: ctx.config.databaseUrl,
       AUTH_SECRET_KEY: '1'.repeat(64),
+      COMMUNICATION_PAYLOAD_KEY: 'c1'.repeat(32),
       STORAGE_DRIVER: 'fs',
       STORAGE_FS_ROOT: ctx.config.storage.driver === 'fs' ? ctx.config.storage.fsRoot : '/tmp/x',
       LOG_LEVEL: 'error',

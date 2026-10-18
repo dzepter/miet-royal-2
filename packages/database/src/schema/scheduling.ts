@@ -86,6 +86,16 @@ export const appointments = pgTable(
      * Mail-Freigabe-Workflow (Phase 12) räumt das Feld wieder ab.
      */
     customerInfoRequiredAt: timestamp('customer_info_required_at', { withTimezone: true }),
+    /** Phase 12: Kunde wurde über die Terminänderung informiert (Mail bestätigt zugestellt). */
+    customerInformedAt: timestamp('customer_informed_at', { withTimezone: true }),
+    /**
+     * Phase 12 (Order §19): der dem Kunden zuletzt mitgeteilte Termin (alte
+     * Zeit für die Terminänderungsmail). Gesetzt bei der ersten Verschiebung
+     * einer vereinbarten Zeit, bei weiteren Verschiebungen vor der
+     * Kundeninformation NICHT überschrieben; nach bestätigtem Versand abgeräumt.
+     */
+    customerKnownStartAt: timestamp('customer_known_start_at', { withTimezone: true }),
+    customerKnownEndAt: timestamp('customer_known_end_at', { withTimezone: true }),
     /**
      * Gleiche-Tages-Reassignment (Order §11): Übernahmebestätigung.
      * requestedFor = Nutzer, der bestätigen muss; eine erneute Zuweisung

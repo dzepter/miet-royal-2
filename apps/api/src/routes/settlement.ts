@@ -12,7 +12,8 @@ import { ProcessService } from '../crm/process-service.ts';
 import { LexwareApiError } from '../lexware/errors.ts';
 import { getCompletedVisibilityDays } from '../crm/settings-service.ts';
 import { buildVisibilityContext } from '../crm/visibility.ts';
-import type { SettlementNoticeGateway } from '../settlement/notice-gateway.ts';
+import { createRetentionCompletionListener } from '../communication/retention/cleanup.ts';
+import type { SettlementNoticeMailer } from '../communication/transactional/mailers.ts';
 import {
   SettlementError,
   SettlementService,
@@ -79,7 +80,8 @@ export interface SettlementRouteOptions {
   queue: JobQueue;
   accountingGateway: AccountingGateway;
   transfers: AccountingTransferService;
-  noticeGateway: SettlementNoticeGateway;
+  /** Phase 12 (Order §12): Kundeninformation über die Mail-Outbox. */
+  notices: SettlementNoticeMailer;
 }
 
 /** SettlementError ⇒ Status + fachlicher Code (z. B. 409 SETTLEMENT_LOCKED); sonst sendAuthError. */
@@ -105,12 +107,16 @@ export function registerSettlementRoutes(
   app: FastifyInstance,
   options: SettlementRouteOptions,
 ): void {
-  const { db, auth, config, transfers, noticeGateway, queue } = options;
-  const processService = new ProcessService(db);
+  const { db, auth, config, transfers, notices, queue } = options;
+  // Phase 12 (E2E-Agent 2, Retention Order §25): manueller Transfer schließt den Vorgang ab ⇒
+  // Foto-Retention-Job sofort einreihen (wie CRM-Abschluss; Backstop bleibt).
+  const processService = new ProcessService(db, [
+    createRetentionCompletionListener(queue, app.log),
+  ]);
   const service = new SettlementService({
     db,
     transfers,
-    noticeGateway,
+    notices,
     queue,
     processes: processService,
     appEnv: config.appEnv,

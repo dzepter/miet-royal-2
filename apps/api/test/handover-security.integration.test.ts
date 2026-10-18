@@ -352,6 +352,7 @@ describe('99.–101. Datenminimierung und Isolation', () => {
       APP_ENV: 'production',
       DATABASE_URL: 'postgresql://prod:SYNTH@db-prod.internal:5432/mietroyal_prod',
       AUTH_SECRET_KEY: '1'.repeat(64),
+      COMMUNICATION_PAYLOAD_KEY: 'c1'.repeat(32),
       STORAGE_DRIVER: 's3',
       STORAGE_S3_ENDPOINT: 'https://s3.synthetic.example',
       STORAGE_S3_REGION: 'eu-central-1',
@@ -365,6 +366,7 @@ describe('99.–101. Datenminimierung und Isolation', () => {
       APP_ENV: 'demo',
       DATABASE_URL: 'postgresql://demo:SYNTH@db-demo.internal:5432/mietroyal_demo',
       AUTH_SECRET_KEY: '2'.repeat(64),
+      COMMUNICATION_PAYLOAD_KEY: 'c2'.repeat(32),
       STORAGE_S3_BUCKET: 'mietroyal-demo-documents',
       STORAGE_S3_ACCESS_KEY_ID: 'SYNTH-DEMO',
       STORAGE_S3_SECRET_ACCESS_KEY: 'SYNTH-demo-secret',
@@ -375,6 +377,7 @@ describe('99.–101. Datenminimierung und Isolation', () => {
       APP_ENV: 'demo',
       DATABASE_URL: 'postgresql://demo:SYNTH@db-demo.internal:5432/mietroyal_demo',
       AUTH_SECRET_KEY: '2'.repeat(64),
+      COMMUNICATION_PAYLOAD_KEY: 'c2'.repeat(32),
     });
     expect(() => assertConfigsIsolated(production, collidingStorage)).toThrow();
   });

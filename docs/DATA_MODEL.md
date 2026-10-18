@@ -130,13 +130,140 @@ Snapshots: `offer_versions.voucher_id/voucher_discount_cents/voucher_snapshot`,
 `bookings.voucher_id/voucher_snapshot` (ohne Klartext). Kein Klartextcode in
 irgendeiner Spalte.
 
+### MailDelivery (Phase 12, `mail_deliveries`)
+Dauerhafte E-Mail-Outbox: `kind` (offer, order_confirmation, handover_protocol,
+return_protocol, settlement_damage_missing_notice, cancellation_confirmation,
+reminder_7_days, reminder_1_day, appointment_changed, voucher_delivery,
+invoice_delivery, manual_customer_reply), Bezüge `process_id`/`customer_id`/
+`booking_id`, eingefrorener Empfänger (`recipient_email`, `recipient_name`),
+`subject`, `template_kind`/`template_version`, `context` (jsonb, NUR nicht-
+geheime Render-Daten), `secret_payload_ciphertext` (AES-256-GCM v2 mit
+Communication-Key; Token/Gutscheincode; nach `sent` gelöscht), `attachments`
+(Referenzen: `document` → documents.id, `lexware_invoice` → Lexware-ID; nie
+Bytes), `status` (pending | sending | sent | retry | failed | blocked |
+outcome_unknown), `idempotency_key` (UNIQUE, fachlich), `message_id` (UNIQUE,
+stabil über alle Versuche), `in_reply_to_message_id`, `attempts`,
+`next_attempt_at`, `sending_since`, `sent_at`, `provider_code`,
+`last_error_code`, `blocked_reason` (MAIL_NOT_CONFIGURED,
+DEMO_NOT_WHITELISTED, NO_RECIPIENT, INVALID_RECIPIENT, SECRET_UNDECRYPTABLE,
+PUBLIC_WEB_BASE_URL_MISSING, …), `conversation_message_id`, `created_by`.
+Kein Mailbody, kein Klartext-Geheimnis in irgendeiner Spalte.
+
+### PushSubscription / PushDelivery (Phase 12, `push_subscriptions`, `push_deliveries`)
+`push_subscriptions`: `user_id`, `session_id` (registrierende Gerätesession),
+`endpoint` (UNIQUE, Capability-URL – nie loggen/ausgeben), `p256dh`, `auth`,
+`user_agent_label`, `created_at`, `last_success_at`, `disabled_at`,
+`disabled_reason` (user_unsubscribed | gone | session_revoked | user_inactive |
+reassigned). Versand nur an Zeilen mit `disabled_at IS NULL`, aktivem User
+und nicht widerrufener Session. `push_deliveries`: `kind` (appointment_1h,
+return_overdue, machine_risk, machine_risk_6h, session_new_device_login,
+substitution_started), `user_id`, `idempotency_key` (UNIQUE, z. B.
+`push:return_overdue:<incidentId>:<userId>`), `payload` (jsonb {kind, title,
+body, url, tag} – datenminimiert), `status` (pending | sent | failed |
+skipped), `subscriptions_targeted`/`_succeeded`, `last_error_code`, `sent_at`.
+
+### CalendarFeedToken (Phase 12, `calendar_feed_tokens`)
+Ein Eintrag je User (`user_id` UNIQUE): `token_hash` (SHA-256 des 32-Byte-
+Tokens, UNIQUE; Klartext nur in der Erzeugungsantwort), `created_at`,
+`regenerated_at`, `last_access_at`. Regenerate ersetzt den Hash in place.
+
+### AppointmentReminder (Phase 12, `appointment_reminders`)
+Bindet Erinnerungen an die Terminversion: `appointment_id`, `kind`
+(reminder_7_days | reminder_1_day | push_1_hour), `fingerprint` (für Push:
+sha256(appointmentId|startAt|assignee); für Mail-Erinnerungen:
+sha256(appointmentId|kind|startAt-ISO)), `due_at` (Mail: startAt − 7 bzw. − 1
+Berliner Kalendertag(e), gleiche Wanduhrzeit), `mail_delivery_id`/
+`push_delivery_id`, `sent_at` (Mail: vom Sent-Listener gesetzt);
+UNIQUE (appointment, kind, fingerprint) ⇒ Reschedule/Neuzuweisung erzeugen
+neue Zeilen, alte bleiben no-op. Eine Mail-Zeile mit `mail_delivery_id IS NULL`
+und `sent_at IS NULL` bedeutet „bewusst nicht nachgeholt“ (Buchung nach dem
+Fälligkeitszeitpunkt oder Fälligkeit > 6 h zurück) – sie hält jeden weiteren
+Scan idempotent.
+
+### CustomerActionToken (Phase 12, `customer_action_tokens`)
+Single-Purpose-Kundenlinks: `purpose` (pickup_contact_update |
+delivery_contact_update | document_view), `token_hash` (SHA-256 des 32-Byte-
+base64url-Tokens, UNIQUE – nie der Klartext), `process_id`, `customer_id`,
+`booking_id`, `appointment_id` (Kontakt-Links), `document_id` (nur
+document_view; CHECK), `expires_at` (Kontakt-Links: exakt startAt − 1 h),
+`revoked_at` (erneute Ausgabe je Termin/Zweck widerruft ältere Tokens),
+`last_used_at`, `use_count`. Zusätzlich serverseitiger Cutoff gegen den
+AKTUELLEN Terminbeginn, Termin-/Vorgangsstatus; alle Fehlerfälle neutral.
+
+Phase 12 (transactional): purpose `document_view` (Kundeninformation →
+Rückgabeprotokoll) gilt 90 Tage ab Ausstellung, wird beim Einreihen der Mail
+in derselben Transaktion ausgestellt; Klartext nur in der verschlüsselten
+Outbox-Payload.
+
+### Transaktionsmail-Status (Phase 12, transactional)
+Verknüpfung über `*.mail_delivery_id` (kein FK): `order_confirmations.status`
+prepared | approved | queued | sent | failed; `delivery_packets.status`
+ready | queued | sent | failed (`ready` nur noch ohne Mailer, z. B. Alt-
+bestand); `settlement_customer_notices.status` prepared | approved | queued |
+sent | blocked | failed (`gateway` = 'mail', `gateway_reference` =
+Message-ID); `cancellations.confirmation_status` (Text) prepared | queued |
+sent | failed | blocked, `confirmation_mail_delivery_id`,
+`confirmation_gateway_reference` = Message-ID; `settlements/cancellations.
+invoice_delivery_status` (Text) pending | sent | failed | blocked +
+`invoice_mail_delivery_id`; `lexware_invoice_mappings.delivery_status`
+pending | sent (CHECK) + `mail_delivery_id`; `vouchers.mail_delivery_id`,
+`delivery_problem_code` (NO_EMAIL, DELIVERY_COPY_UNDECRYPTABLE, MAIL_FAILED,
+SMTP-Code). `offer_deliveries` wird seit Phase 12 nicht mehr befüllt
+(Altbestand, Token dort maskiert).
+
+### BookingCustomerContact (Phase 12, `booking_customer_contacts`)
+Vom Kunden per Aktionslink gepflegte Abholperson (`kind = pickup`) bzw.
+Kontakt vor Ort (`kind = delivery`): `booking_id`, `kind`, `first_name`,
+`last_name`, `phone` (Pflicht; normalisiert `+<Ziffern>`, 6–20 Ziffern),
+`updated_via_token_id`, `updated_at`. UNIQUE (booking, kind): genau EIN
+aktueller Stand je Buchung und Art – eine Änderung überschreibt vollständig,
+es gibt keine Historie und keine Kopie der alten Telefonnummer.
+
 ### Document
 Typ, Version, Storage-Key, Hash, created/finalized, immutable, kunden-sichtbar.
 
-### ConversationMessage
-PORTAL / EMAIL / WHATSAPP, Richtung, Sender, Text, Zeit, optional importiert.
-### MessagePhoto
-temporäre Datei.
+### ConversationMessage (Phase 12, `conversation_messages`)
+Eine Zeile je Nachricht im Vorgang: `process_id` (NULL = nicht zugeordnet,
+Order §22/§27), `customer_id`, `channel` (email | whatsapp | portal
+[vorbereitet]), `direction` (inbound | outbound), `sender_snapshot` (jsonb
+ohne Secrets: `name?`, `email?`, `phone?` = wa_id – bei ausgehenden WhatsApp-
+Zeilen die Gegenstelle –, `skippedAttachments?` = Zähler nicht gespeicherter
+Anhänge), `subject`, `body` (NUR Text; HTML wird sicher zu Text, nie Raw-HTML),
+`provider_message_id` (RFC-5322-Message-ID ohne Klammern bzw. wamid; UNIQUE je
+Kanal), `reply_to_provider_message_id` (In-Reply-To / WhatsApp-context.id),
+`mail_delivery_id` (eigene Outbox-Zustellung), `is_system_event` (automatische
+Mails als kompakte Ereignisse), `delivery_state` (received | queued | sent |
+delivered | read | failed | blocked; wird aus Outbox-Status bzw. WhatsApp-
+statuses gespiegelt), `sent_at`/`received_at`, `created_by_staff_id`,
+Zuordnung durch Staff (`assigned_by_staff_id`, `assigned_at`) bzw. Ignorieren
+(`ignored_at`, `ignored_by_staff_id`), Retention `body_deleted_at` (Text
+12 Monate nach Vorgangsabschluss geleert; Zeile bleibt als Metadatum).
+### MessagePhoto (Phase 12, `message_photos`)
+Eingehendes Bild (nur JPEG/PNG/WebP nach MIME + Magic Bytes + Größenlimit):
+`message_id`, `storage_key` (privat, `communication/messages/<messageId>/<uuid>.<ext>`,
+UNIQUE), `mime_type`, `byte_size`, `sha256`, `deleted_at` (bei
+Vorgangsabschluss gelöscht – nur Kommunikationsfotos, nie Übergabe-/
+Rückgabe-/Schadensfotos). Auslieferung ausschließlich über
+`GET /staff/messages/:id/photos/:photoId` (Vorgangssichtbarkeit).
+### InboundMailReceipt / InboundMailState (Phase 12, `inbound_mail_receipts`, `inbound_mail_state`)
+Beleg je verarbeiteter eingehender Mail: `mailbox`, `uid_validity`, `uid`
+(UNIQUE Tripel), `message_id` (partial UNIQUE), `fingerprint` (SHA-256 über
+From|Date|Subject|Textanfang, UNIQUE), `from_address`, `subject`,
+`received_at`, `status` (matched | unmatched | ignored | rejected),
+`match_reason` (in_reply_to | references | process_number_sender | manual),
+`conversation_message_id`. Poller-Zustand je Mailbox: `uid_validity`,
+`last_uid` (erst nach erfolgreicher Verarbeitung fortgeschrieben),
+`last_poll_at`, `last_success_at`, `last_error_code` (neutral, nie Inhalte).
+### WhatsAppEvent / WhatsAppContact (Phase 12, `whatsapp_events`, `whatsapp_contacts`)
+`whatsapp_events`: Dedupe/Verlauf je Webhook-Ereignis – `provider_message_id`
+(wamid bzw. `outbound:<messageId>` für Sendeergebnisse) + `event_type`
+(`message`, `status.sent|delivered|read|failed`, `send_result`) UNIQUE,
+`phone_number_id`, `status` (queued | processed | ignored | failed),
+`result_code` (Zuordnungsgrund, `UNSUPPORTED_<TYP>`, Graph-Fehlercode),
+`received_at`, `processed_at`, `conversation_message_id`; nie Nutzlast/Inhalt.
+`whatsapp_contacts`: `wa_id` (PK, Ziffern ohne Plus), `customer_id` (wenn
+eindeutig zugeordnet), `last_inbound_at` (Basis des 24-h-Service-Fensters),
+`profile_name`.
 ### InternalNote
 Vorgang, Autor, Text.
 

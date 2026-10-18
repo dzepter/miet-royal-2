@@ -46,7 +46,10 @@ async function control<T = Record<string, unknown>>(
 ): Promise<T> {
   const response = await fetch(`${LEXWARE_FAKE_ORIGIN}/__control/${action}`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    // Phase 12 (E2E): keine Keep-Alive-Sockets im Testprozess – zwischen zwei Specs blockiert
+    // der synchrone DB-Reset die Event-Loop; ein inzwischen serverseitig geschlossener
+    // Pool-Socket führte sonst sporadisch zu „other side closed“.
+    headers: { 'content-type': 'application/json', connection: 'close' },
     body: JSON.stringify(body),
   });
   if (!response.ok) {

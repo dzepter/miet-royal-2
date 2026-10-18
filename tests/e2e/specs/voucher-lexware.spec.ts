@@ -10,6 +10,7 @@
  * Zahlung nur über Fake-Steuerung + signierten Webhook (keine Mock-Zahlung
  * mit Lexware). Ausschließlich synthetische Testdaten.
  */
+import { createHash } from 'node:crypto';
 import { expect, test, type Page } from '@playwright/test';
 import {
   applySyntheticTax,
@@ -22,6 +23,7 @@ import {
   resetLexwareE2eState,
   setInvoicePaid,
 } from '../helpers/lexware.ts';
+import { clearSink, expectMailCount, voucherCodeFromMail } from '../helpers/mail.ts';
 import { ADMIN_EMAIL, ADMIN_PASSWORD, resetE2eDatabase } from '../helpers/seed.ts';
 import {
   cleanMachine,
@@ -35,9 +37,10 @@ import {
   allVouchers,
   expectCustomerVoucherCard,
   expectNoCustomerVoucherCard,
+  expectNoPlaintextCode,
   LABEL_DELIVERY_PENDING,
+  LABEL_DELIVERY_SENT,
   LABEL_STATUS_ACTIVE,
-  NEVER_SENT,
   processDetail,
   vouchersOfCustomer,
 } from '../helpers/voucher.ts';
@@ -53,6 +56,7 @@ test.beforeAll(async ({ browser }) => {
   resetE2eDatabase();
   resetLexwareE2eState();
   await resetFake();
+  await clearSink(); // Phase 12: Mail-Zählungen nur für diese Spec
   staff = await browser.newPage();
   customerPage = await browser.newPage();
 });
@@ -61,7 +65,7 @@ test.afterAll(async () => {
   await customerPage.close();
 });
 
-test('K: Lexware: Rechnung bezahlt → signierter payment.changed-Webhook (doppelt) → Job → genau ein Gutschein, Versand ausstehend', async () => {
+test('K: Lexware: Rechnung bezahlt → signierter payment.changed-Webhook (doppelt) → Job → genau ein Gutschein, genau eine Gutscheinmail (Phase 12)', async () => {
   test.setTimeout(600_000);
   await login(staff, ADMIN_EMAIL, ADMIN_PASSWORD, 'Erika');
   await ensureInitialStock(staff, 'sirup-kirsche', 'Sirup Kirsche', 10);
@@ -118,33 +122,44 @@ test('K: Lexware: Rechnung bezahlt → signierter payment.changed-Webhook (doppe
   await runDueJobs(staff);
   const created = vouchersOfCustomer(customerId);
   expect(created).toHaveLength(1);
+  // Phase 12 (Order §15): Mail konfiguriert (SMTP-Senke) ⇒ im selben Job-Lauf versendet,
+  // Versandkopie gelöscht, Hash bleibt.
   expect(created[0]).toMatchObject({
     status: 'active',
     discount_percent: 20,
-    delivery_status: 'pending',
-    delivered_at: null,
+    delivery_status: 'sent',
     origin_process_id: processId,
   });
-  expect(created[0]!.delivery_code_ciphertext).not.toBeNull();
+  expect(created[0]!.delivered_at).not.toBeNull();
+  expect(created[0]!.delivery_code_ciphertext).toBeNull();
   expect(allVouchers()).toHaveLength(1);
+  const voucherMail = { to: 'lena@e2e.example', subject: 'Dein Gutschein von Miet-Royal' };
+  const [mail] = await expectMailCount(voucherMail, 1);
+  const code = voucherCodeFromMail(mail!);
+  expect(
+    createHash('sha256').update(code, 'utf8').digest('hex') === created[0]!.code_hash,
+    'Hash des Mailcodes',
+  ).toBe(true);
 
-  // Erneuter Webhook + Worker ⇒ weiterhin genau einer (§10/§48).
+  // Erneuter Webhook + Worker ⇒ weiterhin genau einer (§10/§48) – und keine zweite Mail.
   expect([200, 202]).toContain(await postSignedWebhook(LEXWARE_API_ORIGIN, payload));
   await runDueJobs(staff);
   expect(allVouchers()).toHaveLength(1);
+  await expectMailCount(voucherMail, 1);
 
   await expectCustomerVoucherCard(staff, customerId, {
     statusLabel: LABEL_STATUS_ACTIVE,
-    deliveryLabel: LABEL_DELIVERY_PENDING,
+    deliveryLabel: LABEL_DELIVERY_SENT,
     maskedReference: `MR20-••••-••••-${created[0]!.code_suffix}`,
   });
   await staff.goto(`/vorgaenge/${processId}`);
   const line = staff.getByTestId('process-voucher');
   await expect(line).toContainText('20-%-Wiedermieter-Gutschein erstellt');
-  await expect(line).toContainText(LABEL_DELIVERY_PENDING);
-  await expect(line).not.toContainText(NEVER_SENT);
+  await expect(line).toContainText(LABEL_DELIVERY_SENT);
+  await expect(line).not.toContainText(LABEL_DELIVERY_PENDING);
   const api = await processDetail(staff, processId);
   expect(api.voucher?.id).toBe(created[0]!.id);
   expect(api.text).not.toContain(created[0]!.code_hash);
   expect(api.text).not.toContain('deliveryCodeCiphertext');
+  expectNoPlaintextCode(api.text, code);
 });

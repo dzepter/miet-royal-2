@@ -13,6 +13,7 @@ import {
 import { eq } from 'drizzle-orm';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createTestContext, destroyTestContext, type TestContext } from './auth-helpers.ts';
+import { drainAllJobs } from './settlement-helpers.ts';
 import {
   adminSession,
   bookedProcess,
@@ -90,7 +91,7 @@ describe('111.–113. Automatischer Mock-Transfer und Zahlungsstatus', () => {
     const { admin, cookie } = await adminSession(ctx);
     const world = await bookedProcess(ctx, admin.id, { eventInDays: 2 });
     const view = await cancelBooking(ctx, admin.id, world.processId);
-    await ctx.jobs.drain();
+    await drainAllJobs(ctx);
     const transfer = (await ctx.db.select().from(accountingTransfers))[0]!;
     const paid = await ctx.app.inject({
       method: 'POST',
@@ -208,7 +209,7 @@ describe('119.–121. Idempotenz', () => {
     expect(await ctx.db.select().from(cancellations)).toHaveLength(1);
     expect(await ctx.db.select().from(accountingTransfers)).toHaveLength(1);
     expect(await ctx.db.select().from(integrationJobs)).toHaveLength(1);
-    await ctx.jobs.drain();
+    await drainAllJobs(ctx);
     expect(ctx.accounting.calls).toHaveLength(1);
     // Nach Übertragung: erneutes Storno ändert nichts an der Rechnung.
     const third = await ctx.app.inject({
@@ -249,7 +250,7 @@ describe('119.–121. Idempotenz', () => {
     expect(ctx.accounting.calls).toHaveLength(1);
     expect((await ctx.db.select().from(accountingTransfers))[0]!.status).toBe('succeeded');
     // Worker-Job danach: kein zweiter Transfer.
-    await ctx.jobs.drain();
+    await drainAllJobs(ctx);
     expect(ctx.accounting.calls).toHaveLength(1);
   });
 });
@@ -259,7 +260,7 @@ describe('Referenzrecht und Bestätigung (§§59/61)', () => {
     const { admin } = await adminSession(ctx);
     const world = await bookedProcess(ctx, admin.id, { eventInDays: 10 });
     await cancelBooking(ctx, admin.id, world.processId);
-    await ctx.jobs.drain();
+    await drainAllJobs(ctx);
     const viewer = await staffWith(ctx, admin.id, ['process.view_all'], 'Vera');
     const hidden = await cancellationView(viewer.cookie, world.processId);
     expect(hidden).toMatchObject({
@@ -302,11 +303,15 @@ describe('Referenzrecht und Bestätigung (§§59/61)', () => {
       payload: {},
     });
     expect(sent.statusCode).toBe(200);
-    expect(sent.json().confirmationStatus).toBe('sent');
+    // Phase 12: bewusste Aktion reiht ein (queued); „sent“ erst nach bestätigtem Mailversand.
+    expect(sent.json().confirmationStatus).toBe('queued');
+    await drainAllJobs(ctx);
     const stored = await storedCancellation(view.id);
     expect(stored.confirmationStatus).toBe('sent');
     expect(stored.confirmationSentAt).not.toBeNull();
-    expect(stored.confirmationGatewayReference).toBe(`outbox:cancellation-confirmation:${view.id}`);
+    expect(stored.confirmationMailDeliveryId).not.toBeNull();
+    expect(stored.confirmationGatewayReference).toMatch(/^<.+@.+>$/);
+    expect(ctx.mailGateway.sent.filter((m) => m.subject.includes('Storno'))).toHaveLength(1);
     const again = await ctx.app.inject({
       method: 'POST',
       url: `/staff/cancellations/${view.id}/confirmation/send`,

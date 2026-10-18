@@ -8,7 +8,12 @@ export {
 } from './jobs/queue.ts';
 export { PostgresJobQueue, DEFAULT_LEASE_MS } from './jobs/postgres-queue.ts';
 export { computeBackoffMs } from './jobs/backoff.ts';
-export { JobRunner, type JobHandler, type JobRunnerLogger } from './jobs/runner.ts';
+export {
+  JobRunner,
+  summarizeJobError,
+  type JobHandler,
+  type JobRunnerLogger,
+} from './jobs/runner.ts';
 export { SYSTEM_HEARTBEAT_JOB_TYPE, systemHeartbeatHandler } from './jobs/system-heartbeat.ts';
 
 // Storage (privater Objektspeicher hinter Interface)

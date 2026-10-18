@@ -57,7 +57,16 @@ describe('Normale Rechnung (Tests 52–75)', () => {
     await readyLexware(ctx, admin.id);
     const { world, view } = await settledReturn(ctx, admin.id, cookie);
     expect(await ctx.jobs.runOnce()).toBe('processed');
+    // Phase 12 (Retention §25): der Abschluss durch den Transfer reiht genau EINEN
+    // Foto-Retention-Job ein – danach nichts mehr (insbesondere keine zweite Rechnung).
+    expect(await ctx.jobs.runOnce()).toBe('processed');
     expect(await ctx.jobs.runOnce()).toBe('idle');
+    const retentionJobs = await ctx.pool.query<{ status: string }>(
+      `SELECT status FROM integration_jobs
+        WHERE type = 'communication.cleanup_retention' AND payload->>'processId' = $1`,
+      [world.processId],
+    );
+    expect(retentionJobs.rows.map((row) => row.status)).toEqual(['succeeded']);
 
     const invoices = fakeInvoices(ctx);
     expect(invoices).toHaveLength(1);

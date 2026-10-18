@@ -11,6 +11,7 @@ import {
 import type { JobQueue } from '@mietroyal/integrations';
 import { eq } from 'drizzle-orm';
 import { AuthError } from '../auth/service.ts';
+import { enqueueInvoiceDelivery } from '../communication/invoice-delivery-job.ts';
 import type { LexwareClient, LexwareInvoice, LexwarePayment } from '../lexware/client.ts';
 import type { LexwareConnectionService } from '../lexware/connection-service.ts';
 import type { ContactSyncService } from '../lexware/contact-sync-service.ts';
@@ -895,7 +896,10 @@ export class AccountingTransferService {
     now: Date,
   ): Promise<ExecuteTransferResult> {
     // Phase 11: bereits bezahlte Rechnung beim Anlegen ⇒ Listener NACH dem Commit.
-    const afterCommit: { paid: AccountingTransferRow | null } = { paid: null };
+    const afterCommit: { paid: AccountingTransferRow | null; invoiceMappingId: string | null } = {
+      paid: null,
+      invoiceMappingId: null,
+    };
     const result = await this.db.transaction(async (tx): Promise<ExecuteTransferResult> => {
       let phase2 = phase2Input;
       const row = await this.lockRow(tx, phase1.row.id);
@@ -985,6 +989,10 @@ export class AccountingTransferService {
         });
         await this.mirrorDelivery(tx, successRow, now, paymentStatus);
         if (paymentStatus === 'paid') afterCommit.paid = successRow;
+        // Phase 12 (Order §16): Rechnungsmail-Job NACH dem Commit (Key je Mapping, nie doppelt) –
+        // nur bei explizit konfiguriertem Mailversand; sonst bleibt der Versand „ausstehend“
+        // (Nachholen über den Sweep `enqueuePendingInvoiceDeliveries`).
+        if (deps.context.config.mail.enabled) afterCommit.invoiceMappingId = phase1.mapping.id;
         deps.context.logger.info(
           { lexware: { action: 'transfer_success', transferId: row.id, invoiceId: invoice.id } },
           'Lexware-Rechnung erstellt',
@@ -1096,6 +1104,24 @@ export class AccountingTransferService {
       };
     });
     if (afterCommit.paid !== null) await this.notifyPaymentStatus(afterCommit.paid, 'paid', now);
+    if (afterCommit.invoiceMappingId !== null) {
+      try {
+        await enqueueInvoiceDelivery(this.queue, afterCommit.invoiceMappingId);
+      } catch (error) {
+        // Rechnung ist gültig und der Transfer abgeschlossen (Order §3); der Versand
+        // bleibt „ausstehend“ und wird beim nächsten Lauf/Sweep nachgeholt.
+        deps.context.logger.warn(
+          {
+            lexware: {
+              action: 'invoice_delivery_enqueue_failed',
+              mappingId: afterCommit.invoiceMappingId,
+              error: error instanceof Error ? error.name : 'unknown',
+            },
+          },
+          'Rechnungsmail-Job konnte nicht eingereiht werden',
+        );
+      }
+    }
     return result;
   }
 

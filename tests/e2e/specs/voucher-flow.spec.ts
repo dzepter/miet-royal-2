@@ -8,13 +8,16 @@
  * Worker nur über `mock-run-jobs`, Zahlung nur über `mock-set-paid`, Zeit nur
  * über `mock-expire-wait`. Ausschließlich synthetische Testdaten.
  *
- * Klartextcode: Der Code erscheint nirgends in UI/API (Order §§12/14). Für die
- * Angebots-Szenarien entschlüsselt die Spec die verschlüsselte Versandkopie
- * des in Szenario A automatisch erzeugten Gutscheins IN-PROCESS
- * (helpers/voucher.ts `revealVoucherCode`, Serverfunktion direkt importiert,
- * nur Testdatenbank) – kein Reveal-Script, kein stdout/stderr, keine
- * Produktroute, keine DB-Mutation, und zugleich der Nachweis, dass die
- * Versandkopie entschlüsselbar ist (Pflichttest 23; Phase-11-Finale F15).
+ * Klartextcode: Der Code erscheint nirgends in UI/API (Order §§12/14).
+ * Phase 12 (Order §15): Mit konfiguriertem Mailversand (E2E: echte SMTP-
+ * Zustellung an die lokale Test-Senke) wird der in Szenario A automatisch
+ * erzeugte Gutschein im selben Job-Lauf per E-Mail versendet; danach ist die
+ * Versandkopie gelöscht (nur der Hash bleibt). Die Angebots-Szenarien lesen
+ * den Code deshalb AUS DER ZUGESTELLTEN GUTSCHEINMAIL (helpers/mail.ts) –
+ * der einzige Ort, an dem der Klartext existiert; der Hash-Vergleich ist
+ * zugleich der Nachweis, dass die Versandkopie korrekt entschlüsselt wurde
+ * (Pflichttest 23; Phase-11-Finale F15). Kein Reveal-Script, keine
+ * Produktroute, keine DB-Mutation.
  *
  * Reihenfolge (seriell, fachlich bedingt): A erzeugt den Gutschein, B löst ihn
  * ein, H reaktiviert ihn durch kostenloses Storno; C–G nutzen den dann wieder
@@ -23,6 +26,8 @@
  */
 import { createHash } from 'node:crypto';
 import { expect, test, type Page } from '@playwright/test';
+import { singleMailDelivery } from '../helpers/jobs.ts';
+import { clearSink, expectMailCount, voucherCodeFromMail } from '../helpers/mail.ts';
 import { ADMIN_EMAIL, ADMIN_PASSWORD, resetE2eDatabase } from '../helpers/seed.ts';
 import {
   berlinDayPlus,
@@ -56,17 +61,16 @@ import {
   expectVoucherApplied,
   formatVoucherCode,
   LABEL_DELIVERY_PENDING,
+  LABEL_DELIVERY_SENT,
   LABEL_STATUS_ACTIVE,
   LABEL_STATUS_REDEEMED,
   LABEL_STATUS_RESERVED,
-  NEVER_SENT,
   offerOfProcess,
   openOfferPage,
   openPublicOffer,
   processDetail,
   redemptionsOfVoucher,
   removeVoucherViaUi,
-  revealVoucherCode,
   sendOfferExpectError,
   sendOfferViaUi,
   unknownVoucherCode,
@@ -98,6 +102,9 @@ const AMOUNTS_1X10 = {
 };
 
 const sha256 = (value: string) => createHash('sha256').update(value, 'utf8').digest('hex');
+/** Phase 12: Gutscheinmail an die Kundin aus Szenario A. */
+const WANDA_EMAIL = 'wanda@e2e.example';
+const VOUCHER_MAIL = { to: WANDA_EMAIL, subject: 'Dein Gutschein von Miet-Royal' };
 
 let staff: Page; // Erika (Admin – alle Rechte inkl. system.settings für die Mock-Steuerung)
 let customerPage: Page;
@@ -113,6 +120,7 @@ let processB = '';
 
 test.beforeAll(async ({ browser }) => {
   resetE2eDatabase();
+  await clearSink(); // Phase 12: Mail-Zählungen nur für diese Spec
   staff = await browser.newPage();
   customerPage = await browser.newPage();
 });
@@ -136,14 +144,15 @@ async function expectProcessVoucherLine(processId: string) {
   await expect(staff.getByRole('heading', { name: /^MR-\d{4}-\d{4,}$/ })).toBeVisible();
   const line = staff.getByTestId('process-voucher');
   await expect(line).toContainText('20-%-Wiedermieter-Gutschein erstellt');
-  await expect(line).toContainText(LABEL_DELIVERY_PENDING);
-  await expect(line).not.toContainText(NEVER_SENT);
+  // Phase 12: automatisch per E-Mail versendet (Order §15).
+  await expect(line).toContainText(LABEL_DELIVERY_SENT);
+  await expect(line).not.toContainText(LABEL_DELIVERY_PENDING);
   return line;
 }
 
 // ── A: Schadenfreie, bezahlte Abrechnung ⇒ Gutschein ──────────────────────
 
-test('A: Schadenfreie Rückgabe + bezahlte Mock-Abrechnung + Reinigung abgeschlossen ⇒ genau ein 20-%-Gutschein: Status am Kunden, Versand ausstehend, kein Klartext', async () => {
+test('A: Schadenfreie Rückgabe + bezahlte Mock-Abrechnung + Reinigung abgeschlossen ⇒ genau ein 20-%-Gutschein: Status am Kunden, automatisch per E-Mail versendet (Code nur in der Mail), kein Klartext', async () => {
   test.setTimeout(600_000);
   await login(staff, ADMIN_EMAIL, ADMIN_PASSWORD, 'Erika');
   await ensureInitialStock(staff, 'sirup-kirsche', 'Sirup Kirsche', 10);
@@ -155,7 +164,7 @@ test('A: Schadenfreie Rückgabe + bezahlte Mock-Abrechnung + Reinigung abgeschlo
   ({ processId: processA } = await issueAndReturn(staff, customerPage, {
     firstName: 'Wanda',
     lastName: 'Wiedermieter',
-    email: 'wanda@e2e.example',
+    email: WANDA_EMAIL,
     machineCodes: ['MR-10-01-01'],
   }));
   customerWanda = (await processDetail(staff, processA)).customerId;
@@ -175,7 +184,12 @@ test('A: Schadenfreie Rückgabe + bezahlte Mock-Abrechnung + Reinigung abgeschlo
   expect(allVouchers()).toHaveLength(0);
   await expectNoCustomerVoucherCard(staff, customerWanda);
 
-  // Reinigung abschließen (Trigger B) ⇒ Job ⇒ Gutschein entsteht (§15).
+  // Bis hierher keine Gutscheinmail (es gibt keinen Gutschein).
+  await expectMailCount(VOUCHER_MAIL, 0);
+
+  // Reinigung abschließen (Trigger B) ⇒ Job ⇒ Gutschein entsteht (§15) und wird
+  // (Phase 12, Order §15) im selben Job-Lauf per E-Mail versendet: voucher.delivery
+  // ⇒ Outbox ⇒ mail.send (SMTP) ⇒ markDelivered (sent, Kopie gelöscht, Hash bleibt).
   await cleanMachine(staff, 'MR-10-01-01');
   await openSettlement(staff, processA);
   await runDueJobs(staff);
@@ -185,14 +199,19 @@ test('A: Schadenfreie Rückgabe + bezahlte Mock-Abrechnung + Reinigung abgeschlo
   expect(voucherA).toMatchObject({
     status: 'active',
     discount_percent: 20,
-    delivery_status: 'pending',
-    delivered_at: null,
+    delivery_status: 'sent',
+    delivery_problem_code: null,
     reserved_offer_id: null,
     origin_process_id: processA,
   });
+  expect(voucherA.delivered_at).not.toBeNull();
   expect(voucherA.code_hash).toMatch(/^[0-9a-f]{64}$/);
   expect(voucherA.code_suffix).toMatch(/^[A-Z2-9]{4}$/);
-  expect(voucherA.delivery_code_ciphertext).not.toBeNull();
+  // Versandkopie nach bestätigtem Versand gelöscht (Order §15).
+  expect(voucherA.delivery_code_ciphertext).toBeNull();
+  const voucherOutbox = singleMailDelivery(processA, 'voucher_delivery');
+  expect(voucherOutbox).toMatchObject({ status: 'sent', recipient_email: WANDA_EMAIL });
+  expect(voucherOutbox.secret_payload_ciphertext).toBeNull();
   // 12 Kalendermonate (grob: 365–366 Tage) ab Aktivierung.
   const validityDays =
     (Date.parse(voucherA.expires_at) - Date.parse(voucherA.activated_at)) / 86_400_000;
@@ -200,7 +219,7 @@ test('A: Schadenfreie Rückgabe + bezahlte Mock-Abrechnung + Reinigung abgeschlo
   expect(validityDays).toBeLessThanOrEqual(367);
   maskedReference = `MR20-••••-••••-${voucherA.code_suffix}`;
 
-  // Kundenprofil: Aktiv – gültig bis …, Versand ausstehend, maskierte Referenz.
+  // Kundenprofil: Aktiv – gültig bis …, Versendet (Phase 12), maskierte Referenz.
   await expectCustomerVoucherCard(staff, customerWanda, {
     statusLabel: LABEL_STATUS_ACTIVE,
     maskedReference,
@@ -208,20 +227,27 @@ test('A: Schadenfreie Rückgabe + bezahlte Mock-Abrechnung + Reinigung abgeschlo
   await expect(staff.getByTestId('customer-voucher-status')).toContainText(/gültig bis/);
   await expectProcessVoucherLine(processA);
 
-  // „bezahlt“ erneut gemeldet + Jobs ⇒ weiterhin genau ein Gutschein (§48).
+  // „bezahlt“ erneut gemeldet + Jobs ⇒ weiterhin genau ein Gutschein (§48) und genau EINE Mail.
   await openSettlement(staff, processA);
   await setPaid(staff);
   await runDueJobs(staff);
   expect(allVouchers()).toHaveLength(1);
   expect(voucherById(voucherA.id).status).toBe('active');
+  const [voucherMail] = await expectMailCount(VOUCHER_MAIL, 1);
 
-  // Klartext NUR aus der Versandkopie, in-process im Testprozess (F15) – Hash passt.
-  codeCompact = revealVoucherCode(voucherA);
+  // Klartext NUR aus der zugestellten Gutscheinmail (Phase 12) – Hash/Suffix passen.
+  codeCompact = voucherCodeFromMail(voucherMail!);
   codeFormatted = formatVoucherCode(codeCompact);
-  expect(sha256(codeCompact)).toBe(voucherA.code_hash);
+  expect(sha256(codeCompact) === voucherA.code_hash, 'Hash des Mailcodes').toBe(true);
   expect(codeCompact.slice(-4)).toBe(voucherA.code_suffix);
   expect(voucherA.code_hash).not.toBe(codeCompact);
-  expectNoPlaintextCode(voucherA.delivery_code_ciphertext!, codeCompact);
+  expect(voucherMail!.messageId).toBe(voucherOutbox.message_id);
+  // Kein Klartext in Gutscheinzeile und Outbox (Kontext/Betreff ohne Code).
+  expectNoPlaintextCode(JSON.stringify(voucherById(voucherA.id)), codeCompact);
+  expectNoPlaintextCode(
+    JSON.stringify(singleMailDelivery(processA, 'voucher_delivery')),
+    codeCompact,
+  );
 
   // Kein Klartext in UI-Texten und API-Antworten (§§12/25/26).
   await staff.goto(`/kunden/${customerWanda}`);
@@ -236,7 +262,7 @@ test('A: Schadenfreie Rückgabe + bezahlte Mock-Abrechnung + Reinigung abgeschlo
   expect(customerApi.voucher).toMatchObject({
     id: voucherA.id,
     status: 'active',
-    deliveryStatus: 'pending',
+    deliveryStatus: 'sent',
     maskedReference,
   });
   const processApi = await processDetail(staff, processA);
@@ -630,6 +656,9 @@ test('J: Dokumentierter Schaden + bezahlte Abrechnung + Reinigung abgeschlossen 
   await staff.getByTestId('notice-review').click();
   await expect(staff.getByTestId('notice-preview')).toBeVisible();
   await staff.getByTestId('notice-send').click();
+  // Phase 12: Wartefenster erst nach bestätigtem Mailversand (Job mail.send).
+  await expect(status()).not.toContainText(LABEL_WAITING);
+  await runDueJobs(staff);
   await expect(status()).toContainText(LABEL_WAITING);
   await expireWait(staff);
   await transferViaJobs();
@@ -649,20 +678,28 @@ test('J: Dokumentierter Schaden + bezahlte Abrechnung + Reinigung abgeschlossen 
   expect((await processDetail(staff, processId)).voucher).toBeNull();
 });
 
-// ── L: Phase-12-Vorbereitung ──────────────────────────────────────────────
+// ── L: Versandzustand nach Phase 12 ───────────────────────────────────────
 
-test('L: Phase-12-Vorbereitung: Versand ausstehend, verschlüsselte Kopie vorhanden, nur Hash in der DB, kein Klartext in UI/API/Snapshots', async () => {
+test('L: Phase 12: Gutschein genau einmal versendet, Versandkopie gelöscht, nur Hash in der DB, Code nur in der Kundenmail, kein Klartext in UI/API/Snapshots/Outbox', async () => {
   test.setTimeout(120_000);
   const row = voucherById(voucherA.id);
-  expect(row).toMatchObject({ delivery_status: 'pending', delivered_at: null });
-  expect(row.delivery_code_ciphertext).not.toBeNull();
-  expect(row.delivery_code_ciphertext!.length).toBeGreaterThan(40);
-  expectNoPlaintextCode(row.delivery_code_ciphertext!, codeCompact);
-  expect(row.code_hash).toBe(sha256(codeCompact));
+  // Reaktivierung (H) und Verbrauch (I) ändern den Versandzustand nicht.
+  expect(row.delivery_status).toBe('sent');
+  expect(row.delivered_at).not.toBeNull();
+  expect(row.delivery_code_ciphertext).toBeNull();
+  expect(row.code_hash === sha256(codeCompact), 'Hash passt zum Mailcode').toBe(true);
   expect(row.code_hash).not.toContain(codeCompact);
   // Kein Klartext in irgendeiner Gutschein-/Einlösungsspalte.
   expectNoPlaintextCode(JSON.stringify(row), codeCompact);
   expectNoPlaintextCode(JSON.stringify(redemptionsOfVoucher(voucherA.id)), codeCompact);
+  // Outbox: genau eine Gutscheinzustellung, Geheimnis-Payload gelöscht, kein Klartext.
+  const outbox = singleMailDelivery(processA, 'voucher_delivery');
+  expect(outbox.status).toBe('sent');
+  expect(outbox.secret_payload_ciphertext).toBeNull();
+  expectNoPlaintextCode(JSON.stringify(outbox), codeCompact);
+  // Genau EINE Gutscheinmail über den gesamten Verlauf (A–J): keine Doppelmail.
+  const [mail] = await expectMailCount(VOUCHER_MAIL, 1);
+  expect(voucherCodeFromMail(mail!) === codeCompact, 'Mailcode unverändert').toBe(true);
 
   // API-Antworten: weder Klartext noch Hash noch Versandkopie (§§25–29, 125).
   for (const text of [
@@ -673,14 +710,13 @@ test('L: Phase-12-Vorbereitung: Versand ausstehend, verschlüsselte Kopie vorhan
   ]) {
     expectNoPlaintextCode(text, codeCompact);
     expect(text).not.toContain(row.code_hash);
-    expect(text).not.toContain(row.delivery_code_ciphertext!);
     expect(text).not.toContain('deliveryCodeCiphertext');
     expect(text).not.toContain('codeHash');
   }
-  // UI: Versand ausstehend, nie „gesendet“; kein Klartext (§15/§97/§98).
+  // UI: „Versendet“ (Phase 12); weiterhin nur maskierte Referenz, kein Klartext (§15/§97/§98).
   await expectCustomerVoucherCard(staff, customerWanda, {
     statusLabel: LABEL_STATUS_REDEEMED,
-    deliveryLabel: LABEL_DELIVERY_PENDING,
+    deliveryLabel: LABEL_DELIVERY_SENT,
     maskedReference,
   });
   expectNoPlaintextCode(await staff.content(), codeCompact);

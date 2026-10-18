@@ -2132,3 +2132,653 @@ Shell cwd was reset to /home/user/Sparkoffer.de
   Schreib-/stdout-Zugriff, Script existiert nicht), F21 = Delivery-Tests
   97–105 unverändert, F15/F18 = Voucher-E2E ohne Script.
 
+
+## Phase 12 (mail): Outbox, Retry, outcome_unknown, Message-ID, Krypto v2
+
+- **Outbox als Taktgeber, Queue als Zusteller.** Jede ausgehende E-Mail ist
+  eine Zeile in `mail_deliveries` (Order §6). Fachservices schreiben die
+  Zeile – gern in ihrer eigenen Transaktion (`MailOutbox.enqueue(input, tx)`)
+  – und reihen NACH Commit den Job `mail.send` ein (`scheduleSend`, Key
+  `mail.send:<deliveryId>`). Das Gateway (Nodemailer/SMTP) wird nur im Job
+  aufgerufen, nie unter Zeilensperren (CLAUDE.md „Gateways nie in offenen
+  Transaktionen“). Der Job beansprucht die Zeile per
+  `UPDATE … WHERE status IN (pending, retry) RETURNING` (Claim); ohne Claim ist
+  er ein No-op – at-least-once-Wiederholungen der Queue erzeugen keine zweite
+  Mail. Eine seit > 15 min „sending“-Zeile (Worker-Absturz mitten im Versand)
+  wird erneut aufgenommen.
+- **Retry mit eigenem Backoff.** Transiente SMTP-Fehler (4xx, Verbindungs-/
+  Timeout-Fehler vor DATA) setzen `retry`, `attempts + 1`,
+  `next_attempt_at = now + 1 min × 2^(n−1)` (max. 6 h) und reihen einen NEUEN
+  Job `mail.send:<id>:<attempt>` mit `runAt = next_attempt_at` ein; nach 8
+  Versuchen `failed`. Permanente Fehler (5xx, abgelehnter Empfänger,
+  Header-Injection) ⇒ `failed`. Die Job-Queue wiederholt selbst nur bei
+  Infrastrukturfehlern (DB), nie wegen Gateway-Ergebnissen – so bleibt die
+  Outbox die einzige Wahrheit über Versuche und Wartezeiten.
+- **`outcome_unknown` statt Doppelversand.** Bricht die Verbindung NACH dem
+  DATA-Kommando ab (Nodemailer `command === 'DATA'` ohne Antwortcode, Timeout,
+  Socket-Fehler) oder wirft der Transport unerwartet, kann der Server die
+  Mail bereits angenommen haben. Dann `outcome_unknown` ohne automatischen
+  Retry (Order §9, Review „Duplicate Email nach Timeout“). Nur ein bewusstes
+  „Erneut senden“ im Admin erzeugt eine NEUE Zustellung mit NEUER Message-ID
+  (Key `<alt>:resend:<neueId>`); die alte Zeile bleibt als Nachweis. Dasselbe
+  gilt für `failed` und konfigurationsbedingte Blockaden
+  (`DEMO_NOT_WHITELISTED`, `MAIL_NOT_CONFIGURED`, `PUBLIC_WEB_BASE_URL_MISSING`).
+- **Stabile Message-ID.** `<deliveryId@domain(MAIL_FROM_ADDRESS)>` wird beim
+  Einreihen festgelegt und über alle Versuche derselben Zustellung
+  wiederverwendet (Provider-Dedupe, Threading für Antworten via In-Reply-To/
+  References). Keine Exactly-once-Behauptung.
+- **Blockaden beim Einreihen sind kein Fehler.** Mail nicht konfiguriert
+  (Gateway `disabled`), Demo-Empfänger nicht auf der Whitelist, fehlender/
+  ungültiger Empfänger ⇒ `blocked` mit neutralem Grund; der Fachprozess
+  (Rückgabe final, Rechnung gültig, Gutschein aktiv) läuft weiter (Order §3).
+  Bestehende harte Versandblockaden bei bewusstem „An Kunde senden“ bleiben
+  Sache der Fachmodule (z. B. `blockReasonFor()` vor der Aktion prüfen).
+- **Vorlagen aus einem Block-Modell.** Jede Vorlage beschreibt Inhalt als
+  neutrale Blöcke; daraus entstehen immer text/plain UND HTML. Der HTML-
+  Renderer escaped jeden Text, verlinkt nur http(s)-URLs auf
+  `MAIL_PUBLIC_WEB_BASE_URL`, kennt keine Bilder/Skripte/externen Ressourcen
+  (kein Tracking, Order §9). Kontexte sind zod-validiert
+  (`templates/contexts.ts`), Betreffe werden auf CR/LF geprüft, Gateways
+  prüfen Betreff/Namen/Empfänger erneut (`HEADER_INJECTION`), Nodemailer
+  erhält Adressobjekte statt zusammengesetzter Header.
+- **Geheimnisse nur verschlüsselt.** Angebots-/Aktions-/Dokument-Token und
+  Gutscheincodes stehen nie im Kontext (jsonb), sondern in
+  `secret_payload_ciphertext` (AES-256-GCM v2, Purpose `mail-secret-payload`,
+  AAD = env|purpose|deliveryId), werden nur im Job im Arbeitsspeicher
+  entschlüsselt und nach `sent` gelöscht. Nicht entschlüsselbar ⇒ `blocked
+  SECRET_UNDECRYPTABLE`.
+- **Gutschein-Krypto v1 → v2 (Order §8).** Neue Versandkopien entstehen als
+  `v2:<keyId>:<base64>` mit `COMMUNICATION_PAYLOAD_KEY`;
+  `VoucherDeliveryService.revealCodeForDelivery` liest v2 (aktuell/Vorgänger)
+  und Legacy v1 (AUTH_SECRET_KEY) und kapselt eine nicht aktuelle Kopie nach
+  erfolgreichem Lesen sofort neu. `pnpm communication:rewrap-secrets`
+  (`apps/api/src/communication/rewrap.ts`) hebt alle Kopien und offenen
+  Mail-Payloads auf den aktuellen Schlüssel; nicht entschlüsselbare
+  Gutscheinkopien erhalten `delivery_problem_code =
+  DELIVERY_COPY_UNDECRYPTABLE` – Gutschein, Hash und Ciphertext bleiben
+  unverändert (nie Codeänderung, auch nicht reserviert/eingelöst).
+- **Gateway-Wahl je Umgebung.** `createOutboundMailGateway`: SMTP genau dann,
+  wenn `config.mail.enabled` (vollständige SMTP-Daten), sonst `Disabled` –
+  in jeder Umgebung inklusive demo (dort greift zusätzlich die Whitelist +
+  `[DEMO]`-Betreff). `FakeMailGateway` existiert nur per Test-Injection;
+  `buildApp`/`createCommunicationContext` lehnen ihn in production hart ab.
+  TLS: `secure: true` (implizit) oder `requireTLS: true` (STARTTLS),
+  `rejectUnauthorized` ist immer true und nicht konfigurierbar.
+- **Logging.** Nur deliveryId/kind/status/neutraler Fehlercode. Pino-
+  Redaction (`communication/logging.ts`) deckt SMTP-/IMAP-Passwörter,
+  WhatsApp-Token/App-Secret, Push-Private-Key und Communication-Keys unter
+  `config.*`, `*.config.*`, `*.*` ab (API und Worker).
+
+## Phase 12 (push+calendar): Web Push, operative Push-Regeln, privater ICS-Feed
+
+- **Gateway-Grenze.** `PushGateway.send(target, payload)` liefert nur
+  `sent | gone | transient_error | permanent_error`. `WebPushGateway`
+  (Bibliothek `web-push`, aes128gcm, VAPID-Details je Aufruf statt globalem
+  `setVapidDetails`, TTL 3600 s) mappt 200/201 ⇒ sent, 404/410 ⇒ gone
+  (RFC 8030 §7.3; 410 defensiv), 429/5xx/Netz ⇒ transient, 400/401/403/413 ⇒
+  permanent. `createPushGateway(config)`: `push.enabled` (alle drei
+  `PUSH_VAPID_*`) ⇒ WebPush, sonst `Disabled`; `FakePushGateway` nur per
+  Test-Injection – `buildApp` lehnt ihn in production hart ab. Endpoint und
+  Schlüssel (Capability-URL, RFC 8030 §8.3) erscheinen nie in Logs,
+  Fehlermeldungen oder API-Antworten; die Geräteliste zeigt nur Label/Zeiten.
+- **Subscription = User × Gerätesession.** `push_subscriptions` bindet
+  Endpoint an `user_id` UND `session_id` der registrierenden Session.
+  Logout/Revoke/Deaktivierung deaktivieren Subscriptions sofort über den
+  `SessionLifecycleListener` der Auth (minimal-invasiver Hook in
+  `StaffAuthService`; Listener können Login/Logout nie brechen); der
+  Versandjob prüft zusätzlich lazy (User aktiv, Session nicht widerrufen) und
+  deaktiviert als Backstop. `endpoint` ist UNIQUE: registriert ein anderer
+  User denselben Browser-Endpoint, wird die Zeile ihm zugeordnet
+  (`reassigned`, Zähler zurückgesetzt) – der alte User sieht/erreicht das
+  Gerät nie wieder. Registrierung/Abmeldung braucht kein neues Recht (jede
+  gültige Session, nur das eigene Gerät); Push gibt keine Daten frei.
+- **Push-Outbox + Job.** `PushService.enqueue` schreibt genau eine Zeile je
+  Idempotenzschlüssel in `push_deliveries` (UNIQUE ⇒ Dedupe) und reiht
+  `push.send:<deliveryId>` (max. 5 Versuche) ein. Der Job sendet an alle
+  aktiven Subscriptions des Empfängers: gone ⇒ Subscription `gone`,
+  transient ⇒ Fehler ⇒ Queue-Retry (at-least-once; doppelte Anzeige fängt
+  der Browser über den Notification-`tag`), Ende `sent` (≥ 1 Erfolg) oder
+  `failed` (0 Geräte / alle permanent) mit Zählern.
+- **Datenminimierung technisch erzwungen.** `buildPushPayload(input)` kennt
+  nur geschlossene Eingaben (Vorgangsnummer im Format MR-YYYY-NNNN,
+  Terminart, Vorgangs-ID); es gibt keinen freien Textparameter. Texte:
+  „Termin in 1 Stunde / Abholung MR-2026-1234“, „Rückgabe überfällig /
+  MR-… – in Miet-Royal prüfen“, „Maschinenkonflikt …“, „Neue Anmeldung von
+  einem neuen Gerät – in Miet-Royal prüfen“ (bewusst OHNE Mitarbeitername –
+  konservativ, Details stehen in der Mitarbeiterverwaltung), „Vertretung
+  aktiv – in Miet-Royal prüfen“. `url` ist immer ein relativer Staff-Pfad
+  (`/vorgaenge/<id>/termine`, `/mitarbeiter`, `/`); der Service Worker öffnet
+  nur Same-Origin-Pfade.
+- **Regeln (`PushRuleScanner.scanDue(now)`, aufgerufen vom zentralen
+  `communication.scan_due`).** (a) 1 h vor Pickup/Delivery/Return
+  (Vorlauf = Systemsetting `appointment_reminder_minutes`, Default 60) an die
+  EFFEKTIVE Zuständigkeit inkl. Vertretung; Idempotenz über
+  `appointment_reminders` (`push_1_hour`, Fingerprint =
+  sha256(appointmentId|startAt|assignee)); Reschedule/Neuzuweisung ⇒ neuer
+  Fingerprint ⇒ neuer Push, alte Zeile bleibt (no-op); ungeplante Termine nie;
+  `appointments.reminder_sent_at` wird informativ gesetzt. (b)
+  Vertretungsbeginn: Vertretungen mit Beginn in den letzten 24 h, die noch
+  laufen – Schlüssel `push:substitution:<id>`. (c) Überfällige Rückgabe:
+  `listDueOverdueAdminNotifications` (bestehende Incident-Definition), genau
+  ein Push je Incident an alle aktiven Nutzer mit `calendar.view_all` ODER
+  `employee.manage` (Planung/Admin), danach `admin_notified_at`. (d)
+  Maschinenrisiko: offene `machine_risk_incidents` mit
+  `admin_notification_due_at ≤ now` ⇒ ein Push, `follow_up_due_at = +6 h`;
+  Follow-up genau einmal (`follow_up_sent_at`), nie mehr; Empfänger wie (c).
+  (e) Neues Gerät: Sofort-Hook nach `session.new_device_login`
+  (= erste Session eines Users mit bisher unbekanntem `device_label`) an
+  Nutzer mit `employee.manage`; der Scan holt verpasste Ereignisse der letzten
+  24 h mit demselben Schlüssel nach. (f) Reinigung > 24 h: bewusst kein Push;
+  Touren existieren nicht (`tour.delay_risk` bleibt Grenzbegriff, kein
+  PushKind).
+- **ICS-Feed.** Token 32 Random-Bytes base64url (43 Zeichen), nur SHA-256 in
+  `calendar_feed_tokens` (ein Token je User; Regenerate ersetzt den Hash ⇒
+  alter Link sofort 404). Öffentliche Route `GET /public/calendar/<token>.ics`
+  (`publicLimit(60)`, neutrales 404 für unbekannt/ungültig/inaktiven User,
+  Pfad im Log maskiert `/public/calendar/***`, `Cache-Control: private,
+  no-store`). Inhalt RFC 5545/7986: PRODID `-//Miet-Royal//Staff
+  Calendar//DE`, METHOD:PUBLISH, NAME/X-WR-CALNAME „Miet-Royal – <Name>“,
+  REFRESH-INTERVAL/X-PUBLISHED-TTL PT1H (Client bestimmt das Intervall),
+  eingebettete VTIMEZONE Europe/Berlin (feste EU-Regeln), je effektivem
+  Pickup/Delivery/Return (inkl. Vertretung, nur geplant, −30…+180 Tage) ein
+  VEVENT mit UID `<appointmentId>@miet-royal`, DTSTAMP UTC,
+  DTSTART/DTEND;TZID=Europe/Berlin (Ende = `end_at` oder +60 min),
+  SEQUENCE = `appointments.version − 1` (RFC: Start 0, monoton – jede
+  Mutation bumpt `version`), SUMMARY „Miet-Royal – Abholung MR-…“,
+  DESCRIPTION = Terminart + Staff-Link, URL = Staff-Link; CRLF, Faltung
+  ≤ 75 Oktette UTF-8-sicher, TEXT-Escaping. **Keine LOCATION** (Liefer-/
+  Abholadresse ist Kundendatum; der Betriebsstandort wird nie öffentlich
+  ausgespielt), keine VALARM, keine Namen/Telefon/Preise/Schäden/Notizen.
+  Basis-URL der Links = Systemsetting `staff_app_base_url`; ohne Setting
+  relative URL + Hinweis in der Antwort.
+- **Service Worker.** `sw.js` erhält nur `push` (showNotification aus
+  `{title, body, tag, url}`) und `notificationclick` (Fenster fokussieren/
+  navigieren oder öffnen, nur Same-Origin-Pfade); Cache-/Offline-Logik und
+  Schlüssel-Handling bleiben byte-identisch, keine API-Aufrufe im Worker.
+  Registrierung nur aus einem Klick-Handler (`Notification.requestPermission`).
+
+## Phase 12 (inbound): IMAP-Eingang, Konversation, Unmatched-Inbox, WhatsApp Cloud API
+
+- **Inbound-Zuordnung ist konservativ und deterministisch.** Reihenfolge:
+  (1) In-Reply-To, dann References gegen `mail_deliveries.message_id`
+  (eigene Outbox) – mit und ohne spitze Klammern verglichen; (2) genau EINE
+  Vorgangsnummer `MR-JJJJ-NNNN` in Betreff/Text UND Absender normalisiert ==
+  `customers.email` des Vorgangskunden; (3) unmatched. Zwei Nummern, fremder
+  Absender oder Nummer ohne Absenderabgleich ⇒ bewusst unmatched (Staff
+  ordnet zu). Verworfen: Fuzzy-Matching über Namen/Domains (falsche
+  Zuordnung wäre ein Datenschutzproblem).
+- **E-Mail/WhatsApp autorisieren NIE Fachaktionen.** Inbound-Verarbeitung
+  schreibt ausschließlich `conversation_messages`, `message_photos`,
+  `inbound_mail_receipts`, `whatsapp_events`, `whatsapp_contacts`; der
+  Vorgang bleibt unberührt (Tests 75/85/108 prüfen `updated_at`).
+- **Dedupe dreifach, Restart-sicher.** UID-Tripel (mailbox+UIDVALIDITY+UID),
+  Message-ID, Fingerprint (SHA-256 From|Date|Subject|Textanfang). `last_uid`
+  wird je Nachricht erst nach erfolgreicher Verarbeitung fortgeschrieben;
+  Fotos werden VOR der Transaktion unter dem vorab erzeugten
+  Nachrichten-UUID hochgeladen (Unique-Rennen räumt Storage-Reste ab).
+  UIDVALIDITY-Wechsel setzt den Zähler zurück; Belege fangen Duplikate.
+  Kein UNSEEN-Zwang: Abruf über UID-Range, Mailbox read-only, nie `\Seen`,
+  nie löschen.
+- **HTML niemals rendern.** Eigener Tag-Stripper (Script/Style/Head samt
+  Inhalt entfernt, alle Tags inkl. `<img>` entfernt, Entities dekodiert;
+  `mailparser` mit `skipHtmlToText`, damit keine Link-/Bild-URLs in den Text
+  wandern). Verworfen: html-to-text/sanitizer-Bibliotheken (mehr Angriffs-
+  fläche, kein Mehrwert für reinen Text).
+- **Bilder nur mit MIME UND Magic Bytes** (JPEG/PNG/WebP; E-Mail ≤ 8 MB,
+  WhatsApp ≤ 5 MB nach Meta-Limit); SVG ist kein Bild (XSS-Vektor). Alles
+  andere wird nie gespeichert, nur gezählt (`skippedAttachments`).
+- **Poll-Job statt Scheduler-Framework.** `mail.inbound_poll` reiht sich
+  selbst alle 2 Minuten mit Zeit-Bucket-Schlüssel ein (Folgejob ZUERST,
+  damit ein Abruffehler die Kette nicht abreißt); `enqueueInboundPoll`
+  beim Worker-Boot. Deaktivierte Quelle ⇒ No-op ohne Folgejob.
+- **Konversation = Vorgangssichtbarkeit.** Dieselbe Hilfsfunktion wie
+  routes/crm.ts/commerce.ts (`process.view_all` + `getVisibleProcess`,
+  neutrales 404). Staff-Antwort per E-Mail: Empfänger ist IMMER die Kunden-
+  E-Mail (kein Feld im Vertrag; Fremdfelder werden verworfen), Betreff aus
+  der zentralen Vorlage `manual_customer_reply`, In-Reply-To = letzte
+  eingehende Mail des Vorgangs; Outbox-Zeile und Konversationszeile in EINER
+  Transaktion, `scheduleSend` erst nach Commit. Zustellstatus wird über
+  `MailSentListener`/`MailFailedListener` der Outbox gespiegelt
+  (`outcome_unknown` bleibt `queued` – kein falsches „failed“).
+- **Retention-Hilfen** `deleteChatPhotosForProcess` (Storage + `deleted_at`)
+  und `purgeChatTextForProcess` (body ''/subject NULL/`body_deleted_at`)
+  sind idempotent und betreffen ausschließlich Kommunikationsdaten; der
+  Cleanup-Job (Agent R) ruft sie.
+- **WhatsApp: nur Meta Cloud API, Verträge nach Verifikation 2026-10-18**
+  (docs/COMMUNICATION_INTEGRATIONS.md). Webhook-Signatur über die ROHEN
+  Bytes (eigener Content-Type-Parser im eigenen Fastify-Scope wie beim
+  Lexware-Webhook, 3 MB), `timingSafeEqual`, neutral 401; Verify-Token in
+  konstanter Zeit. Verarbeitung idempotent im Request (Event-Zeile zuerst,
+  UNIQUE wamid+event_type; fehlgeschlagene Events werden bei Metas
+  Wiederholung erneut verarbeitet), Bilder asynchron über `whatsapp.media_fetch`
+  (kein Download im Request – Media-URLs sind nur 5 min gültig, Retry holt
+  neue). Nur Text + Bilder; alle anderen Typen als Hinweiszeile ohne Inhalt.
+- **WhatsApp-Zuordnung:** Reply-Kontext vor Telefonnummer; Telefon nur bei
+  genau EINEM Kunden UND genau EINEM aktiven Vorgang (`open`/`reopened` –
+  abgeschlossene/stornierte zählen nicht). Kandidaten: wa_id, normalisiert,
+  Variante 49→0 (dokumentiert, konservativ). Mehrdeutig ⇒ unmatched.
+- **Service-Window serverseitig:** `whatsapp_contacts.last_inbound_at` + 24 h
+  (Zeitstempel der Kundennachricht aus dem Webhook, nicht Empfangszeit);
+  außerhalb 409 mit festem Hinweistext. Keine Templates, keine automatischen
+  WhatsApp-Nachrichten – der Provider-Fehler 131047 wird zusätzlich als
+  `WINDOW_CLOSED` (permanent) abgebildet. Sendeergebnisse landen als
+  `whatsapp_events`-Zeile `send_result` (Code ohne Inhalt), Statuses
+  (sent/delivered/read/failed) nur vorwärts.
+- **Gateway-Wahl fail-closed:** production `live` oder `disabled` (nie Mock);
+  demo immer Mock („DEMO / simuliert“, Config lehnt echte Werte ab);
+  `buildApp` wirft bei injiziertem Fake/Mock in production. `fetch` ist im
+  Cloud-API-Gateway injizierbar (Tests prüfen den Graph-Request ohne Netz).
+- **Rechte:** Unmatched-Inbox unter `message.reply_customer` (siehe
+  PERMISSIONS.md); WhatsApp-Antwort nur `whatsapp.reply`; keine neue
+  Permission.
+
+## Phase 12 (scan): Kunden-Erinnerungen, Terminänderung, Aktionslinks, Scheduler, Retention
+
+- **Reminder-Zeitlogik (Order §17/§18).** Je Buchung zählt der erste
+  kundenrelevante Übergabetermin (Pickup oder Delivery; geplant = `start_at`
+  bzw. Fensterbeginn). `due_at = start_at − 7` bzw. `− 1` KALENDERTAG(E) in
+  Europe/Berlin bei gleicher Wanduhrzeit (`addBerlinCalendarDays` in
+  `packages/domain`, Schwester von `addBerlinCalendarMonths`; DST-Unit-Tests:
+  167 h im März, 169 h im Oktober). Fällig, wenn `due_at ≤ now < start_at`,
+  Termin `scheduled`, Vorgang `open|reopened`. **Kein Nachholen:** entstand die
+  Buchung nach `due_at` (`bookings.created_at > due_at`) oder liegt `due_at`
+  mehr als 6 h zurück (`REMINDER_TOLERANCE_MS` – deckt Worker-Ausfälle ab, ohne
+  tagealte „Erinnerungen“ zu verschicken), wird die `appointment_reminders`-
+  Zeile ohne Zustellung angelegt (Marker, idempotent). Ungeplante, stornierte
+  und vergangene Termine erhalten nie eine Mail.
+- **Fingerprint-Bindung (Order §19).** `fingerprint = sha256(appointmentId|kind|
+  startAt-ISO)`, Outbox-Key `reminder:<kind>:<fingerprint>`. Reschedule ⇒ neuer
+  Fingerprint ⇒ der neue Termin bekommt seine Mail, falls sein `due_at` noch
+  offen ist; alte Zeilen/Zustellungen bleiben unverändert (nie doppelt). Die
+  Reminder-Zeile wird ZUERST mit `ON CONFLICT DO NOTHING` in einer Transaktion
+  geschrieben – nur der Gewinner reiht die Mail ein (Race zweier Scanner ⇒ genau
+  ein Aktions-Token, genau eine Mail); `mail.send` wird nach Commit geplant.
+  `sent_at` setzt ein MailSentListener.
+- **Inhalt.** 7 Tage: Vorgang, Eventdatum, Terminart, Termin (+ Fensterende),
+  Adresse, Rückgabe soweit geplant, Vorbereitungshinweise. 1 Tag: zusätzlich der
+  Aktionslink (Pickup „Abholperson ändern“, Delivery „Kontakt vor Ort ändern“;
+  Token nur in der verschlüsselten Secret-Payload). Abholadresse = Systemsetting
+  `pickup_exact_address` (die bestätigte Adresse aus der AB; fehlt sie, entfällt
+  die Zeile), Lieferadresse = `bookings.delivery_snapshot`. Kein Empfänger ⇒
+  `blocked NO_RECIPIENT`, Zeile wird trotzdem angelegt.
+- **Terminänderung (Order §19).** `POST /staff/appointments/:id/inform-customer`
+  (`email.approve_prepared` + Terminsichtbarkeit) nur bei gesetztem
+  `customer_info_required_at`; Outbox-Key `appointment_changed:<id>:<version>`
+  (Doppelklick dedupliziert; erneute Verschiebung = neue Version = neue Mail
+  möglich). Nach bestätigtem Versand setzt der Sent-Listener
+  `customer_informed_at` und räumt `customer_info_required_at` nur ab, wenn die
+  Terminversion unverändert ist (eine zwischenzeitliche weitere Änderung bleibt
+  offen); `version` wird dabei bewusst NICHT erhöht (keine 409 für parallele
+  Bearbeiter, ICS-SEQUENCE unverändert). **Vorheriger Termin:** die Phase-4-
+  Verschiebung bewahrt den alten Wert nicht; die Mail nennt nur den neuen
+  Termin (`oldAt = null`, Vorlage lässt „Bisher“ weg) – Client-Daten werden nie
+  als „vorheriger Termin“ übernommen (siehe OPEN_ITEMS/Schema-Wunsch).
+- **Aktionslinks (Order §20).** `CustomerActionLinkService`: 32 Random-Bytes
+  base64url, nur SHA-256 in `customer_action_tokens`; Zweck ist Teil der
+  Auflösung (Pickup-Token wirkt nie auf den Lieferkontakt); je Termin/Zweck ein
+  aktiver Token (erneute Ausgabe widerruft); gültig bis exakt `start_at − 1 h`
+  (`expires_at` bei Ausgabe UND serverseitiger Cutoff gegen den aktuellen
+  Terminbeginn – ein vorgezogener Termin sperrt sofort, ein verschobener
+  verlängert nicht; die neue 1-Tag-Mail bringt einen neuen Token). Öffentliche
+  Routen `GET/POST /public/actions/:token` (`publicLimit(60)`/`(10)`,
+  `Cache-Control: private, no-store`, Pfad im Log `/public/actions/***`):
+  JEDER Fehlerfall – unbekannt, syntaktisch ungültig, abgelaufen, widerrufen,
+  falscher Zweck, Cutoff, Termin/Vorgang storniert – liefert dasselbe neutrale
+  404 (kein 400 für Token-Form, kein Orakel). Antwort datenminimiert
+  (`purpose`, `processNumber`, `appointmentAt`, `appointmentEndAt`, `current`).
+  Felder: Vor-/Nachname 1–80 Zeichen ohne Steuerzeichen, Telefon PFLICHT
+  (Abholperson/Kontakt vor Ort muss erreichbar sein), normalisiert über
+  `crm/normalize.ts` auf `+<6–20 Ziffern>`; Validierungsfehler 400 nur nach
+  erfolgreicher Token-Auflösung. Ein Kontakt je Buchung und Art
+  (`booking_customer_contacts`, Upsert) – „Phone-Löschung“ = vollständiges
+  Überschreiben, keine Historie, keine Kopie, kein Audit-Detail mit Nummer.
+  Staff-Sicht: `GET /staff/processes/:id/customer-contacts`.
+- **Scheduler (Order §32/§37).** Ein Job `communication.scan_due` auf der
+  bestehenden PG-Queue, alle 2 min: Worker-Boot reiht den aktuellen Bucket
+  (`communication.scan_due:<Bucket-ISO>`) ein; jeder Lauf reiht ZUERST den
+  nächsten Bucket (`runAt` = Bucket-Beginn) ein und ruft dann fehlertolerant
+  nacheinander die `DueScanner` (Reminder 7d/1d, Push-Regeln `PushRuleScanner`,
+  weitere Scanner einhängbar), den Outbox-Backstop (pending/retry mit fälligem
+  `next_attempt_at` und > 5 min Karenz bzw. `sending` > 15 min ohne offenen
+  `mail.send`-Job ⇒ Job `mail.send:<id>:backstop:<Bucket>`; der Handler ist ohne
+  Claim ein No-op) und den Retention-Backstop (Chatfotos abgeschlossener
+  Vorgänge bei jedem Lauf; Text-Retention täglich als Job
+  `communication.cleanup_retention:<JJJJ-MM-TT>`). Scanner-Fehler werden nur mit
+  Name/Code geloggt; die Kette reißt nie ab. Gleiche Handler im API-Runner
+  (Mock-Steuerung/Tests: `ctx.scan.runOnce(now)`) und im Worker.
+- **Retention (Order §25).** `ProcessService` erhält Nach-Commit-
+  `ProcessCompletionListener`; der Abschluss reiht
+  `communication.cleanup_retention:<processId>:photos:<completedAt>` ein
+  (Zeitstempel im Schlüssel ⇒ Reopen + erneuter Abschluss läuft erneut).
+  Gelöscht werden NUR `message_photos` (Storage + `deleted_at`); Dokumente,
+  Übergabe-/Rückgabe-/Schadenfotos liegen in anderen Tabellen/Präfixen und
+  werden nie berührt (Negativtest). Chattext: `body = ''`, `subject = NULL`,
+  `body_deleted_at` 12 Kalendermonate (Berlin) nach `completed_at`, nur für
+  `main_status = completed`. Reopen: nichts wird wiederhergestellt, neue
+  Kommunikation läuft normal; erst der erneute Abschluss startet Foto-Lauf und
+  Frist neu. Abschlüsse über den Abrechnungstransfer im Worker deckt der
+  2-min-Backstop ab.
+
+
+## Phase 12 (transactional): Transaktionsmails, Kundeninformation, Dokument-Link, Gutschein, Rechnung
+
+- **Ein Weg für alle Transaktionsmails** (Order §§11–16): Fachservices reihen
+  GENAU EINE Outbox-Zeile (`mail_deliveries`) in ihrer eigenen Transaktion ein
+  (`enqueue(input, tx)`) und planen `mail.send` erst NACH dem Commit
+  (`scheduleSend`). Kein Gateway-Aufruf unter Row-Locks mehr (AB, Notice,
+  Storno liefen bis Phase 11 synchron in der Transaktion). Komposition:
+  `createTransactionalMailModule` (apps/api/src/jobs/communication-transactional.ts)
+  für API, Worker und Tests – Angebots-/AB-Gateway, Paket-/Notice-/Storno-
+  Mailer, `CustomerDocumentLinkService`, Sent-/Failed-Listener, transienter
+  Lexware-Rechnungsabruf; Jobs `voucher.delivery` und `invoice.delivery`.
+- **Idempotenzschlüssel = Fachentität**: `offer:<offerVersionId>` (eine
+  Version wird nur einmal versendet), `order_confirmation:<id>`,
+  `handover_protocol:<handoverId>`, `return_protocol:<returnId>`,
+  `settlement_notice:<noticeId>`, `cancellation_confirmation:<id>`,
+  `voucher_delivery:<voucherId>`, `invoice_delivery:<lexwareInvoiceMappingId>`.
+  Bewusste Wiederholung nach Fehlschlag (AB, Kundeninformation) hängt
+  `:retry:<vorherigeDeliveryId>` an; der Outbox-Resend `:resend:<id>`. Die
+  Listener lesen die Entität nur aus dem Präfix (`parseTransactionalKey`) –
+  so erreichen auch manuelle Resends den Fachstatus. Alle Listener sind
+  idempotent (Job-Wiederholung).
+- **Fachstatus**: AB `approved → queued → sent | failed` (failed ⇒ erneute
+  Sendeaktion); Paket `ready → queued → sent | failed` (ohne Kunden-E-Mail:
+  Zustellung `blocked NO_RECIPIENT`, Paket `failed`); Stornobestätigung
+  `prepared → queued → sent | failed | blocked`; Rechnung
+  `invoice_delivery_status` an Abrechnung/Storno `pending → sent | failed |
+  blocked`, `lexware_invoice_mappings.delivery_status` nur `pending → sent`
+  (CHECK unverändert). Mailfehler rollen nie zurück: Übergabe/Rückgabe bleiben
+  final, die Rechnung bleibt gültig, der Vorgang abgeschlossen (Order §3).
+- **Angebot**: Der Klartext-Token existiert nur im Speicher des Versands und
+  verschlüsselt in der Outbox-Payload (`secrets.offerToken`); nach `sent`
+  löscht `mail.send` die Payload. `offer_deliveries` (Phase-5-Altbestand,
+  Token dort schon maskiert) wird nicht mehr befüllt; `GET /staff/outbox`
+  (system.settings) listet jetzt die Mail-Outbox (Felder `kind`, `recipient`
+  kompatibel, nie Secrets/Kontext). Production ohne Mailweg: `assertConfigured`
+  ⇒ CONFLICT VOR dem Einfrieren (wie bisher); außerhalb von production ohne
+  SMTP: Zustellung `blocked MAIL_NOT_CONFIGURED`, sichtbar in der Outbox.
+- **Kundeninformation (Schaden/Fehlteil)**: Freigabe = Einreihen (Notice
+  `queued`, Dokument-Token ausgestellt, `approved_by/at`). `notice_sent_at`,
+  `wait_until` (+24 h) und die Klärung „Kundeninformation“ setzt ERST der
+  Sent-Listener mit der Versandzeit (`SettlementService.noticeMailSent`, nur
+  wenn noch NULL). Mailfehler/Blockade ⇒ Notice `failed`/`blocked`, keine
+  Frist, Transfer bleibt blockiert; erneute Freigabe erzeugt eine neue
+  Zustellung. Ohne Mailweg (Gateway `disabled`) bleibt es bei
+  `NOTICE_NOT_CONFIGURED` (409, Notice `blocked`). `SettlementNoticeGateway`
+  und `AppOptions.noticeGateway` sind entfernt; der Worker-Transferjob braucht
+  keinen Mailer (`notices: null`).
+- **Customer Document Link** (Order §13): `customer_action_tokens` purpose
+  `document_view`, 32 Byte base64url, nur SHA-256, gebunden an Vorgang/Kunde/
+  Buchung und GENAU ein Dokument; Gültigkeit 90 Tage (Auftrag nennt keine
+  Dauer – konservativ). `GET /public/documents/:token` (publicLimit 30/min,
+  neutrales 404, `inline`, `no-store`, `nosniff`), Pfad in `maskLoggedPath`
+  maskiert; Mail-Link `${MAIL_PUBLIC_WEB_BASE_URL}/dokument/<token>` (Web-
+  Seite lädt die API-Route). Kein Storage-Link.
+- **Gutschein**: `voucher.delivery:<voucherId>` nach Erzeugung (Eligibility-
+  Job), Sweep `enqueuePendingVoucherDeliveries` (Zeit-Bucket-Schlüssel, nur
+  Gutscheine ohne Zustellung) und Staff-Aktion `POST /staff/customers/:id/send-voucher` (Body `{ voucherId }`, Gutschein muss zum Kunden gehören)
+  (customer.view + email.approve_prepared). Der Code steht nur in der
+  verschlüsselten Outbox-Payload; Sent-Listener ⇒ `markDelivered` (Kopie
+  gelöscht, Hash bleibt). Ohne E-Mail `NO_EMAIL`, nicht entschlüsselbar
+  `DELIVERY_COPY_UNDECRYPTABLE` (kein Versand), Mailfehler `MAIL_FAILED` bzw.
+  SMTP-Code – der Gutschein bleibt gültig. Mail deaktiviert ⇒ pending ohne
+  Problemcode (Sweep versucht später erneut).
+- **Rechnung**: Nach erfolgreicher Lexware-Rechnung (Abrechnung und Storno)
+  reiht der Transfer-Service NACH dem Commit `invoice.delivery:<mappingId>`
+  ein. Empfänger = eingefrorene Buchungs-E-Mail; Anhang `lexware_invoice`
+  wird beim Versand über `client.getInvoiceFile` geholt und nur im Speicher
+  gehalten (nie documents/Storage). Automatisch nie doppelt
+  (`mail_delivery_id` am Mapping + UNIQUE Outbox-Schlüssel); manueller
+  Resend über die Outbox (neue Message-ID).
+- **Automatische Hintergrundmails nur bei explizit konfiguriertem Mailversand**:
+  `voucher.delivery` und `invoice.delivery` (kein Staff-Klick) laufen nur, wenn
+  `config.mail.enabled` (MAIL_ENABLED + vollständige SMTP-Daten) UND das
+  Gateway nicht deaktiviert ist – in jeder echten Umgebung identisch mit „SMTP
+  aktiv“ (Fake ist in production verboten), fail-closed, weil der Gutschein-
+  versand die Versandkopie unwiderruflich löscht. Ohne Mailversand bleiben
+  Gutschein/Rechnung „Versand ausstehend“; Nachholen über die Sweeps
+  `enqueuePendingVoucherDeliveries` (in scan_due verdrahtet) und
+  `enqueuePendingInvoiceDeliveries` (für scan_due bereitgestellt). Im
+  Standard-Testkontext (FakeMailGateway ohne MAIL_ENABLED) bleibt damit der
+  Phase-10/11-Zustand prüfbar; Phase-12-Tests setzen MAIL_ENABLED.
+- **Test-Welt-Helfer**: `settleMailJobs` (apps/api/test/mail-job-helpers.ts)
+  verarbeitet nach Angebotsversand/Finalisierung/Notice-Freigabe gezielt nur
+  offene Outbox-Zustellungen (MailSendProcessor inkl. Listener) und entfernt
+  die `mail.send`-Jobs – andere Jobs bleiben unberührt, damit die
+  `runOnce()`-Erwartungen der Bestandstests weiter gelten. Hinweis:
+  `JobRunner.drain()` verarbeitet bei nicht gestartetem Runner nur EINEN Job
+  (`stopped` ist initial true) – Tests nutzen eine runOnce-Schleife.
+
+## Phase 12 (UI): Staff-Kommunikation, Admin-Status, öffentliche Token-Seiten
+
+- **Vorgang → Kommunikation** (`/vorgaenge/[id]/kommunikation`): chronologische
+  Liste aus `GET /staff/processes/:id/conversation`; Texte ausschließlich als
+  React-Text (`white-space: pre-wrap`), nie `dangerouslySetInnerHTML`;
+  automatische Mails (`isSystemEvent`) als kompakte Ereigniszeile (Betreff +
+  Zustellstatus, nie der interne `[kind]`-Body). Fotos werden per `fetch`
+  (Session-Cookie, `no-store`) geladen und nur als Blob-URL gezeigt (beim
+  Unmount widerrufen) – kein `<img src>` direkt auf die API, nichts im SW-Cache.
+  Antwortformular ohne Empfängerfeld; Kanalwahl nur aus `canReplyEmail`/
+  `canReplyWhatsApp` des Servers, WhatsApp-Option deaktiviert ohne offenes
+  Service-Fenster (Text exakt laut Order §28), Mock-Kennzeichnung
+  „DEMO / simuliert“ bei `whatsapp.mode === 'mock'`.
+- **Vorgangsüberblick**: Karte „Kommunikation“ mit letzter Zustellung je
+  Mailart (Labels aus der API: „Angebot – E-Mail gesendet“ …), vom Kunden
+  gepflegter Abholperson-/Lieferkontakt und Einstieg in die Nachrichten.
+  AB-/Storno-/Paket-/Kundeninfo-Zustände `queued`/`failed` werden ehrlich
+  angezeigt („Versand eingeplant“/„Versand fehlgeschlagen“, nie „Versendet“
+  vor bestätigtem Versand); `queued` blockiert die operative „Nächste Aktion“
+  nicht, `failed` führt zu „Auftragsbestätigung erneut versenden“.
+- **Nicht zugeordnet** (`/kommunikation/nicht-zugeordnet`, Navigation
+  „Kommunikation“ nur mit `message.reply_customer`): Zuordnen über die
+  bestehende `/staff/search` (nur sichtbare Vorgänge) mit Bestätigungsdialog,
+  Ignorieren mit Bestätigungsdialog. Keine Mailbox-Funktionen.
+- **Einstellungen → Kommunikation** (`/einstellungen/kommunikation`,
+  `system.settings`): reine Statusseite (SMTP/IMAP/WhatsApp/Push), SMTP-Prüfung,
+  letzte Zustellungen mit Statusfilter und „Erneut senden“ (Dialog, Warnung bei
+  `outcome_unknown`). Neutrale Fehlercodes werden auf deutsche Texte
+  abgebildet; der Code erscheint nur hier als „Diagnosecode“.
+- **Terminänderung**: Button in der gemeinsamen Termin-Vorschau (Heute,
+  Kalender, Terminplanung) nur mit `email.approve_prepared` und offener
+  Kundeninformation; „Kunde informiert“ erst aus `customerInformedAt` (nach
+  bestätigtem Versand), nie optimistisch.
+- **Gutschein**: Problemtext (NO_EMAIL exakt laut Order §15) und
+  „Gutschein jetzt senden“ (`customer.view` + `email.approve_prepared`, nur
+  wenn der Server `canSendNow` meldet UND ein Versandproblem vorliegt – im
+  Normalfall sendet der Server automatisch). Nie Klartext-Code.
+- **Offline**: Kommunikationsaktionen sind Online-Aktionen – bei
+  `connectivity === 'offline'` deaktiviert mit dem Text des Offline-Routers
+  (`ONLINE_REQUIRED_MESSAGE`); der Router lehnt sie zusätzlich ab.
+- **apps/web** `/kontakt/[token]` und `/dokument/[token]`: Client-Seiten über
+  den bestehenden `/api`-Proxy, neutral „Dieser Link ist nicht verfügbar.“ bei
+  jedem Fehler; nur Vorgangsnummer/Terminart/-zeit (Europe/Berlin) bzw. das
+  PDF als Blob-Einbettung. Segment-Metadaten `noindex` + `referrer: no-referrer`,
+  in `next.config.ts` zusätzlich `Cache-Control: private, no-store`,
+  `X-Robots-Tag`, `Referrer-Policy: no-referrer`, `X-Frame-Options: DENY`.
+
+<!-- Phase 12 (Härtung Review A) -->
+## Phase 12 Härtung (Review A)
+
+Reproduzierte Funde aus Review A, behoben und als Regressionstests in
+`apps/api/test/communication-hardening-{smtp,config,outbox,inbound,transactional,public-links}.(integration.)test.ts`
+(Fund-ID im Testnamen). RA-2/RA-5/RA-13 (hängendes `sending`, Erinnerung im
+Retry nach Terminänderung, Demo-Whitelist beim Versand) liegen in
+`send-job.ts` und sind in `communication-hardening-mail.integration.test.ts`
+abgedeckt.
+
+- **RA-1 SMTP-Klassifikation** (`mail/gateways.ts`): Nodemailer 10.1.6 meldet
+  Socket-Timeout, Socket-Fehler und Abbruch einer bestehenden Sitzung immer mit
+  `command: 'CONN'` – auch nach vollständig übertragenem DATA (im installierten
+  `smtp-connection` geprüft und mit echtem Nodemailer gegen einen lokalen
+  Mini-SMTP-Server reproduziert). Entscheidung: ohne Antwortcode ist ein Fehler
+  nur bei POSITIVEM Nachweis „vor der Sitzung“ transient (`timeoutType`
+  CONNECT/GREETING/UPGRADE, EDNS, ETLS, EPROXY, Aufbau-Systemcode bzw.
+  `syscall` connect/getaddrinfo, Zertifikatsfehler, Kommandos vor MAIL FROM);
+  alles andere ⇒ `unknown` ⇒ `outcome_unknown`. Ein Abbruch vor dem Greeting
+  ist von einem Abbruch nach DATA nicht unterscheidbar und wird bewusst
+  konservativ als unklar behandelt (kein eigenes Socket-Signal: dafür müsste
+  die Verbindung außerhalb von Nodemailer aufgebaut werden). Fail-safe: fehlt
+  ein Signal, entsteht nie ein automatischer Retry.
+- **RA-3 Resend idempotent** (`mail/outbox.ts`): Quelle `FOR UPDATE` in einer
+  Transaktion, Schlüssel `<alt>:resend:<quell-id>` ⇒ zweiter Resend 409;
+  Resend einer Resend-Zustellung bleibt möglich. Zusätzlich „überholte
+  Quelle“: existiert für dasselbe Fachobjekt (Präfix `<art>:<id>`) eine neuere
+  laufende/versendete/unklare Zustellung ⇒ 409 (kein Gutscheincode an eine alte,
+  falsche Adresse). Listen liefern `resentDeliveryId`, `resendable` ist dann false.
+- **RA-4 Rewrap** (`communication/rewrap.ts`): alle Payloads außer `sent`;
+  nicht entschlüsselbar ⇒ nur pending/retry werden `blocked`, andere Status
+  bleiben (eine unklare Zustellung wird nie umgedeutet).
+- **RA-6 Fingerprint** (`inbound/content.ts`, `processor.ts`): Dedupe per
+  Fingerprint nur ohne Message-ID; Material = From|Date|Subject|gesamter Text|
+  Anhang-Hashes, ohne Date zusätzlich Mailbox/UIDVALIDITY/UID. Mit Message-ID
+  wird ein eigener Namensraum `message-id|<id>` gespeichert, weil die Spalte
+  NOT NULL + UNIQUE ist (keine Schemaänderung nötig). Bestehende Belege
+  behalten ihren alten Fingerprint; nach dem Update werden nur noch exakte
+  Duplikate ohne Message-ID erkannt (bewusst).
+- **RA-10 Poison Message**: Steuerzeichen in Body/Betreff/Absender/Adresse/
+  Message-IDs werden entfernt (Dateinamen werden nicht gespeichert – nur
+  generierte Storage-Keys). Je Nachricht `try/catch` in `pollOnce`: nur
+  positiv erkannte Datenfehler (SQLSTATE 22/23 außer 23505, unlesbares MIME)
+  ⇒ Beleg `rejected` + `match_reason = quarantined:<code>` (vorhandener
+  Enum-Wert, keine Migration), lastUid weiter; alles andere wirft wie bisher
+  (fail-safe: eine unbekannte Fehlerart blockiert lieber, als Mails zu
+  überspringen). JobRunner (`packages/integrations`): `last_error`/Log nur
+  `Klasse [Code]: erste Zeile` (≤ 500 Zeichen, ohne Steuerzeichen); Drizzle-
+  Parameter (Zeile 2) und Meldungen roher pg-Fehler werden nie gespeichert (H3).
+- **RA-8 Angebotsmail**: Satz „PDF im Anhang“ ersetzt durch „Über den Link
+  kannst du das Angebot ansehen und als PDF herunterladen.“ (die öffentliche
+  Angebotsseite bietet den PDF-Download; Ansprache „du“ wie alle Vorlagen),
+  Vorlagenversion `offer` = 2.
+- **RA-9/H6 Gutschein** (`voucher/voucher-delivery.ts` `voucherSendNowState`
+  als einzige Regel für Profil, Route und Job): neue Zustellung
+  `voucher_delivery:<id>:retry:<prev>` an die AKTUELLE Kundenadresse nur
+  nach `failed`/`blocked` und nur über die bewusste Staff-Aktion (Job-Payload
+  `retryOfDeliveryId`); laufend/unklar ⇒ 409, `canSendNow=false`,
+  `sendNowBlock` (neutraler Code). Abgelaufene Gutscheine (`isVoucherExpired`
+  aus `@mietroyal/domain`) werden weder vom Job noch vom Sweep noch über die
+  Route versendet (`VOUCHER_EXPIRED`).
+- **RA-11** (`packages/config`): `MAIL_PUBLIC_WEB_BASE_URL` außerhalb von
+  development Pflicht bei `MAIL_ENABLED=true`.
+- **RA-12 outcome_unknown** (`transactional/listeners.ts`,
+  `settlement-service.ts noticeMailFailed`): kein Spiegeln als `failed`; der
+  Fachstatus bleibt `queued`, die normale Sendeaktion ist gesperrt; erneutes
+  Senden nur über die Admin-Outbox, deren Zustellung über das Schlüsselpräfix
+  das Fachobjekt erreicht. Gutschein: nur Problemcode.
+- **RA-14 Konversation** (`conversation/outbox-listener.ts`): automatische
+  Mails mit Vorgang (außer `manual_customer_reply`) ⇒ `recordOutboundSystemEvent`
+  bei `sent` und bei `failed`/`blocked`/`outcome_unknown` (Zustand gespiegelt,
+  unklar bleibt „queued“), idempotent je Zustellung.
+- **RA-15 Dedupe-Status** (`MailEnqueueResult.existingStatus`,
+  `MailOutboxService.enqueueRetryingFailed`, `transactionalStatusOf`): der
+  echte Status einer vorhandenen Zeile wird nie als „pending“ verschleiert;
+  bewusste Wiederholung nach `failed`/`blocked` ⇒ `<key>:retry:<vorherige>`
+  (Kette deterministisch, Doppelklick ⇒ dieselbe Zeile). Genutzt von der
+  Stornobestätigung (AB/Kundeninformation hatten den Retry-Schlüssel bereits);
+  die Terminänderungsmail (`informCustomer`) wird zentral nachgezogen.
+- **H7**: vor der Transaktion hochgeladene Inbound-Fotos werden bei jedem
+  Fehlschlag (nicht nur Unique-Konflikt) wieder gelöscht, ebenso Teil-Uploads.
+- **H8**: Betrieb hinter Proxy (`API_TRUST_PROXY_HOPS`, Maskierung der
+  Token-Pfade in Proxy-Access-Logs) in DEPLOYMENT_NOTES.md.
+
+## Phase 12 Härtung (Review B)
+
+Reproduzierte Funde aus Review B, behoben und als Regressionstests in
+`apps/api/test/communication-hardening-{whatsapp,scheduler,retention,push,calendar}.integration.test.ts`
+(Fund-ID im Testnamen; die Reviewer-Dateien `review-b-*` sind darin aufgegangen).
+
+- **B16 ICS-Link** (`calendar/feed-service.ts` `feedPath`): Die Staff-App
+  leitet nur `/api/:path*` an die API weiter und streift `/api` ab
+  (`apps/staff/next.config.ts`). Der ausgegebene Link lautet daher
+  `<Staff-Basis-URL>/api/public/calendar/<token>.ics` (ohne Basis-URL relativ
+  `/api/public/calendar/…`); die API-Route bleibt `/public/calendar/:file`.
+  `maskLoggedPath` ist nicht verankert und maskiert beide Pfadformen. Der Test
+  wendet die echte Rewrite-Regel aus `next.config.ts` auf den Link an.
+- **B12 Rechteentzug** (`resolveToken`): zusätzlich zu „Nutzer aktiv“ wird das
+  effektive Recht `calendar.view` frisch über `StaffAuthService.effectivePermissions`
+  geprüft; ohne Recht neutral 404 (wie unbekannter Token), bei erneuter
+  Vergabe gilt derselbe Link wieder (kein Token-Widerruf – Regenerate bleibt
+  die bewusste Aktion).
+- **B6 Scheduler-Kette** (`communication/chain-bucket.ts`, `scan-due.ts`,
+  `inbound/poll-job.ts`): Folge-Bucket = max(Payload-Bucket + 2 min, Bucket
+  nach `now`) – der Bucket steht bereits im Payload; eine wenige ms
+  nachgehende Worker-Uhr re-enqueued so nie mehr den eigenen (für immer
+  UNIQUE) Schlüssel. Zusätzlich **Ketten-Watchdog** im Worker
+  (`startChainWatchdog`, 60 s): ruft `enqueueScanDue`/`enqueueInboundPoll`
+  für den AKTUELLEN Bucket (ein `INSERT … ON CONFLICT DO NOTHING`). Doppelketten
+  entstehen nicht: je Bucket existiert genau ein Schlüssel, und jeder Lauf
+  reiht mindestens den Bucket nach `now` ein – parallele Ketten laufen
+  spätestens im nächsten Bucket zusammen (Test B6d).
+- **B7 = RA-5 Pre-Send-Guard** (`mail/send-job.ts` `MailPreSendGuard`,
+  registriert über `CommunicationContext.addMailPreSendGuard`): generischer
+  Hook unmittelbar vor dem Versand, ohne Fachlogik im Job. `null` ⇒ senden,
+  sonst `blocked` mit Code; wirft der Guard ⇒ Retry (`PRE_SEND_CHECK_FAILED`),
+  nie Versand ohne Prüfung. Guards: Erinnerungen (`ReminderService.preSendGuard`:
+  Reminder-Zeile über Fingerprint aus dem Schlüssel – auch für Resends –,
+  Termin `scheduled`, noch nicht begonnen, Vorgang `open|reopened`,
+  Fingerprint = aktueller `startAt`; sonst `STALE_APPOINTMENT`),
+  Terminänderung (`AppointmentCustomerInfoService.preSendGuard`: dieselbe
+  Bedingung wie `informCustomer` – Termin geplant, Vorgang nicht storniert;
+  eine erneute Verschiebung blockiert nicht, der Sent-Listener behandelt
+  abweichende Versionen), Angebot (`commerce/offer-mail-guard.ts`:
+  `effectiveStatus` der Version = `superseded` ⇒ `SUPERSEDED`; nicht
+  zuordenbare Zustellungen werden nicht blockiert). Der Aktionslink der
+  1-Tag-Erinnerung wird nicht zusätzlich geprüft (eigene Cutoff-Prüfung).
+- **RA-2 hängendes `sending`**: nicht mehr erneut gesendet, sondern atomar
+  `outcome_unknown` mit `SENDING_STALE` (Fehler-Listener wie bei unknown); der
+  Outbox-Backstop plant dafür weiterhin den Job. **RA-13**: unmittelbar vor
+  dem Versand dieselbe Prüfung wie beim Einreihen (`MailOutboxService.blockReasonFor`,
+  u. a. Demo-Whitelist, Mailweg deaktiviert) ⇒ `blocked` mit dem Code.
+- **B1 WhatsApp-Event atomar** (`whatsapp/webhook-service.ts`): Event-Zeile,
+  Kontakt, Konversationszeile und Ergebnis in EINER Transaktion; Fehler ⇒
+  Rollback ⇒ Metas Wiederholung (nach Nicht-200) verarbeitet neu. Parallele
+  Zustellungen warten am UNIQUE-Index. Altbestand (`failed` bzw. `queued` ohne
+  Ergebnis älter als 2 min) wird bei Wiederholung verarbeitet. Media-Job nach
+  Commit; Duplikate eines verarbeiteten Bildes reihen ihn dedupliziert erneut
+  ein (Absturz zwischen Commit und Einreihen). Status-Events ebenfalls atomar.
+- **B13** `metadata.phone_number_id` ≠ `WHATSAPP_PHONE_NUMBER_ID` ⇒ Event
+  `ignored` (`PHONE_NUMBER_MISMATCH`), keine Konversation/kein Kontakt, 200 an
+  Meta. **B2** `last_inbound_at = GREATEST(alt, neu)`.
+- **B3 WhatsApp-`unknown`** (`WhatsAppSendOutcome` um `unknown` erweitert):
+  Ausnahme beim Senden ist nur transient, wenn ein Fehlercode (auch in
+  `cause`) nachweislich VOR dem Absenden liegt (ECONNREFUSED, ENOTFOUND,
+  EAI_AGAIN, …UNREACH, UND_ERR_CONNECT_TIMEOUT, Zertifikatsfehler); Abbruch/
+  Timeout/Verbindungsabbruch ⇒ `unknown` ⇒ Nachricht `failed` mit
+  `OUTCOME_UNKNOWN`, kein Auto-Retry (Staff sendet bewusst neu). Ein Timeout
+  während des Verbindungsaufbaus ist davon nicht unterscheidbar und wird
+  konservativ als unklar behandelt.
+- **B4 Media-Download**: Bearer-Token nur an erlaubte Hosts
+  (`WHATSAPP_MEDIA_DOWNLOAD_HOSTS` = `lookaside.fbsbx.com` – nicht amtlich
+  verifiziert – plus Host der Graph-Basis-URL; development mit Fake-Basis-URL
+  zusätzlich localhost/127.0.0.1/[::1]); `redirect: 'error'`; Content-Length
+  vorab, Stream mit 5-MB-Limit (Timeout umfasst das Lesen).
+- **B5**: `media_fetch` bricht ab, wenn für die Nachricht irgendeine (auch
+  gelöschte) Fotozeile existiert oder der Vorgang abgeschlossen ist.
+- **B15 Retention**: `deletedAt` erst nach erfolgreichem Storage-Löschen
+  (`StorageObjectNotFoundError` = Erfolg); Fehler ⇒ Zeile bleibt, Backstop
+  (scan_due) wiederholt; Log nur `processId`/Anzahl/Fehlerklasse.
+- **B10 Push-Endpoint-Allowlist** (`push/endpoint-policy.ts` `checkPushEndpoint`,
+  eine Regel für Route UND `WebPushGateway`): überall https ohne Zugangsdaten;
+  production/staging/demo nur bekannte Push-Dienste (`fcm.googleapis.com`,
+  `updates.push.services.mozilla.com`, `web.push.apple.com`,
+  `*.notify.windows.com`, `*.push.apple.com` – Liste aus den Push-Diensten
+  der gängigen Browser, NICHT amtlich verifiziert), Port 443, keine IP-Literale
+  (damit keine privaten/Loopback-/Link-local-Ziele); development ohne weitere
+  Einschränkung (lokale Fakes, E2E `https://localhost:<port>`). Route ⇒ 400
+  `PUSH_ENDPOINT_NOT_ALLOWED`; das Gateway prüft vor jedem Versand erneut
+  (Altbestand) ⇒ `permanent_error`, Subscription `endpoint_not_allowed`.
+  web-push folgt keinen Redirects (`https.request`, 3xx ⇒ permanent).
+- **B11**: `isSessionExpiredByInactivity`/`sessionInactivityCutoff`
+  (`auth/service.ts`) sind die EINE Inaktivitätsregel – `authenticate` und
+  die Push-Ziele (`activeTargetsForUser`, `hasActiveSubscription`,
+  `countActive`) nutzen sie; abgelaufene Sessions ⇒ `session_expired`.
+- **B14 1h-Push**: erst Push-Zustellung (+ Job, Schlüssel je Fingerprint),
+  dann Reminder-Marke + `reminderSentAt` in einer Transaktion; Absturz
+  dazwischen ⇒ nächster Scan holt nach (dedupliziert). Eine Marke ohne
+  `pushDeliveryId` (Altbestand) wird ergänzt.
+- **Service Worker** (`apps/staff/public/sw.js`): `client.navigate()` wirft bei
+  nicht kontrollierten Clients ⇒ Fallback `clients.openWindow(url)`.
+- **Offen (fehlende Fachregel, nicht umgesetzt):** B8 Retention von Chatfotos/
+  -texten STORNIERTER Vorgänge und B9 Retention unzugeordneter/ignorierter
+  Nachrichten (ohne Vorgang). Order §25 regelt nur den Vorgangsabschluss;
+  Frist und Bezugszeitpunkt (Storno-Datum? Eingang? Ignorieren?) sind fachlich
+  festzulegen.

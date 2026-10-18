@@ -70,6 +70,9 @@ Was jetzt zu tun ist“), Nutzer entscheidet.
 Offline-Suche nur im geladenen Arbeitspaket, mit sichtbarem Hinweis.
 Abmelden mit nicht synchronisierten Erfassungen: zweistufige Rückfrage,
 „Zuerst synchronisieren (empfohlen)“ als Hauptaktion – nie stiller Verlust.
+Online-Aktionen (z. B. Kundennachricht senden, Mail erneut senden – Phase 12)
+sind offline deaktiviert und zeigen „Diese Aktion ist offline nicht verfügbar –
+bitte mit Verbindung erneut versuchen.“
 
 ## Suche
 Teiltreffer/Tippfehler, Suche nach MR-Nummer, Kunde, Telefon,

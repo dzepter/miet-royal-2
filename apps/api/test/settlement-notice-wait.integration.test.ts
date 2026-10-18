@@ -8,15 +8,18 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { buildApp } from '../src/app.ts';
-import { DisabledSettlementNoticeGateway } from '../src/settlement/notice-gateway.ts';
+import { DisabledMailGateway } from '../src/communication/mail/gateways.ts';
 import { createTestContext, destroyTestContext, type TestContext } from './auth-helpers.ts';
 import { jpegBytes, POINT_MARKER } from './return-helpers.ts';
 import {
   adminSession,
+  backdateSentNotice,
+  drainAllJobs,
   lineOf,
   openClarifications,
   post,
   resetSettlementWorld,
+  sentNoticeMails,
   settledReturn,
   settlementServiceFor,
   settlementViewFor,
@@ -37,6 +40,16 @@ beforeEach(async () => {
 });
 
 const HOUR = 3_600_000;
+
+/** Phase 12 (Retention §25): Status der Foto-Retention-Jobs eines Vorgangs. */
+async function retentionJobStatuses(processId: string): Promise<string[]> {
+  const result = await ctx.pool.query<{ status: string }>(
+    `SELECT status FROM integration_jobs
+      WHERE type = 'communication.cleanup_retention' AND payload->>'processId' = $1`,
+    [processId],
+  );
+  return result.rows.map((row) => row.status);
+}
 
 /** Finalisierte Rückgabe mit einem Schaden, Schadenkosten `amount` berechnet. */
 async function chargedDamage(cookie: string, adminId: string, amount = 5000) {
@@ -65,10 +78,16 @@ async function sendNotice(cookie: string, processId: string) {
     },
   );
   expect(sent.status).toBe(200);
+  // Phase 12: Freigabe reiht nur ein – die Frist beginnt erst mit bestätigtem Mailversand (mail.send).
+  await drainAllJobs(ctx);
   return settlementViewFor(ctx.app, cookie, processId);
 }
 
-/** Versand mit rückdatiertem Zeitpunkt (Frist bereits abgelaufen) über den Service. */
+/**
+ * Versand mit rückdatiertem Zeitpunkt (Frist bereits abgelaufen): Freigabe über
+ * den Service, Mailversand über den Test-Runner, danach Frist/Auto-Job in die
+ * Vergangenheit verschoben (Phase 12: die Frist beginnt erst nach Mailerfolg).
+ */
 async function sendNoticeBackdated(
   adminId: string,
   cookie: string,
@@ -76,12 +95,15 @@ async function sendNoticeBackdated(
   hoursAgo = 25,
 ) {
   const current = await settlementViewFor(ctx.app, cookie, processId);
+  const sentAt = new Date(Date.now() - hoursAgo * HOUR);
   await settlementServiceFor(ctx).approveAndSendNotice(
     adminId,
     current.settlement.id,
     current.settlement.version,
-    new Date(Date.now() - hoursAgo * HOUR),
+    sentAt,
   );
+  await drainAllJobs(ctx);
+  await backdateSentNotice(ctx, current.settlement.id, sentAt);
   return settlementViewFor(ctx.app, cookie, processId);
 }
 
@@ -119,7 +141,7 @@ describe('Kundeninformation (§91)', () => {
     expect(view.notice!.bodyText).toContain('Rückgabeprotokoll');
     expect(view.notice!.bodyText).not.toMatch(/MwSt|Mahnung|rechtliche Schritte/i);
     expect(view.settlement.noticeSentAt).toBeNull();
-    expect(ctx.notices.sent).toHaveLength(0);
+    expect(await sentNoticeMails(ctx)).toHaveLength(0);
     const notice = await ctx.app.inject({
       method: 'GET',
       url: `/staff/settlements/${view.settlement.id}/notice`,
@@ -205,9 +227,9 @@ describe('Kundeninformation (§91)', () => {
     expect(current.notice!.bodyText).toContain('Tropfschale');
     expect(current.notice!.bodyText).toContain('48,00 EUR');
     const sent = await sendNotice(cookie, world.processId);
-    expect(ctx.notices.sent).toHaveLength(1);
-    expect(ctx.notices.sent[0]!.recipientEmail).toBe('klara.kommerz@test.example');
-    expect(sent.notice).toMatchObject({ status: 'sent', gateway: 'outbox' });
+    expect(await sentNoticeMails(ctx)).toHaveLength(1);
+    expect((await sentNoticeMails(ctx))[0]!.recipientEmail).toBe('klara.kommerz@test.example');
+    expect(sent.notice).toMatchObject({ status: 'sent', gateway: 'mail' });
     expect(sent.settlement.noticeSentAt).not.toBeNull();
     expect(
       new Date(sent.settlement.waitUntil!).getTime() -
@@ -226,10 +248,10 @@ describe('Kundeninformation (§91)', () => {
     );
     expect(again.status).toBe(409);
     expect(again.body.error?.code).toBe('NOTICE_ALREADY_SENT');
-    expect(ctx.notices.sent).toHaveLength(1);
+    expect(await sentNoticeMails(ctx)).toHaveLength(1);
   });
 
-  it('49. Ohne Versandadapter (Production) wird nichts gesendet: 409, Notice blocked, keine Frist', async () => {
+  it('49. Ohne Versandadapter (Mail deaktiviert) wird nichts gesendet: 409, Notice blocked, keine Frist', async () => {
     const { admin, cookie } = await adminSession(ctx);
     const { view } = await chargedDamage(cookie, admin.id);
     const app = buildApp({
@@ -239,7 +261,7 @@ describe('Kundeninformation (§91)', () => {
       rateLimitEnabled: false,
       storage: ctx.storage,
       accountingGateway: ctx.accounting,
-      noticeGateway: new DisabledSettlementNoticeGateway(),
+      mailGateway: new DisabledMailGateway(),
       jobQueue: ctx.queue,
     });
     await app.ready();
@@ -260,7 +282,7 @@ describe('Kundeninformation (§91)', () => {
     expect(after.settlement.noticeSentAt).toBeNull();
     expect(after.settlement.waitUntil).toBeNull();
     expect(after.settlement.status).toBe('customer_notice_required');
-    expect(ctx.notices.sent).toHaveLength(0);
+    expect(await sentNoticeMails(ctx)).toHaveLength(0);
   });
 
   it('52. Spätere Position nach Versand: Frist startet NICHT neu, keine zweite Information, kein Auto-Transfer', async () => {
@@ -287,7 +309,7 @@ describe('Kundeninformation (§91)', () => {
     expect(current.settlement.amountsChangedAfterNoticeAt).not.toBeNull();
     expect(current.settlement.manualTransferRequired).toBe(true);
     expect(current.settlement.chargesTotalCents).toBe(14000);
-    expect(ctx.notices.sent).toHaveLength(1);
+    expect(await sentNoticeMails(ctx)).toHaveLength(1);
     expect(current.settlement.status).toBe('customer_waiting');
     expect(current.settlement.autoTransferPlannedAt).toBeNull();
   });
@@ -358,7 +380,7 @@ describe('Kundeninformation (§91)', () => {
     expect(transfer.body.outcome).toBe('succeeded');
     expect(ctx.accounting.calls).toHaveLength(1);
     expect(ctx.accounting.calls[0]!.amountDueCents).toBe(12500);
-    expect(ctx.notices.sent).toHaveLength(1);
+    expect(await sentNoticeMails(ctx)).toHaveLength(1);
   });
 
   it('55. Betrag nach Versand geändert ⇒ neue Summe sichtbar, kein Auto-Transfer, keine zweite Mail, manuell möglich', async () => {
@@ -383,7 +405,7 @@ describe('Kundeninformation (§91)', () => {
     expect(current.settlement.amountDueCents).toBe(10500);
     expect(await ctx.jobs.runOnce()).toBe('processed');
     expect(ctx.accounting.calls).toHaveLength(0);
-    expect(ctx.notices.sent).toHaveLength(1);
+    expect(await sentNoticeMails(ctx)).toHaveLength(1);
     const transfer = await post(
       ctx.app,
       cookie,
@@ -420,7 +442,7 @@ describe('Kundeninformation (§91)', () => {
     expect(current.settlement.amountsChangedAfterNoticeAt).toBeNull();
     expect(current.settlement.amountDueCents).toBe(7500);
     expect(current.dominantAction.key).toBe('auto_planned');
-    expect(ctx.notices.sent).toHaveLength(1);
+    expect(await sentNoticeMails(ctx)).toHaveLength(1);
     // Der beim Versand eingestellte Job wurde vorgezogen und überträgt sofort.
     expect(await ctx.jobs.runOnce()).toBe('processed');
     expect(ctx.accounting.calls).toHaveLength(1);
@@ -474,7 +496,7 @@ describe('Kundeninformation (§91)', () => {
     expect(await ctx.jobs.runOnce()).toBe('processed');
     expect(ctx.accounting.calls).toHaveLength(1);
     expect(ctx.accounting.calls[0]!.amountDueCents).toBe(9500);
-    expect(ctx.notices.sent).toHaveLength(1);
+    expect(await sentNoticeMails(ctx)).toHaveLength(1);
   });
 
   it('53b. Kundenrückmeldung → Position entfernt ⇒ Rückmeldung bearbeitet, ohne weitere Blocker überträgt der Auto-Job (DOMAIN_RULES)', async () => {
@@ -573,7 +595,11 @@ describe('Kundeninformation (§91)', () => {
     expect(current.settlement.manualTransferRequired).toBe(false);
     expect(current.dominantAction.key).toBe('auto_planned');
     expect(await ctx.jobs.runOnce()).toBe('processed');
+    // Phase 12 (Retention §25): der Abschluss durch den Transfer reiht genau EINEN
+    // Foto-Retention-Job ein – danach nichts mehr (insbesondere kein zweiter Transfer).
+    expect(await ctx.jobs.runOnce()).toBe('processed');
     expect(await ctx.jobs.runOnce()).toBe('idle');
+    expect(await retentionJobStatuses(world.processId)).toEqual(['succeeded']);
     expect(ctx.accounting.calls).toHaveLength(1);
     const after = await settlementViewFor(ctx.app, cookie, world.processId);
     expect(after.settlement.status).toBe('transferred');
@@ -617,7 +643,9 @@ describe('Kundeninformation (§91)', () => {
       headers: { cookie },
       payload: {},
     });
-    expect(run.json()).toMatchObject({ processed: 1, failed: 0 });
+    // Phase 12 (Retention §25): Transfer-Job + der durch den Abschluss eingereihte Foto-Retention-Job.
+    expect(run.json()).toMatchObject({ processed: 2, failed: 0 });
+    expect(await retentionJobStatuses(world.processId)).toEqual(['succeeded']);
     expect(ctx.accounting.calls).toHaveLength(1);
     const after = await settlementViewFor(ctx.app, cookie, world.processId);
     expect(after.settlement.status).toBe('transferred');

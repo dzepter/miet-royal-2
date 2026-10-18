@@ -5,7 +5,7 @@
  * Versand, Blockade ohne exakte Abholadresse). Läuft gegen PostgreSQL.
  */
 import { createHash } from 'node:crypto';
-import { documents, offerDeliveries, processes } from '@mietroyal/database';
+import { documents, mailDeliveries, processes } from '@mietroyal/database';
 import { eq } from 'drizzle-orm';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import {
@@ -19,6 +19,7 @@ import {
   type TestContext,
 } from './auth-helpers.ts';
 import { createStaffWithPermissions, truncateCrmTables } from './crm-helpers.ts';
+import { drainAllJobs } from './settlement-helpers.ts';
 import {
   commerceServices,
   createCommerceWorld,
@@ -312,15 +313,26 @@ describe('51.–54. Auftragsbestätigung', () => {
     });
 
     await services.confirmations.send(confirmation!.id);
+    // Phase 12: Sendeaktion reiht ein (queued); „sent“ erst nach bestätigtem Mailversand.
+    const queued = await services.confirmations.byId(confirmation!.id);
+    expect(queued.status).toBe('queued');
+    expect(queued.mailDeliveryId).not.toBeNull();
+    await drainAllJobs(ctx);
     const sent = await services.confirmations.byId(confirmation!.id);
     expect(sent.status).toBe('sent');
     expect(sent.sentAt).not.toBeNull();
     const outbox = await ctx.db
       .select()
-      .from(offerDeliveries)
-      .where(eq(offerDeliveries.orderConfirmationId, confirmation!.id));
+      .from(mailDeliveries)
+      .where(eq(mailDeliveries.id, queued.mailDeliveryId!));
     expect(outbox).toHaveLength(1);
-    expect(outbox[0]!.recipient).toBe('klara.kommerz@test.example');
+    expect(outbox[0]!.recipientEmail).toBe('klara.kommerz@test.example');
+    expect(outbox[0]!.status).toBe('sent');
+    expect(outbox[0]!.attachments).toEqual([
+      expect.objectContaining({ kind: 'document', documentId: document.id }),
+    ]);
+    const mail = ctx.mailGateway.sent.find((m) => m.messageId === outbox[0]!.messageId)!;
+    expect(Buffer.from(mail.attachments[0]!.content).equals(bytes)).toBe(true);
 
     // Dokument nach dem Versand unverändert (Zeile + Bytes):
     const reread = await services.documents.byId(document.id);

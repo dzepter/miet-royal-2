@@ -90,8 +90,12 @@ export const settlementClarificationStatus = pgEnum('settlement_clarification_st
 export const customerNoticeStatus = pgEnum('settlement_customer_notice_status', [
   'prepared',
   'approved',
+  /** Phase 12: freigegeben und in der Mail-Outbox – die 24-h-Frist beginnt erst mit bestätigtem Versand. */
+  'queued',
   'sent',
   'blocked',
+  /** Phase 12: Versand endgültig gescheitert – erneute Freigabe nötig. */
+  'failed',
 ]);
 
 export const accountingTransferKind = pgEnum('accounting_transfer_kind', [
@@ -204,6 +208,8 @@ export const settlements = pgTable(
     lastTransferErrorCode: text('last_transfer_error_code'),
     /** Phase 10: Rechnungsversand (Lexware mailt nicht per API) – 'pending' bis Phase 12 versendet; nie automatisch 'sent'. */
     invoiceDeliveryStatus: text('invoice_delivery_status'),
+    /** Phase 12: Outbox-Zustellung der Rechnungsmail (mail_deliveries) – kein FK (Importzyklus). */
+    invoiceMailDeliveryId: uuid('invoice_mail_delivery_id'),
     /** Optimistische Sperre gegen Lost Updates (Order §82). */
     version: integer('version').notNull().default(1),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
@@ -314,6 +320,8 @@ export const settlementCustomerNotices = pgTable('settlement_customer_notices', 
   approvedBy: uuid('approved_by').references(() => staffUsers.id),
   approvedAt: timestamp('approved_at', { withTimezone: true }),
   sentAt: timestamp('sent_at', { withTimezone: true }),
+  /** Phase 12: Outbox-Zustellung (mail_deliveries) – kein FK (Importzyklus). */
+  mailDeliveryId: uuid('mail_delivery_id'),
   gateway: text('gateway'),
   gatewayReference: text('gateway_reference'),
   blockedReason: text('blocked_reason'),
@@ -504,6 +512,9 @@ export const cancellations = pgTable(
     confirmationStatus: text('confirmation_status').notNull().default('prepared'),
     confirmationSentAt: timestamp('confirmation_sent_at', { withTimezone: true }),
     confirmationGatewayReference: text('confirmation_gateway_reference'),
+    /** Phase 12: Outbox-Zustellungen (Stornobestätigung / Rechnungsmail) – kein FK (Importzyklus). */
+    confirmationMailDeliveryId: uuid('confirmation_mail_delivery_id'),
+    invoiceMailDeliveryId: uuid('invoice_mail_delivery_id'),
     /** Hinweis bei bestehendem externem Geldfluss (Anzahlung/Kaution): „Externe Rückzahlung/Verrechnung prüfen“. */
     externalRefundReviewRequired: boolean('external_refund_review_required')
       .notNull()

@@ -41,8 +41,20 @@ const processListColumns = {
 const LOCKED_MESSAGE =
   'Der Vorgang ist abgeschlossen und für die normale Bearbeitung gesperrt. Zum Bearbeiten bitte wieder öffnen.';
 
+/**
+ * Phase 12 (reminders/retention): Nach-Commit-Listener für den
+ * Vorgangsabschluss (z. B. Retention-Job für Chatfotos). Fehler im Listener
+ * machen den Abschluss nie rückgängig.
+ */
+export interface ProcessCompletionListener {
+  processCompleted(event: { processId: string; completedAt: Date }): Promise<void>;
+}
+
 export class ProcessService {
-  constructor(private readonly db: Database) {}
+  constructor(
+    private readonly db: Database,
+    private readonly completionListeners: readonly ProcessCompletionListener[] = [],
+  ) {}
 
   /**
    * Race-sichere Vergabe der öffentlichen Vorgangsnummer MR-YYYY-NNNN:
@@ -217,7 +229,7 @@ export class ProcessService {
 
   /** Operativ beendet – keine Rechnungs-/Zahlungslogik in Phase 2. */
   async complete(processId: string, ctx: ProcessVisibilityContext): Promise<void> {
-    await this.db.transaction(async (tx) => {
+    const completedAt = await this.db.transaction(async (tx) => {
       const process = await this.lockVisibleProcess(tx, processId, ctx);
       if (process.mainStatus !== 'open' && process.mainStatus !== 'reopened') {
         throw new AuthError('CONFLICT', 'Nur offene Vorgänge können abgeschlossen werden.');
@@ -245,7 +257,16 @@ export class ProcessService {
         .set({ mainStatus: 'completed', completedAt: now, updatedAt: now })
         .where(eq(processes.id, processId));
       await this.deleteEphemeralPhones(tx, processId, now);
+      return now;
     });
+    // Phase 12 (retention): Listener NACH dem Commit, nie unter Sperren.
+    for (const listener of this.completionListeners) {
+      try {
+        await listener.processCompleted({ processId, completedAt });
+      } catch (error) {
+        console.error('Vorgangsabschluss-Listener fehlgeschlagen', error);
+      }
+    }
   }
 
   /**

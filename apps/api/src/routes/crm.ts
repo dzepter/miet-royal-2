@@ -1,10 +1,13 @@
 import type { AppConfig } from '@mietroyal/config';
-import type { Database } from '@mietroyal/database';
+import { vouchers as vouchersTable, type Database } from '@mietroyal/database';
+import { eq } from 'drizzle-orm';
 import type { PermissionKey } from '@mietroyal/permissions';
 import { parseOrThrow, z } from '@mietroyal/validation';
 import type { FastifyInstance } from 'fastify';
+import type { JobQueue } from '@mietroyal/integrations';
 import { requireAuth, requirePermission, sendAuthError } from '../auth/http.ts';
-import type { StaffAuthService } from '../auth/service.ts';
+import { AuthError, type StaffAuthService } from '../auth/service.ts';
+import { enqueueVoucherDelivery } from '../communication/voucher-delivery-job.ts';
 import {
   loadCancellationSummary,
   loadProcessRelations,
@@ -12,10 +15,11 @@ import {
 } from '../cancellation/cancellation-service.ts';
 import { CustomerService } from '../crm/customer-service.ts';
 import { isValidIsoDate } from '../crm/normalize.ts';
-import { ProcessService } from '../crm/process-service.ts';
+import { ProcessService, type ProcessCompletionListener } from '../crm/process-service.ts';
 import { SearchService } from '../crm/search-service.ts';
 import { getCompletedVisibilityDays, setCompletedVisibilityDays } from '../crm/settings-service.ts';
 import { buildVisibilityContext } from '../crm/visibility.ts';
+import { voucherSendNowState, type VoucherSendNowBlock } from '../voucher/voucher-delivery.ts';
 import type { VoucherService } from '../voucher/voucher-service.ts';
 import { UUID_PATTERN } from './auth.ts';
 import { sendCancellationError } from './cancellation.ts';
@@ -68,12 +72,20 @@ interface CrmRouteOptions {
    * Instanz liefern die Routen `voucher: null`.
    */
   vouchers?: VoucherService;
+  /** Phase 12 (scan): Nach-Commit-Listener für den Vorgangsabschluss (Retention). */
+  processCompletionListeners?: readonly ProcessCompletionListener[];
+  /**
+   * Phase 12 (transactional, Order §15): Staff-Aktion „Gutschein jetzt senden“
+   * reiht nur den Job `voucher.delivery` ein (Versand im Job über die Mail-
+   * Outbox; Staff sieht nie den Klartext). Ohne Queue fehlt die Route.
+   */
+  voucherDelivery?: { queue: JobQueue };
 }
 
 export function registerCrmRoutes(app: FastifyInstance, options: CrmRouteOptions): void {
-  const { db, auth, config, cancellationService, vouchers } = options;
+  const { db, auth, config, cancellationService, vouchers, voucherDelivery } = options;
   const customersService = new CustomerService(db);
-  const processService = new ProcessService(db);
+  const processService = new ProcessService(db, options.processCompletionListeners ?? []);
   const searchService = new SearchService(db);
 
   const visibilityCtxFor = async (effective: ReadonlySet<PermissionKey>) =>
@@ -443,6 +455,72 @@ export function registerCrmRoutes(app: FastifyInstance, options: CrmRouteOptions
     if (!(await requirePermission(request, reply, auth, context, 'system.settings'))) return;
     return { days: await getCompletedVisibilityDays(db) };
   });
+
+  // Phase 12 (transactional, Order §15): „Gutschein jetzt senden“ – bewusste
+  // Staff-Aktion, wenn der Kunde inzwischen eine E-Mail-Adresse hat. Pfad unter
+  // dem Kunden (kein eigener /vouchers- oder /voucher-Pfad – Phase-11-Regel F19):
+  // der Gutschein muss zu DIESEM Kunden gehören (sonst neutrales 404). Rechte:
+  // Kundensicht (customer.view) + Versandfreigabe (email.approve_prepared, wie
+  // die Stornobestätigung). Antwort nur Status – nie Code/Hash/Versandkopie.
+  if (vouchers !== undefined && voucherDelivery !== undefined) {
+    const sendVoucherBody = z.strictObject({ voucherId: uuidSchema });
+    // Härtung RA-9/H6: verständliche 409-Texte je Blockade (keine technischen Codes).
+    const sendNowMessages: Record<VoucherSendNowBlock, string> = {
+      ALREADY_SENT: 'Der Gutschein wurde bereits versendet.',
+      NO_DELIVERY_COPY: 'Gutschein kann nicht gesendet werden: keine Versandkopie vorhanden.',
+      VOUCHER_EXPIRED: 'Gutschein kann nicht gesendet werden: Der Gutschein ist abgelaufen.',
+      NO_EMAIL: 'Gutschein kann nicht gesendet werden: keine E-Mail-Adresse hinterlegt.',
+      DELIVERY_IN_PROGRESS: 'Der Gutschein wird gerade versendet – bitte den Versand abwarten.',
+      DELIVERY_OUTCOME_UNKNOWN:
+        'Die Zustellung des Gutscheins ist unklar (der Kunde kann ihn erhalten haben). Bitte in der Kommunikations-Übersicht prüfen.',
+    };
+    app.post('/staff/customers/:id/send-voucher', async (request, reply) => {
+      const context = await requireAuth(request, reply, auth, config);
+      if (context === null) return;
+      if (!(await requirePermission(request, reply, auth, context, 'customer.view'))) return;
+      if (!(await requirePermission(request, reply, auth, context, 'email.approve_prepared')))
+        return;
+      const params = parseOrThrow(idParams, request.params, 'params');
+      const body = parseOrThrow(sendVoucherBody, request.body ?? {});
+      try {
+        const customer = await customersService.getActiveCustomer(params.id);
+        const summary = await vouchers.voucherSummaryById(body.voucherId, customer.id);
+        if (summary === null) {
+          throw new AuthError('NOT_FOUND', 'Gutschein nicht gefunden.');
+        }
+        if (!config.mail.enabled) {
+          throw new AuthError(
+            'CONFLICT',
+            'Gutschein kann nicht gesendet werden: Der Mailversand ist nicht konfiguriert.',
+          );
+        }
+        // Eine Regel für Profil (canSendNow), Route und Job (Härtung RA-9/H6).
+        const voucherRows = await db
+          .select()
+          .from(vouchersTable)
+          .where(eq(vouchersTable.id, summary.id));
+        const voucherRow = voucherRows[0];
+        if (voucherRow === undefined) throw new AuthError('NOT_FOUND', 'Gutschein nicht gefunden.');
+        const state = await voucherSendNowState(db, voucherRow);
+        if (state.block !== null) {
+          throw new AuthError('CONFLICT', sendNowMessages[state.block]);
+        }
+        // Nach gescheiterter Vorzustellung: neue Zustellung an die AKTUELLE Kundenadresse.
+        await enqueueVoucherDelivery(
+          voucherDelivery.queue,
+          summary.id,
+          state.retryOfDeliveryId === null
+            ? `manual:${Date.now().toString(36)}`
+            : `retry:${state.retryOfDeliveryId}:${Date.now().toString(36)}`,
+          { retryOfDeliveryId: state.retryOfDeliveryId },
+        );
+        return { queued: true, voucherId: summary.id };
+      } catch (error) {
+        if (sendAuthError(request, reply, error)) return;
+        throw error;
+      }
+    });
+  }
 
   app.put('/staff/settings/completed-visibility', async (request, reply) => {
     const context = await requireAuth(request, reply, auth, config);

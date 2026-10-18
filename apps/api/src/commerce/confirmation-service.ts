@@ -16,6 +16,14 @@ import { AuthError } from '../auth/service.ts';
 import { getPickupExactAddress } from '../crm/settings-service.ts';
 import type { DocumentService } from './document-service.ts';
 import type { OfferDeliveryGateway } from './delivery-gateway.ts';
+import type { OrderConfirmationMailContext } from '../communication/mail/templates/contexts.ts';
+import {
+  isoDateOrNull,
+  mailSalutation,
+  safeAttachmentName,
+  transactionalKey,
+  transactionalRetryKey,
+} from '../communication/transactional/keys.ts';
 
 /**
  * Auftragsbestätigung (Phase-3-Vorgaben Nr. 31–33/35): nach Annahme
@@ -322,45 +330,86 @@ export class OrderConfirmationService {
     });
   }
 
-  /** Fachlicher Versand über den Phase-3-Adapter (nach Freigabe, serialisiert). */
+  /**
+   * Bewusste AB-Sendeaktion (Phase 12, Order §11): reiht die Mail mit dem
+   * finalen, unveränderlichen AB-PDF als Anhang in die Outbox ein – in
+   * derselben Transaktion wie der Statuswechsel auf `queued`. Versendet wird
+   * nach dem Commit durch `mail.send`; der Sent-Listener setzt `sent`/
+   * `sentAt`, der Failed-Listener `failed` (erneute Sendeaktion möglich).
+   * Production ohne Mailweg: harte Blockade VOR jeder Zustandsänderung.
+   */
   async send(confirmationId: string, now = new Date()): Promise<void> {
-    await this.db.transaction(async (tx) => {
+    this.gateway.assertConfigured();
+    const enqueued = await this.db.transaction(async (tx) => {
       const confirmation = await this.lockConfirmation(tx, confirmationId);
-      if (confirmation.status !== 'approved') {
-        throw new AuthError('CONFLICT', 'Die Auftragsbestätigung muss zuerst freigegeben werden.');
+      if (confirmation.status !== 'approved' && confirmation.status !== 'failed') {
+        throw new AuthError(
+          'CONFLICT',
+          confirmation.status === 'prepared'
+            ? 'Die Auftragsbestätigung muss zuerst freigegeben werden.'
+            : 'Die Auftragsbestätigung wurde bereits versendet bzw. ist im Versand.',
+        );
+      }
+      if (confirmation.documentId === null) {
+        throw new AuthError('CONFLICT', 'Für die Auftragsbestätigung fehlt das finale PDF.');
       }
       // A1: Reads unter der Sperre über tx, Outbox-Zeile in derselben Transaktion.
       const booking = await this.bookingById(confirmation.bookingId, tx);
       const processRows = await tx
-        .select({ processNumber: processes.processNumber })
+        .select({ processNumber: processes.processNumber, customerId: processes.customerId })
         .from(processes)
         .where(eq(processes.id, booking.processId));
       const customer = booking.customerSnapshot as Record<string, unknown>;
-      const recipient = String(customer.email ?? '');
+      const recipient = String(customer.email ?? '').trim();
       if (recipient === '') {
         throw new AuthError('CONFLICT', 'Für den Versand fehlt die Kunden-E-Mail im Snapshot.');
       }
       const processNumber = processRows[0]?.processNumber ?? '';
-      // Kein „anbei“: Der Adapter transportiert derzeit keine Anhänge; der
-      // echte Mail-Adapter (spätere Phase) hängt das finale AB-PDF an.
-      await this.gateway.deliver(
+      const event = (booking.eventSnapshot ?? {}) as Record<string, unknown>;
+      const displayName = typeof customer.displayName === 'string' ? customer.displayName : null;
+      const result = await this.gateway.enqueue(
         {
           kind: 'order_confirmation',
-          orderConfirmationId: confirmation.id,
-          recipient,
-          subject: `Ihre Miet-Royal-Auftragsbestätigung ${processNumber}`,
-          body:
-            `Guten Tag ${String(customer.displayName ?? '')},\n\n` +
-            `Ihre Auftragsbestätigung für Vorgang ${processNumber} wurde freigegeben. ` +
-            `Sie erhalten das Dokument von Miet-Royal.\n`,
+          processId: booking.processId,
+          customerId: processRows[0]?.customerId ?? null,
+          bookingId: booking.id,
+          recipient: { email: recipient, name: displayName },
+          context: {
+            salutation: mailSalutation(displayName),
+            processNumber,
+            eventDate: isoDateOrNull(event.eventDate),
+          } satisfies OrderConfirmationMailContext,
+          attachments: [
+            {
+              kind: 'document',
+              documentId: confirmation.documentId,
+              filename: safeAttachmentName(`Auftragsbestaetigung-${processNumber}.pdf`),
+            },
+          ],
+          idempotencyKey:
+            confirmation.mailDeliveryId === null
+              ? transactionalKey('order_confirmation', confirmation.id)
+              : transactionalRetryKey(
+                  'order_confirmation',
+                  confirmation.id,
+                  confirmation.mailDeliveryId,
+                ),
         },
         tx,
       );
       await tx
         .update(orderConfirmations)
-        .set({ status: 'sent', sentAt: now, updatedAt: now })
+        .set({
+          // Blockiert (z. B. kein Mailweg außerhalb von production): sichtbar `failed`,
+          // nie „versendet“ – die Outbox-Zeile trägt den Grund.
+          status: result.status === 'pending' ? 'queued' : 'failed',
+          mailDeliveryId: result.deliveryId,
+          updatedAt: now,
+        })
         .where(eq(orderConfirmations.id, confirmationId));
+      return result;
     });
+    if (enqueued.status === 'pending') await this.gateway.scheduleSend(enqueued.deliveryId);
   }
 
   private async lockConfirmation(

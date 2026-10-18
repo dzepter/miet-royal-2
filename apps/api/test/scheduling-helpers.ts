@@ -9,6 +9,7 @@ import {
   productServiceFor,
 } from './commerce-helpers.ts';
 import type { TestContext } from './auth-helpers.ts';
+import { settleOfferMailJobs } from './mail-job-helpers.ts';
 
 /** Scheduling-Tabellen leeren (VOR den Commerce-/Auth-Resets aufrufen). */
 export async function truncateSchedulingTables(pool: pg.Pool): Promise<void> {
@@ -101,6 +102,7 @@ export async function createAcceptedBooking(
   }
   const effective = await ctx.auth.effectivePermissions(adminId);
   const { token } = await services.offers.send(adminId, versionId, effective);
+  await settleOfferMailJobs(ctx); // Phase 12: Angebotsmail-Job abarbeiten
   const { bookingId } = await services.offers.accept(token);
   return {
     processId: world.processId,

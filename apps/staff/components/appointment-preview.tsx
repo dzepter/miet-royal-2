@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { useEffect, useRef, useState } from 'react';
 import { apiFetch, hasPermission, type Me } from '../lib/api';
 import {
+  dayTimeLabel,
   fromBerlinInput,
   KIND_LABELS,
   timeLabel,
@@ -11,6 +12,9 @@ import {
   type CalendarEntry,
 } from '../lib/scheduling';
 import { formatBerlin } from '../lib/commerce';
+import { informCustomer } from '../lib/communication';
+import { OfflineActionHint, useOfflineNow } from './communication';
+import { ConfirmDialog } from './confirm-dialog';
 
 /**
  * Kompakte Termin-Vorschau (Order §15/§28): Kunde, Vorgang, Zeit, Art,
@@ -36,10 +40,19 @@ export function AppointmentPreview({
   const [staffOptions, setStaffOptions] = useState<{ id: string; name: string }[]>([]);
   const [assignTo, setAssignTo] = useState('');
   const cardRef = useRef<HTMLDivElement | null>(null);
+  // Phase 12 (Order §19): „Kunden über Terminänderung informieren“ – Online-Aktion.
+  const offlineNow = useOfflineNow();
+  const [informConfirm, setInformConfirm] = useState(false);
+  const [informNotice, setInformNotice] = useState<string | null>(null);
 
   const canAssign = hasPermission(me, 'appointment.assign');
   const canReschedule = hasPermission(me, 'calendar.drag_drop');
   const canComplete = hasPermission(me, 'calendar.manage');
+  const canInform =
+    hasPermission(me, 'email.approve_prepared') &&
+    entry.status === 'scheduled' &&
+    entry.customerInfoRequiredAt !== null;
+  const informedAt = entry.customerInformedAt ?? null;
   const myId = me?.user.id;
 
   useEffect(() => {
@@ -47,6 +60,33 @@ export function AppointmentPreview({
     setEnd(toBerlinInput(entry.endAt));
     setError(null);
   }, [entry.id, entry.version, entry.startAt, entry.endAt]);
+
+  useEffect(() => {
+    setInformNotice(null);
+    setInformConfirm(false);
+  }, [entry.id]);
+
+  async function sendCustomerInfo() {
+    setBusy(true);
+    setError(null);
+    setInformNotice(null);
+    const result = await informCustomer(entry.id);
+    setBusy(false);
+    setInformConfirm(false);
+    if (!result.ok || result.data === null) {
+      setError(result.errorMessage ?? 'Die Kundeninformation konnte nicht gesendet werden.');
+      await onChanged();
+      return;
+    }
+    setInformNotice(
+      result.data.status === 'blocked'
+        ? 'Terminänderungsmail angelegt, der Versand ist jedoch blockiert (E-Mail-Versand nicht möglich) – bitte den Kunden anrufen.'
+        : result.data.deduplicated
+          ? 'Für diese Terminänderung ist bereits eine Mail eingeplant – nach erfolgreichem Versand gilt der Kunde als informiert.'
+          : 'Terminänderungsmail eingeplant – nach erfolgreichem Versand gilt der Kunde als informiert.',
+    );
+    await onChanged();
+  }
 
   // Die Vorschau rendert unterhalb von Liste/Raster – beim Öffnen bzw.
   // Terminwechsel in den sichtbaren Bereich holen (Order §15).
@@ -137,6 +177,11 @@ export function AppointmentPreview({
         {entry.customerInfoRequiredAt !== null && (
           <span className="badge">Kundeninformation erforderlich</span>
         )}{' '}
+        {entry.customerInfoRequiredAt === null && informedAt !== null && (
+          <span className="badge ok" data-testid="appointment-customer-informed">
+            Kunde informiert ({formatBerlin(informedAt)})
+          </span>
+        )}{' '}
         {entry.status === 'completed' && <span className="badge active">Abgeschlossen</span>}
       </p>
 
@@ -199,6 +244,53 @@ export function AppointmentPreview({
           </button>
         )}
       </p>
+      {canInform && (
+        <div data-testid="appointment-inform-section">
+          {informedAt !== null && (
+            <p className="muted" style={{ margin: '0.3rem 0' }}>
+              Zuletzt informiert: {formatBerlin(informedAt)} – der Termin wurde danach erneut
+              geändert.
+            </p>
+          )}
+          <OfflineActionHint testId="appointment-inform-offline" />
+          <p style={{ margin: '0.3rem 0' }}>
+            <button
+              type="button"
+              className="primary"
+              data-testid="appointment-inform-customer"
+              disabled={busy || offlineNow}
+              onClick={() => setInformConfirm(true)}
+            >
+              Kunden über Terminänderung informieren
+            </button>
+          </p>
+        </div>
+      )}
+      {informNotice !== null && (
+        <p className="success" data-testid="appointment-inform-notice">
+          {informNotice}
+        </p>
+      )}
+      {informConfirm && (
+        <ConfirmDialog
+          testId="appointment-inform-dialog"
+          title="Kunden über Terminänderung informieren?"
+          confirmLabel="E-Mail senden"
+          confirmTestId="appointment-inform-confirm"
+          busy={busy}
+          disabled={offlineNow}
+          maxWidth="28rem"
+          onCancel={() => setInformConfirm(false)}
+          onConfirm={() => void sendCustomerInfo()}
+        >
+          <p>
+            Der Kunde erhält eine E-Mail mit Vorgangsnummer, Terminart sowie altem und neuem Termin
+            ({KIND_LABELS[entry.kind]}, neu: {dayTimeLabel(entry)}).
+          </p>
+          <p className="muted">Erst nach erfolgreichem Versand gilt der Kunde als informiert.</p>
+        </ConfirmDialog>
+      )}
+
       {entry.overdueIncident !== null && entry.overdueIncident.customerContactedAt !== null && (
         <p className="muted">
           Kunde kontaktiert: {formatBerlin(entry.overdueIncident.customerContactedAt)}

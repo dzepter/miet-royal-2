@@ -59,6 +59,10 @@ export interface VoucherSummary {
   maskedReference: string;
   deliveryStatus: 'pending' | 'sent';
   deliveryLabel: string;
+  /** Phase 12 (Order §15): z. B. NO_EMAIL, MAIL_FAILED, DELIVERY_COPY_UNDECRYPTABLE – nie Code/Hash. */
+  deliveryProblemCode?: string | null;
+  /** Phase 12: „Gutschein jetzt senden“ möglich (laut Server). */
+  canSendNow?: boolean;
   reservedOfferId: string | null;
   originProcessId: string;
   originProcessNumber: string | null;

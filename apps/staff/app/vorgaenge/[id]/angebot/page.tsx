@@ -71,6 +71,23 @@ function OfferView() {
     void load();
   }, [load]);
 
+  // Phase 12 (UI): AB-Mail in der Outbox – Status still nachladen, bis der Versand
+  // bestätigt oder gescheitert ist (max. ~1 Minute, danach manuell neu laden).
+  const confirmationQueued = data?.confirmation?.status === 'queued';
+  useEffect(() => {
+    if (!confirmationQueued) return;
+    let rounds = 0;
+    const timer = window.setInterval(() => {
+      rounds += 1;
+      if (rounds > 20) {
+        window.clearInterval(timer);
+        return;
+      }
+      void load();
+    }, 3000);
+    return () => window.clearInterval(timer);
+  }, [confirmationQueued, load]);
+
   async function run(path: string, body?: unknown, method = 'POST'): Promise<boolean> {
     setBusy(true);
     setError(null);
@@ -125,7 +142,7 @@ function OfferView() {
       {publicPath !== null && (
         <div className="card">
           <p className="success" style={{ margin: 0 }}>
-            Angebot versendet (Test-Outbox). Online-Link für den Kunden:
+            Angebot zum E-Mail-Versand eingeplant. Online-Link für den Kunden:
           </p>
           <p style={{ wordBreak: 'break-all' }}>
             <code data-testid="public-offer-link">{publicPath}</code>
@@ -483,13 +500,23 @@ function OfferView() {
             <>
               <p>
                 Status:{' '}
-                <span className="badge active">
+                <span
+                  className={`badge ${data.confirmation.status === 'failed' ? 'locked' : 'active'}`}
+                  data-testid="confirmation-status"
+                >
                   {data.confirmation.status === 'prepared'
                     ? 'Vorbereitet'
                     : data.confirmation.status === 'approved'
                       ? 'Freigegeben'
-                      : 'Versendet'}
+                      : data.confirmation.status === 'queued'
+                        ? 'Versand eingeplant'
+                        : data.confirmation.status === 'failed'
+                          ? 'Versand fehlgeschlagen'
+                          : 'Versendet'}
                 </span>
+                {data.confirmation.status === 'sent' && data.confirmation.sentAt !== null && (
+                  <span className="muted"> am {formatBerlin(data.confirmation.sentAt)}</span>
+                )}
               </p>
               {blockers.map((blocker) => (
                 <p className="error" key={blocker}>
@@ -537,6 +564,19 @@ function OfferView() {
                   }
                 >
                   Auftragsbestätigung versenden
+                </button>
+              )}
+              {/* Phase 12 (UI): nach endgültig gescheitertem Versand bewusst erneut senden. */}
+              {data.confirmation.status === 'failed' && hasPermission(me, 'booking.confirm') && (
+                <button
+                  className="primary"
+                  data-testid="confirmation-resend"
+                  disabled={busy}
+                  onClick={() =>
+                    void run(`/staff/order-confirmations/${data.confirmation?.id}/send`)
+                  }
+                >
+                  Auftragsbestätigung erneut versenden
                 </button>
               )}
             </>

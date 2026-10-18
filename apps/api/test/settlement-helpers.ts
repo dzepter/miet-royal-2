@@ -1,5 +1,6 @@
-import { appointments, settlements } from '@mietroyal/database';
-import { eq } from 'drizzle-orm';
+import { appointments, mailDeliveries, settlements } from '@mietroyal/database';
+import { customerNoticeWaitUntil } from '@mietroyal/domain';
+import { and, eq } from 'drizzle-orm';
 import type pg from 'pg';
 import type { FastifyInstance } from 'fastify';
 import { AccountingTransferService } from '../src/accounting/transfer-service.ts';
@@ -13,6 +14,7 @@ import {
   truncateAuthTables,
   type TestContext,
 } from './auth-helpers.ts';
+import { settleMailJobs, settleOfferMailJobs } from './mail-job-helpers.ts';
 import {
   commerceServices,
   createCommerceWorld,
@@ -62,7 +64,7 @@ export async function resetSettlementWorld(ctx: TestContext): Promise<void> {
   await truncateCommerceTables(ctx.pool);
   ctx.accounting.calls.length = 0;
   ctx.accounting.failNext(0);
-  ctx.notices.sent.length = 0;
+  ctx.mailGateway.reset();
 }
 
 export async function adminSession(ctx: TestContext) {
@@ -72,12 +74,58 @@ export async function adminSession(ctx: TestContext) {
   return { admin, cookie: session.cookie, effective };
 }
 
+/** Alle fälligen Jobs des Test-Runners verarbeiten (der nicht gestartete Runner bricht `drain()` nach einem Job ab). */
+export async function drainAllJobs(ctx: TestContext): Promise<number> {
+  let processed = 0;
+  for (let i = 0; i < 50; i += 1) {
+    const outcome = await ctx.jobs.runOnce();
+    if (outcome === 'idle') break;
+    processed += 1;
+  }
+  return processed;
+}
+
+/** Phase 12: bestätigt versendete Kundeninformationen (Mail-Outbox, Status sent). */
+export async function sentNoticeMails(ctx: TestContext) {
+  return ctx.db
+    .select()
+    .from(mailDeliveries)
+    .where(
+      and(
+        eq(mailDeliveries.kind, 'settlement_damage_missing_notice'),
+        eq(mailDeliveries.status, 'sent'),
+      ),
+    );
+}
+
+/**
+ * Phase 12: Frist einer bereits (per Test-Runner) versendeten Kundeninformation
+ * in die Vergangenheit verschieben – inkl. des beim Versand geplanten Auto-Jobs.
+ */
+export async function backdateSentNotice(ctx: TestContext, settlementId: string, sentAt: Date) {
+  const waitUntil = customerNoticeWaitUntil(sentAt);
+  await ctx.pool.query(
+    'UPDATE settlements SET notice_sent_at = $2, wait_until = $3 WHERE id = $1',
+    [settlementId, sentAt, waitUntil],
+  );
+  await ctx.pool.query(
+    'UPDATE settlement_customer_notices SET sent_at = $2 WHERE settlement_id = $1',
+    [settlementId, sentAt],
+  );
+  await ctx.pool.query(
+    `UPDATE integration_jobs SET run_at = $2
+     WHERE type = 'settlement.accounting_transfer' AND status = 'pending'
+       AND payload->>'settlementId' = $1`,
+    [settlementId, waitUntil],
+  );
+}
+
 /** Service-Instanz wie in den Routen (dieselbe Queue/dasselbe Gateway wie die App). */
 export function settlementServiceFor(ctx: TestContext): SettlementService {
   return new SettlementService({
     db: ctx.db,
     transfers: new AccountingTransferService(ctx.db, ctx.accounting, ctx.queue),
-    noticeGateway: ctx.notices,
+    notices: ctx.transactional.noticeMailer,
     queue: ctx.queue,
     processes: new ProcessService(ctx.db),
     appEnv: ctx.config.appEnv,
@@ -190,6 +238,7 @@ async function acceptedBookingWithOptions(
     await services.offers.applyVoucher(adminId, versionId, code);
   }
   const { token } = await services.offers.send(adminId, versionId, effective);
+  await settleOfferMailJobs(ctx); // Phase 12: Angebotsmail-Job abarbeiten
   const { bookingId } = await services.offers.accept(token);
   const scheduling = schedulingServiceFor(ctx);
   await scheduling.ensureAppointmentsForBooking(bookingId);
@@ -231,6 +280,7 @@ export async function issuedBookingWithOptions(
   await readyHandover(ctx, adminId, world.bookingId, codes);
   const services = handoverServicesFor(ctx);
   await services.handover.finalize(adminId, world.bookingId);
+  await settleMailJobs(ctx); // Phase 12: Übergabeprotokoll-Mail abarbeiten
   return { ...world, machineCodes: codes, services };
 }
 
@@ -308,6 +358,7 @@ export async function finalizedReturn(
   if (response.statusCode !== 200) {
     throw new Error(`Finalisierung fehlgeschlagen: ${response.statusCode} ${response.body}`);
   }
+  await settleMailJobs(ctx); // Phase 12: Rückgabeprotokoll-Mail abarbeiten
   const finalized = response.json() as {
     detail: { return: { id: string }; machines: { id: string }[] };
   };

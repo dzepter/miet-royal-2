@@ -37,12 +37,7 @@ import {
   VOUCHER_NOT_COMBINABLE_MESSAGE,
   normalizeVoucherCode,
 } from '@mietroyal/domain';
-import {
-  renderOfferPdf,
-  formatEuro,
-  type PdfLineItem,
-  type PdfVoucherBlock,
-} from '@mietroyal/documents';
+import { renderOfferPdf, type PdfLineItem, type PdfVoucherBlock } from '@mietroyal/documents';
 import type { PermissionKey } from '@mietroyal/permissions';
 import { and, asc, eq, isNull, sql } from 'drizzle-orm';
 import { hashVoucherCode } from '../voucher/voucher-codes.ts';
@@ -50,6 +45,12 @@ import { AuthError } from '../auth/service.ts';
 import { customerDisplayName } from '../crm/customer-service.ts';
 import type { DocumentService } from './document-service.ts';
 import type { OfferDeliveryGateway } from './delivery-gateway.ts';
+import type {
+  OfferMailContext,
+  OfferMailSecrets,
+} from '../communication/mail/templates/contexts.ts';
+import { mailSalutation, transactionalKey } from '../communication/transactional/keys.ts';
+import type { MailEnqueueResult } from '../communication/types.ts';
 import { ProductService } from './product-service.ts';
 import { TermsService } from './terms-service.ts';
 import { VoucherError, VoucherService } from '../voucher/voucher-service.ts';
@@ -408,6 +409,22 @@ export class OfferService {
     await this.recomputeDraft(tx, locked.id);
   }
 
+  /**
+   * Phase-12-Vorarbeit A: Wechselt der Maschinen-PRODUKTTYP einer Entwurfsversion,
+   * verfällt ein bestehender Sonderpreis der Maschinenposition (er galt für den
+   * alten Typ) – er muss bewusst neu gesetzt werden. Sonderpreise auf
+   * Nicht-Maschinen-Positionen bleiben bestehen, sofern ihre Position existiert.
+   */
+  private machineSpecialPricePatch(
+    locked: OfferVersion,
+    nextMachineProductId: string | null,
+  ): { specialPrices: SpecialPriceEntry[] } | Record<string, never> {
+    if (nextMachineProductId === locked.machineProductId) return {};
+    const entries = (locked.specialPrices ?? []) as SpecialPriceEntry[];
+    const kept = entries.filter((entry) => entry.lineKey !== 'machine');
+    return kept.length === entries.length ? {} : { specialPrices: kept };
+  }
+
   async updateDraft(actorId: string, versionId: string, input: DraftInput): Promise<void> {
     const version = await this.getVersion(versionId);
     this.assertDraft(version);
@@ -442,7 +459,10 @@ export class OfferService {
         .set({
           ...(input.machineProductId === undefined
             ? {}
-            : { machineProductId: input.machineProductId }),
+            : {
+                machineProductId: input.machineProductId,
+                ...this.machineSpecialPricePatch(locked, input.machineProductId),
+              }),
           ...(input.machineQuantity === undefined
             ? {}
             : { machineQuantity: input.machineQuantity }),
@@ -503,6 +523,7 @@ export class OfferService {
         .update(offerVersions)
         .set({
           machineProductId: inquiry.machineProductId,
+          ...this.machineSpecialPricePatch(locked, inquiry.machineProductId),
           fulfillment: inquiry.fulfillment,
           deliveryStreet: inquiry.deliveryStreet,
           deliveryPostalCode: inquiry.deliveryPostalCode,
@@ -1024,8 +1045,9 @@ export class OfferService {
     // Token je Versand rotieren: alter Link wird ungültig, der Kunde erhält
     // mit jeder versendeten Version einen frischen, nicht erratbaren Link.
     const token = randomBytes(TOKEN_BYTES).toString('base64url');
+    const customerEmail = customer.email;
 
-    await this.db.transaction(async (tx) => {
+    const enqueued: MailEnqueueResult = await this.db.transaction(async (tx) => {
       // Gleiche Sperr-Reihenfolge wie accept/createNewVersion: erst das
       // Angebot, dann die Version – Versand, neue Version und Annahme
       // serialisieren sich damit vollständig.
@@ -1121,6 +1143,29 @@ export class OfferService {
         offerId: offer.id,
         tokenHash: hashToken(token),
       });
+      // Phase 12 (Order §11): Angebotsmail in DERSELBEN Transaktion einreihen –
+      // der Klartext-Token existiert nur hier im Speicher und verschlüsselt in
+      // der Outbox-Payload; versendet wird erst nach dem Commit durch mail.send.
+      // Genau eine Zustellung je Version (eine Version wird nur einmal versendet).
+      // Production ohne Mailweg wurde bereits VOR dem Einfrieren blockiert.
+      return this.gateway.enqueue(
+        {
+          kind: 'offer',
+          processId: process.id,
+          customerId: customer.id,
+          recipient: { email: customerEmail, name: customerDisplayName(customer) },
+          context: {
+            salutation: mailSalutation(customerDisplayName(customer)),
+            processNumber: process.processNumber,
+            eventDate,
+            validUntil: expiresAt.toISOString(),
+          } satisfies OfferMailContext,
+          secrets: { offerToken: token } satisfies OfferMailSecrets,
+          idempotencyKey: transactionalKey('offer', versionId),
+          createdBy: actorId,
+        },
+        tx,
+      );
     });
 
     // Finales Angebots-PDF (immutable) erzeugen.
@@ -1133,21 +1178,10 @@ export class OfferService {
       terms.label,
     );
 
-    // Fachlicher Versand über den Phase-3-Adapter (Outbox in Dev/Test;
-    // Production ohne echten Adapter wurde bereits VOR dem Einfrieren
-    // durch assertConfigured() blockiert).
-    const link = `/angebot/${token}`;
-    await this.gateway.deliver({
-      kind: 'offer',
-      offerVersionId: versionId,
-      recipient: customer.email,
-      subject: `Ihr Miet-Royal-Angebot ${process.processNumber} (Version ${version.versionNumber})`,
-      body:
-        `Guten Tag ${customerDisplayName(customer)},\n\n` +
-        `Ihr Angebot ${process.processNumber} (Version ${version.versionNumber}) ist online abrufbar:\n` +
-        `${link}\n\nFester Angebotswert: ${formatEuro(sentVersion.fixedTotalCents ?? 0)}\n` +
-        `Gültig bis: ${expiresAt.toLocaleString('de-DE', { timeZone: 'Europe/Berlin' })}\n`,
-    });
+    // Versandjob NACH dem Commit (und nach dem PDF) planen; blockierte
+    // Zustellungen (kein Mailweg außerhalb von production) bleiben sichtbar
+    // in der Outbox – es wird nie ein Versand vorgetäuscht.
+    if (enqueued.status === 'pending') await this.gateway.scheduleSend(enqueued.deliveryId);
 
     return { token };
   }

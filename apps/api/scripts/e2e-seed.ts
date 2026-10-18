@@ -27,6 +27,15 @@ try {
   await pool.query('TRUNCATE process_notes, processes, customers, system_settings CASCADE');
   // Phase 9: keine Finanz-Jobs früherer Specs (würden auf gelöschte Abrechnungen zeigen).
   await pool.query('TRUNCATE integration_jobs');
+  // Phase 12 (push): Push-/Kalender-Tabellen hängen an staff_users (nicht an processes) – explizit leeren.
+  await pool.query('TRUNCATE push_deliveries, push_subscriptions, calendar_feed_tokens');
+  // Phase 12: Kommunikationstabellen vollständig leeren – einige hängen ohne FK
+  // an Vorgängen (Outbox, Inbound-Belege, WhatsApp-Ereignisse, IMAP-Zustand).
+  await pool.query(
+    `TRUNCATE mail_deliveries, customer_action_tokens, booking_customer_contacts,
+     appointment_reminders, message_photos, conversation_messages, inbound_mail_receipts,
+     inbound_mail_state, whatsapp_events, whatsapp_contacts CASCADE`,
+  );
   // Phase 11: Gutscheine/Einlösungen explizit leeren (hängen per FK an
   // customers/processes/bookings und gingen oben per CASCADE mit – hier bewusst sichtbar).
   await pool.query('TRUNCATE voucher_redemptions, vouchers CASCADE');

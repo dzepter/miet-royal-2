@@ -1,14 +1,14 @@
 import type { AppConfig } from '@mietroyal/config';
-import { offerDeliveries, type Database } from '@mietroyal/database';
+import type { Database } from '@mietroyal/database';
 import { parseOrThrow, z } from '@mietroyal/validation';
-import { desc } from 'drizzle-orm';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { requireAuth, requirePermission, sendAuthError, sendError } from '../auth/http.ts';
 import type { AuthenticatedContext, StaffAuthService } from '../auth/service.ts';
 import { ProcessService } from '../crm/process-service.ts';
 import { buildVisibilityContext } from '../crm/visibility.ts';
 import { OrderConfirmationService } from '../commerce/confirmation-service.ts';
-import { createOfferDeliveryGateway } from '../commerce/delivery-gateway.ts';
+import type { OfferDeliveryGateway } from '../commerce/delivery-gateway.ts';
+import type { MailOutboxService } from '../communication/mail/outbox.ts';
 import { DocumentService } from '../commerce/document-service.ts';
 import { InquiryService } from '../commerce/inquiry-service.ts';
 import { OfferService } from '../commerce/offer-service.ts';
@@ -127,14 +127,18 @@ interface CommerceRouteOptions {
   config: AppConfig;
   storage: StorageProvider;
   rateLimitEnabled: boolean;
+  /** Phase 12 (Order §11): Angebots-/AB-Versand über die zentrale Mail-Outbox. */
+  offerGateway: OfferDeliveryGateway;
+  /** Phase 12: Outbox-Einsicht (GET /staff/outbox) – nie Secrets/Bodies. */
+  mailOutbox: MailOutboxService;
 }
 
 export function registerCommerceRoutes(app: FastifyInstance, options: CommerceRouteOptions): void {
-  const { db, auth, config, storage } = options;
+  const { db, auth, config, storage, mailOutbox } = options;
   const productService = new ProductService(db);
   const inquiryService = new InquiryService(db);
   const documentService = new DocumentService(db, storage);
-  const gateway = createOfferDeliveryGateway(config, db);
+  const gateway = options.offerGateway;
   const offerService = new OfferService(db, config, documentService, gateway);
   const confirmationService = new OrderConfirmationService(db, config, documentService, gateway);
   const termsService = new TermsService(db, config);
@@ -786,16 +790,19 @@ export function registerCommerceRoutes(app: FastifyInstance, options: CommerceRo
     }
   });
 
-  /** Outbox-Einsicht (Dev/Test-Adapter) für Prüfzwecke. */
+  /**
+   * Outbox-Einsicht (system.settings): seit Phase 12 die zentrale Mail-Outbox
+   * (Angebot/AB/…), kompatibel mit den Feldern `kind`/`recipient` der früheren
+   * offer_deliveries-Ansicht – nie Secrets, Bodies oder Vorlagenkontext.
+   */
   app.get('/staff/outbox', async (request, reply) => {
     const context = await requireAuth(request, reply, auth, config);
     if (context === null) return;
     if (!(await requirePermission(request, reply, auth, context, 'system.settings'))) return;
-    const deliveries = await db
-      .select()
-      .from(offerDeliveries)
-      .orderBy(desc(offerDeliveries.createdAt))
-      .limit(50);
+    const deliveries = (await mailOutbox.list({}, 50)).map((delivery) => ({
+      ...delivery,
+      recipient: delivery.recipientEmail,
+    }));
     return { deliveries };
   });
 

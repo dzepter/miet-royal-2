@@ -9,7 +9,7 @@
  * `machine`), nie anhand des Client-lineKeys. Läuft gegen echtes PostgreSQL
  * über die ECHTEN Service-/Routenpfade (Lexware-Fake für F14).
  */
-import { offerVersions } from '@mietroyal/database';
+import { offerLineItems, offerVersions } from '@mietroyal/database';
 import {
   VOUCHER_LABEL,
   VOUCHER_NOT_COMBINABLE_MESSAGE,
@@ -30,6 +30,7 @@ import {
 } from './lexware-test-helpers.ts';
 import { lineOf, post, settledReturn, settlementViewFor } from './settlement-helpers.ts';
 import {
+  bookingRowById,
   containsCode,
   issueVoucherForCustomer,
   versionRow,
@@ -506,5 +507,101 @@ describe('Abrechnung & Lexware mit Gutschein und Nicht-Maschinen-Sonderpreis (F1
     expect(containsCode(payload, state.code, state.compact)).toBe(false);
     expect(containsCode(snapshot, state.code, state.compact)).toBe(false);
     expect(JSON.stringify(invoice)).not.toContain(state.compact);
+  });
+});
+
+describe('Phase-12-Vorarbeit A: Maschinen-Sonderpreis verfällt beim Wechsel des Maschinentyps (A1–A4)', () => {
+  it('A1./A2./A3. Maschine A + Sonderpreis → Wechsel auf Maschine B ⇒ Maschinen-Sonderpreis weg, Kaufartikel-Sonderpreis bleibt, Gutschein anwendbar', async () => {
+    const { admin, cookie } = await adminSession(ctx);
+    const world = await mixedWorld(admin.id);
+    expect((await specialViaRoute(cookie, world.versionId, 'machine', 10000)).statusCode).toBe(200);
+    expect(
+      (await specialViaRoute(cookie, world.versionId, world.canisterKey, 400)).statusCode,
+    ).toBe(200);
+    let version = await versionRow(ctx, world.versionId);
+    expect(specialKeys(version)).toEqual([world.canisterKey, 'machine']);
+    expect(version.machineSubtotalCents).toBe(10000);
+    // Wechsel des Maschinen-Produkttyps (manuell)
+    const services = commerceServices(ctx);
+    const other = await productId('slush-1x8');
+    await services.offers.updateDraft(admin.id, world.versionId, { machineProductId: other });
+    version = await versionRow(ctx, world.versionId);
+    expect(specialKeys(version)).toEqual([world.canisterKey]);
+    const standard = (await productServiceFor(ctx).pricingProductBySlug('slush-1x8', new Date()))
+      .listPriceCents;
+    expect(version.machineSubtotalCents).toBe(standard);
+    // Gleiche Maschine erneut setzen ⇒ kein Verlust (kein Typwechsel): Sonderpreis neu setzen und prüfen
+    expect((await specialViaRoute(cookie, world.versionId, 'machine', 9000)).statusCode).toBe(200);
+    await services.offers.updateDraft(admin.id, world.versionId, { machineProductId: other });
+    expect(specialKeys(await versionRow(ctx, world.versionId))).toEqual([
+      world.canisterKey,
+      'machine',
+    ]);
+    // Zurück auf 2×10 ⇒ wieder weg; Gutschein danach anwendbar (A3).
+    const original = await productId('slush-2x10');
+    await services.offers.updateDraft(admin.id, world.versionId, { machineProductId: original });
+    expect(specialKeys(await versionRow(ctx, world.versionId))).toEqual([world.canisterKey]);
+    expect((await applyViaRoute(cookie, world.versionId, world.code)).statusCode).toBe(200);
+    version = await versionRow(ctx, world.versionId);
+    expect(version.voucherDiscountCents).toBe(VOUCHER_2X10);
+  });
+
+  it('A1b. „Neu aus Anfrage übernehmen“ mit anderem Maschinentyp entfernt den Maschinen-Sonderpreis ebenfalls', async () => {
+    const { admin, cookie } = await adminSession(ctx);
+    const world = await mixedWorld(admin.id);
+    expect((await specialViaRoute(cookie, world.versionId, 'machine', 10000)).statusCode).toBe(200);
+    const services = commerceServices(ctx);
+    const other = await productId('slush-1x8');
+    // Entwurf auf B wechseln (Sonderpreis verfällt), neuen Sonderpreis für B setzen,
+    // dann aus der Anfrage (Maschine A) übernehmen ⇒ Typwechsel ⇒ verfällt erneut.
+    await services.offers.updateDraft(admin.id, world.versionId, { machineProductId: other });
+    expect((await specialViaRoute(cookie, world.versionId, 'machine', 7000)).statusCode).toBe(200);
+    await services.offers.syncDraftFromInquiry(admin.id, world.versionId);
+    const version = await versionRow(ctx, world.versionId);
+    expect(specialKeys(version)).toEqual([]);
+    expect(version.machineSubtotalCents).toBe(MACHINE_2X10);
+    // Sync ohne Typwechsel behält einen Maschinen-Sonderpreis.
+    expect((await specialViaRoute(cookie, world.versionId, 'machine', 11000)).statusCode).toBe(200);
+    await services.offers.syncDraftFromInquiry(admin.id, world.versionId);
+    expect(specialKeys(await versionRow(ctx, world.versionId))).toEqual(['machine']);
+  });
+
+  it('A4. Alter Maschinen-Sonderpreis landet nicht im Offer-/Booking-Snapshot', async () => {
+    const { admin, cookie } = await adminSession(ctx);
+    const world = await mixedWorld(admin.id);
+    expect((await specialViaRoute(cookie, world.versionId, 'machine', 10000)).statusCode).toBe(200);
+    const services = commerceServices(ctx);
+    const other = await productId('slush-1x8');
+    await services.offers.updateDraft(admin.id, world.versionId, { machineProductId: other });
+    const effective = await ctx.auth.effectivePermissions(admin.id);
+    const { token } = await services.offers.send(admin.id, world.versionId, effective);
+    const sent = await versionRow(ctx, world.versionId);
+    const standard = (await productServiceFor(ctx).pricingProductBySlug('slush-1x8', new Date()))
+      .listPriceCents;
+    expect(sent.machineSubtotalCents).toBe(standard);
+    expect(specialKeys(sent)).toEqual([]);
+    const items = await ctx.db
+      .select()
+      .from(offerLineItems)
+      .where(eq(offerLineItems.offerVersionId, world.versionId));
+    const machineLine = items.find((item) => item.kind === 'machine')!;
+    expect(machineLine.priceSource).toBe('list');
+    expect(machineLine.agreedUnitPriceCents).toBe(standard);
+    // Annahme ⇒ Booking-Snapshot mit Listenpreis, ohne Sonderpreis-Spuren.
+    const { bookingId } = await services.offers.accept(token);
+    const booking = await bookingRowById(ctx, bookingId);
+    const snapshotItems = booking.itemsSnapshot as {
+      kind: string;
+      priceSource: string;
+      agreedUnitPriceCents: number;
+      standardUnitPriceCents: number;
+    }[];
+    const snapshotMachine = snapshotItems.find((item) => item.kind === 'machine')!;
+    expect(snapshotMachine.priceSource).toBe('list');
+    expect(snapshotMachine.agreedUnitPriceCents).toBe(standard);
+    expect(JSON.stringify(booking.itemsSnapshot)).not.toContain('10000');
+    expect((booking.totalsSnapshot as { machineSubtotalCents: number }).machineSubtotalCents).toBe(
+      standard,
+    );
   });
 });

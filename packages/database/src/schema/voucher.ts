@@ -83,6 +83,8 @@ export const vouchers = pgTable(
     /** Hinweis für Phase 12 (z. B. NO_EMAIL) – der Gutschein bleibt bestehen (§51). */
     deliveryProblemCode: text('delivery_problem_code'),
     deliveredAt: timestamp('delivered_at', { withTimezone: true }),
+    /** Phase 12: Outbox-Zustellung der Gutscheinmail (mail_deliveries) – kein FK (Importzyklus). */
+    mailDeliveryId: uuid('mail_delivery_id'),
     /**
      * Verschlüsselte temporäre Versandkopie (base64: iv|tag|ciphertext,
      * AES-256-GCM, AAD = Gutschein-ID). Wird von Phase 12 nach Versand

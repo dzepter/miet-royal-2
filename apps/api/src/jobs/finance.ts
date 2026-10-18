@@ -138,6 +138,8 @@ export function registerFinanceJobHandlers(runner: JobRunner, deps: FinanceJobDe
     createVoucherEligibilityHandler(
       new VoucherService(deps.db, deps.config, deps.logger),
       deps.logger,
+      // Phase 12 (transactional): neuer Gutschein ⇒ Versandjob voucher.delivery.
+      deps.queue,
     ),
   );
 }

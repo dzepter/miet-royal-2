@@ -1,0 +1,10 @@
+From: max.mustermann@example.com
+To: Miet-Royal Mainz <buero@miet-royal.test>
+Subject: Vorgänge {{PROCESS_NUMBER}} und MR-2020-9999
+Date: Sat, 18 Oct 2026 10:15:00 +0200
+Message-ID: <pn-3@example.com>
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: 8bit
+
+Zwei Nummern in einer Mail.

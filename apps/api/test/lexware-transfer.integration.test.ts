@@ -49,7 +49,7 @@ function independentService(workerId: string): SettlementService {
   return new SettlementService({
     db: ctx.db,
     transfers: ctx.transfersFor(workerId),
-    noticeGateway: ctx.notices,
+    notices: ctx.transactional.noticeMailer,
     queue: ctx.queue,
     processes: new ProcessService(ctx.db),
     appEnv: ctx.config.appEnv,

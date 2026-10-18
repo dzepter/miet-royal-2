@@ -39,7 +39,8 @@ import {
 } from '@mietroyal/domain';
 import { and, asc, desc, eq, gt, isNotNull, isNull, or, sql } from 'drizzle-orm';
 import { codeSuffix, generateVoucherCode, hashVoucherCode } from './voucher-codes.ts';
-import { encryptDeliveryCode } from './voucher-crypto.ts';
+import { PayloadCrypto } from '../communication/payload-crypto.ts';
+import { voucherSendNowState, type VoucherSendNowBlock } from './voucher-delivery.ts';
 
 /**
  * Zentraler Gutschein-Service (Phase 11, Order §§3–7, 10, 16–19, 28–45).
@@ -124,6 +125,15 @@ export interface VoucherSummary {
   maskedReference: string;
   deliveryStatus: VoucherDeliveryStatus;
   deliveryLabel: string;
+  /** Phase 12 (Order §15): z. B. NO_EMAIL, MAIL_FAILED, DELIVERY_COPY_UNDECRYPTABLE – nie Code/Hash. */
+  deliveryProblemCode: string | null;
+  /**
+   * Phase 12: Staff-Aktion „Gutschein jetzt senden“ möglich (pending, Versandkopie vorhanden,
+   * nicht abgelaufen, Kunde hat E-Mail, keine laufende/unklare Zustellung – Härtung RA-9/H6).
+   */
+  canSendNow: boolean;
+  /** Härtung RA-9/H6: Grund, warum „jetzt senden“ nicht möglich ist (neutraler Code) oder null. */
+  sendNowBlock: VoucherSendNowBlock | null;
   reservedOfferId: string | null;
   originProcessId: string;
   originProcessNumber: string | null;
@@ -141,11 +151,15 @@ export type ReactivationOutcome =
 type SettlementRow = typeof settlements.$inferSelect;
 
 export class VoucherService {
+  private readonly payloadCrypto: PayloadCrypto;
+
   constructor(
     private readonly db: Database,
     private readonly config: AppConfig,
     private readonly logger?: VoucherLogger,
-  ) {}
+  ) {
+    this.payloadCrypto = new PayloadCrypto(config);
+  }
 
   // ── Eligibility (Order §§3–5, 47) ──────────────────────────────────────
 
@@ -376,7 +390,8 @@ export class VoucherService {
           deliveryStatus: 'pending',
           // Kunde ohne E-Mail (Order §51): Gutschein entsteht trotzdem, Phase 12 sieht das Problem.
           deliveryProblemCode: email === null || email.trim() === '' ? 'NO_EMAIL' : null,
-          deliveryCodeCiphertext: encryptDeliveryCode(code, voucherId, this.config.auth.secretKey),
+          // Phase 12 (Order §8): Versandkopie als Communication-Payload v2 (COMMUNICATION_PAYLOAD_KEY).
+          deliveryCodeCiphertext: this.payloadCrypto.encrypt(code, 'voucher-delivery', voucherId),
           version: 1,
           createdAt: now,
           updatedAt: now,
@@ -780,10 +795,21 @@ export class VoucherService {
       maskedReference: maskVoucherCode(row.codeSuffix),
       deliveryStatus: row.deliveryStatus,
       deliveryLabel: VOUCHER_DELIVERY_LABELS[row.deliveryStatus],
+      deliveryProblemCode: row.deliveryProblemCode,
+      ...(await this.sendNowFields(row, now)),
       reservedOfferId,
       originProcessId: row.originProcessId,
       originProcessNumber: processNumber,
     };
+  }
+
+  /** Eine Regel für Profil, Route und Job (voucherSendNowState, Härtung RA-9/H6). */
+  private async sendNowFields(
+    row: VoucherRow,
+    now: Date,
+  ): Promise<{ canSendNow: boolean; sendNowBlock: VoucherSendNowBlock | null }> {
+    const state = await voucherSendNowState(this.db, row, now);
+    return { canSendNow: state.canSendNow, sendNowBlock: state.block };
   }
 
   /** Relevantester Gutschein des Kunden: aktiv/reserviert zuerst, sonst der neueste. */
@@ -805,6 +831,22 @@ export class VoucherService {
     });
     const chosen = usable ?? first;
     return this.toSummary(chosen.voucher, chosen.processNumber ?? null, now);
+  }
+
+  /** Phase 12: Einzelner Gutschein DIESES Kunden (Staff-Aktion „jetzt senden“) – nur Zusammenfassung. */
+  async voucherSummaryById(
+    voucherId: string,
+    customerId: string,
+    now: Date = new Date(),
+  ): Promise<VoucherSummary | null> {
+    const rows = await this.db
+      .select({ voucher: vouchers, processNumber: processes.processNumber })
+      .from(vouchers)
+      .leftJoin(processes, eq(processes.id, vouchers.originProcessId))
+      .where(and(eq(vouchers.id, voucherId), eq(vouchers.customerId, customerId)));
+    const row = rows[0];
+    if (row === undefined) return null;
+    return this.toSummary(row.voucher, row.processNumber ?? null, now);
   }
 
   /** Gutschein, der aus diesem Ursprungsvorgang entstanden ist. */

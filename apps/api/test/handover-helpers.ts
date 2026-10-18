@@ -60,6 +60,7 @@ export function handoverServicesFor(ctx: TestContext): HandoverServices {
     productService,
     scheduling,
     damages,
+    ctx.transactional.packetMailer, // Phase 12: Protokollmail wie in der App
   );
   const returns = new ReturnService(
     ctx.db,
@@ -70,6 +71,8 @@ export function handoverServicesFor(ctx: TestContext): HandoverServices {
     scheduling,
     damages,
     assignments,
+    [],
+    ctx.transactional.packetMailer,
   );
   return {
     machineService,

@@ -148,6 +148,20 @@
       "when": 1792308537860,
       "tag": "0020_voucher_returning_customer",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1792335435352,
+      "tag": "0021_communication_phase12",
+      "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1792340752849,
+      "tag": "0022_appointment_customer_known_time",
+      "breakpoints": true
     }
   ]
 }

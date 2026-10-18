@@ -501,7 +501,13 @@ export const handoverSignatures = pgTable(
 
 // ── Dokumentpaket / Outbox-Grundlage (Order §39) ──────────────────────────
 
-export const deliveryPacketStatus = pgEnum('delivery_packet_status', ['ready', 'sent']);
+export const deliveryPacketStatus = pgEnum('delivery_packet_status', [
+  'ready',
+  /** Phase 12: Mail in der Outbox. */
+  'queued',
+  'sent',
+  'failed',
+]);
 
 /**
  * Fachliches Versandpaket: nach der Ausgabe EINE E-Mail mit Lieferschein +
@@ -536,6 +542,8 @@ export const deliveryPackets = pgTable(
     documentIds: jsonb('document_ids').notNull(),
     status: deliveryPacketStatus('status').notNull().default('ready'),
     sentAt: timestamp('sent_at', { withTimezone: true }),
+    /** Phase 12: Outbox-Zustellung (mail_deliveries) – kein FK (Importzyklus). */
+    mailDeliveryId: uuid('mail_delivery_id'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [

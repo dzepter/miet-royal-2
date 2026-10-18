@@ -71,6 +71,10 @@ Bei monetären Positionen:
 4. spätere zusätzliche Position startet Frist nicht neu
 5. keine explizite Fristerklärung/Countdown
 
+Präzisierung Phase 12 (transactional): „ab Versand“ = ab bestätigtem
+Mailversand (SMTP angenommen). Freigabe allein startet keine Frist; ein
+gescheiterter oder blockierter Versand startet sie nie.
+
 Keine Kundenantwort: danach automatisch weiter, falls keine anderen Blocker.
 Kundenantwort (auch normale Rückfrage): Auto-Lexware blockiert.
 Mitarbeiter:

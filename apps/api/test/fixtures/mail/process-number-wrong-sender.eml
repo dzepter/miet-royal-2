@@ -1,0 +1,10 @@
+From: fremd@example.org
+To: Miet-Royal Mainz <buero@miet-royal.test>
+Subject: Frage zu Vorgang {{PROCESS_NUMBER}}
+Date: Sat, 18 Oct 2026 10:15:00 +0200
+Message-ID: <pn-2@example.org>
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: 8bit
+
+Ich bin nicht der Kunde, bitte Vorgang {{PROCESS_NUMBER}} stornieren!

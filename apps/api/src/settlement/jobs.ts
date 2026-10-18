@@ -1,8 +1,8 @@
 import type { JobHandler } from '@mietroyal/integrations';
 import { settlementTransferIdempotencyKey } from '../accounting/gateway.ts';
+import { createRetentionCompletionListener } from '../communication/retention/cleanup.ts';
 import { ProcessService } from '../crm/process-service.ts';
 import type { FinanceHandlerDeps } from '../jobs/finance.ts';
-import { createSettlementNoticeGateway } from './notice-gateway.ts';
 import { SettlementService } from './settlement-service.ts';
 
 /**
@@ -20,9 +20,14 @@ export function createSettlementAccountingTransferHandler(deps: FinanceHandlerDe
   const service = new SettlementService({
     db: deps.db,
     transfers: deps.transfers,
-    noticeGateway: createSettlementNoticeGateway(deps.config),
+    // Phase 12: Der Transferjob versendet nie Kundeninformationen – kein Mailer nötig.
+    notices: null,
     queue: deps.queue,
-    processes: new ProcessService(deps.db),
+    // Phase 12 (E2E-Agent 2, Retention Order §25): Abschluss über den Auto-Transfer
+    // reiht wie der CRM-Abschluss sofort den Foto-Retention-Job ein (Backstop bleibt).
+    processes: new ProcessService(deps.db, [
+      createRetentionCompletionListener(deps.queue, deps.logger),
+    ]),
     appEnv: deps.config.appEnv,
     ...(deps.logger === undefined ? {} : { logger: deps.logger }),
   });

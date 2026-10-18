@@ -4,7 +4,12 @@
   "private": true,
   "type": "module",
   "exports": {
-    "./jobs": "./src/jobs/finance.ts"
+    "./jobs": "./src/jobs/finance.ts",
+    "./jobs/communication": "./src/jobs/communication.ts",
+    "./jobs/communication-push": "./src/jobs/communication-push.ts",
+    "./jobs/communication-inbound": "./src/jobs/communication-inbound.ts",
+    "./jobs/communication-scan": "./src/jobs/communication-scan.ts",
+    "./jobs/communication-transactional": "./src/jobs/communication-transactional.ts"
   },
   "scripts": {
     "dev": "APP_ENV=development tsx watch src/server.ts",
@@ -20,7 +25,11 @@
     "lexware:setup": "tsx scripts/lexware-setup.ts",
     "lexware:reconcile": "tsx scripts/lexware-reconcile.ts",
     "lexware:smoke": "tsx scripts/lexware-smoke.ts",
-    "lexware:fake": "tsx scripts/lexware-fake-server.ts"
+    "lexware:fake": "tsx scripts/lexware-fake-server.ts",
+    "communication:rewrap-secrets": "tsx scripts/communication-rewrap-secrets.ts",
+    "mail:smoke": "tsx scripts/mail-smoke.ts",
+    "push:generate-vapid-keys": "tsx scripts/generate-vapid-keys.ts",
+    "whatsapp:smoke": "tsx scripts/whatsapp-smoke.ts"
   },
   "dependencies": {
     "@fastify/cookie": "11.1.2",
@@ -36,14 +45,21 @@
     "@node-rs/argon2": "2.2.0",
     "drizzle-orm": "0.45.2",
     "fastify": "5.12.1",
+    "imapflow": "2.5.4",
+    "mailparser": "3.9.44",
+    "nodemailer": "10.1.6",
     "otpauth": "9.5.1",
     "pg": "8.23.0",
-    "qrcode": "1.5.4"
+    "qrcode": "1.5.4",
+    "web-push": "3.6.7"
   },
   "devDependencies": {
+    "@types/mailparser": "^3.9.0",
     "@types/node": "26.4.0",
+    "@types/nodemailer": "^8.0.2",
     "@types/pg": "8.23.1",
     "@types/qrcode": "1.5.5",
+    "@types/web-push": "^3.6.4",
     "tsx": "4.23.13",
     "vitest": "4.1.11"
   }

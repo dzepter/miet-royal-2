@@ -1,0 +1,9 @@
+From: ohne-id@example.net
+To: Miet-Royal Mainz <buero@miet-royal.test>
+Subject: Mail ohne Message-ID
+Date: Sat, 18 Oct 2026 10:15:00 +0200
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: 8bit
+
+Diese Mail hat keinen Message-ID-Header und wird per Fingerprint dedupliziert.

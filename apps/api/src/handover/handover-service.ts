@@ -40,6 +40,7 @@ import { assertBookingNotCancelled, isBookingCancelled } from '../cancellation/b
 import { transportNotes } from '../commerce/confirmation-service.ts';
 import { visibleProcessesWhere, type ProcessVisibilityContext } from '../crm/visibility.ts';
 import type { DocumentService } from '../commerce/document-service.ts';
+import type { DeliveryPacketMailer, EnqueuedMail } from '../communication/transactional/mailers.ts';
 import type { ProductService } from '../commerce/product-service.ts';
 import { getPickupExactAddress } from '../crm/settings-service.ts';
 import type { SchedulingService } from '../scheduling/scheduling-service.ts';
@@ -243,26 +244,39 @@ const RECIPIENT_KIND_LABELS = {
  * zwischen dem Rendern (Phase 1) und der Transaktion (Phase 2), wird die
  * Finalisierung abgebrochen statt ein veraltetes Dokument zu registrieren.
  */
-function finalizationFingerprint(view: HandoverDetailView): string {
+/** Reihenfolgeunabhängig (siehe Rückgabe): Listen vor dem Serialisieren nach ID sortieren. */
+function sortedIds(ids: readonly string[]): string[] {
+  return [...ids].sort();
+}
+function sortedTuples<T extends readonly unknown[]>(tuples: readonly T[]): T[] {
+  return [...tuples].sort((a, b) => String(a[0]).localeCompare(String(b[0])));
+}
+
+export function finalizationFingerprint(view: HandoverDetailView): string {
   return JSON.stringify({
-    slots: view.slots.map((slot) => [
-      slot.id,
-      slot.machine?.id ?? null,
-      slot.status,
-      slot.override?.id ?? null,
-    ]),
-    items: view.deliveryNote.items.map((item) => [
-      item.id,
-      item.actualQuantity,
-      item.unitPriceCents,
-    ]),
-    additions: view.additions.map((addition) => addition.id),
+    slots: sortedTuples(
+      view.slots.map(
+        (slot) =>
+          [slot.id, slot.machine?.id ?? null, slot.status, slot.override?.id ?? null] as const,
+      ),
+    ),
+    items: sortedTuples(
+      view.deliveryNote.items.map(
+        (item) => [item.id, item.actualQuantity, item.unitPriceCents] as const,
+      ),
+    ),
+    additions: sortedIds(view.additions.map((addition) => addition.id)),
     recipient: [view.handover.recipientKind, view.handover.recipientName],
-    machines: view.machines.map((machine) => [
-      machine.assignmentId,
-      machine.checked,
-      machine.photos.map((photo) => photo.id),
-    ]),
+    machines: sortedTuples(
+      view.machines.map(
+        (machine) =>
+          [
+            machine.assignmentId,
+            machine.checked,
+            sortedIds(machine.photos.map((photo) => photo.id)),
+          ] as const,
+      ),
+    ),
     representative:
       view.representative === null
         ? null
@@ -306,6 +320,8 @@ export class HandoverService {
     private readonly productService: ProductService,
     private readonly scheduling: SchedulingService,
     private readonly damages: ExistingDamageProvider = NO_EXISTING_DAMAGES,
+    /** Phase 12 (Order §11): Protokollmail nach Finalisierung (ohne Mailer bleibt das Paket `ready`). */
+    private readonly packetMailer: DeliveryPacketMailer | null = null,
   ) {}
 
   // ── Laden / Anlegen (Order §18: Entwurf automatisch) ────────────────────
@@ -1608,6 +1624,7 @@ export class HandoverService {
     const protocolUpload = await this.documentService.uploadBytes(protocolKey, protocolPdf);
 
     // Phase 2: fachlich atomare Transaktion.
+    let enqueuedMail: EnqueuedMail | null = null;
     await this.db.transaction(async (tx) => {
       await tx.execute(
         sql`SELECT pg_advisory_xact_lock(hashtext(${'handover-finalize:' + handover.id}))`,
@@ -1798,7 +1815,7 @@ export class HandoverService {
 
       // Dokumentpaket (Order §39): genau EIN Paket je Übergabe, versandbereit.
       const customer = booking.customerSnapshot as Record<string, unknown>;
-      await tx
+      const insertedPacket = await tx
         .insert(deliveryPackets)
         .values({
           kind: 'handover_completed',
@@ -1814,8 +1831,35 @@ export class HandoverService {
           documentIds: [deliveryNoteDocument.id, protocolDocument.id],
           status: 'ready',
         })
-        .onConflictDoNothing({ target: [deliveryPackets.handoverId, deliveryPackets.kind] });
+        .onConflictDoNothing({ target: [deliveryPackets.handoverId, deliveryPackets.kind] })
+        .returning({ id: deliveryPackets.id });
+      // Phase 12 (Order §11): Protokollmail (Lieferschein + Übergabeprotokoll)
+      // in derselben Transaktion einreihen; Versand erst nach dem Commit.
+      if (this.packetMailer !== null && insertedPacket.length > 0) {
+        enqueuedMail = await this.packetMailer.enqueueWithin(tx, {
+          kind: 'handover_completed',
+          entityId: handover.id,
+          processId: booking.processId,
+          bookingId,
+          customerId: booking.customerId,
+          processNumber,
+          recipient: {
+            email: typeof customer.email === 'string' ? customer.email : '',
+            name: typeof customer.displayName === 'string' ? customer.displayName : null,
+          },
+          finalizedAt,
+          documents: [
+            { documentId: deliveryNoteDocument.id, filename: `Lieferschein-${processNumber}.pdf` },
+            {
+              documentId: protocolDocument.id,
+              filename: `Uebergabeprotokoll-${processNumber}.pdf`,
+            },
+          ],
+        });
+      }
     });
+    // Mailfehler rollen die Übergabe nie zurück: Job-Planung außerhalb der Transaktion.
+    await this.packetMailer?.afterCommit(enqueuedMail);
     await this.assignments.refreshRiskIncidents(now);
     return this.detail(bookingId, now);
   }

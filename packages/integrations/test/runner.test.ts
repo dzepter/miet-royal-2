@@ -1,7 +1,7 @@
 import { setTimeout as sleep } from 'node:timers/promises';
 import { describe, expect, it } from 'vitest';
 import type { ClaimedJob, JobQueue, ReclaimResult } from '../src/jobs/queue.ts';
-import { JobRunner } from '../src/jobs/runner.ts';
+import { JOB_ERROR_SUMMARY_MAX_CHARS, JobRunner, summarizeJobError } from '../src/jobs/runner.ts';
 
 /** Steuerbare In-Memory-Queue für Lebenszyklus-Tests ohne Datenbank. */
 class FakeQueue implements JobQueue {
@@ -83,5 +83,42 @@ describe('JobRunner-Lebenszyklus', () => {
     runner.start(10);
     await Promise.all([runner.stop(), runner.stop()]);
     await runner.stop();
+  });
+});
+
+describe('summarizeJobError (Phase 12, Härtung RA-10/H3)', () => {
+  it('speichert nur Fehlerklasse, Code und erste Zeile – nie Drizzle-Parameter oder NUL-Bytes', () => {
+    const cause = Object.assign(new Error('invalid byte sequence for encoding "UTF8": 0x00'), {
+      code: '22021',
+      severity: 'ERROR',
+    });
+    const drizzle = Object.assign(
+      new Error(
+        'Failed query: insert into "conversation_messages" ("body") values ($1)\nparams: Geheimer Kundentext SECRET-4711 mit NUL\u0000Byte',
+      ),
+      { name: 'DrizzleQueryError', cause },
+    );
+    const summary = summarizeJobError(drizzle);
+    expect(summary).toBe(
+      'DrizzleQueryError [22021]: Failed query: insert into "conversation_messages" ("body") values ($1)',
+    );
+    expect(summary).not.toContain('SECRET-4711');
+    expect(summary).not.toContain('\u0000');
+  });
+
+  it('rohe PostgreSQL-Fehler ohne Meldung (zitiert Werte); Steuerzeichen entfernt; Länge begrenzt', () => {
+    const raw = Object.assign(
+      new Error('invalid input syntax for type uuid: "kunde@example.org"'),
+      {
+        name: 'error',
+        code: '22P02',
+        severity: 'ERROR',
+      },
+    );
+    expect(summarizeJobError(raw)).toBe('error [22P02]');
+    expect(summarizeJobError(new Error('a\u0000b\tc'))).toBe('Error: a b c');
+    const long = summarizeJobError(new Error('x'.repeat(2000)));
+    expect(long.length).toBe(JOB_ERROR_SUMMARY_MAX_CHARS);
+    expect(summarizeJobError('kaputt')).toBe('string: kaputt');
   });
 });

@@ -112,7 +112,6 @@ describe('Mock-Accounting über die Abrechnung (§92)', () => {
       rateLimitEnabled: false,
       storage: ctx.storage,
       accountingGateway: new DisabledAccountingGateway(),
-      noticeGateway: ctx.notices,
       jobQueue: ctx.queue,
     });
     await app.ready();
@@ -391,6 +390,6 @@ describe('Prozessabschluss und Reopen (§93)', () => {
     expect(after.snapshot).toEqual(before.snapshot);
     expect(after.attempts).toBe(before.attempts);
     expect(ctx.accounting.calls).toHaveLength(1);
-    expect(ctx.notices.sent).toHaveLength(0);
+    expect(ctx.mailGateway.sent).toHaveLength(0);
   });
 });

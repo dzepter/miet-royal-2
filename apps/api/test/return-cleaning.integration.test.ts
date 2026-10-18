@@ -15,6 +15,7 @@ import {
   truncateAuthTables,
   type TestContext,
 } from './auth-helpers.ts';
+import { settleMailJobs } from './mail-job-helpers.ts';
 import { createStaffWithPermissions, truncateCrmTables } from './crm-helpers.ts';
 import { truncateCommerceTables } from './commerce-helpers.ts';
 import { truncateSchedulingTables } from './scheduling-helpers.ts';
@@ -52,6 +53,7 @@ async function returnedMachine(adminId: string) {
   const { world, services } = await startedReturn(ctx, adminId);
   await readyReturn(ctx, adminId, services, world.bookingId);
   await services.returns.finalize(adminId, world.bookingId);
+  await settleMailJobs(ctx); // Phase 12: Rückgabeprotokoll-Mail der Finalisierung abarbeiten
   const machine = await machineByCode(ctx.db, 'MR-10-01-01');
   return { world, services, machine };
 }

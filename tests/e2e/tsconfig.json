@@ -3,5 +3,5 @@
   "compilerOptions": {
     "lib": ["ES2023", "DOM", "DOM.Iterable"]
   },
-  "include": ["specs", "helpers", "global-setup.ts", "playwright.config.ts"]
+  "include": ["specs", "helpers", "fakes", "global-setup.ts", "playwright.config.ts"]
 }

@@ -5,6 +5,7 @@ import { useParams, useRouter } from 'next/navigation';
 import { useCallback, useEffect, useState } from 'react';
 import { AuthGuard, useMe } from '../../../components/auth-guard';
 import { ConfirmDialog } from '../../../components/confirm-dialog';
+import { VoucherDeliveryActions } from '../../../components/communication';
 import { apiFetch, hasPermission, type Me } from '../../../lib/api';
 import {
   formatBerlinDate,
@@ -225,6 +226,14 @@ function CustomerView() {
               </>
             )}
           </p>
+          {/* Phase 12 (UI): Versandproblem + „Gutschein jetzt senden“ (Order §15). */}
+          <VoucherDeliveryActions
+            customerId={params.id}
+            voucher={detail.voucher}
+            me={me}
+            testIdPrefix="customer-voucher"
+            onChanged={load}
+          />
         </div>
       ) : null}
 

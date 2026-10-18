@@ -36,6 +36,96 @@ export interface AppConfig {
   };
   /** Phase 10: Lexware-Office-Anbindung (Public API). */
   lexware: LexwareConfig;
+  /** Phase 12: E-Mail (SMTP-Versand, IMAP-Eingang). */
+  mail: MailConfig;
+  /** Phase 12: Verschlüsselung von Kommunikations-Geheimnissen (Links, Codes) in der Datenbank. */
+  communication: CommunicationConfig;
+  /** Phase 12: WhatsApp (ausschließlich Meta WhatsApp Business Cloud API). */
+  whatsapp: WhatsAppConfig;
+  /** Phase 12: Web Push (RFC 8030/8291/8292, VAPID). */
+  push: PushConfig;
+}
+
+/**
+ * E-Mail-Konfiguration (Phase 12):
+ * - Versand nur bei MAIL_ENABLED=true UND vollständigen SMTP-Daten (fail-closed).
+ * - production/staging: nur TLS (implizit 465 oder STARTTLS-Pflicht); ungültige
+ *   Zertifikate werden nie akzeptiert (keine Option dafür); Hosts nur per env.
+ * - demo: Versand nur an die Whitelist MAIL_DEMO_WHITELIST, Betreff mit "[DEMO]".
+ * - IMAP-Eingang nur bei MAIL_IMAP_ENABLED=true UND vollständigen Zugangsdaten (fail-closed).
+ * Passwörter existieren ausschließlich in diesem Objekt (nie Log/DB/Antwort).
+ */
+export interface MailConfig {
+  enabled: boolean;
+  smtp: {
+    host: string;
+    port: number;
+    /** implizites TLS (meist 465) oder STARTTLS-Pflicht (meist 587). */
+    tls: 'implicit' | 'starttls';
+    user: string;
+    password: string;
+  } | null;
+  imap: {
+    host: string;
+    port: number;
+    tls: 'implicit' | 'starttls';
+    user: string;
+    password: string;
+    folder: string;
+  } | null;
+  fromName: string;
+  fromAddress: string | null;
+  /** Antwortadresse (Reply-To); Default = fromAddress. */
+  replyAddress: string | null;
+  /** Nur demo: erlaubte Empfänger (kleingeschrieben; `@domain` = ganze Domain). */
+  demoWhitelist: readonly string[];
+  /** Absolute Basis-URL der öffentlichen Web-App (Angebots-/Aktionslinks), ohne Slash am Ende. */
+  publicWebBaseUrl: string | null;
+}
+
+export interface CommunicationConfig {
+  /** Aktueller Schlüssel (>= 32 Zeichen) für AES-256-GCM-Payloads (Schlüssel-ID wird abgeleitet). */
+  payloadKey: string;
+  /** Genau ein Vorgängerschlüssel für die Rotation (nur Entschlüsselung), optional. */
+  payloadKeyPrevious: string | null;
+}
+
+export const WHATSAPP_GRAPH_BASE_URL = 'https://graph.facebook.com';
+export const WHATSAPP_DEFAULT_GRAPH_API_VERSION = 'v25.0';
+
+/**
+ * WhatsApp-Konfiguration (Phase 12):
+ * - production: `live` genau dann, wenn WHATSAPP_ENABLED=true und alle Werte
+ *   gesetzt sind; Host fest graph.facebook.com (WHATSAPP_BASE_URL abgelehnt);
+ *   sonst `disabled`.
+ * - demo: immer `mock` (simulierter Gateway); echte Zugangsdaten sind dort ein Fehler.
+ * - development: `mock`, per Opt-in (WHATSAPP_ENABLED=true + Werte) `live`,
+ *   WHATSAPP_BASE_URL darf auf einen lokalen Fake zeigen.
+ * - staging: `disabled`, per Opt-in `live`.
+ */
+export interface WhatsAppConfig {
+  mode: 'disabled' | 'live' | 'mock';
+  accessToken: string | null;
+  phoneNumberId: string | null;
+  businessAccountId: string | null;
+  /** App-Secret für X-Hub-Signature-256 (Webhook). */
+  appSecret: string | null;
+  /** Verify-Token für die Webhook-Registrierung (GET hub.verify_token). */
+  verifyToken: string | null;
+  graphApiVersion: string;
+  baseUrl: string;
+}
+
+/**
+ * Web-Push-Konfiguration (Phase 12): aktiv genau dann, wenn alle drei VAPID-
+ * Werte gesetzt sind. Der private Schlüssel existiert nur hier.
+ */
+export interface PushConfig {
+  enabled: boolean;
+  vapidPublicKey: string | null;
+  vapidPrivateKey: string | null;
+  /** `mailto:` oder `https://` (RFC 8292 sub). */
+  vapidSubject: string | null;
 }
 
 /**
@@ -130,6 +220,68 @@ const rawEnvSchema = z.object({
     .regex(/^\d{4}-\d{2}-\d{2}$/, 'muss YYYY-MM-DD sein')
     .optional(),
   LEXWARE_REQUEST_TIMEOUT_MS: z.coerce.number().int().min(1000).max(120_000).optional(),
+  // Phase 12 – E-Mail
+  MAIL_ENABLED: z.enum(['true', 'false']).optional(),
+  MAIL_SMTP_HOST: z.string().min(1).max(253).optional(),
+  MAIL_SMTP_PORT: portSchema.optional(),
+  MAIL_SMTP_SECURE: z.enum(['true', 'false']).optional(),
+  MAIL_SMTP_USER: z.string().min(1).max(256).optional(),
+  MAIL_SMTP_PASSWORD: z.string().min(1).max(1024).optional(),
+  MAIL_IMAP_ENABLED: z.enum(['true', 'false']).optional(),
+  MAIL_IMAP_HOST: z.string().min(1).max(253).optional(),
+  MAIL_IMAP_PORT: portSchema.optional(),
+  MAIL_IMAP_SECURE: z.enum(['true', 'false']).optional(),
+  MAIL_IMAP_USER: z.string().min(1).max(256).optional(),
+  MAIL_IMAP_PASSWORD: z.string().min(1).max(1024).optional(),
+  MAIL_IMAP_FOLDER: z.string().min(1).max(256).optional(),
+  MAIL_FROM_NAME: z.string().min(1).max(128).optional(),
+  MAIL_FROM_ADDRESS: z.string().email('muss eine E-Mail-Adresse sein').max(254).optional(),
+  MAIL_REPLY_ADDRESS: z.string().email('muss eine E-Mail-Adresse sein').max(254).optional(),
+  /** Kommagetrennt: vollständige Adressen oder `@domain` (nur demo). */
+  MAIL_DEMO_WHITELIST: z.string().max(4096).optional(),
+  MAIL_PUBLIC_WEB_BASE_URL: z
+    .string()
+    .regex(/^https?:\/\/[^\s]+$/, 'muss eine absolute http(s)-URL sein')
+    .optional(),
+  // Phase 12 – Verschlüsselung von Kommunikations-Geheimnissen
+  COMMUNICATION_PAYLOAD_KEY: z
+    .string()
+    .min(32, 'muss mindestens 32 Zeichen lang sein')
+    .max(256)
+    .optional(),
+  COMMUNICATION_PAYLOAD_KEY_PREVIOUS: z
+    .string()
+    .min(32, 'muss mindestens 32 Zeichen lang sein')
+    .max(256)
+    .optional(),
+  // Phase 12 – WhatsApp Business Cloud API
+  WHATSAPP_ENABLED: z.enum(['true', 'false']).optional(),
+  WHATSAPP_ACCESS_TOKEN: z.string().min(1).max(2048).optional(),
+  WHATSAPP_PHONE_NUMBER_ID: z
+    .string()
+    .regex(/^\d{1,32}$/, 'muss numerisch sein')
+    .optional(),
+  WHATSAPP_BUSINESS_ACCOUNT_ID: z
+    .string()
+    .regex(/^\d{1,32}$/, 'muss numerisch sein')
+    .optional(),
+  WHATSAPP_APP_SECRET: z.string().min(16).max(512).optional(),
+  WHATSAPP_VERIFY_TOKEN: z.string().min(16).max(512).optional(),
+  WHATSAPP_GRAPH_API_VERSION: z
+    .string()
+    .regex(/^v\d{1,3}\.\d{1,3}$/, 'muss die Form vNN.N haben')
+    .optional(),
+  WHATSAPP_BASE_URL: z
+    .string()
+    .regex(/^https?:\/\/.+/, 'muss eine http(s)-URL sein')
+    .optional(),
+  // Phase 12 – Web Push (VAPID)
+  PUSH_VAPID_PUBLIC_KEY: z.string().min(1).max(512).optional(),
+  PUSH_VAPID_PRIVATE_KEY: z.string().min(1).max(512).optional(),
+  PUSH_VAPID_SUBJECT: z
+    .string()
+    .regex(/^(mailto:[^\s@]+@[^\s@]+|https:\/\/[^\s]+)$/, 'muss mailto: oder https:// sein')
+    .optional(),
 });
 
 /**
@@ -145,6 +297,10 @@ const DEVELOPMENT_DEFAULTS = {
   // Nur lokale Entwicklung – kein Geheimnis. Verschlüsselt lokale
   // TOTP-Secrets; alle anderen Umgebungen MÜSSEN einen eigenen Wert setzen.
   AUTH_SECRET_KEY: 'mietroyal-development-only-auth-secret-key',
+  // Nur lokale Entwicklung – kein Geheimnis. Verschlüsselt lokale
+  // Kommunikations-Payloads (Links/Codes); alle anderen Umgebungen MÜSSEN
+  // einen eigenen Wert setzen.
+  COMMUNICATION_PAYLOAD_KEY: 'mietroyal-development-only-communication-payload-key',
 } as const;
 
 export function loadConfig(env: Record<string, string | undefined> = process.env): AppConfig {
@@ -251,10 +407,34 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
       lexwareBaseUrl = raw.LEXWARE_BASE_URL.replace(/\/+$/, '');
   }
 
+  // Phase 12: Kommunikations-Payload-Schlüssel (Pflicht außerhalb von development).
+  const communicationPayloadKey = requireVar(
+    raw.COMMUNICATION_PAYLOAD_KEY,
+    'COMMUNICATION_PAYLOAD_KEY',
+    DEVELOPMENT_DEFAULTS.COMMUNICATION_PAYLOAD_KEY,
+  );
+  if (
+    raw.COMMUNICATION_PAYLOAD_KEY_PREVIOUS !== undefined &&
+    raw.COMMUNICATION_PAYLOAD_KEY_PREVIOUS === communicationPayloadKey
+  ) {
+    problems.push(
+      'COMMUNICATION_PAYLOAD_KEY_PREVIOUS: darf nicht dem aktuellen Schlüssel gleichen',
+    );
+  }
+
+  const mail = buildMailConfig(raw, problems);
+  const whatsapp = buildWhatsAppConfig(raw, problems);
+  const push = buildPushConfig(raw, problems);
+
   if (problems.length > 0) {
     throw new ConfigError(problems);
   }
-  if (databaseUrl === undefined || storage === undefined || authSecretKey === undefined) {
+  if (
+    databaseUrl === undefined ||
+    storage === undefined ||
+    authSecretKey === undefined ||
+    communicationPayloadKey === undefined
+  ) {
     // Durch die problems-Prüfung oben nicht erreichbar; hält die Typen eng.
     throw new ConfigError(['Konfiguration unvollständig']);
   }
@@ -289,5 +469,204 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
       apiKeyReminderDate: raw.LEXWARE_API_KEY_REMINDER_DATE ?? null,
       requestTimeoutMs: raw.LEXWARE_REQUEST_TIMEOUT_MS ?? 15_000,
     },
+    mail,
+    communication: {
+      payloadKey: communicationPayloadKey,
+      payloadKeyPrevious: raw.COMMUNICATION_PAYLOAD_KEY_PREVIOUS ?? null,
+    },
+    whatsapp,
+    push,
+  };
+}
+
+type RawEnv = z.infer<typeof rawEnvSchema>;
+
+const isTlsRequiredEnv = (env: AppEnvironment): boolean =>
+  env === 'production' || env === 'staging';
+
+function buildMailConfig(raw: RawEnv, problems: string[]): MailConfig {
+  const enabled = raw.MAIL_ENABLED === 'true';
+  const tlsRequired = isTlsRequiredEnv(raw.APP_ENV);
+
+  let smtp: MailConfig['smtp'] = null;
+  if (enabled) {
+    for (const name of [
+      'MAIL_SMTP_HOST',
+      'MAIL_SMTP_USER',
+      'MAIL_SMTP_PASSWORD',
+      'MAIL_FROM_ADDRESS',
+    ] as const) {
+      if (raw[name] === undefined) {
+        problems.push(`${name}: muss gesetzt sein, wenn MAIL_ENABLED=true`);
+      }
+    }
+    if (tlsRequired && /^(localhost|127\.0\.0\.1)$/i.test(raw.MAIL_SMTP_HOST ?? '')) {
+      problems.push(`MAIL_SMTP_HOST: in ${raw.APP_ENV} keine localhost-Adresse`);
+    }
+    if (
+      raw.MAIL_SMTP_HOST !== undefined &&
+      raw.MAIL_SMTP_USER !== undefined &&
+      raw.MAIL_SMTP_PASSWORD !== undefined
+    ) {
+      const implicit = raw.MAIL_SMTP_SECURE === undefined ? true : raw.MAIL_SMTP_SECURE === 'true';
+      smtp = {
+        host: raw.MAIL_SMTP_HOST,
+        port: raw.MAIL_SMTP_PORT ?? (implicit ? 465 : 587),
+        tls: implicit ? 'implicit' : 'starttls',
+        user: raw.MAIL_SMTP_USER,
+        password: raw.MAIL_SMTP_PASSWORD,
+      };
+    }
+  }
+
+  let imap: MailConfig['imap'] = null;
+  if (raw.MAIL_IMAP_ENABLED === 'true') {
+    for (const name of ['MAIL_IMAP_HOST', 'MAIL_IMAP_USER', 'MAIL_IMAP_PASSWORD'] as const) {
+      if (raw[name] === undefined) {
+        problems.push(`${name}: muss gesetzt sein, wenn MAIL_IMAP_ENABLED=true`);
+      }
+    }
+  }
+  if (raw.MAIL_IMAP_ENABLED === 'true' && raw.MAIL_IMAP_HOST !== undefined) {
+    if (raw.MAIL_IMAP_USER !== undefined && raw.MAIL_IMAP_PASSWORD !== undefined) {
+      const implicit = raw.MAIL_IMAP_SECURE === undefined ? true : raw.MAIL_IMAP_SECURE === 'true';
+      imap = {
+        host: raw.MAIL_IMAP_HOST,
+        port: raw.MAIL_IMAP_PORT ?? (implicit ? 993 : 143),
+        tls: implicit ? 'implicit' : 'starttls',
+        user: raw.MAIL_IMAP_USER,
+        password: raw.MAIL_IMAP_PASSWORD,
+        folder: raw.MAIL_IMAP_FOLDER ?? 'INBOX',
+      };
+    }
+    if (tlsRequired && /^(localhost|127\.0\.0\.1)$/i.test(raw.MAIL_IMAP_HOST)) {
+      problems.push(`MAIL_IMAP_HOST: in ${raw.APP_ENV} keine localhost-Adresse`);
+    }
+  }
+
+  const demoWhitelist = (raw.MAIL_DEMO_WHITELIST ?? '')
+    .split(',')
+    .map((entry) => entry.trim().toLowerCase())
+    .filter((entry) => entry !== '');
+  for (const entry of demoWhitelist) {
+    if (!/^(@[^\s@]+\.[^\s@]+|[^\s@]+@[^\s@]+\.[^\s@]+)$/.test(entry)) {
+      problems.push('MAIL_DEMO_WHITELIST: Einträge müssen Adressen oder @domain sein');
+      break;
+    }
+  }
+  if (raw.APP_ENV === 'demo') {
+    if (enabled && demoWhitelist.length === 0) {
+      problems.push(
+        'MAIL_DEMO_WHITELIST: in demo Pflicht, wenn MAIL_ENABLED=true (Demo sendet nur an freigegebene Adressen)',
+      );
+    }
+  } else if (raw.APP_ENV === 'production' && raw.MAIL_DEMO_WHITELIST !== undefined) {
+    problems.push('MAIL_DEMO_WHITELIST: in production nicht zulässig (nur demo)');
+  }
+
+  if (
+    enabled &&
+    raw.APP_ENV === 'production' &&
+    raw.MAIL_PUBLIC_WEB_BASE_URL !== undefined &&
+    !/^https:\/\//.test(raw.MAIL_PUBLIC_WEB_BASE_URL)
+  ) {
+    problems.push('MAIL_PUBLIC_WEB_BASE_URL: in production nur HTTPS');
+  }
+  // Härtung RA-11: Angebots-, Aktions- und Dokumentmails enthalten Links – ohne Basis-URL
+  // würde jede solche Mail erst im Versandjob scheitern (Angebot „versendet“, Kunde erhält
+  // nichts). Außerhalb von development (dort gibt es einen lokalen Default) daher Pflicht.
+  if (enabled && raw.APP_ENV !== 'development' && raw.MAIL_PUBLIC_WEB_BASE_URL === undefined) {
+    problems.push(
+      `MAIL_PUBLIC_WEB_BASE_URL: in ${raw.APP_ENV} Pflicht, wenn MAIL_ENABLED=true (Links in Kundenmails)`,
+    );
+  }
+
+  return {
+    enabled: enabled && smtp !== null,
+    smtp,
+    imap,
+    fromName: raw.MAIL_FROM_NAME ?? 'Miet-Royal Mainz',
+    fromAddress: raw.MAIL_FROM_ADDRESS ?? null,
+    replyAddress: raw.MAIL_REPLY_ADDRESS ?? raw.MAIL_FROM_ADDRESS ?? null,
+    demoWhitelist: raw.APP_ENV === 'demo' ? demoWhitelist : [],
+    publicWebBaseUrl: raw.MAIL_PUBLIC_WEB_BASE_URL?.replace(/\/+$/, '') ?? null,
+  };
+}
+
+function buildWhatsAppConfig(raw: RawEnv, problems: string[]): WhatsAppConfig {
+  const secretNames = [
+    'WHATSAPP_ACCESS_TOKEN',
+    'WHATSAPP_PHONE_NUMBER_ID',
+    'WHATSAPP_BUSINESS_ACCOUNT_ID',
+    'WHATSAPP_APP_SECRET',
+    'WHATSAPP_VERIFY_TOKEN',
+  ] as const;
+  const complete = secretNames.every((name) => raw[name] !== undefined);
+  const anySet = secretNames.some((name) => raw[name] !== undefined);
+  const optIn = raw.WHATSAPP_ENABLED === 'true';
+  let mode: WhatsAppConfig['mode'] = 'disabled';
+  let baseUrl = WHATSAPP_GRAPH_BASE_URL;
+
+  if (raw.APP_ENV === 'demo') {
+    mode = 'mock';
+    if (anySet || optIn) {
+      problems.push(
+        'WHATSAPP_*: in demo nicht zulässig (Demo nutzt ausschließlich den simulierten WhatsApp-Gateway)',
+      );
+    }
+  } else {
+    if (optIn && !complete) {
+      for (const name of secretNames) {
+        if (raw[name] === undefined) {
+          problems.push(`${name}: muss gesetzt sein, wenn WHATSAPP_ENABLED=true`);
+        }
+      }
+    }
+    if (optIn && complete) mode = 'live';
+    else if (raw.APP_ENV === 'development') mode = 'mock';
+
+    if (raw.APP_ENV === 'production') {
+      if (
+        raw.WHATSAPP_BASE_URL !== undefined &&
+        raw.WHATSAPP_BASE_URL.replace(/\/+$/, '') !== WHATSAPP_GRAPH_BASE_URL
+      ) {
+        problems.push(
+          'WHATSAPP_BASE_URL: in production ist ausschließlich https://graph.facebook.com zulässig',
+        );
+      }
+    } else if (raw.WHATSAPP_BASE_URL !== undefined) {
+      baseUrl = raw.WHATSAPP_BASE_URL.replace(/\/+$/, '');
+    }
+  }
+
+  const live = mode === 'live';
+  return {
+    mode,
+    accessToken: live ? (raw.WHATSAPP_ACCESS_TOKEN ?? null) : null,
+    phoneNumberId: live ? (raw.WHATSAPP_PHONE_NUMBER_ID ?? null) : null,
+    businessAccountId: live ? (raw.WHATSAPP_BUSINESS_ACCOUNT_ID ?? null) : null,
+    appSecret: live ? (raw.WHATSAPP_APP_SECRET ?? null) : null,
+    verifyToken: live ? (raw.WHATSAPP_VERIFY_TOKEN ?? null) : null,
+    graphApiVersion: raw.WHATSAPP_GRAPH_API_VERSION ?? WHATSAPP_DEFAULT_GRAPH_API_VERSION,
+    baseUrl,
+  };
+}
+
+function buildPushConfig(raw: RawEnv, problems: string[]): PushConfig {
+  const names = ['PUSH_VAPID_PUBLIC_KEY', 'PUSH_VAPID_PRIVATE_KEY', 'PUSH_VAPID_SUBJECT'] as const;
+  const setCount = names.filter((name) => raw[name] !== undefined).length;
+  if (setCount > 0 && setCount < names.length) {
+    for (const name of names) {
+      if (raw[name] === undefined) {
+        problems.push(`${name}: muss gesetzt sein, wenn Web Push (PUSH_VAPID_*) konfiguriert ist`);
+      }
+    }
+  }
+  const enabled = setCount === names.length;
+  return {
+    enabled,
+    vapidPublicKey: enabled ? (raw.PUSH_VAPID_PUBLIC_KEY ?? null) : null,
+    vapidPrivateKey: enabled ? (raw.PUSH_VAPID_PRIVATE_KEY ?? null) : null,
+    vapidSubject: enabled ? (raw.PUSH_VAPID_SUBJECT ?? null) : null,
   };
 }

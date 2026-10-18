@@ -1,83 +1,83 @@
-import { offerDeliveries, type Database, type DatabaseExecutor } from '@mietroyal/database';
 import type { AppConfig } from '@mietroyal/config';
+import type { DatabaseExecutor } from '@mietroyal/database';
 import { AuthError } from '../auth/service.ts';
+import type { MailOutboxService } from '../communication/mail/outbox.ts';
+import type {
+  MailEnqueueInput,
+  MailEnqueueResult,
+  OutboundMailGateway,
+} from '../communication/types.ts';
 
 /**
- * Fachlicher Versandprozess für Angebote/Auftragsbestätigungen
- * (Phase-3-Vorgabe Nr. 24). Die echte E-Mail-Infrastruktur kommt in einer
- * späteren Phase – hier gibt es NUR den fachlichen Adapterpunkt:
+ * Fachlicher Versandprozess für Angebote/Auftragsbestätigungen (Phase-3-
+ * Vorgabe Nr. 24, Phase 12 Order §11): Der Versand läuft über die zentrale
+ * Mail-Outbox (`mail_deliveries`) und den Job `mail.send` – nie innerhalb
+ * einer offenen Transaktion gegen einen Provider. Die frühere Tabelle
+ * `offer_deliveries` (Phase-5-Altbestand, Token dort bereits maskiert)
+ * wird nicht mehr befüllt; die Outbox ist die einzige Versandspur.
  *
- * - Development/Test/Staging/Demo: Outbox-Adapter (protokolliert den
- *   Versand nachvollziehbar in offer_deliveries; nichts verlässt das System).
- * - Production: solange kein echter Versandadapter konfiguriert ist, wird
- *   der Versand HART blockiert – es wird niemals so getan, als sei eine
- *   E-Mail verschickt worden. `assertConfigured()` erlaubt die Blockade
+ * - Nicht-Production: immer einreihbar; ohne konfigurierten Mailweg endet
+ *   die Zustellung `blocked` (MAIL_NOT_CONFIGURED) – sichtbar, nie vorgetäuscht.
+ * - Production ohne Mailweg: `assertConfigured()` blockiert HART (CONFLICT)
  *   VOR jeder Zustandsänderung (kein Einfrieren ohne echten Versandweg).
  */
-
-export interface OfferDeliveryRequest {
-  kind: 'offer' | 'order_confirmation';
-  offerVersionId?: string | undefined;
-  orderConfirmationId?: string | undefined;
-  recipient: string;
-  subject: string;
-  body: string;
-}
-
 export interface OfferDeliveryGateway {
-  /** Wirft, wenn kein echter Versandweg existiert – VOR dem Einfrieren aufrufen. */
+  /** Wirft, wenn in production kein echter Versandweg existiert – VOR dem Einfrieren aufrufen. */
   assertConfigured(): void;
-  /**
-   * `executor`: laufende Transaktion des Aufrufers – die Outbox-Zeile wird
-   * dann über DIESELBE Verbindung geschrieben (keine verschachtelte
-   * Pool-Akquise unter gehaltenen Sperren, Phase-6-Finalisierung A1).
-   */
-  deliver(request: OfferDeliveryRequest, executor?: DatabaseExecutor): Promise<void>;
+  /** Outbox-Zeile schreiben – `executor` = laufende Transaktion des Aufrufers. */
+  enqueue(input: MailEnqueueInput, executor?: DatabaseExecutor): Promise<MailEnqueueResult>;
+  /** Nach dem Commit: Versandjob planen (nur für `pending`). */
+  scheduleSend(deliveryId: string): Promise<void>;
 }
 
-export class OutboxDeliveryGateway implements OfferDeliveryGateway {
-  constructor(private readonly db: Database) {}
+export const OFFER_DELIVERY_NOT_CONFIGURED_MESSAGE =
+  'Versand nicht möglich: In Production ist kein Mailversand (SMTP) konfiguriert. ' +
+  'Der Versand wird bewusst blockiert, statt einen Versand vorzutäuschen.';
+
+export class OutboxOfferDeliveryGateway implements OfferDeliveryGateway {
+  constructor(
+    private readonly outbox: MailOutboxService,
+    private readonly appEnv: AppConfig['appEnv'],
+    private readonly mailGatewayKind: OutboundMailGateway['kind'],
+  ) {}
 
   assertConfigured(): void {
-    // Outbox ist in Nicht-Production-Umgebungen immer verfügbar.
+    if (this.appEnv === 'production' && this.mailGatewayKind === 'disabled') {
+      throw new AuthError('CONFLICT', OFFER_DELIVERY_NOT_CONFIGURED_MESSAGE);
+    }
   }
 
-  async deliver(request: OfferDeliveryRequest, executor?: DatabaseExecutor): Promise<void> {
-    // Vorgabe Nr. 25: Das Zugriffstoken liegt in der DB NUR als Hash – auch
-    // die Outbox-Kopie des Textes maskiert deshalb den Token im Link (der
-    // echte Link erreicht den Kunden über den späteren Mail-Adapter; in
-    // Dev/Test zeigt die Staff-UI den Link direkt nach dem Versand an).
-    const maskedBody = request.body.replace(/(\/angebot\/)[A-Za-z0-9_-]+/g, '$1***');
-    await (executor ?? this.db).insert(offerDeliveries).values({
-      kind: request.kind,
-      offerVersionId: request.offerVersionId ?? null,
-      orderConfirmationId: request.orderConfirmationId ?? null,
-      recipient: request.recipient,
-      subject: request.subject,
-      body: maskedBody,
-    });
+  enqueue(input: MailEnqueueInput, executor?: DatabaseExecutor): Promise<MailEnqueueResult> {
+    return this.outbox.enqueue(input, executor);
+  }
+
+  scheduleSend(deliveryId: string): Promise<void> {
+    return this.outbox.scheduleSend(deliveryId);
   }
 }
 
+/** Production ohne Versandweg: blockiert hart (Tests „Blockade VOR dem Einfrieren“). */
 export class UnconfiguredProductionGateway implements OfferDeliveryGateway {
   assertConfigured(): void {
-    throw new AuthError(
-      'CONFLICT',
-      'Versand nicht möglich: In Production ist noch kein echter Versandadapter konfiguriert. ' +
-        'Der Versand wird bewusst blockiert, statt einen Versand vorzutäuschen.',
-    );
+    throw new AuthError('CONFLICT', OFFER_DELIVERY_NOT_CONFIGURED_MESSAGE);
   }
 
-  deliver(): Promise<void> {
-    this.assertConfigured();
-    return Promise.resolve();
+  enqueue(): Promise<MailEnqueueResult> {
+    return Promise.reject(new AuthError('CONFLICT', OFFER_DELIVERY_NOT_CONFIGURED_MESSAGE));
+  }
+
+  scheduleSend(): Promise<void> {
+    return Promise.reject(new AuthError('CONFLICT', OFFER_DELIVERY_NOT_CONFIGURED_MESSAGE));
   }
 }
 
-export function createOfferDeliveryGateway(config: AppConfig, db: Database): OfferDeliveryGateway {
-  if (config.appEnv === 'production') {
-    // Kommt der echte Mail-Adapter (spätere Phase), wird er HIER angebunden.
-    return new UnconfiguredProductionGateway();
-  }
-  return new OutboxDeliveryGateway(db);
+export function createOfferDeliveryGateway(
+  config: Pick<AppConfig, 'appEnv'>,
+  communication: { outbox: MailOutboxService; mailGateway: Pick<OutboundMailGateway, 'kind'> },
+): OfferDeliveryGateway {
+  return new OutboxOfferDeliveryGateway(
+    communication.outbox,
+    config.appEnv,
+    communication.mailGateway.kind,
+  );
 }

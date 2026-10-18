@@ -166,6 +166,18 @@ Profiländerung verändert laufenden Booking-Snapshot nicht.
 - Lieferung ohne festen Auto-Endpreis
 - keine Lagerzahl öffentlich
 
+## Kommunikation (Phase 12)
+- Pflichttests 1–205 als Integrations-/Unit-Tests `apps/api/test/communication-*.test.ts`
+  (Nummer im Testnamen), Härtung nach adversarialem Review in
+  `communication-hardening-*` (Fund-IDs RA-…/B…).
+- Keine echten Provider im Gate: Fakes (`FakeMailGateway`, `FakeInboundMailSource`,
+  `FakeWhatsAppGateway`, `FakePushGateway`) in Integrationstests; in E2E echte
+  Gateways gegen lokale Fakes (TLS-SMTP-Senke, IMAP, Graph-API, Push-Dienst,
+  `tests/e2e/fakes/`, Test-CA nur über `NODE_EXTRA_CA_CERTS`).
+- E2E-Szenarien A–T: `communication-flow.spec.ts`, `communication-lexware.spec.ts`,
+  `communication-ops.spec.ts` (Demo-Isolation im eigenen Projekt).
+- Optionale Live-Smokes `pnpm mail:smoke`, `pnpm whatsapp:smoke` nur mit expliziten Flags.
+
 ## Definition of Done
 Fachregel korrekt, Rechte serverseitig, Validierung, Fehlerfall,
 responsive, Tests ausgeführt, Doku aktualisiert, Staging geprüft.
