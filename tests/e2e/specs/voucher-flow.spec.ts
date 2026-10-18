@@ -9,11 +9,12 @@
  * über `mock-expire-wait`. Ausschließlich synthetische Testdaten.
  *
  * Klartextcode: Der Code erscheint nirgends in UI/API (Order §§12/14). Für die
- * Angebots-Szenarien liest die Spec die verschlüsselte Versandkopie des in
- * Szenario A automatisch erzeugten Gutscheins über den Phase-12-Pfad
- * (apps/api/scripts/e2e-voucher-reveal.ts, serverseitige Entschlüsselung,
- * nur Testdatenbank) – keine Produktroute, keine DB-Mutation, und zugleich
- * der Nachweis, dass die Versandkopie entschlüsselbar ist (Pflichttest 23).
+ * Angebots-Szenarien entschlüsselt die Spec die verschlüsselte Versandkopie
+ * des in Szenario A automatisch erzeugten Gutscheins IN-PROCESS
+ * (helpers/voucher.ts `revealVoucherCode`, Serverfunktion direkt importiert,
+ * nur Testdatenbank) – kein Reveal-Script, kein stdout/stderr, keine
+ * Produktroute, keine DB-Mutation, und zugleich der Nachweis, dass die
+ * Versandkopie entschlüsselbar ist (Pflichttest 23; Phase-11-Finale F15).
  *
  * Reihenfolge (seriell, fachlich bedingt): A erzeugt den Gutschein, B löst ihn
  * ein, H reaktiviert ihn durch kostenloses Storno; C–G nutzen den dann wieder
@@ -214,8 +215,8 @@ test('A: Schadenfreie Rückgabe + bezahlte Mock-Abrechnung + Reinigung abgeschlo
   expect(allVouchers()).toHaveLength(1);
   expect(voucherById(voucherA.id).status).toBe('active');
 
-  // Klartext NUR über die Versandkopie (Phase-12-Pfad, Testskript) – Hash passt.
-  codeCompact = revealVoucherCode(voucherA.id);
+  // Klartext NUR aus der Versandkopie, in-process im Testprozess (F15) – Hash passt.
+  codeCompact = revealVoucherCode(voucherA);
   codeFormatted = formatVoucherCode(codeCompact);
   expect(sha256(codeCompact)).toBe(voucherA.code_hash);
   expect(codeCompact.slice(-4)).toBe(voucherA.code_suffix);

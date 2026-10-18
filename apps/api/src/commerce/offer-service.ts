@@ -23,6 +23,7 @@ import type { AppConfig } from '@mietroyal/config';
 import {
   discountNeedsApproval,
   discountNeedsReason,
+  hasMachineSpecialPrice,
   offerExpiresAt,
   priceOffer,
   PricingError,
@@ -735,10 +736,6 @@ export class OfferService {
         (entry) => entry.lineKey !== input.lineKey,
       );
 
-      if (input.unitPriceCents !== null && locked.voucherId !== null) {
-        // Phase 11 (§22): Gutschein und Sonderpreis (auch 0 EUR) schließen sich aus.
-        throw new AuthError('VALIDATION', VOUCHER_NOT_COMBINABLE_MESSAGE);
-      }
       if (input.unitPriceCents !== null) {
         if (!Number.isInteger(input.unitPriceCents) || input.unitPriceCents < 0) {
           throw new AuthError(
@@ -752,10 +749,13 @@ export class OfferService {
             '0-EUR-Sonderpreise erfordern eine eigene Berechtigung.',
           );
         }
-        // Standardpreis der Ziel-Position ermitteln (aus aktueller Berechnung).
+        // Standardpreis und ART der Ziel-Position ermitteln – aus der
+        // serverseitigen Berechnung (Positions-/Produktmetadaten der DB),
+        // nie aus dem Client-lineKey allein. Probe ohne Gutschein, damit
+        // sie allein die Position beschreibt.
         const probe = await this.pricingResultFor(
           tx,
-          { ...locked, specialPrices: existing },
+          { ...locked, specialPrices: existing, voucherId: null },
           new Date(),
         );
         const target = probe.lineItems.find((item) => item.lineKey === input.lineKey);
@@ -764,6 +764,13 @@ export class OfferService {
         }
         if (target.billingMode === 'included') {
           throw new AuthError('VALIDATION', 'Inklusiv-Positionen haben keinen Sonderpreis.');
+        }
+        if (locked.voucherId !== null && target.kind === 'machine') {
+          // Phase 11 (§22): Gutschein und MASCHINEN-Sonderpreis (auch 0 EUR)
+          // schließen sich aus. Sonderpreise auf Kaufartikeln/Kommissions-
+          // positionen bleiben erlaubt – die Preisengine prüft dieselbe Regel
+          // beim anschließenden recomputeDraft strukturell erneut.
+          throw new AuthError('VALIDATION', VOUCHER_NOT_COMBINABLE_MESSAGE);
         }
         existing.push({
           lineKey: input.lineKey,
@@ -825,7 +832,7 @@ export class OfferService {
   /**
    * Gutschein im ENTWURF anwenden (§20): Code wird serverseitig neutral
    * validiert (Hash, Besitzer, Status, Ablauf – immer dieselbe Antwort,
-   * §55), nicht mit Rabatt/Sonderpreis kombinierbar (§22), höchstens ein
+   * §55), nicht mit Rabatt/MASCHINEN-Sonderpreis kombinierbar (§22), höchstens ein
    * Gutschein je Angebot (§21). Der Entwurf reserviert NICHT (§28); die
    * Reservierung erfolgt atomar beim Versand. Kein Rabatt-Recht nötig (§23).
    */
@@ -833,10 +840,15 @@ export class OfferService {
     void actorId;
     await this.db.transaction(async (tx) => {
       const locked = await this.lockDraft(tx, versionId);
-      if (
-        locked.discountType !== null ||
-        ((locked.specialPrices ?? []) as SpecialPriceEntry[]).length > 0
-      ) {
+      if (locked.discountType !== null) {
+        throw new AuthError('VALIDATION', VOUCHER_NOT_COMBINABLE_MESSAGE);
+      }
+      // §22: Nur ein Sonderpreis auf einer MASCHINEN-Position blockiert –
+      // entschieden anhand der serverseitig berechneten Positionen (Kind
+      // `machine`), nicht anhand gespeicherter Client-lineKeys. Sonderpreise
+      // auf Kaufartikeln/Kommissionspositionen und der Lieferpreis sind erlaubt.
+      const probe = await this.pricingResultFor(tx, { ...locked, voucherId: null }, new Date());
+      if (hasMachineSpecialPrice(probe.lineItems)) {
         throw new AuthError('VALIDATION', VOUCHER_NOT_COMBINABLE_MESSAGE);
       }
       // Max. ein Gutschein je Angebot (§21): VOR der Validierung prüfen, damit

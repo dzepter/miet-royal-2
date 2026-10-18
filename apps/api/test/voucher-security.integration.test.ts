@@ -4,16 +4,30 @@
  * API, Logs, Angebots-/Buchungs-Snapshots; Kunden-/Gutschein-IDOR über die
  * bestehenden Rechte; Request-Logging ohne Body; Versandkopie nie im
  * Frontend; Offline-Sync kennt keine Gutschein-Mutation.
+ *
+ * Phase-11-Finale, Punkt 2 (F16–F20): Das stdout-Reveal-Script ist entfernt;
+ * der Klartext darf weder im API-Log (In-Prozess-Jobrunner der API) noch im
+ * Worker-Log noch über irgendeine registrierte Route erscheinen.
  */
 import { randomUUID } from 'node:crypto';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { Writable } from 'node:stream';
-import { bookings, offerVersions } from '@mietroyal/database';
+import { fileURLToPath } from 'node:url';
+import { bookings, offerVersions, vouchers } from '@mietroyal/database';
 import { formatVoucherCode } from '@mietroyal/domain';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { JobRunner, type JobRunnerLogger } from '@mietroyal/integrations';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { registerFinanceJobHandlers } from '../src/jobs/finance.ts';
+import {
+  enqueueVoucherEligibility,
+  voucherEligibilityIdempotencyKey,
+} from '../src/voucher/voucher-jobs.ts';
 import { createTestContext, destroyTestContext, type TestContext } from './auth-helpers.ts';
 import { bookingRow } from './cancellation-helpers.ts';
 import { createStaffWithPermissions, createTestCustomer } from './crm-helpers.ts';
 import { adminSession } from './settlement-helpers.ts';
+import { voucherWorld } from './voucher-offer-helpers.ts';
 import {
   drainJobs,
   issueTestVoucher,
@@ -361,5 +375,196 @@ describe('Logging, Frontend, Offline (Tests 124–127)', () => {
     });
     expect(response.statusCode).toBe(400);
     expect(logText()).not.toContain(code.slice(4));
+  });
+});
+
+/**
+ * Phase-11-Finale, Punkt 2 (Pflichttests F16–F20, F21 in voucher-delivery):
+ * kein Klartext-Gutscheincode über Logs oder HTTP – das frühere
+ * stdout-Reveal-Script (apps/api/scripts/e2e-voucher-reveal.ts) existiert
+ * nicht mehr; E2E entschlüsselt in-process (tests/e2e/helpers/voucher.ts).
+ */
+describe('Phase-11-Finale: kein Klartext über Logs/HTTP (F16, F17, F19, F20)', () => {
+  /** Alle Code-Formen plus Hash/Kopie, in denen ein Leak sichtbar wäre. */
+  function leakNeedles(
+    code: string,
+    voucher: { codeHash: string; deliveryCodeCiphertext: string | null },
+  ) {
+    return [
+      code,
+      code.slice(4),
+      formatVoucherCode(code),
+      voucher.codeHash,
+      voucher.deliveryCodeCiphertext!,
+    ];
+  }
+
+  it('F16. API-Log (trace): Erzeugung über den In-Prozess-Jobrunner der API (run-due-jobs), Kunden-/Vorgangs-/Angebots-Abrufe und Apply – keine Logzeile enthält Code, Hash oder Versandkopie', async () => {
+    const { admin, cookie } = await adminSession(ctx);
+    const paid = await payAndCompleteWorld(ctx, admin.id, cookie);
+    logLines.length = 0;
+    // Jobs über die API-Route: der Handler läuft im API-Prozess mit app.log.
+    const run = await ctx.app.inject({
+      method: 'POST',
+      url: '/staff/accounting/mock/run-due-jobs',
+      headers: { cookie },
+    });
+    expect(run.statusCode).toBe(200);
+    expect((run.json() as { processed: number }).processed).toBeGreaterThan(0);
+    const voucher = (await vouchersForSettlement(ctx, paid.settlementId))[0]!;
+    const code = await voucherDeliveryFor(ctx).revealCodeForDelivery(voucher.id);
+    // Zugriffe, die den Gutschein berühren (Views + Apply-Versuch).
+    for (const url of [
+      `/staff/customers/${paid.world.customerId}`,
+      `/staff/processes/${paid.world.processId}`,
+      `/staff/processes/${paid.world.processId}/offer`,
+    ]) {
+      const response = await ctx.app.inject({ method: 'GET', url, headers: { cookie } });
+      expect(response.statusCode, url).toBe(200);
+    }
+    const version = await ctx.db.select({ id: offerVersions.id }).from(offerVersions).limit(1);
+    await ctx.app.inject({
+      method: 'POST',
+      url: `/staff/offer-versions/${version[0]?.id ?? randomUUID()}/voucher`,
+      headers: { cookie },
+      payload: { code: formatVoucherCode(code) },
+    });
+    const log = logText();
+    // Der Job wurde tatsächlich im API-Prozess verarbeitet und protokolliert …
+    expect(log).toContain('voucher.eligibility_check verarbeitet');
+    expect(log).toContain(voucher.id);
+    // … aber ohne Klartext/Hash/Kopie in irgendeiner Zeile.
+    for (const needle of leakNeedles(code, voucher)) expect(log).not.toContain(needle);
+  });
+
+  it('F17. Worker-Log: eigener JobRunner mit Logger (wie apps/worker) verarbeitet voucher.eligibility_check – Outcome/IDs im Log, nie Code, Hash oder Versandkopie', async () => {
+    const { admin, cookie } = await adminSession(ctx);
+    const paid = await payAndCompleteWorld(ctx, admin.id, cookie);
+    // Die automatisch eingereihten Jobs ohne Logger abräumen, dann den
+    // Gutschein entfernen: der Worker-Job unten erzeugt ihn neu und loggt.
+    await drainJobs(ctx);
+    await ctx.db.delete(vouchers);
+    const workerLines: string[] = [];
+    const workerLogger: JobRunnerLogger = {
+      info: (context, message) =>
+        workerLines.push(JSON.stringify({ level: 'info', ...context, message })),
+      warn: (context, message) =>
+        workerLines.push(JSON.stringify({ level: 'warn', ...context, message })),
+      error: (context, message) =>
+        workerLines.push(JSON.stringify({ level: 'error', ...context, message })),
+    };
+    const worker = new JobRunner(ctx.queue, 'phase11-final-worker', workerLogger);
+    registerFinanceJobHandlers(worker, {
+      db: ctx.db,
+      config: ctx.config,
+      queue: ctx.queue,
+      storage: ctx.storage,
+      accountingGateway: ctx.gateway,
+      lexware: ctx.lexware,
+      lexwareConnection: ctx.lexwareConnection,
+      workerId: 'phase11-final-worker',
+      logger: workerLogger,
+    });
+    await enqueueVoucherEligibility(ctx.queue, {
+      settlementId: paid.settlementId,
+      trigger: 'manual',
+      key: voucherEligibilityIdempotencyKey(paid.settlementId, 'manual', randomUUID()),
+    });
+    expect(await worker.runOnce()).toBe('processed');
+    const voucher = (await vouchersForSettlement(ctx, paid.settlementId))[0]!;
+    expect(voucher).toBeDefined();
+    const code = await voucherDeliveryFor(ctx).revealCodeForDelivery(voucher.id);
+    const workerLog = workerLines.join('\n');
+    expect(workerLog).toContain('voucher.eligibility_check verarbeitet');
+    expect(workerLog).toContain(paid.settlementId);
+    expect(workerLog).toMatch(/"outcome":"created"/);
+    for (const needle of leakNeedles(code, voucher)) expect(workerLog).not.toContain(needle);
+    // Auch das API-Log (Enqueue/Views während des Aufbaus) bleibt sauber.
+    for (const needle of leakNeedles(code, voucher)) expect(logText()).not.toContain(needle);
+  });
+
+  it('F19. Kein Produkt-/Test-HTTP-Endpunkt liefert Klartext: keine Route mit reveal/code/vouchers; Kunden-, Vorgangs-, Angebots- und öffentliche Antworten ohne Code/Hash/Kopie', async () => {
+    // (a) Routentabelle der App: kein Pfad, der einen Code herausgeben könnte.
+    const routes = ctx.app.printRoutes({ commonPrefix: false });
+    expect(routes).not.toMatch(/reveal/i);
+    expect(routes).not.toMatch(/voucher-code/i);
+    expect(routes).not.toMatch(/\/vouchers\b/i);
+    expect(routes).not.toMatch(/\/code\b/i);
+    expect(routes).not.toMatch(/\/(test|e2e|debug|internal)\b/i);
+    // Einziger Gutschein-Pfad: Apply/Remove am Angebotsentwurf (nimmt den Code
+    // entgegen, gibt ihn nie zurück) – kein weiterer Pfad endet auf /voucher.
+    const voucherPaths = routes.split('\n').filter((line) => /\/voucher\b/i.test(line));
+    expect(voucherPaths).toHaveLength(1);
+    expect(voucherPaths[0]).toMatch(/\/voucher \(POST, DELETE\)/);
+    expect(routes).toMatch(/offer-versions\/:id/);
+    // (b) Antworten mit angewendetem Gutschein (Staff + öffentlich).
+    const { admin, cookie } = await adminSession(ctx);
+    const world = await voucherWorld(ctx, admin.id);
+    const voucher = (await voucherRow(ctx, world.voucherId))!;
+    const apply = await ctx.app.inject({
+      method: 'POST',
+      url: `/staff/offer-versions/${world.versionId}/voucher`,
+      headers: { cookie },
+      payload: { code: world.code },
+    });
+    expect(apply.statusCode).toBe(200);
+    const sent = await ctx.app.inject({
+      method: 'POST',
+      url: `/staff/offer-versions/${world.versionId}/send`,
+      headers: { cookie },
+    });
+    expect(sent.statusCode).toBe(200);
+    const token = (sent.json().publicPath as string).replace('/angebot/', '');
+    const needles = leakNeedles(world.compact, voucher);
+    expect(apply.body).not.toContain(world.compact.slice(4));
+    for (const [url, headers] of [
+      [`/staff/customers/${world.customerId}`, { cookie }],
+      [`/staff/processes/${world.processId}`, { cookie }],
+      [`/staff/processes/${world.processId}/offer`, { cookie }],
+      [`/public/offers/${token}`, {}],
+    ] as const) {
+      const response = await ctx.app.inject({ method: 'GET', url, headers });
+      expect(response.statusCode, url).toBe(200);
+      for (const needle of needles) expect(response.body, url).not.toContain(needle);
+      expect(response.body, url).not.toMatch(/codeHash|deliveryCodeCiphertext|ciphertext/i);
+    }
+    // (c) Denkbare Test-/Reveal-Endpunkte existieren nicht (auch nicht ohne Auth).
+    for (const url of [
+      `/staff/vouchers/${world.voucherId}/reveal`,
+      `/test/vouchers/${world.voucherId}/reveal`,
+      `/e2e/voucher-code/${world.voucherId}`,
+      `/internal/vouchers/${world.voucherId}/code`,
+      `/public/vouchers/${world.voucherId}`,
+    ]) {
+      const response = await ctx.app.inject({ method: 'GET', url, headers: { cookie } });
+      expect(response.statusCode, url).toBe(404);
+      for (const needle of needles) expect(response.body, url).not.toContain(needle);
+    }
+  });
+
+  it('F20. Keine Klartextdatei und kein Reveal-Script: revealCodeForDelivery liefert den Code nur als Rückgabewert (kein stdout/stderr, kein Log, kein fs-Zugriff im Modul); apps/api/scripts/e2e-voucher-reveal.ts existiert nicht mehr', async () => {
+    const { voucher, code } = await issuedWorld();
+    const scriptsDir = fileURLToPath(new URL('../scripts/', import.meta.url));
+    expect(existsSync(join(scriptsDir, 'e2e-voucher-reveal.ts'))).toBe(false);
+    expect(readdirSync(scriptsDir).filter((name) => /reveal/i.test(name))).toEqual([]);
+    // Die serverinterne Boundary schreibt nichts: kein fs-/Konsolen-/stdout-Zugriff im Modul.
+    const source = readFileSync(
+      fileURLToPath(new URL('../src/voucher/voucher-delivery.ts', import.meta.url)),
+      'utf8',
+    );
+    expect(source).not.toMatch(/node:fs|writeFile|console\.|process\.std(out|err)/);
+    const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      logLines.length = 0;
+      const again = await voucherDeliveryFor(ctx).revealCodeForDelivery(voucher.id);
+      expect(again).toBe(code);
+      expect(stdoutSpy).not.toHaveBeenCalled();
+      expect(stderrSpy).not.toHaveBeenCalled();
+      expect(logText()).not.toContain(code.slice(4));
+    } finally {
+      stdoutSpy.mockRestore();
+      stderrSpy.mockRestore();
+    }
   });
 });

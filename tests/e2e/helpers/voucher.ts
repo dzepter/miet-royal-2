@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { expect, type Page } from '@playwright/test';
+import { decryptDeliveryCode } from '../../../apps/api/src/voucher/voucher-crypto.ts';
 import { TEST_DATABASE_URL, WEB_ORIGIN } from './seed.ts';
 
 /**
@@ -8,10 +9,13 @@ import { TEST_DATABASE_URL, WEB_ORIGIN } from './seed.ts';
  *
  * - Der Gutscheincode existiert in der Datenbank nur als SHA-256-Hash plus
  *   verschlüsselte Versandkopie; UI und API zeigen ihn nie (Order §§12/14).
- *   Für die Angebots-Szenarien liest `revealVoucherCode` die Versandkopie
- *   über den Phase-12-Pfad (serverseitige Entschlüsselung im Testskript
- *   apps/api/scripts/e2e-voucher-reveal.ts) – keine Produktroute, keine
- *   DB-Mutation, und zugleich der Nachweis, dass die Kopie entschlüsselbar ist.
+ *   Für die Angebots-Szenarien entschlüsselt `revealVoucherCode` die
+ *   Versandkopie AUSSCHLIESSLICH im Testprozess (Phase-11-Finale, Punkt 2):
+ *   dieselbe Funktion wie der Server (`decryptDeliveryCode`, AES-256-GCM/
+ *   HKDF aus AUTH_SECRET_KEY) wird direkt importiert – kein Kindprozess,
+ *   kein stdout/stderr, kein Serverlog, kein HTTP-Endpunkt, keine Datei.
+ *   Der Klartext lebt nur in einer Variablen der Spec und wird dort nur in
+ *   das Eingabefeld getippt (das Feld leert sich nach erfolgreichem Anwenden).
  * - Datenbank-Lesezugriffe laufen wie in lexware.ts über `pg` aus dem
  *   API-Workspace (`queryTestDb`), nur gegen die Testdatenbank.
  * - UI-Wege (Vorgang/Anfrage/Angebot für einen BESTEHENDEN Kunden, Gutschein
@@ -31,7 +35,15 @@ export const LABEL_STATUS_REDEEMED = 'Eingelöst';
 export const NEVER_SENT = /gesendet|versendet/i;
 
 const API_WORKSPACE_DIR = `${import.meta.dirname}/../../../apps/api`;
-const REPO_ROOT = `${import.meta.dirname}/../../..`;
+
+/**
+ * Schlüssel der E2E-API (playwright.config.ts: APP_ENV=development ohne
+ * eigenes AUTH_SECRET_KEY ⇒ development-Default aus
+ * packages/config/src/load-config.ts; ein in der Shell gesetztes
+ * AUTH_SECRET_KEY erbt die API ebenfalls). Kein Geheimnis – nur lokal/E2E.
+ */
+const E2E_AUTH_SECRET_KEY =
+  process.env.AUTH_SECRET_KEY ?? 'mietroyal-development-only-auth-secret-key';
 
 // ── Datenbank (nur lesen) ───────────────────────────────────────────────
 
@@ -153,31 +165,19 @@ export function cancellationOfProcess(processId: string): {
 
 /**
  * Klartextcode (kompakt `MR20XXXXXXXXXXXX`) aus der verschlüsselten
- * Versandkopie – über den Phase-12-Pfad des Produkts (siehe Kopfkommentar).
+ * Versandkopie – nur im Testprozess (siehe Kopfkommentar). Nutzt die
+ * Serverfunktion direkt; falscher Schlüssel oder fremde Gutschein-ID (AAD)
+ * ⇒ wirft. Gibt nichts aus und schreibt nichts.
  */
-export function revealVoucherCode(voucherId: string): string {
-  const output = execFileSync(
-    'pnpm',
-    ['--filter', '@mietroyal/api', 'exec', 'tsx', 'scripts/e2e-voucher-reveal.ts'],
-    {
-      cwd: REPO_ROOT,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      env: {
-        ...process.env,
-        APP_ENV: 'development',
-        DATABASE_URL: TEST_DATABASE_URL,
-        LOG_LEVEL: 'warn',
-        VOUCHER_ID: voucherId,
-      },
-    },
-  ).toString('utf8');
-  const line = output
-    .split('\n')
-    .map((entry) => entry.trim())
-    .filter((entry) => entry.startsWith('{'))
-    .at(-1);
-  expect(line, 'Reveal-Skript lieferte keinen Code').toBeDefined();
-  const { code } = JSON.parse(line!) as { code: string };
+export function revealVoucherCode(
+  voucher: Pick<VoucherDbRow, 'id' | 'delivery_code_ciphertext'>,
+): string {
+  expect(voucher.delivery_code_ciphertext, 'Versandkopie fehlt').not.toBeNull();
+  const code = decryptDeliveryCode(
+    voucher.delivery_code_ciphertext!,
+    voucher.id,
+    E2E_AUTH_SECRET_KEY,
+  );
   expect(code).toMatch(/^MR20[ABCDEFGHJKMNPQRSTUVWXYZ23456789]{12}$/);
   return code;
 }

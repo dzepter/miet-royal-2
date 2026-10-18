@@ -210,8 +210,15 @@ function OfferView() {
                       <td>{BILLING_LABELS[item.billingMode]}</td>
                       {isDraft && hasPermission(me, 'offer.apply_special_price') && (
                         <td>
-                          {hasVoucher ? (
-                            <span className="muted" title={VOUCHER_NOT_COMBINABLE_MESSAGE}>
+                          {hasVoucher && item.kind === 'machine' ? (
+                            // Phase 11 (§22): Bei aktivem Gutschein ist NUR der
+                            // Maschinen-Sonderpreis gesperrt; Kaufartikel-/
+                            // Kommissions-Sonderpreise bleiben bedienbar.
+                            <span
+                              className="muted"
+                              title={VOUCHER_NOT_COMBINABLE_MESSAGE}
+                              data-testid="special-price-blocked-by-voucher"
+                            >
                               –
                             </span>
                           ) : (
@@ -624,7 +631,10 @@ function VoucherSection({
             {' – '}
             die Angebotsgültigkeit endet spätestens mit dem Gutschein.
           </p>
-          <p className="muted">{VOUCHER_NOT_COMBINABLE_MESSAGE}</p>
+          <p className="muted">
+            {VOUCHER_NOT_COMBINABLE_MESSAGE} Sonderpreise auf Kaufartikeln oder
+            Kommissionspositionen sowie der Lieferpreis bleiben möglich.
+          </p>
           {editable && (
             <button
               data-testid="voucher-remove"

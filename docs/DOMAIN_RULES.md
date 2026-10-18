@@ -103,10 +103,15 @@ Anwendung im Angebot (Phase 11):
   Betrag, Besitzer, Status und Reservierung sind ausschließlich serverseitig.
 - Ungültig/fremd/eingelöst/abgelaufen ⇒ immer dieselbe neutrale Antwort
   „Gutschein ist ungültig oder nicht verwendbar.“ (400).
-- Nicht kombinierbar in beide Richtungen mit manuellem %-/EUR-Rabatt und
-  Maschinen-/Artikel-Sonderpreis (auch 0 EUR); Lieferpreis/Zusatzartikel sind kein
-  Rabatt. Meldung: „Gutschein kann nicht mit einem weiteren Rabatt oder
-  Sonderpreis kombiniert werden.“
+- Nicht kombinierbar in beide Richtungen mit manuellem %-/EUR-Rabatt und einem
+  Sonderpreis auf einer MASCHINEN-Position (auch 0 EUR). ERLAUBT bleiben der
+  individuelle Lieferpreis sowie Sonderpreise auf Nicht-Maschinen-Positionen
+  (Kaufartikel wie Mischkanister, zusätzliche Verbrauchs-/Kommissionsartikel) –
+  sie ändern die Maschinenmiet-Zwischensumme nicht. Gemischt (Maschine +
+  Nicht-Maschine) ⇒ blockiert; nur Nicht-Maschine ⇒ erlaubt. Ob ein Sonderpreis
+  eine Maschine betrifft, entscheidet der Server anhand der berechneten Position
+  (Art `machine`), nie anhand eines Client-Schlüssels. Meldung: „Gutschein kann
+  nicht mit einem weiteren Rabatt oder Sonderpreis kombiniert werden.“
 - 20 % der SUMME aller Maschinenmietpositionen, Integer-Cent, half-up; Lieferung,
   Kanister, Kommission, Inklusiv-Artikel, Nachbelastungen bleiben unberührt.
 - Darstellung (Staff, öffentliches Angebot, PDF, AB): „Maschinenmiete regulär /
