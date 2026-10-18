@@ -18,13 +18,22 @@ export const LEXWARE_REQUIRED_EVENT_TYPES = [
   'invoice.changed',
   'invoice.deleted',
   'payment.changed',
-  'token.revoked',
 ] as const;
+/**
+ * Früher von Miet-Royal angelegte Eventtypen, die nicht mehr benötigt werden
+ * (Phase-10-Finalisierung A1: `token.revoked` betrifft laut Doku einen
+ * widerrufenen OAuth-Refresh-Token; die Integration nutzt einen API-Key, dessen
+ * Gesundheit über Profilprüfung/401/403 beurteilt wird). Nur die EIGENE
+ * gespeicherte Subscription dieses Typs wird beim Setup entfernt.
+ */
+export const LEXWARE_RETIRED_EVENT_TYPES = ['token.revoked'] as const;
 export type LexwareRequiredEventType = (typeof LEXWARE_REQUIRED_EVENT_TYPES)[number];
 
 export interface LexwareSubscriptionSetupResult {
   created: string[];
   existing: string[];
+  /** Eigene, nicht mehr benötigte Subscriptions (z. B. token.revoked), die entfernt wurden. */
+  removed: string[];
   failed: { eventType: string; code: string }[];
   callbackUrl: string | null;
   webhookStatus: 'configured' | 'incomplete' | 'error';
@@ -66,6 +75,7 @@ export class LexwareSubscriptionService {
       return {
         created: [],
         existing: [],
+        removed: [],
         failed: LEXWARE_REQUIRED_EVENT_TYPES.map((eventType) => ({
           eventType,
           code: 'LEXWARE_CALLBACK_URL_MISSING',
@@ -89,6 +99,27 @@ export class LexwareSubscriptionService {
     const existing: string[] = [];
     const failed: { eventType: string; code: string }[] = [];
     const resulting: StoredLexwareSubscription[] = [];
+    const removed: string[] = [];
+
+    // Eigene, nicht mehr benötigte Subscriptions (nur per gespeicherter ID – nie fremde).
+    for (const eventType of LEXWARE_RETIRED_EVENT_TYPES) {
+      const retired = remote.filter(
+        (s) => s.eventType === eventType && ownIds.has(s.subscriptionId),
+      );
+      for (const s of retired) {
+        try {
+          await client.deleteEventSubscription(s.subscriptionId);
+          removed.push(eventType);
+        } catch (error) {
+          if (error instanceof LexwareApiError && error.kind === 'not_found') continue;
+          if (error instanceof LexwareApiError && error.kind === 'unauthorized') {
+            await this.handleFailure(error, now);
+            throw error;
+          }
+          failed.push({ eventType, code: codeOf(error) });
+        }
+      }
+    }
 
     for (const eventType of LEXWARE_REQUIRED_EVENT_TYPES) {
       const match = remote.find((s) => s.eventType === eventType && s.callbackUrl === callbackUrl);
@@ -146,13 +177,14 @@ export class LexwareSubscriptionService {
           action: 'subscriptions_setup',
           created: created.length,
           existing: existing.length,
+          removed: removed.length,
           failed: failed.map((f) => `${f.eventType}:${f.code}`),
           status: webhookStatus,
         },
       },
       'Lexware-Event-Subscriptions geprüft',
     );
-    return { created, existing, failed, callbackUrl, webhookStatus };
+    return { created, existing, removed, failed, callbackUrl, webhookStatus };
   }
 
   private async findRemote(

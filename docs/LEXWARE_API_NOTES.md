@@ -96,10 +96,14 @@ claimedGrossAmount, downPaymentDeductions, files.
 - Body: `{organizationId, eventType, resourceId, eventDate}`; keine Event-ID
   ⇒ Deduplizierung über SHA-256(organizationId|eventType|resourceId|eventDate).
 - Genutzte Eventtypen: `invoice.status.changed`, `invoice.changed`,
-  `invoice.deleted`, `payment.changed`, `token.revoked` (resourceId =
-  connectionId des Profils; wird ausgelöst, „wenn die API Verbindung getrennt
-  bzw. der API Key gelöscht wird“). Nach Key-Erneuerung: „subscriptions
-  should be recreated“ (`pnpm lexware:setup`).
+  `invoice.deleted`, `payment.changed`. NICHT genutzt: `token.revoked` – die
+  Doku beschreibt es als Ereignis für einen widerrufenen (OAuth-)Refresh-Token;
+  Miet-Royal authentifiziert sich mit einem Public-API-Key und nutzt keinen
+  Refresh-Token. Die Gesundheit des API-Keys ergibt sich aus Profilprüfung,
+  401/403 und der expliziten Verbindungsprüfung. Eine früher selbst angelegte
+  `token.revoked`-Subscription wird von `pnpm lexware:setup` entfernt (nur die
+  eigene gespeicherte ID). Nach Key-Erneuerung: „subscriptions should be
+  recreated“ (`pnpm lexware:setup`).
 - Signatur: Header `X-Lxo-Signature` = Base64 einer RSA-SHA512-Signatur „of
   the JSON request body (without whitespaces and linebreaks)“. Öffentlicher
   Schlüssel (PEM, RSA-4096, kein Secret) aus

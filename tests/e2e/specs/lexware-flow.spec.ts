@@ -211,10 +211,11 @@ test('A: Admin Einstellungen → Lexware → Verbindung prüfen: Firmenname sich
     'invoice.changed',
     'invoice.deleted',
     'payment.changed',
-    'token.revoked',
   ]) {
     expect(subscriptions.map((s) => s.eventType)).toContain(eventType);
   }
+  // A1: token.revoked (OAuth-Refresh-Token-Ereignis) wird nicht mehr abonniert.
+  expect(subscriptions.map((s) => s.eventType)).not.toContain('token.revoked');
   await section.getByTestId('lexware-setup-webhooks').click();
   expect((await fakeSubscriptions()).length).toBe(subscriptions.length);
 

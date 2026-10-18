@@ -81,11 +81,23 @@ describe('Event-Subscriptions – pnpm lexware:setup / Adminaktion (§54, Tests 
     const second = await subscriptions().setup();
     expect(second.created).toEqual([]);
     expect(second.existing.sort()).toEqual([...LEXWARE_REQUIRED_EVENT_TYPES].sort());
-    expect(fake.subscriptions.size).toBe(5);
+    expect(fake.subscriptions.size).toBe(4);
     const [state] = await ctx.db.select().from(lexwareIntegrationState);
     expect(state!.webhookStatus).toBe('configured');
     expect(state!.webhooksCheckedAt).not.toBeNull();
-    expect((state!.subscriptions as unknown[]).length).toBe(5);
+    expect((state!.subscriptions as unknown[]).length).toBe(4);
+    // A1 (Tests 1–5/106): token.revoked wird nicht mehr verlangt; die vier Rechnungs-/Zahlungstypen bleiben.
+    expect([...LEXWARE_REQUIRED_EVENT_TYPES]).not.toContain('token.revoked');
+    for (const required of [
+      'invoice.changed',
+      'invoice.status.changed',
+      'invoice.deleted',
+      'payment.changed',
+    ]) {
+      expect([...LEXWARE_REQUIRED_EVENT_TYPES]).toContain(required);
+      expect([...fake.subscriptions.values()].map((s) => s.eventType)).toContain(required);
+    }
+    expect([...fake.subscriptions.values()].map((s) => s.eventType)).not.toContain('token.revoked');
     expect(JSON.stringify(state!.subscriptions)).not.toContain(fake.apiKey);
   });
 
@@ -93,8 +105,8 @@ describe('Event-Subscriptions – pnpm lexware:setup / Adminaktion (§54, Tests 
     const existingId = seedForeignSubscription('payment.changed', CALLBACK);
     const result = await subscriptions().setup();
     expect(result.existing).toEqual(['payment.changed']);
-    expect(result.created).toHaveLength(4);
-    expect(fake.subscriptions.size).toBe(5);
+    expect(result.created).toHaveLength(3);
+    expect(fake.subscriptions.size).toBe(4);
     expect(fake.subscriptions.has(existingId)).toBe(true);
     const stored = await subscriptions().stored();
     expect(stored.find((s) => s.eventType === 'payment.changed')?.subscriptionId).toBe(existingId);
@@ -103,12 +115,44 @@ describe('Event-Subscriptions – pnpm lexware:setup / Adminaktion (§54, Tests 
   it('140. Fehlende Subscription wird beim nächsten Lauf angelegt (z. B. nach Key-Erneuerung)', async () => {
     await subscriptions().setup();
     const stored = await subscriptions().stored();
-    const revoked = stored.find((s) => s.eventType === 'token.revoked')!;
-    fake.subscriptions.delete(revoked.subscriptionId);
+    const deleted = stored.find((s) => s.eventType === 'invoice.deleted')!;
+    fake.subscriptions.delete(deleted.subscriptionId);
     const result = await subscriptions().setup();
-    expect(result.created).toEqual(['token.revoked']);
-    expect(result.existing).toHaveLength(4);
-    expect(fake.subscriptions.size).toBe(5);
+    expect(result.created).toEqual(['invoice.deleted']);
+    expect(result.existing).toHaveLength(3);
+    expect(fake.subscriptions.size).toBe(4);
+  });
+
+  it('A1 6./7./107./108. Eigene alte token.revoked-Subscription wird entfernt; eine fremde token.revoked-Subscription bleibt', async () => {
+    const foreignRevoked = seedForeignSubscription(
+      'token.revoked',
+      'https://andere-app.example/hook',
+    );
+    // Eigene, früher angelegte token.revoked-Subscription (gespeicherte ID) simulieren.
+    const ownRevoked = seedForeignSubscription('token.revoked', CALLBACK);
+    await ctx.db
+      .update(lexwareIntegrationState)
+      .set({
+        subscriptions: [
+          { subscriptionId: ownRevoked, eventType: 'token.revoked', callbackUrl: CALLBACK },
+        ],
+      })
+      .where(eq(lexwareIntegrationState.environment, ctx.config.appEnv));
+    const result = await subscriptions().setup();
+    expect(result.removed).toEqual(['token.revoked']);
+    expect(result.created.sort()).toEqual([...LEXWARE_REQUIRED_EVENT_TYPES].sort());
+    expect(result.failed).toEqual([]);
+    expect(fake.subscriptions.has(ownRevoked)).toBe(false);
+    expect(fake.subscriptions.has(foreignRevoked)).toBe(true);
+    expect(fake.requestLog.filter((r) => r.method === 'DELETE')).toHaveLength(1);
+    const stored = await subscriptions().stored();
+    expect(stored.map((s) => s.eventType)).not.toContain('token.revoked');
+    expect(stored).toHaveLength(4);
+    // Zweiter Lauf: nichts mehr zu entfernen, fremde Subscription unangetastet.
+    const again = await subscriptions().setup();
+    expect(again.removed).toEqual([]);
+    expect(fake.subscriptions.has(foreignRevoked)).toBe(true);
+    expect(fake.requestLog.filter((r) => r.method === 'DELETE')).toHaveLength(1);
   });
 
   it('141. Fremde Subscriptions werden nie gelöscht; nur die EIGENE mit veralteter Callback-URL wird ersetzt', async () => {
@@ -120,7 +164,7 @@ describe('Event-Subscriptions – pnpm lexware:setup / Adminaktion (§54, Tests 
     await subscriptions().setup();
     expect(fake.subscriptions.has(foreignId)).toBe(true);
     expect(fake.subscriptions.has(foreignSameType)).toBe(true);
-    expect(fake.subscriptions.size).toBe(7);
+    expect(fake.subscriptions.size).toBe(6);
 
     // Eigene Subscription mit alter URL simulieren: gespeicherter Stand zeigt
     // auf eine Subscription, deren Callback nicht mehr der Konfiguration entspricht.
@@ -155,7 +199,7 @@ describe('Event-Subscriptions – pnpm lexware:setup / Adminaktion (§54, Tests 
       body: { content: [] },
     });
     const result = await subscriptions().setup();
-    expect(result.failed).toHaveLength(5);
+    expect(result.failed).toHaveLength(4);
     expect(result.failed[0]!.code).toBe('LEXWARE_FORBIDDEN');
     expect(result.webhookStatus).toBe('incomplete');
     fake.deniedScopes.clear();
@@ -179,14 +223,14 @@ describe('Event-Subscriptions – pnpm lexware:setup / Adminaktion (§54, Tests 
       failed: [],
       webhookStatus: 'configured',
     });
-    expect(response.json().created).toHaveLength(5);
+    expect(response.json().created).toHaveLength(4);
     const status = await ctx.app.inject({
       method: 'GET',
       url: '/staff/lexware/status',
       headers: { cookie },
     });
     expect(status.json().webhooks).toMatchObject({ status: 'configured', callbackUrl: CALLBACK });
-    expect(status.json().webhooks.subscriptions).toHaveLength(5);
+    expect(status.json().webhooks.subscriptions).toHaveLength(4);
     expect(status.body).not.toContain(fake.apiKey);
   });
 });
@@ -345,7 +389,7 @@ describe('Reconciliation – pnpm lexware:reconcile / Adminaktion (§53, Tests 1
       headers: { cookie },
     });
     expect(free.statusCode).toBe(200);
-    await connection().markDisconnected('TOKEN_REVOKED');
+    await connection().markDisconnected('LEXWARE_DISCONNECTED_TEST');
     const blocked = await ctx.app.inject({
       method: 'POST',
       url: '/staff/lexware/reconcile',
@@ -376,7 +420,7 @@ describe('Reconciliation – pnpm lexware:reconcile / Adminaktion (§53, Tests 1
   it('Setup ohne Callback-URL verwirft die gespeicherten eigenen Subscription-IDs nicht', async () => {
     await subscriptions().setup();
     const before = await subscriptions().stored();
-    expect(before).toHaveLength(5);
+    expect(before).toHaveLength(4);
     const noCallback = createLexwareContext(
       { ...ctx.config, lexware: { ...ctx.config.lexware, webhookCallbackUrl: null } },
       ctx.db,
@@ -389,7 +433,7 @@ describe('Reconciliation – pnpm lexware:reconcile / Adminaktion (§53, Tests 1
     );
     const result = await service.setup();
     expect(result.webhookStatus).toBe('incomplete');
-    expect(result.failed).toHaveLength(5);
+    expect(result.failed).toHaveLength(4);
     expect(await service.stored()).toEqual(before);
     const [state] = await ctx.db.select().from(lexwareIntegrationState);
     expect(state!.webhookStatus).toBe('incomplete');

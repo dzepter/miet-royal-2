@@ -96,7 +96,6 @@ export const LEXWARE_ERROR_CODE_LABELS: Record<string, string> = {
   LEXWARE_NOT_CONNECTED: 'Lexware-Verbindung getrennt',
   LEXWARE_NOT_CONFIGURED: 'Buchhaltungsintegration nicht konfiguriert',
   LEXWARE_ORGANIZATION_MISMATCH: 'Lexware-Organisation hat sich geändert',
-  TOKEN_REVOKED: 'API-Key wurde in Lexware widerrufen',
   LEXWARE_TIMEOUT: 'Lexware antwortet nicht – später erneut prüfen',
   LEXWARE_UNAVAILABLE: 'Lexware derzeit nicht erreichbar',
 };
