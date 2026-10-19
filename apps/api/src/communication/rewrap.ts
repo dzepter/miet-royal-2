@@ -16,6 +16,9 @@
  *   blocked SECRET_UNDECRYPTABLE; bei allen anderen bleibt der Status (z. B.
  *   „Zustellung unklar“) unverändert – nur gezählt. Bereits als
  *   SECRET_UNDECRYPTABLE blockierte Zeilen werden nicht erneut betrachtet.
+ *   Das reine Neuverschlüsseln ändert `updated_at` NICHT (Retention-Frist
+ *   nicht prozessgebundener Zustellungen = Zeitpunkt des letzten Status-
+ *   wechsels); die Blockierung ist ein Statuswechsel und setzt es.
  * Ausgabe ausschließlich Zähler – nie Klartext, nie Ciphertext.
  */
 import { mailDeliveries, vouchers, type Database } from '@mietroyal/database';
@@ -123,9 +126,12 @@ export async function rewrapMailSecretPayloads(
         );
       continue;
     }
+    // Phase-12-Finalisierung (Review-Fund): reines Neuverschlüsseln ist KEIN Status-
+    // wechsel ⇒ `updated_at` bleibt (Endzustandszeit der 90-Tage-Retention nicht
+    // prozessgebundener Zustellungen, retention/cleanup.ts).
     await db
       .update(mailDeliveries)
-      .set({ secretPayloadCiphertext: rewrapped, updatedAt: new Date() })
+      .set({ secretPayloadCiphertext: rewrapped })
       .where(
         and(
           eq(mailDeliveries.id, row.id),

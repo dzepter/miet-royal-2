@@ -44,7 +44,7 @@ export const WHATSAPP_PHONE_NUMBER_ID = '100000000000001';
 export const WHATSAPP_BUSINESS_ACCOUNT_ID = '200000000000002';
 export const WHATSAPP_APP_SECRET = 'e2e-fake-whatsapp-app-secret-0001';
 export const WHATSAPP_VERIFY_TOKEN = 'e2e-fake-whatsapp-verify-token-0001';
-export const WHATSAPP_GRAPH_API_VERSION = 'v25.0';
+export const WHATSAPP_GRAPH_API_VERSION = 'v26.0';
 
 /** VAPID-Testschlüssel (P-256, base64url) – nur für die lokale E2E-API. */
 export const PUSH_VAPID_PUBLIC_KEY =

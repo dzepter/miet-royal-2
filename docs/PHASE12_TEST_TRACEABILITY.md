@@ -203,7 +203,7 @@ pnpm vitest run
 | 132 | PUSH | KEIN Reinigungs-Push | `communication-push.integration.test.ts`::132. Reinigung &gt; 24 h ist KEINE Push-Art (Order §31) | Integration |
 | 133 | PUSH | Tour-Grenze (tour.delay_risk ist kein PushKind) | `communication-push.integration.test.ts`::133. Touren existieren nicht: tour.delay_risk ist nur Grenzkonstante, kein PushKind | Integration |
 | 134 | PUSH | Hijack: fremder Endpoint (Geräteübernahme) | `communication-push.integration.test.ts`::134. Fremder Endpoint: zweiter User übernimmt das Gerät – erster sieht/erreicht es nicht mehr | Integration |
-| 135 | PUSH | Hijack: fremde Session kann nicht abmelden/sehen | `communication-push.integration.test.ts`::135. Fremde Session: andere Nutzer können eine Subscription weder abmelden noch sehen | Integration |
+| 135 | PUSH | Hijack: fremde Session kann nicht abschalten/sehen (Phase 12 Finalisierung: Abmelde-Route entfernt, 404) | `communication-push.integration.test.ts`::135. Fremde Session: andere Nutzer können eine Subscription weder abschalten noch sehen | Integration |
 | 136 | PUSH | Endpoint/Keys nie im Log | `communication-push.integration.test.ts`::136. Endpoint und Schlüssel erscheinen nie im Serverlog | Integration |
 | 137 | PUSH | Ungeplanter Termin ⇒ kein 1-h-Push | `communication-push.integration.test.ts`::123./124./125. Genau ein Push je Termin 1 h vorher an die effektive Zuständigkeit; ungeplant nie; zweiter Scan no-op | Integration |
 | 138 | PUSH | Vertretungsbeginn: kleiner Hinweis an den Vertreter, genau einmal | `communication-push.integration.test.ts`::126. Vertretung: Vertreter bekommt den 1h-Push und den Vertretungs-Hinweis, Original nicht<br>`communication-ops.spec.ts`::Q. Vertretung: der 1-h-Push geht an die Vertretung, nicht an die ursprünglich zuständige Person – auch für einen bere … | Integration + E2E |
@@ -269,7 +269,7 @@ pnpm vitest run
 | 198 | SECURITY | HTML/XSS eingehend (nie Raw-HTML) | `communication-inbound.integration.test.ts`::76. HTML-only wird sicher zu Text: kein Script, keine Tags, keine externen Bilder, Entities dekodiert<br>`communication-inbound-content.test.ts`::entfernt Script/Style samt Inhalt, Tags, externe Bilder und dekodiert Entities | Integration + Unit |
 | 199 | SECURITY | Kein SVG (Mail-Anhang, WhatsApp-Medium) | `communication-inbound.integration.test.ts`::78. PDF/SVG/ZIP und getarnte Anhänge werden NIE gespeichert – nur gezählt<br>`communication-whatsapp.integration.test.ts`::105. Bild ⇒ Job whatsapp.media_fetch lädt über den Gateway, prüft Magic Bytes und speichert privat als message_photos … | Integration |
 | 200 | SECURITY | Keine Remote Images (eingehend entfernt, ausgehend keine Bilder) | `communication-inbound.integration.test.ts`::76. HTML-only wird sicher zu Text: kein Script, keine Tags, keine externen Bilder, Entities dekodiert<br>`communication-inbound-content.test.ts`::entfernt Script/Style samt Inhalt, Tags, externe Bilder und dekodiert Entities<br>`communication-templates.test.ts`::&lt;Mailart&gt;: liefert Betreff, text/plain und HTML mit Signatur, ohne Bilder oder fremde URLs (je Mailart)<br>`communication-mail.integration.test.ts`::7./11./12./13. Erfolg ⇒ sent, sentAt, Providercode, Secret-Payload gelöscht; Mail hat text+html, Signatur, Link, kein … | Integration + Unit |
-| 201 | SECURITY | Push-Hijack | `communication-push.integration.test.ts`::134. Fremder Endpoint: zweiter User übernimmt das Gerät – erster sieht/erreicht es nicht mehr<br>`communication-push.integration.test.ts`::135. Fremde Session: andere Nutzer können eine Subscription weder abmelden noch sehen | Integration |
+| 201 | SECURITY | Push-Hijack | `communication-push.integration.test.ts`::134. Fremder Endpoint: zweiter User übernimmt das Gerät – erster sieht/erreicht es nicht mehr<br>`communication-push.integration.test.ts`::135. Fremde Session: andere Nutzer können eine Subscription weder abschalten noch sehen | Integration |
 | 202 | SECURITY | Settings-Permission (system.settings, keine Secrets im Status) | `communication-mail.integration.test.ts`::Admin-Routen nur mit system.settings; mail/check liefert nur ok/code; Vorgangsstatus nur mit process.view_all und sic …<br>`communication-mail.integration.test.ts`::Statusroute mit Push/IMAP konfiguriert: öffentlicher VAPID-Key ja, privater Key und IMAP-Passwort nie | Integration |
 | 203 | SECURITY | Demo-Isolation (Mail-Whitelist/[DEMO], WhatsApp-Mock, getrennte Schlüssel/Feeds) | `communication-mail.integration.test.ts`::14. Demo: JEDE Mail trägt „[DEMO] “ im Betreff (Outbox-Zeile und Versand)<br>`communication-mail.integration.test.ts`::15. Demo-Whitelist: nicht freigegebene Empfänger werden blockiert (kein Job, keine Mail); Vollmatch und @domain erlaubt<br>`communication-hardening-outbox.integration.test.ts`::RA-13-K Resend einer DEMO_NOT_WHITELISTED-Zustellung bleibt blockiert; Staff-Antwort blockiert, [DEMO]-Betreff<br>`communication-whatsapp.integration.test.ts`::98. demo ⇒ MockWhatsAppGateway („DEMO / simuliert“), Webhook neutral 404; 116. Demo-Isolation: Mock sendet nie einen …<br>`load-config.test.ts`::Env-Isolation: Kommunikationsschlüssel, WhatsApp-Zugang, VAPID-Paar und IMAP-Postfach dürfen nicht geteilt werden<br>`communication-demo.spec.ts`::T. Demo-Mail: Status ohne Secrets; Empfänger außerhalb der Whitelist ⇒ blocked DEMO_NOT_WHITELISTED und KEINE Mail in …<br>`communication-demo.spec.ts`::T. Demo-WhatsApp: nur Mock „DEMO / simuliert“ – Webhook (Verify + POST) neutral 404, Staff-Antwort läuft über den Moc … | Integration + Unit + E2E |
 | 204 | SECURITY | Offline-Mutationen blockiert (Kommunikationsaktionen nie per Offline-Sync) | `communication-coverage.integration.test.ts`::204. Offline-Mutationen blockiert: Kommunikationsaktionen sind keine Offline-Mutationsart – der Sync lehnt sie per Sc … | Integration (API-Teil; UI-Sperre (apps/staff/components/communication.tsx, offline deaktiviert) nicht automatisiert) — **neu** |
@@ -309,6 +309,136 @@ Fakes prüfbar:
   Vorschlag: `URL` ohne Basis-URL weglassen (DESCRIPTION behält den relativen Pfad).
 - ICS: `REFRESH-INTERVAL;VALUE=DURATION:PT1H` / `X-PUBLISHED-TTL:PT1H` sind gesetzt – laut
   docs/COMMUNICATION_INTEGRATIONS.md bewusst als Hinweis (RFC 7986); der Client bestimmt den Refresh.
+
+## Phase 12 Finalisierung (2026-10-19): D, P, RA, W, R
+
+Neue Pflichttests der Finalisierung. Die Testnamen tragen die Kennung als Präfix. Dateipfade wie oben.
+
+### D – stabile Geräteidentität (`auth-device-identity.integration.test.ts`)
+
+| Nr. | Thema | Test(s) |
+|---|---|---|
+| D1 | Server setzt `mr_staff_device` (32 Byte base64url, HttpOnly, SameSite=Strict, Path=/, 400 Tage), Secure-Regel | „D1. Login ohne Geräte-Cookie …“; „D1. Secure-Regel exakt wie beim Session-Cookie …“ |
+| D2 | gleiches Cookie ⇒ kein Ereignis, nur `last_seen_at` | „D2. gleiches Geräte-Cookie …“ |
+| D3 | zwei Cookies + gleicher User-Agent ⇒ zwei Geräte; Geräte je Mitarbeiter | „D3. zwei Browser ohne Cookie …“; „D3. Geräte sind je Mitarbeiter …“ |
+| D4 | gleiches Cookie + anderer User-Agent ⇒ bekannt | „D4. gleiches Cookie mit anderem User-Agent …“ |
+| D5 | Cookie gelöscht/ungültig ⇒ neues Gerät; Logout/Widerruf löschen das Cookie nicht | „D5. gelöschtes Cookie …“; „D5. Logout löscht das Geräte-Cookie NICHT …“ |
+| D6 | TOTP: Geräte-Hash reist über die Challenge; Challenge ohne Hash ⇒ ungültig | „D6. Geräte-Hash aus Schritt 1 …“; „D6. Challenge ohne Geräteidentität …“ |
+| D7 | Recovery-Login | „D7. Recovery-Login …“ |
+| D8 | TOTP-Ersteinrichtung über Challenge | „D8. Setup-Challenge trägt den Geräte-Hash …“ |
+| D9 | parallele Erst-Logins atomar | „D9. acht gleichzeitige Erst-Logins …“; „D9. parallele Recovery-Abschlüsse …“ |
+| D10 | DB enthält nie den Klartext, nur SHA-256 | „D10. nach allen Loginpfaden …“ |
+| D11 | Serverlog ohne Klartext/Hash/Cookie-Header | „D11. Serverlog (Level trace) …“ |
+| D12 | kein Klartext/Hash in API-Antworten | „D12. weder Klartext noch Hash …“ |
+| D13 | je neuem Gerät genau ein Admin-Push | „D13. je neuem Gerät genau ein Admin-Security-Push …“ |
+
+E2E-Zusatzbeleg: `communication-ops.spec.ts` „P. Neues Gerät = neuer serverseitiger Geräte-Cookie …“.
+
+### P – kein Push-Opt-out (`communication-push-final.integration.test.ts`)
+
+| Nr. | Thema | Test(s) |
+|---|---|---|
+| P1 | `DELETE /staff/push/subscriptions/current` existiert nicht, keine andere Opt-out-Route | „P1. …“ |
+| P2 | keine Ausschalt-/Abmelde-/Pausieren-UI, keine Abmeldefunktion in `lib/push.ts` | „P2. …“ |
+| P3 | Aktivieren; nach technischem Verlust (410) reaktiviert erneutes Aktivieren | „P3. …“ |
+| P4 | Anzeigezustände und Texte (`lib/push-state.ts`) | „P4. …“ |
+| P5 | Logout ⇒ technisch deaktiviert | „P5. …“ |
+| P6 | Session-Widerruf und Inaktivität | „P6. …“ |
+| P7, P8 | Push-Dienst 404 bzw. 410 ⇒ `gone` | „P7. …“, „P8. …“ (parametrisiert) |
+| P8b, P8c | unzulässiger Endpoint; Endpoint-Übernahme durch anderen User | „P8b. …“; „P8c. …“ |
+| P9 | deaktivierter Mitarbeiter bekommt keinen Push | „P9. …“ |
+| P10 | `scanDue` end-to-end: je genau ein Push, zweiter Lauf no-op | „P10. …“ |
+| P11 | erneuter Login mit demselben Geräte-Cookie (S2, S1 gültig) ⇒ Abo an S2; Sessions tragen nur den SHA-256; kein Hash in Antworten (B1) | „P11. …“ |
+| P12 | S1 läuft per Inaktivität ab ⇒ Push kommt weiter an (B1 a) | „P12. …“ |
+| P13 | Logout von S2 ⇒ deaktiviert, kein Push; späterer Login reaktiviert nicht (B1 b) | „P13. …“ |
+| P14 | anderer Mitarbeiter mit demselben Geräte-Cookie bzw. anderes Gerät ⇒ kein Umbinden | „P14. …“ |
+| P15 | Session ohne Hash (vor Rollout) ⇒ kein Umbinden beim Login; Statusroute bindet um | „P15. …“ |
+| P16 | Statusroute: fremder User ⇒ false; deaktiviert ⇒ keine Reaktivierung; widerrufene/abgelaufene Bindung ⇒ deaktiviert | „P16. …“ |
+| P17 | Fehler beim Umbinden bricht den Login nie; Log nur IDs/Code | „P17. …“ |
+
+Bestandstest angepasst: `communication-push.integration.test.ts` „135. …“ prüft jetzt, dass die
+DELETE-Route für fremde UND eigene Subscription 404 liefert und die Subscription aktiv bleibt.
+
+### RA – Reassignment-Race (`communication-push-final.integration.test.ts`)
+
+| Nr. | Thema | Test(s) |
+|---|---|---|
+| RA1 | genau ein Push an die neue Person, danach markiert | „RA1. …“ |
+| RA2 | Wechsel vor dem Claim ⇒ nur die aktuelle Person | „RA2. …“ |
+| RA3 | Wechsel genau zwischen Lesen und Claim (Testhook) ⇒ Claim scheitert; 1h-Regel analog | „RA3. …“; „RA3b. …“ |
+| RA4 | Fehler nach Claim vor Zustellung ⇒ Rollback inkl. Claim, Nachholen genau einmal | „RA4. …“ |
+| RA5 | Absturz nach Commit vor Job ⇒ Outbox-Backstop, genau ein Push; Altbestand | „RA5. …“; „RA5b. …“ |
+| RA6 | parallele Scanner; Claim parallel zur Neuzuweisung | „RA6. …“; „RA6b. …“ |
+| RA7 | erneute Neuzuweisung ⇒ neuer Anspruch | „RA7. …“ |
+| RA8 | Storno vor dem Claim ⇒ kein Push | „RA8. …“ |
+| RA9 | Datenminimierung der Nutzlast/Schlüssel | „RA9. …“ |
+| RA10 | Versandzeit-Prüfung (B2): Neuzuweisung nach Claim vor `push.send` ⇒ `skipped`/`SUPERSEDED`, kein Gateway-Aufruf (Z1); 1h-Push (Z1b); Storno (Z1c); Retry nach transientem Fehler (Z1d); Prüfung vor jedem Gerät + Restfenster | „RA10. …“; „RA10b. …“; „RA10c. …“; „RA10d. …“; „RA10e. …“ |
+| RA11 | Positivkontrolle: unveränderter Stand ⇒ genau ein Push; Zustellungen ohne `appointment_id` ungeprüft | „RA11. …“ |
+| RA12 | Verschiebung nach 1h-Claim ⇒ alter 1h-Push überholt, neuer genau einmal | „RA12. …“ |
+| RA13 | Kurzfrist-Regel nur für Neuzuweisungen der letzten 24 h (B3) | „RA13. …“ |
+| RA14 | Review 2: 1h-Push überholt, Zuweisung zurückgenommen ⇒ Schlüssel frei, genau ein 1h-Push | „RA14. …“ |
+| RA15 | Review 2: 1h-Push überholt durch Verschiebung, zurück auf die ursprüngliche Zeit ⇒ genau ein 1h-Push | „RA15. …“ |
+
+RA6b verschärft (B2): Bernd erhält deterministisch keinen Push (eine evtl. Zustellung ist `SUPERSEDED`).
+RA7 angepasst: `push.send` läuft je Zuweisung, solange sie aktuell ist.
+
+### W – Meta Graph API (Default v26.0)
+
+| Nr. | Thema | Test(s) |
+|---|---|---|
+| W1 | Default v26.0, kein „latest“, Mindestversion v21.0 | `communication-whatsapp-graph-version.test.ts` „W1. …“; `load-config.test.ts` (Default v26.0, v25.0 erlaubt, v20.0/„latest“ abgelehnt) |
+| W2 | Send-Pfad `POST https://graph.facebook.com/v26.0/{phone-number-id}/messages` mit Bearer | „W2. …“; `communication-whatsapp.integration.test.ts` „97. …“ |
+| W3 | Media-Metadaten `GET /v26.0/{media-id}`; Download nur erlaubter Host, ohne Redirects | „W3. …“ |
+| W4 | fremder Media-Host ⇒ `MEDIA_HOST_NOT_ALLOWED`, Bearer verlässt Graph nicht | `communication-hardening-whatsapp.integration.test.ts` „B4. …“ |
+| W5 | erlaubter Host: keine Redirects, Größenlimit | `communication-hardening-whatsapp.integration.test.ts` „B4b. …“ |
+| W6 | Contract-Fake akzeptiert nur die konfigurierte Version (400/Code 100 sonst) | `tests/e2e/fakes/whatsapp-graph.ts`; E2E `communication-flow.spec.ts` „Z. …“ |
+| W7 | Production-Host ausschließlich `graph.facebook.com` | „W7. …“ |
+
+Live-Smoke-Voraussetzung (nicht automatisierbar): „Echten WhatsApp-Bildempfang vor Go-live gegen
+Meta-Testaccount prüfen und tatsächlichen Media-Downloadhost verifizieren.“
+
+### R – Retention final (`communication-retention-final.integration.test.ts`)
+
+| Nr. | Thema | Test |
+|---|---|---|
+| R1 | Abschluss ⇒ Listener-Job: Chatfotos sofort gelöscht (Storage + deletedAt), Anker = completed_at für Nachrichte … | „R1. …“ |
+| R2 | Staff-Storno mit Buchung (Phase 9) ⇒ Listener-Job: Chatfotos sofort gelöscht, Anker = processes.cancelled_at ( … | „R2. …“ |
+| R3 | Legacy-Storno ohne Buchung (POST /staff/processes/:id/cancel) ⇒ Fotos sofort gelöscht; Anker = cancelled_at, n … | „R3. …“ |
+| R4 | Backstop (scan_due, alle 2 min) holt einen Storno ohne Listener nach: Fotos gelöscht, Anker gesetzt; offene Vo … | „R4. …“ |
+| R5 | Abschluss: Text/Betreff/Absender/Message-IDs nach exakt 12 Berliner Kalendermonaten minimiert (inbound ⇒ {"rol … | „R5. …“ |
+| R6 | Storno: Fristbeginn ist der Stornozeitpunkt (cancelled_at) – 12 Monate danach minimiert, eine Minute davor nic … | „R6. …“ |
+| R7 | Reopen setzt nichts zurück und restauriert nichts; neue Nachrichten ohne Anker; erneuter Abschluss ⇒ neuer Ank … | „R7. …“ |
+| R8 | Terminal-Job läuft erst nach einem Reopen: nur Daten, die zum Terminalzeitpunkt zum Vorgang gehörten, erhalten … | „R8. …“ |
+| R9 | Manuelle Zuordnung zu einem abgeschlossenen Vorgang ⇒ Chatfotos sofort gelöscht; Anker beim nächsten Backstop … | „R9. …“ |
+| R10 | In-Reply-To (IMAP) auf eine Mail eines stornierten Vorgangs ⇒ zugeordnet, Fotos sofort gelöscht; Anker beim Ba … | „R10. …“ |
+| R11 | Unzugeordnete E-Mail nach 90 Kalendertagen: Text/Betreff/Absender leer, Fotos gelöscht, Beleg ohne Absender/Be … | „R11. …“ |
+| R12 | Ignorierte Nachricht und Quarantäne-Beleg (rejected) nach 90 Tagen bereinigt; zugeordnete Belege und jüngere E … | „R12. …“ |
+| R13 | IMAP-Dedupe nach der Bereinigung: gleiche UID nach Neustart (UID-Tripel), Kopie nach UIDVALIDITY-Wechsel bzw. … | „R13. …“ |
+| R14 | Message-ID nur als Hash: keine Klartextspalte, kein Klartext im Beleg; Hash = SHA-256 (hex, UTF-8) der normali … | „R14. …“ |
+| R15 | WhatsApp: unzugeordnete Nachricht nach 90 Tagen ohne Telefon/Name/wamid, Foto gelöscht; Kontakt ohne Kunde gel … | „R15. …“ |
+| R15b | Verspätete Webhook-Wiederholung einer Nachricht bzw. eines Status, deren wamid nach 90 Tagen nur noch gehasht … | „R15b. …“ |
+| R16 | Prozessgebunden: 12 Berliner Monate nach dem Terminal-Anker ⇒ Empfänger/Betreff/Kontext/Anhänge/In-Reply-To/Se … | „R16. …“ |
+| R17 | Nicht prozessgebunden: 90 Berliner Kalendertage nach Endzustand (sent ⇒ sent_at; failed/blocked/outcome_unknow … | „R17. …“ |
+| R18 | Nach dem Scrub kein Resend: Route 409, resendable=false + Platzhalter in Outbox-/Statuslisten; Send-Job ohne E … | „R18. …“ |
+| R19 | Negativtest: Übergabe-/Rückgabe-/Schadens-/Defektfotos, Signaturen, Dokumente (inkl. unterschriebener Protokol … | „R19. …“ |
+| R20 | Idempotenz: doppelter Terminal-Job, doppelter Tages-Backstop und Wiederholung am Folgetag ändern nichts mehr ( … | „R20. …“ |
+| R21 | Review: Media-Job-Schlüssel = Konversationszeilen-ID (nie wamid), auch im Duplikatpfad; Altschlüssel > 90 Tage ⇒ sha256 … | „R21. …“ |
+| R22 | Review: zurückdatierter Date-Header (2001) verkürzt die 90-Tage-Frist nicht – Bezugszeit created_at; Zukunfts-Header … | „R22. …“ |
+| R23 | Review: Reopen-Rennen im Terminal-Job – neue Nachricht/Zustellung nach Reopen behält Anker NULL und Foto (Snapshot) … | „R23. …“ |
+| R24 | Review: Reopen-Rennen im Backstop – Terminalprüfung in derselben Anweisung wie die Fotoauswahl; deletePhotosIfProce … | „R24. …“ |
+| R25 | Review: Storage-Fehler im Terminal-Job ⇒ neutraler Fehler + Queue-Retry; Retry löscht das Terminalfoto auch nach Reopen … | „R25. …“ |
+| R26 | Review: Schlüssel-Rewrap lässt updated_at unverändert ⇒ 90-Tage-Frist nicht verschoben; Blockierung setzt updated_at … | „R26. …“ |
+| R27 | Review: Unzugeordnet-Purge – Zuordnung zwischen Auswahl und Wirkung ⇒ Nachricht, Foto und Beleg unberührt … | „R27. …“ |
+| R28 | Review: whatsapp.media_fetch nach Abschluss + Reopen (Anker gesetzt) ⇒ kein Laden/Speichern; Rennen während Download … | „R28. …“ |
+| R29 | Review: scan_due – wirft der 2-min-Retention-Backstop, wird der Tagesjob trotzdem eingereiht (neutrales Log) … | „R29. …“ |
+| R30 | Review 2: media_fetch – Löschen der nicht registrierten Datei scheitert ⇒ Retry entfernt sie über den deterministischen Schlüssel | „R30. …“ |
+| R31 | Review 2: Abbruch zwischen Nachrichten- und Beleg-Minimierung ⇒ beides zurückgerollt, nächster Lauf minimiert beide | „R31. …“ |
+
+Angepasste Bestandstests (altes Verhalten, Begründung in TECH_DECISIONS.md „Phase 12 Finalisierung:
+Retention“): `communication-retention` 95, `communication-conversation` 92, `communication-inbound`
+71/81, `communication-hardening-inbound` RA-6a/RA-10c, `communication-hardening-outbox`,
+`cancellation-security` 145; nach dem Review zusätzlich `communication-retention-final` R11/R12/R13/
+R15/R20 und `communication-whatsapp` 105 (Media-Job-Schlüssel).
 
 ## Anhang: weitere Phase-12-Tests ohne eigene Pflichtnummer
 

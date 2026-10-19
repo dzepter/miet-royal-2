@@ -25,6 +25,7 @@ async function recordSystemEvent(
     customerId: delivery.customerId,
     channel: 'email',
     kind: delivery.kind,
+    // Phase-12-Finalisierung: nach Retention-Scrub kein Betreff mehr (nur Art).
     subject: delivery.subject,
     mailDeliveryId: delivery.id,
   });

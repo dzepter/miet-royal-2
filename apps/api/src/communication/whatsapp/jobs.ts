@@ -7,12 +7,17 @@
  *   whatsapp_events-Zeile `send_result`); transient ⇒ werfen (Queue-Retry);
  *   unknown (Härtung B3: Request evtl. angekommen, keine Antwort) ⇒ failed mit
  *   Code OUTCOME_UNKNOWN OHNE Auto-Retry – Staff kann bewusst neu senden.
- * - `whatsapp.media_fetch` (Key `whatsapp.media_fetch:<providerMessageId>`):
+ * - `whatsapp.media_fetch` (Key `whatsapp.media_fetch:<conversationMessageId>`;
+ *   Altschlüssel mit wamid hasht die Retention nach 90 Tagen):
  *   lädt ein Bild über gateway.fetchMedia, prüft es (nur JPEG/PNG/WebP,
  *   Magic Bytes, 5 MB) und speichert es privat als message_photos-Zeile.
  *   Härtung B5: existiert für die Nachricht schon IRGENDEINE Fotozeile (auch
  *   eine per Retention gelöschte) oder ist der Vorgang abgeschlossen, wird
- *   nichts (erneut) geladen.
+ *   nichts (erneut) geladen. Phase-12-Finalisierung (Review-Fund): ebenso
+ *   nicht, wenn die Nachricht schon einen Retention-Anker hat (gehört zu einer
+ *   Terminalphase, z. B. Abschluss + Reopen vor dem Job) oder bereinigt ist;
+ *   unmittelbar vor dem Registrieren wird das unter Zeilensperre erneut
+ *   geprüft (sonst wird die bereits gespeicherte Datei wieder entfernt).
  * Beide Handler sind idempotent (Zustand wird vor jeder Aktion geprüft).
  */
 import { createHash } from 'node:crypto';
@@ -21,17 +26,21 @@ import {
   messagePhotos,
   processes,
   whatsappEvents,
+  type ConversationMessageRow,
   type Database,
+  type DatabaseExecutor,
 } from '@mietroyal/database';
-import type {
-  JobHandler,
-  JobQueue,
-  JobRunnerLogger,
-  StorageProvider,
+import {
+  StorageObjectNotFoundError,
+  type JobHandler,
+  type JobQueue,
+  type JobRunnerLogger,
+  type StorageProvider,
 } from '@mietroyal/integrations';
 import { and, eq } from 'drizzle-orm';
-import { ConversationService, photoStorageKey } from '../conversation/conversation-service.ts';
+import { ConversationService } from '../conversation/conversation-service.ts';
 import { imageExtensionFor, type AllowedImageMime } from '../inbound/content.ts';
+import { isTerminalProcessStatus } from '../retention/terminal.ts'; // Phase 12 (retention-final)
 import type { WhatsAppGateway } from '../types.ts';
 import { WHATSAPP_OUTCOME_UNKNOWN } from './gateways.ts';
 import { WHATSAPP_MEDIA_FETCH_JOB_TYPE, WHATSAPP_SEND_JOB_TYPE } from '../types.ts';
@@ -220,13 +229,13 @@ export function createWhatsAppMediaFetchHandler(deps: WhatsAppJobDeps): JobHandl
       .limit(1);
     if (existing.length > 0) return;
     // Retention: Vorgang abgeschlossen (Fotos werden gelöscht) ⇒ nichts mehr nachladen.
-    if (message.bodyDeletedAt !== null) return;
-    if (message.processId !== null) {
-      const owner = await deps.db
-        .select({ mainStatus: processes.mainStatus })
-        .from(processes)
-        .where(eq(processes.id, message.processId));
-      if (owner[0]?.mainStatus === 'completed') return;
+    // Phase 12 (retention-final): ebenso storniert (terminal) bzw. bereinigte Nachricht.
+    // Review Runde 2 (B2): eine bei einem früheren Versuch schon gespeicherte,
+    // aber nicht registrierte Datei (deterministischer Schlüssel) wird entfernt;
+    // scheitert das Löschen, wirft der Job ⇒ Queue-Retry (wie Härtung B15).
+    if (await mediaFetchBlocked(deps.db, message)) {
+      await discardUnregisteredMedia(deps.storage, messageId);
+      return;
     }
 
     const outcome = await deps.gateway.fetchMedia(mediaId);
@@ -246,20 +255,91 @@ export function createWhatsAppMediaFetchHandler(deps: WhatsAppJobDeps): JobHandl
       return;
     }
     const mime = outcome.mimeType as AllowedImageMime;
-    const storageKey = photoStorageKey(messageId, imageExtensionFor(mime));
+    const storageKey = whatsappMediaStorageKey(messageId, imageExtensionFor(mime));
+    // Storage nie unter offener Transaktion – danach unter Zeilensperre erneut prüfen
+    // (Abschluss/Terminal-Job/Reopen während des Downloads ⇒ nicht registrieren).
     await deps.storage.put(storageKey, outcome.bytes, { contentType: mime });
-    await conversations.registerPhoto({
-      messageId,
-      storageKey,
-      mimeType: mime,
-      byteSize: outcome.bytes.length,
-      sha256: createHash('sha256').update(outcome.bytes).digest('hex'),
+    const registered = await deps.db.transaction(async (tx) => {
+      const locked = await tx
+        .select()
+        .from(conversationMessages)
+        .where(eq(conversationMessages.id, messageId))
+        .for('update');
+      const current = locked[0];
+      if (current === undefined || (await mediaFetchBlocked(tx, current))) return false;
+      await conversations.registerPhoto(
+        {
+          messageId,
+          storageKey,
+          mimeType: mime,
+          byteSize: outcome.bytes.length,
+          sha256: createHash('sha256').update(outcome.bytes).digest('hex'),
+        },
+        tx,
+      );
+      return true;
     });
+    if (!registered) {
+      await discardUnregisteredMedia(deps.storage, messageId);
+      deps.logger?.info(
+        { jobId: job.id, conversationMessageId: messageId },
+        'whatsapp.media_fetch verworfen (Retention)',
+      );
+      return;
+    }
     deps.logger?.info(
       { jobId: job.id, conversationMessageId: messageId, bytes: outcome.bytes.length },
       'whatsapp.media_fetch gespeichert',
     );
   };
+}
+
+/**
+ * Review Runde 2 (B2): Storage-Schlüssel eines WhatsApp-Bildes ist je
+ * Konversationszeile deterministisch (eine WhatsApp-Nachricht trägt genau ein
+ * Bild). So findet jeder spätere Lauf eine gespeicherte, aber nicht
+ * registrierte Datei wieder (statt eines zufälligen, verlorenen Schlüssels).
+ */
+export function whatsappMediaStorageKey(messageId: string, extension: string): string {
+  return `communication/messages/${messageId}/whatsapp-media.${extension}`;
+}
+
+/** Alle möglichen Dateien dieser Nachricht löschen; „nicht vorhanden“ = Erfolg, sonst werfen (Retry). */
+async function discardUnregisteredMedia(storage: StorageProvider, messageId: string) {
+  for (const mime of ['image/jpeg', 'image/png', 'image/webp'] as const) {
+    try {
+      await storage.delete(whatsappMediaStorageKey(messageId, imageExtensionFor(mime)));
+    } catch (error) {
+      if (!(error instanceof StorageObjectNotFoundError)) throw error;
+    }
+  }
+}
+
+/**
+ * Kein (erneutes) Laden/Speichern: Text gelöscht oder PII bereinigt, Retention-
+ * Anker gesetzt (Nachricht gehört zu einer Terminalphase – auch wenn der
+ * Vorgang inzwischen wieder geöffnet ist) oder Vorgang aktuell terminal.
+ */
+async function mediaFetchBlocked(
+  db: DatabaseExecutor,
+  message: Pick<
+    ConversationMessageRow,
+    'bodyDeletedAt' | 'piiScrubbedAt' | 'retentionAnchorAt' | 'processId'
+  >,
+): Promise<boolean> {
+  if (
+    message.bodyDeletedAt !== null ||
+    message.piiScrubbedAt !== null ||
+    message.retentionAnchorAt !== null
+  ) {
+    return true;
+  }
+  if (message.processId === null) return false;
+  const owner = await db
+    .select({ mainStatus: processes.mainStatus })
+    .from(processes)
+    .where(eq(processes.id, message.processId));
+  return isTerminalProcessStatus(owner[0]?.mainStatus);
 }
 
 async function noteMediaFailure(

@@ -6,9 +6,10 @@
  *   nur Daten für einen bereits geprüften Vorgang).
  * - Staff-Antwort per E-Mail: Empfänger ist NIE frei – immer die E-Mail des
  *   Kunden des Vorgangs; Versand über die Outbox (`MailOutbox`), Job nach Commit.
- * - Retention-Hilfen (`deleteChatPhotosForProcess`, `purgeChatTextForProcess`)
- *   werden vom Cleanup-Job (Agent R) aufgerufen; sie betreffen ausschließlich
- *   Kommunikationsfotos/-texte – nie Übergabe-/Rückgabe-/Schadensfotos.
+ * - Retention-Hilfen (`deleteChatPhotosForProcess`, `scrubMessages`, …)
+ *   werden vom Cleanup-Job (retention/cleanup.ts) aufgerufen; sie betreffen
+ *   ausschließlich Kommunikationsfotos/-texte – nie Übergabe-/Rückgabe-/
+ *   Schadensfotos, Signaturen oder Dokumente.
  * - Eingehende Nachrichten autorisieren NIE Fachaktionen: dieser Service
  *   schreibt nur conversation_messages/message_photos.
  */
@@ -27,10 +28,11 @@ import {
   type DatabaseExecutor,
 } from '@mietroyal/database';
 import { StorageObjectNotFoundError, type StorageProvider } from '@mietroyal/integrations';
-import { and, asc, desc, eq, gt, inArray, isNull, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, inArray, isNull, lte, sql, type SQL } from 'drizzle-orm';
 import { AuthError } from '../../auth/service.ts';
 import { previewOf } from '../inbound/content.ts';
 import { renderMailSubject } from '../mail/templates/index.ts';
+import { isTerminalProcessStatus, PROCESS_TERMINAL_STATUSES } from '../retention/terminal.ts';
 import type { MailDeliveryKind, MailOutbox } from '../types.ts';
 
 export type ConversationChannel = 'email' | 'whatsapp' | 'portal';
@@ -44,7 +46,16 @@ export interface SenderSnapshot {
   phone?: string | null;
   /** Nicht gespeicherte Anhänge (PDF/ZIP/…): nur Zähler, nie Inhalte. */
   skippedAttachments?: number;
+  /** Nach der 12-Monats-Retention verbleibende neutrale Rolle (keine Namen/Kontaktdaten). */
+  role?: 'customer' | 'staff';
 }
+
+/**
+ * Retention-Modus der PII-Minimierung (Phase-12-Finalisierung §4.3/§4.4):
+ * `matched` = Vorgangs-Kommunikation nach 12 Monaten (Absender ⇒ neutrale
+ * Rolle), `unmatched` = unzugeordnet/ignoriert nach 90 Tagen (Absender leer).
+ */
+export type ConversationScrubMode = 'matched' | 'unmatched';
 
 export const MANUAL_REPLY_MAX_CHARS = 5000;
 
@@ -100,7 +111,21 @@ function snapshotOf(row: ConversationMessageRow): SenderSnapshot {
   if (typeof value.skippedAttachments === 'number') {
     out.skippedAttachments = value.skippedAttachments;
   }
+  if (value.role === 'customer' || value.role === 'staff') out.role = value.role;
   return out;
+}
+
+/**
+ * Phase-12-Finalisierung (Review-Fund Reopen-Rennen): Bedingung „Vorgang der
+ * Nachricht ist abgeschlossen/storniert“ als Teil DERSELBEN SQL-Anweisung wie
+ * die Fotoauswahl (konsistenter Statement-Snapshot unter READ COMMITTED).
+ */
+function processStillTerminal(processIdColumn: typeof conversationMessages.processId): SQL {
+  const statuses = sql.join(
+    PROCESS_TERMINAL_STATUSES.map((status) => sql`${status}`),
+    sql`, `,
+  );
+  return sql`EXISTS (SELECT 1 FROM ${processes} WHERE ${processes.id} = ${processIdColumn} AND ${processes.mainStatus} IN (${statuses}))`;
 }
 
 export function photoStorageKey(messageId: string, extension: string): string {
@@ -301,7 +326,8 @@ export class ConversationService {
       customerId?: string | null;
       channel: 'email';
       kind: MailDeliveryKind;
-      subject: string;
+      /** null = Zustellung bereits bereinigt (Retention) – Ereignis nur mit Art. */
+      subject: string | null;
       mailDeliveryId: string;
     },
     executor: DatabaseExecutor = this.db,
@@ -321,7 +347,7 @@ export class ConversationService {
         direction: 'outbound',
         senderSnapshot: { name: 'Miet-Royal' },
         subject: input.subject,
-        body: `[${input.kind}] ${input.subject}`,
+        body: input.subject === null ? `[${input.kind}]` : `[${input.kind}] ${input.subject}`,
         mailDeliveryId: input.mailDeliveryId,
         isSystemEvent: true,
         deliveryState: 'queued',
@@ -479,6 +505,8 @@ export class ConversationService {
           isNull(conversationMessages.processId),
           isNull(conversationMessages.ignoredAt),
           eq(conversationMessages.direction, 'inbound'),
+          // Phase-12-Finalisierung §4.4: nach der 90-Tage-Bereinigung nicht mehr sichtbar.
+          isNull(conversationMessages.piiScrubbedAt),
         ),
       )
       .orderBy(desc(conversationMessages.createdAt));
@@ -496,26 +524,41 @@ export class ConversationService {
     }));
   }
 
-  /** Zuordnung durch Mitarbeitende: nur Konversationszeile + Beleg – keine Fachmutation. */
+  /**
+   * Zuordnung durch Mitarbeitende: nur Konversationszeile + Beleg – keine Fachmutation.
+   * Phase-12-Finalisierung §4.2/§4.4: bereits bereinigte Nachrichten (90 Tage)
+   * sind nicht mehr zuordenbar (404). Ist der Zielvorgang bereits terminal
+   * (abgeschlossen/storniert), werden die Chatfotos der Nachricht nach dem
+   * Commit SOFORT gelöscht; den Retention-Anker (= aktueller Terminal-
+   * zeitpunkt) setzt der nächste Retention-Backstop (scan_due, alle 2 min).
+   */
   async assignUnmatched(
     messageId: string,
     input: { processId: string; staffUserId: string },
   ): Promise<void> {
-    await this.db.transaction(async (tx) => {
+    const targetTerminal = await this.db.transaction(async (tx) => {
       const rows = await tx
         .select()
         .from(conversationMessages)
         .where(eq(conversationMessages.id, messageId))
         .for('update');
       const message = rows[0];
-      if (message === undefined || message.direction !== 'inbound') {
+      if (
+        message === undefined ||
+        message.direction !== 'inbound' ||
+        message.piiScrubbedAt !== null
+      ) {
         throw new AuthError('NOT_FOUND', 'Nachricht nicht gefunden.');
       }
       if (message.processId !== null || message.ignoredAt !== null) {
         throw new AuthError('CONFLICT', 'Die Nachricht ist bereits zugeordnet oder ignoriert.');
       }
       const processRows = await tx
-        .select({ id: processes.id, customerId: processes.customerId })
+        .select({
+          id: processes.id,
+          customerId: processes.customerId,
+          mainStatus: processes.mainStatus,
+        })
         .from(processes)
         .where(eq(processes.id, input.processId));
       const process = processRows[0];
@@ -541,7 +584,14 @@ export class ConversationService {
           .set({ customerId: process.customerId, updatedAt: now })
           .where(and(eq(whatsappContacts.waId, sender.phone), isNull(whatsappContacts.customerId)));
       }
+      return isTerminalProcessStatus(process.mainStatus);
     });
+    if (targetTerminal) {
+      // Storage nie unter offener Transaktion; Fehler ⇒ Backstop (Zeile bleibt offen, B15).
+      // Phase-12-Finalisierung (Review): Terminalzustand in DERSELBEN Anweisung wie die
+      // Fotoauswahl erneut prüfen – ein inzwischen wieder geöffneter Vorgang behält die Fotos.
+      await this.deletePhotosIfProcessTerminal(messageId).catch(() => undefined);
+    }
   }
 
   async ignoreUnmatched(messageId: string, staffUserId: string): Promise<void> {
@@ -552,7 +602,11 @@ export class ConversationService {
         .where(eq(conversationMessages.id, messageId))
         .for('update');
       const message = rows[0];
-      if (message === undefined || message.direction !== 'inbound') {
+      if (
+        message === undefined ||
+        message.direction !== 'inbound' ||
+        message.piiScrubbedAt !== null
+      ) {
         throw new AuthError('NOT_FOUND', 'Nachricht nicht gefunden.');
       }
       if (message.processId !== null || message.ignoredAt !== null) {
@@ -569,7 +623,7 @@ export class ConversationService {
     });
   }
 
-  // ── Retention (Order §25; Aufruf aus dem Cleanup-Job) ──────────────────
+  // ── Retention (Order §25 + Phase-12-Finalisierung §4; Aufruf aus dem Cleanup-Job) ──
 
   /**
    * Kommunikationsfotos eines Vorgangs löschen (Storage + deletedAt). Idempotent.
@@ -577,15 +631,94 @@ export class ConversationService {
    * bereits fehlendes Objekt zählt als gelöscht). Scheitert das Löschen, bleibt
    * die Zeile offen – der Retention-Backstop (scan_due) versucht es erneut.
    * `errorCode`: neutraler Code des ersten Fehlers (nur für das Log).
+   * `joinedBefore` (Finalisierung §4.2): nur Nachrichten, die spätestens zu
+   * diesem Zeitpunkt zum Vorgang gehörten (COALESCE(assigned_at, created_at)) –
+   * Snapshot des Terminal-Jobs (retention/cleanup.ts `runTerminalCleanup`).
+   * `onlyWhileTerminal` (Review-Fund Reopen-Rennen): die Fotoauswahl prüft in
+   * DERSELBEN SQL-Anweisung, dass der Vorgang (noch) abgeschlossen/storniert
+   * ist – der Statement-Snapshot ist konsistent, Nachrichten nach einem Reopen
+   * sind nie enthalten (Backstop). Ohne Option: Low-Level-Hilfe ohne
+   * Zustandsprüfung (Aufrufer legt die Bedingung fest).
    */
   async deleteChatPhotosForProcess(
     processId: string,
+    options: { joinedBefore?: Date; onlyWhileTerminal?: boolean } = {},
   ): Promise<{ deleted: number; failed: number; errorCode: string | null }> {
     const rows = await this.db
       .select({ id: messagePhotos.id, storageKey: messagePhotos.storageKey })
       .from(messagePhotos)
       .innerJoin(conversationMessages, eq(conversationMessages.id, messagePhotos.messageId))
-      .where(and(eq(conversationMessages.processId, processId), isNull(messagePhotos.deletedAt)));
+      .where(
+        and(
+          eq(conversationMessages.processId, processId),
+          isNull(messagePhotos.deletedAt),
+          ...(options.joinedBefore === undefined
+            ? []
+            : [
+                lte(
+                  sql`COALESCE(${conversationMessages.assignedAt}, ${conversationMessages.createdAt})`,
+                  options.joinedBefore,
+                ),
+              ]),
+          ...(options.onlyWhileTerminal === true
+            ? [processStillTerminal(conversationMessages.processId)]
+            : []),
+        ),
+      );
+    return this.deletePhotoRows(rows);
+  }
+
+  /**
+   * Kommunikationsfotos bestimmter Nachrichten löschen (gleiches Muster wie oben).
+   * `onlyUnassigned` (90-Tage-Purge Unzugeordnetes): nur Nachrichten, die in
+   * DERSELBEN Anweisung (noch) keinem Vorgang zugeordnet sind – eine Zuordnung
+   * zwischen Auswahl und Löschung lässt die Fotos unberührt.
+   */
+  async deleteChatPhotosForMessages(
+    messageIds: readonly string[],
+    options: { onlyUnassigned?: boolean } = {},
+  ): Promise<{ deleted: number; failed: number; errorCode: string | null }> {
+    if (messageIds.length === 0) return { deleted: 0, failed: 0, errorCode: null };
+    const rows = await this.db
+      .select({ id: messagePhotos.id, storageKey: messagePhotos.storageKey })
+      .from(messagePhotos)
+      .innerJoin(conversationMessages, eq(conversationMessages.id, messagePhotos.messageId))
+      .where(
+        and(
+          inArray(messagePhotos.messageId, [...messageIds]),
+          isNull(messagePhotos.deletedAt),
+          ...(options.onlyUnassigned === true ? [isNull(conversationMessages.processId)] : []),
+        ),
+      );
+    return this.deletePhotoRows(rows);
+  }
+
+  /**
+   * Finalisierung §4.2: Nachricht gehört (inzwischen) zu einem TERMINALEN
+   * Vorgang (z. B. In-Reply-To auf eine Mail eines abgeschlossenen Vorgangs) ⇒
+   * ihre Chatfotos sofort löschen. Sonst no-op. Terminalprüfung und Fotoauswahl
+   * in EINER Anweisung (Review-Fund Reopen-Rennen).
+   */
+  async deletePhotosIfProcessTerminal(
+    messageId: string,
+  ): Promise<{ deleted: number; failed: number; errorCode: string | null }> {
+    const rows = await this.db
+      .select({ id: messagePhotos.id, storageKey: messagePhotos.storageKey })
+      .from(messagePhotos)
+      .innerJoin(conversationMessages, eq(conversationMessages.id, messagePhotos.messageId))
+      .where(
+        and(
+          eq(messagePhotos.messageId, messageId),
+          isNull(messagePhotos.deletedAt),
+          processStillTerminal(conversationMessages.processId),
+        ),
+      );
+    return this.deletePhotoRows(rows);
+  }
+
+  private async deletePhotoRows(
+    rows: readonly { id: string; storageKey: string }[],
+  ): Promise<{ deleted: number; failed: number; errorCode: string | null }> {
     let deleted = 0;
     let failed = 0;
     let errorCode: string | null = null;
@@ -608,19 +741,98 @@ export class ConversationService {
     return { deleted, failed, errorCode };
   }
 
-  /** Chattexte eines Vorgangs leeren (body ⇒ '', bodyDeletedAt). Idempotent. */
+  /**
+   * PII-Minimierung von Konversationszeilen (Finalisierung §4.3/§4.4/§4.6),
+   * idempotent über `pii_scrubbed_at IS NULL`:
+   * body '' (Spalte NOT NULL), subject NULL, Absender-Snapshot minimiert
+   * (`matched`: {"role":"customer"} bzw. {"role":"staff"} für ausgehende
+   * Zeilen; `unmatched`: {}), provider_message_id und reply_to_provider_
+   * message_id NULL (E-Mail-Message-IDs sind potenziell personenbezogen;
+   * WhatsApp-wamids enthalten base64-kodiert die wa_id = Telefonnummer und
+   * werden nach Ablauf der Frist nicht mehr gebraucht), body_deleted_at
+   * (bleibt, falls schon gesetzt) und pii_scrubbed_at. Verknüpfte Eingangs-
+   * belege verlieren Absender/Betreff (from_address/subject NULL).
+   * Technische Felder (Kanal, Richtung, Zeiten, Zustellstatus, Vorgang/Kunde,
+   * Outbox-Verweis) bleiben.
+   * Review-Fund (Unzugeordnet-Purge): Modus `unmatched` prüft `process_id IS
+   * NULL` IN der UPDATE-Bedingung (eine Zuordnung zwischen Auswahl und Scrub
+   * lässt die Nachricht unberührt); Belege nur zu tatsächlich minimierten
+   * Nachrichten (`unmatched` zusätzlich Status unmatched/ignored/rejected).
+   */
+  async scrubMessages(
+    messageIds: readonly string[],
+    now: Date,
+    mode: ConversationScrubMode,
+  ): Promise<{ scrubbed: number; receipts: number }> {
+    if (messageIds.length === 0) return { scrubbed: 0, receipts: 0 };
+    const sender =
+      mode === 'unmatched'
+        ? sql`'{}'::jsonb`
+        : sql`CASE WHEN ${conversationMessages.direction} = 'outbound'
+            THEN '{"role":"staff"}'::jsonb ELSE '{"role":"customer"}'::jsonb END`;
+    // Review Runde 2 (B3): Nachricht und Beleg in EINER Transaktion – ein
+    // Abbruch dazwischen ließe sonst einen zugeordneten Beleg dauerhaft mit
+    // Absender/Betreff zurück (die Nachricht wird danach nie mehr ausgewählt).
+    return this.db.transaction(async (tx) => {
+      const updated = await tx
+        .update(conversationMessages)
+        .set({
+          body: '',
+          subject: null,
+          senderSnapshot: sender,
+          providerMessageId: null,
+          replyToProviderMessageId: null,
+          bodyDeletedAt: sql`COALESCE(${conversationMessages.bodyDeletedAt}, ${now.toISOString()}::timestamptz)`,
+          piiScrubbedAt: now,
+        })
+        .where(
+          and(
+            inArray(conversationMessages.id, [...messageIds]),
+            isNull(conversationMessages.piiScrubbedAt),
+            ...(mode === 'unmatched' ? [isNull(conversationMessages.processId)] : []),
+          ),
+        )
+        .returning({ id: conversationMessages.id });
+      const receipts = await tx
+        .update(inboundMailReceipts)
+        .set({ fromAddress: null, subject: null, piiScrubbedAt: now })
+        .where(
+          and(
+            inArray(inboundMailReceipts.conversationMessageId, [...messageIds]),
+            isNull(inboundMailReceipts.piiScrubbedAt),
+            // Nur Belege bereits minimierter Nachrichten (auch nach Absturz zwischen beiden Anweisungen).
+            sql`EXISTS (SELECT 1 FROM ${conversationMessages} WHERE ${conversationMessages.id} = ${inboundMailReceipts.conversationMessageId} AND ${conversationMessages.piiScrubbedAt} IS NOT NULL)`,
+            ...(mode === 'unmatched'
+              ? [inArray(inboundMailReceipts.status, ['unmatched', 'ignored', 'rejected'])]
+              : []),
+          ),
+        )
+        .returning({ id: inboundMailReceipts.id });
+      return { scrubbed: updated.length, receipts: receipts.length };
+    });
+  }
+
+  /**
+   * Chattexte eines Vorgangs leeren und PII minimieren (wie die 12-Monats-
+   * Retention, `matched`). Idempotent. Der Cleanup-Job entscheidet über die
+   * Frist (Retention-Anker); diese Hilfe prüft sie NICHT.
+   */
   async purgeChatTextForProcess(processId: string, now = new Date()): Promise<{ purged: number }> {
-    const updated = await this.db
-      .update(conversationMessages)
-      .set({ body: '', subject: null, bodyDeletedAt: now })
+    const rows = await this.db
+      .select({ id: conversationMessages.id })
+      .from(conversationMessages)
       .where(
         and(
           eq(conversationMessages.processId, processId),
-          isNull(conversationMessages.bodyDeletedAt),
+          isNull(conversationMessages.piiScrubbedAt),
         ),
-      )
-      .returning({ id: conversationMessages.id });
-    return { purged: updated.length };
+      );
+    const result = await this.scrubMessages(
+      rows.map((row) => row.id),
+      now,
+      'matched',
+    );
+    return { purged: result.scrubbed };
   }
 
   /** Letzte eingehende WhatsApp-Nachricht (für Antwortziel/Fenster). */

@@ -80,6 +80,12 @@ export const MAIL_DELIVERY_KIND_LABELS: Record<MailDeliveryKind, string> = {
   manual_customer_reply: 'Antwort an Kunde',
 };
 
+/**
+ * Phase-12-Finalisierung (Retention §4.6): Platzhalter der Listen-/Status-
+ * ansicht, nachdem Empfänger und Betreff einer Zustellung bereinigt wurden.
+ */
+export const MAIL_DELIVERY_SCRUBBED_SUBJECT = 'Inhalt nach Ablauf der Aufbewahrungsfrist gelöscht';
+
 /** Listen-/Statusansicht ohne Secrets, Bodies oder Kontext. */
 export interface MailDeliverySummary {
   id: string;
@@ -88,8 +94,12 @@ export interface MailDeliverySummary {
   status: MailDeliveryStatus;
   statusLabel: string;
   processId: string | null;
+  /** '' = keine Adresse bzw. nach Retention bereinigt (`piiScrubbed`). */
   recipientEmail: string;
+  /** Nach Retention: Platzhalter `MAIL_DELIVERY_SCRUBBED_SUBJECT`. */
   subject: string;
+  /** Phase-12-Finalisierung: Empfänger/Betreff/Kontext entfernt – kein Resend mehr. */
+  piiScrubbed: boolean;
   attempts: number;
   nextAttemptAt: string | null;
   sentAt: string | null;
@@ -102,7 +112,13 @@ export interface MailDeliverySummary {
   updatedAt: string;
 }
 
-export function isResendable(row: Pick<MailDeliveryRow, 'status' | 'blockedReason'>): boolean {
+export function isResendable(
+  row: Pick<MailDeliveryRow, 'status' | 'blockedReason'> &
+    Partial<Pick<MailDeliveryRow, 'piiScrubbedAt' | 'recipientEmail'>>,
+): boolean {
+  // Phase-12-Finalisierung (Retention §4.6): bereinigte Zustellung ⇒ nie erneut senden.
+  if (row.piiScrubbedAt !== undefined && row.piiScrubbedAt !== null) return false;
+  if (row.recipientEmail === null) return false;
   if (row.status === 'failed' || row.status === 'outcome_unknown') return true;
   return (
     row.status === 'blocked' && MAIL_RESENDABLE_BLOCK_REASONS.includes(row.blockedReason ?? '')
@@ -133,8 +149,9 @@ export function summarizeDelivery(
     status: row.status,
     statusLabel: MAIL_DELIVERY_STATUS_LABELS[row.status],
     processId: row.processId,
-    recipientEmail: row.recipientEmail,
-    subject: row.subject,
+    recipientEmail: row.recipientEmail ?? '',
+    subject: row.subject ?? MAIL_DELIVERY_SCRUBBED_SUBJECT,
+    piiScrubbed: row.piiScrubbedAt !== null,
     attempts: row.attempts,
     nextAttemptAt: row.nextAttemptAt?.toISOString() ?? null,
     sentAt: row.sentAt?.toISOString() ?? null,
@@ -408,9 +425,10 @@ export class MailOutboxService implements MailOutbox {
         .for('update');
       const source = locked[0];
       if (source === undefined) throw new AuthError('NOT_FOUND', 'Zustellung nicht gefunden.');
-      if (!isResendable(source)) {
+      if (!isResendable(source) || source.recipientEmail === null) {
         throw new AuthError('CONFLICT', 'Diese Zustellung kann nicht erneut gesendet werden.');
       }
+      const recipientEmail = source.recipientEmail;
       await this.assertNotSuperseded(tx, source);
       let secrets: Record<string, string> | undefined;
       if (source.secretPayloadCiphertext !== null) {
@@ -430,7 +448,7 @@ export class MailOutboxService implements MailOutbox {
           processId: source.processId,
           customerId: source.customerId,
           bookingId: source.bookingId,
-          recipient: { email: source.recipientEmail, name: source.recipientName },
+          recipient: { email: recipientEmail, name: source.recipientName },
           context: source.context as Record<string, unknown>,
           ...(secrets === undefined ? {} : { secrets }),
           attachments: source.attachments as MailAttachmentRef[],

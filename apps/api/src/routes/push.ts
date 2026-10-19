@@ -9,11 +9,16 @@ import type { PushGateway } from '../communication/types.ts';
 
 /**
  * Web-Push-Routen (Phase 12, Order §29): Jede gültige Session darf das
- * EIGENE Gerät registrieren/abmelden und die eigenen Geräte sehen – kein
- * neues Recht (Push ist Werkzeug, keine Datenfreigabe). Endpoint/Keys
- * werden entgegengenommen, aber nie zurückgegeben oder geloggt.
+ * EIGENE Gerät registrieren und die eigenen Geräte sehen – kein neues Recht
+ * (Push ist Werkzeug, keine Datenfreigabe). Endpoint/Keys werden
+ * entgegengenommen, aber nie zurückgegeben oder geloggt.
  * Härtung B10: außerhalb von development nur Endpoints bekannter Push-Dienste
  * (communication/push/endpoint-policy.ts) – kein SSRF über den Endpoint.
+ * Phase 12 Finalisierung (bestätigte Entscheidung): KEIN Push-Opt-out in
+ * Miet-Royal – es gibt bewusst keine Route zum Abmelden/Ausschalten. Die
+ * bewusste Entscheidung ist die Browserberechtigung; danach deaktiviert nur
+ * die Technik (Logout/Revoke/Inaktivität/Mitarbeiter deaktiviert, 404/410,
+ * unzulässiger Endpoint, Übernahme des Endpoints durch einen anderen User).
  */
 
 const BASE64URL_PATTERN = /^[A-Za-z0-9_-]+$/;
@@ -42,7 +47,7 @@ const subscribeBody = z.object({
   userAgentLabel: z.string().max(120).optional(),
 });
 
-const unsubscribeBody = z.object({ endpoint: endpointSchema });
+const endpointBody = z.object({ endpoint: endpointSchema });
 
 interface PushRouteOptions {
   auth: StaffAuthService;
@@ -102,14 +107,6 @@ export function registerPushRoutes(app: FastifyInstance, options: PushRouteOptio
     return { subscriptionId: result.id };
   });
 
-  app.delete('/staff/push/subscriptions/current', async (request, reply) => {
-    const context = await requireAuth(request, reply, auth, config, { allowLocked: true });
-    if (context === null) return;
-    const body = parseOrThrow(unsubscribeBody, request.body, 'body');
-    const removed = await subscriptions.unsubscribe(context.user.id, body.endpoint);
-    return { removed };
-  });
-
   app.get('/staff/push/subscriptions', async (request, reply) => {
     const context = await requireAuth(request, reply, auth, config, { touchActivity: false });
     if (context === null) return;
@@ -117,11 +114,22 @@ export function registerPushRoutes(app: FastifyInstance, options: PushRouteOptio
     return { devices };
   });
 
-  /** Status des eigenen Browsers: ist dieser Endpoint aktiv registriert? */
+  /**
+   * Status des eigenen Browsers: ist dieser Endpoint für DIESEN User aktiv?
+   * Phase 12 Finalisierung (B1): eine an eine andere gültige Session desselben
+   * Users gebundene Subscription wird dabei an die aktuelle Session gebunden
+   * (Details: PushSubscriptionService.statusForSession); fremder User ⇒ false.
+   */
   app.post('/staff/push/subscriptions/status', async (request, reply) => {
     const context = await requireAuth(request, reply, auth, config, { touchActivity: false });
     if (context === null) return;
-    const body = parseOrThrow(unsubscribeBody, request.body, 'body');
-    return { active: await subscriptions.isActiveForUser(context.user.id, body.endpoint) };
+    const body = parseOrThrow(endpointBody, request.body, 'body');
+    return {
+      active: await subscriptions.statusForSession(
+        context.user.id,
+        context.session.id,
+        body.endpoint,
+      ),
+    };
   });
 }

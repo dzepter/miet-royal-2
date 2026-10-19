@@ -7,16 +7,20 @@ import {
   fetchPushDevices,
   fetchPushStatus,
   subscribeToPush,
-  unsubscribeFromPush,
   type PushDevice,
   type PushStatus,
 } from '../../../lib/push';
+import { derivePushViewState } from '../../../lib/push-state';
 
 /**
  * Einstellungen → Benachrichtigungen (Phase 12, Order §29): Push auf DIESEM
- * Gerät aktivieren/deaktivieren – nur nach Klick (Berechtigungsabfrage des
- * Browsers) – und die eigenen registrierten Geräte sehen. Für jede
- * angemeldete Person, kein Admin-Recht nötig.
+ * Gerät aktivieren – nur nach Klick (Berechtigungsabfrage des Browsers) –
+ * und die eigenen registrierten Geräte sehen. Für jede angemeldete Person,
+ * kein Admin-Recht nötig.
+ * Phase 12 Finalisierung (bestätigte Entscheidung): Die bewusste
+ * Entscheidung ist die Browserberechtigung; Miet-Royal bietet danach
+ * keinen eigenen Schalter mehr an. Der Anzeigezustand kommt ausschließlich
+ * aus `derivePushViewState` (lib/push-state.ts).
  */
 function formatDate(value: string | null): string {
   if (value === null) return '–';
@@ -28,7 +32,6 @@ function NotificationSettings() {
   const [devices, setDevices] = useState<PushDevice[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     const [nextStatus, nextDevices] = await Promise.all([fetchPushStatus(), fetchPushDevices()]);
@@ -42,30 +45,14 @@ function NotificationSettings() {
   async function enable() {
     setBusy(true);
     setError(null);
-    setNotice(null);
     const outcome = await subscribeToPush();
     setBusy(false);
-    if (!outcome.ok) {
-      setError(outcome.message);
-      return;
-    }
-    setNotice('Push ist auf diesem Gerät aktiv.');
+    // Abgelehnte Browserberechtigung zeigt der Status selbst (push-denied).
+    if (!outcome.ok && outcome.reason !== 'denied') setError(outcome.message);
     await load();
   }
 
-  async function disable() {
-    setBusy(true);
-    setError(null);
-    setNotice(null);
-    const ok = await unsubscribeFromPush();
-    setBusy(false);
-    if (!ok) {
-      setError('Push konnte nicht deaktiviert werden.');
-      return;
-    }
-    setNotice('Push ist auf diesem Gerät deaktiviert.');
-    await load();
-  }
+  const view = derivePushViewState(status);
 
   return (
     <main className="page">
@@ -80,39 +67,30 @@ function NotificationSettings() {
           überfälligen Rückgaben, Maschinenkonflikten und neuen Anmeldungen. Die Nachrichten
           enthalten nur die Vorgangsnummer, nie Kundendaten.
         </p>
-        {status === null && <p className="muted">Wird geladen …</p>}
-        {status !== null && !status.supported && (
-          <p className="error">Dieser Browser unterstützt keine Push-Benachrichtigungen.</p>
+        {view.kind === 'loading' && <p className="muted">Wird geladen …</p>}
+        {(view.kind === 'unsupported' || view.kind === 'server_disabled') && (
+          <p className="error">{view.text}</p>
         )}
-        {status !== null && status.supported && !status.serverEnabled && (
-          <p className="error">Push ist auf diesem Server nicht konfiguriert.</p>
+        {view.kind === 'denied' && (
+          <p className="error" data-testid="push-denied">
+            {view.text}
+          </p>
         )}
-        {status?.permission === 'denied' && (
-          <p className="error">
-            Benachrichtigungen sind im Browser blockiert. Bitte in den Seiteneinstellungen erlauben.
+        {view.kind === 'active' && (
+          <p className="success" data-testid="push-status">
+            {view.text}
           </p>
         )}
         {error !== null && <p className="error">{error}</p>}
-        {notice !== null && <p className="success">{notice}</p>}
-        {status !== null && status.supported && status.serverEnabled && !status.active && (
+        {view.kind === 'inactive' && (
           <button
             className="primary"
             type="button"
             data-testid="push-enable"
-            disabled={busy || status.permission === 'denied'}
+            disabled={busy}
             onClick={() => void enable()}
           >
-            Push auf diesem Gerät aktivieren
-          </button>
-        )}
-        {status !== null && status.active && (
-          <button
-            type="button"
-            data-testid="push-disable"
-            disabled={busy}
-            onClick={() => void disable()}
-          >
-            Push auf diesem Gerät deaktivieren
+            {view.actionLabel}
           </button>
         )}
       </div>
@@ -133,9 +111,6 @@ function NotificationSettings() {
             </div>
           ))}
         </div>
-        <p className="muted">
-          Abmelden eines Geräts (unter „Mein Konto“) beendet auch dessen Push-Benachrichtigungen.
-        </p>
       </div>
     </main>
   );

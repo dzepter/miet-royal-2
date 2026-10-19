@@ -1,6 +1,7 @@
 import type { AppConfig } from '@mietroyal/config';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import type { PermissionKey } from '@mietroyal/permissions';
+import { DEVICE_COOKIE_MAX_AGE_SECONDS, DEVICE_COOKIE_NAME } from './device.ts';
 import { AuthError, type AuthenticatedContext, type StaffAuthService } from './service.ts';
 
 export const SESSION_COOKIE_NAME = 'mr_staff_session';
@@ -62,6 +63,24 @@ export function clearSessionCookie(reply: FastifyReply, config: AppConfig): void
     httpOnly: true,
     sameSite: 'strict',
     secure: config.appEnv !== 'development',
+  });
+}
+
+/**
+ * Phase-12-Finalisierung: Geräte-Cookie (stabile Geräteidentität, siehe
+ * auth/device.ts). Gleiche Attribute wie das Session-Cookie (HttpOnly,
+ * SameSite=Strict – der Login läuft same-origin über den Staff-Proxy –,
+ * Secure außer in lokaler development-Umgebung, Path=/), aber deutlich
+ * langlebiger (400 Tage). Wird nach bestandener Passwortprüfung gesetzt bzw.
+ * erneuert; Logout/Widerruf löschen es bewusst NICHT (daher kein clear…).
+ */
+export function setDeviceCookie(reply: FastifyReply, config: AppConfig, token: string): void {
+  void reply.setCookie(DEVICE_COOKIE_NAME, token, {
+    path: '/',
+    httpOnly: true,
+    sameSite: 'strict',
+    secure: config.appEnv !== 'development',
+    maxAge: DEVICE_COOKIE_MAX_AGE_SECONDS,
   });
 }
 

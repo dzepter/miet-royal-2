@@ -1,7 +1,7 @@
 import {
   staffSubstitutions,
   staffUsers,
-  type Database,
+  type DatabaseExecutor,
   type StaffSubstitution,
 } from '@mietroyal/database';
 import { resolveEffectiveAssigneeId, type SubstitutionLike } from '@mietroyal/domain';
@@ -30,8 +30,10 @@ export function toSubstitutionLike(row: StaffSubstitution): SubstitutionLike {
  * Vertretungen, deren Vertretung nicht mehr AKTIV ist (gesperrt/
  * deaktiviert), werden ignoriert – ein Nutzer ohne Login kann keine
  * Termine übernehmen, die Zuständigkeit fällt an das Original zurück.
+ * Auch innerhalb einer Transaktion nutzbar (Phase 12 Finalisierung: der
+ * 1h-Push prüft die Zuständigkeit unter Terminsperre erneut).
  */
-export async function loadSubstitutions(db: Database): Promise<SubstitutionLike[]> {
+export async function loadSubstitutions(db: DatabaseExecutor): Promise<SubstitutionLike[]> {
   const rows = await db
     .select({ substitution: staffSubstitutions, substituteStatus: staffUsers.status })
     .from(staffSubstitutions)

@@ -340,7 +340,7 @@ export async function truncateAuthTables(pool: pg.Pool): Promise<void> {
     `TRUNCATE staff_security_events, staff_user_permission_overrides, staff_user_roles,
      staff_role_permissions, staff_roles, staff_recovery_codes,
      staff_password_reset_tokens, staff_login_challenges, staff_sessions,
-     staff_permission_explanations, staff_users CASCADE`,
+     staff_known_devices, staff_permission_explanations, staff_users CASCADE`,
   );
 }
 
@@ -358,6 +358,13 @@ export async function bootstrapAdmin(context: TestContext) {
 
 export interface LoginResult {
   cookie: string;
+  /**
+   * Phase-12-Finalisierung (Geräteidentität): `mr_staff_device=<wert>` wie
+   * ihn der Browser danach hält – vom Server gesetzt oder (ohne Set-Cookie)
+   * der mitgeschickte Wert; '' = kein Geräte-Cookie. Für „gleiches Gerät“ an
+   * den nächsten `login(…, { deviceCookie })` weiterreichen.
+   */
+  deviceCookie: string;
   body: Record<string, unknown>;
   statusCode: number;
 }
@@ -369,16 +376,21 @@ export async function login(
   email: string,
   password: string,
   userAgent = DEFAULT_UA,
+  // Phase-12-Finalisierung: bestimmtes Geräte-Cookie mitschicken (`mr_staff_device=…`).
+  options: { deviceCookie?: string } = {},
 ): Promise<LoginResult> {
+  const deviceCookie = options.deviceCookie ?? '';
   const response = await app.inject({
     method: 'POST',
     url: '/auth/login',
     payload: { email, password },
-    headers: { 'user-agent': userAgent },
+    headers: { 'user-agent': userAgent, ...(deviceCookie === '' ? {} : { cookie: deviceCookie }) },
   });
   const setCookie = response.cookies.find((c) => c.name === 'mr_staff_session');
+  const setDevice = response.cookies.find((c) => c.name === 'mr_staff_device');
   return {
     cookie: setCookie === undefined ? '' : `mr_staff_session=${setCookie.value}`,
+    deviceCookie: setDevice === undefined ? deviceCookie : `mr_staff_device=${setDevice.value}`,
     body: response.json(),
     statusCode: response.statusCode,
   };

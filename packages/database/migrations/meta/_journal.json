@@ -162,6 +162,27 @@
       "when": 1792340752849,
       "tag": "0022_appointment_customer_known_time",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1792387842799,
+      "tag": "0023_phase12_final_device_retention",
+      "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1792387858631,
+      "tag": "0024_inbound_message_id_hash_only",
+      "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1792392945672,
+      "tag": "0025_phase12_final_push_session_retention_idx",
+      "breakpoints": true
     }
   ]
 }

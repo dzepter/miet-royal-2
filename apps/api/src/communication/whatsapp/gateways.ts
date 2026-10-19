@@ -1,7 +1,9 @@
 /**
  * Phase 12 (Order §26/§28/§39): WhatsApp-Gateways – ausschließlich die
  * offizielle Meta WhatsApp Business Cloud API (Graph API), verifiziert am
- * 2026-10-18 (phase12_whatsapp_verification.md).
+ * 2026-10-18 (phase12_whatsapp_verification.md); Versionsstand in der
+ * Finalisierung am 2026-10-19 erneut gegen Meta-Primärquellen geprüft
+ * (Default v26.0, docs/COMMUNICATION_INTEGRATIONS.md).
  *
  * - `CloudApiWhatsAppGateway`: POST /{version}/{phone-number-id}/messages,
  *   Bearer-Token; Medien über GET /{version}/{media-id} + Download der

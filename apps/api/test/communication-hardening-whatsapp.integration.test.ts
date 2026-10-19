@@ -101,7 +101,7 @@ function graphGateway(fetchImpl: FetchLike) {
   return new CloudApiWhatsAppGateway(
     {
       baseUrl: 'https://graph.facebook.com',
-      graphApiVersion: 'v25.0',
+      graphApiVersion: 'v26.0',
       phoneNumberId: '100000000000001',
       accessToken: ACCESS_TOKEN,
     },

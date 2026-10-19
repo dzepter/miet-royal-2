@@ -16,7 +16,7 @@
  * Kunde UND genau EIN aktiver Vorgang, sonst unmatched.
  * Eine WhatsApp-Nachricht autorisiert NIE Fachaktionen.
  */
-import { createHmac, timingSafeEqual } from 'node:crypto';
+import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import type { AppConfig } from '@mietroyal/config';
 import {
   conversationMessages,
@@ -44,6 +44,24 @@ export const WHATSAPP_SERVICE_WINDOW_MS = 24 * 60 * 60 * 1000;
 export const WHATSAPP_QUEUED_EVENT_GRACE_MS = 2 * 60 * 1000;
 /** Aktive Vorgänge für die Telefon-Zuordnung: alles außer abgeschlossen/storniert. */
 export const WHATSAPP_ACTIVE_PROCESS_STATUSES = ['open', 'reopened'] as const;
+
+/**
+ * Phase-12-Finalisierung (Retention): Nach 90 Tagen steht die wamid in
+ * `whatsapp_events` nur noch als `sha256:<hex>` (retention/cleanup.ts,
+ * gleiche Berechnung wie dort in SQL). Eine verspätete Wiederholung desselben
+ * Ereignisses wird über diese Form weiterhin als Duplikat erkannt.
+ */
+export function retainedWhatsAppEventId(providerMessageId: string): string {
+  return `sha256:${createHash('sha256').update(providerMessageId, 'utf8').digest('hex')}`;
+}
+
+/**
+ * Idempotenzschlüssel des Media-Jobs: Konversationszeilen-ID (UUID), nie die
+ * wamid (base64 der wa_id = Telefonnummer; integration_jobs ist dauerhaft).
+ */
+export function whatsappMediaFetchJobKey(conversationMessageId: string): string {
+  return `${WHATSAPP_MEDIA_FETCH_JOB_TYPE}:${conversationMessageId}`;
+}
 
 export type WhatsAppMatchReason = 'reply_context' | 'phone_unique_process' | null;
 
@@ -267,6 +285,25 @@ export class WhatsAppWebhookService {
     return result;
   }
 
+  /** Ereignis liegt nach Ablauf der 90 Tage bereits in gehashter Form vor (Retention) ⇒ Duplikat. */
+  private async isRetainedDuplicate(
+    tx: DatabaseExecutor,
+    eventType: string,
+    providerMessageId: string,
+  ): Promise<boolean> {
+    const rows = await tx
+      .select({ id: whatsappEvents.id })
+      .from(whatsappEvents)
+      .where(
+        and(
+          eq(whatsappEvents.eventType, eventType),
+          eq(whatsappEvents.providerMessageId, retainedWhatsAppEventId(providerMessageId)),
+        ),
+      )
+      .limit(1);
+    return rows.length > 0;
+  }
+
   /** Härtung B13: Webhook für eine andere Nummer derselben Meta-App? (null-Konfiguration ⇒ keine Prüfung möglich) */
   private phoneNumberMismatch(phoneNumberId: string): boolean {
     const expected = this.deps.config.whatsapp.phoneNumberId;
@@ -284,6 +321,12 @@ export class WhatsAppWebhookService {
     // statt als Duplikat verworfen zu werden. Parallele Zustellungen derselben
     // Nachricht warten am UNIQUE-Index auf den Commit der ersten.
     const outcome = await this.deps.db.transaction(async (tx) => {
+      if (await this.isRetainedDuplicate(tx, 'message', message.id)) {
+        return {
+          result: { ...base, result: 'duplicate', matchReason: null, conversationMessageId: null },
+          mediaFor: null,
+        } satisfies { result: WhatsAppInboundOutcome; mediaFor: string | null };
+      }
       const inserted = await tx
         .insert(whatsappEvents)
         .values({
@@ -433,12 +476,14 @@ export class WhatsAppWebhookService {
       } satisfies { result: WhatsAppInboundOutcome; mediaFor: string | null };
     });
 
-    // Media-Job erst NACH dem Commit (Key je wamid ⇒ Wiederholungen deduplizieren).
+    // Media-Job erst NACH dem Commit. Phase-12-Finalisierung (Review-Fund): Key je
+    // Konversationszeile (1:1 zur wamid, auch im Duplikatpfad `mediaFor`) statt der
+    // telefonabgeleiteten wamid ⇒ Wiederholungen deduplizieren weiterhin.
     if (outcome.mediaFor !== null && message.mediaId !== null) {
       await this.deps.queue.enqueue(
         WHATSAPP_MEDIA_FETCH_JOB_TYPE,
         { messageId: outcome.mediaFor, mediaId: message.mediaId },
-        { idempotencyKey: `${WHATSAPP_MEDIA_FETCH_JOB_TYPE}:${message.id}`, maxAttempts: 5 },
+        { idempotencyKey: whatsappMediaFetchJobKey(outcome.mediaFor), maxAttempts: 5 },
       );
     }
     const result = outcome.result;
@@ -509,6 +554,14 @@ export class WhatsAppWebhookService {
     const eventType = `status.${status.status}`;
     // Härtung B1: Event-Zeile und Statusübernahme atomar (Rollback ⇒ Metas Retry wirkt).
     return this.deps.db.transaction(async (tx) => {
+      if (await this.isRetainedDuplicate(tx, eventType, status.id)) {
+        return {
+          providerMessageId: status.id,
+          status: status.status,
+          applied: false,
+          duplicate: true,
+        };
+      }
       const inserted = await tx
         .insert(whatsappEvents)
         .values({

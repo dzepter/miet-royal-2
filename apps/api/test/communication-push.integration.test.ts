@@ -776,8 +776,16 @@ describe('129.–131. Overdue, Maschinenrisiko initial + 6 h, neues Gerät', () 
     // Ohne registriertes Admin-Gerät entsteht KEINE Zustellung (Queue bleibt frei).
     expect(await deliveries('session_new_device_login')).toHaveLength(0);
     await subscribe(cookie, endpointFor('admin-security'));
-    const anna = await makeEmployee(admin.id, 'Anna');
-    void anna; // Login von Anna (neues Gerät) ⇒ Admin-Push
+    // Phase-12-Finalisierung: Geräteidentität = Geräte-Cookie (nicht der
+    // User-Agent). Login von Anna ohne Cookie (neues Gerät) ⇒ Admin-Push.
+    await createEmployeeWithPassword(ctx, admin.id, {
+      firstName: 'Anna',
+      lastName: 'Test',
+      email: 'anna@test.example',
+      password: 'anna-passwort-1234',
+    });
+    const annaLaptop = await login(ctx.app, 'anna@test.example', 'anna-passwort-1234', UA_WINDOWS);
+    expect(annaLaptop.deviceCookie).toMatch(/^mr_staff_device=/);
     const afterAnna = await deliveries('session_new_device_login');
     expect(afterAnna).toHaveLength(1);
     expect(afterAnna[0]!.userId).toBe(admin.id);
@@ -787,10 +795,16 @@ describe('129.–131. Overdue, Maschinenrisiko initial + 6 h, neues Gerät', () 
     );
     expect(JSON.stringify(annaRow.payload)).not.toContain('Anna');
 
-    // Gleiches Gerät erneut: kein weiterer Push.
-    await login(ctx.app, 'anna@test.example', 'anna-passwort-1234');
+    // Gleiches Gerät (gleiches Geräte-Cookie) erneut – auch mit anderem
+    // User-Agent: kein weiterer Push.
+    await login(ctx.app, 'anna@test.example', 'anna-passwort-1234', UA_WINDOWS, {
+      deviceCookie: annaLaptop.deviceCookie,
+    });
+    await login(ctx.app, 'anna@test.example', 'anna-passwort-1234', UA_IPHONE, {
+      deviceCookie: annaLaptop.deviceCookie,
+    });
     expect(await deliveries('session_new_device_login')).toHaveLength(1);
-    // Anderes Gerät: ein weiterer Push.
+    // Anderes Gerät (Browser ohne Geräte-Cookie): ein weiterer Push.
     await login(ctx.app, 'anna@test.example', 'anna-passwort-1234', UA_IPHONE);
     expect(await deliveries('session_new_device_login')).toHaveLength(2);
     // Backstop-Scan: holt nur das Admin-Login VOR der Geräteregistrierung nach
@@ -854,19 +868,23 @@ describe('134.–136. Hijack: fremder Endpoint, fremde Session, Logs', () => {
     );
   });
 
-  it('135. Fremde Session: andere Nutzer können eine Subscription weder abmelden noch sehen', async () => {
+  it('135. Fremde Session: andere Nutzer können eine Subscription weder abschalten noch sehen', async () => {
+    // Phase 12 Finalisierung: Die frühere Abmelde-Route (DELETE
+    // /staff/push/subscriptions/current) existiert nicht mehr (kein Push-Opt-out,
+    // Pflichttest P1) – weder für fremde noch für die eigene Subscription.
     const { admin, cookie: adminCookie } = await adminSession();
     const anna = await makeEmployee(admin.id, 'Anna');
     const endpoint = endpointFor('admin-only');
     await subscribe(adminCookie, endpoint);
-    const foreignDelete = await ctx.app.inject({
-      method: 'DELETE',
-      url: '/staff/push/subscriptions/current',
-      headers: { cookie: anna.cookie },
-      payload: { endpoint },
-    });
-    expect(foreignDelete.statusCode).toBe(200);
-    expect(foreignDelete.json()).toEqual({ removed: false });
+    for (const cookie of [anna.cookie, adminCookie]) {
+      const removed = await ctx.app.inject({
+        method: 'DELETE',
+        url: '/staff/push/subscriptions/current',
+        headers: { cookie },
+        payload: { endpoint },
+      });
+      expect(removed.statusCode).toBe(404);
+    }
     expect((await subscriptionByEndpoint(endpoint))!.disabledAt).toBeNull();
     const foreignStatus = await ctx.app.inject({
       method: 'POST',
@@ -875,14 +893,13 @@ describe('134.–136. Hijack: fremder Endpoint, fremde Session, Logs', () => {
       payload: { endpoint },
     });
     expect(foreignStatus.json()).toEqual({ active: false });
-    const ownDelete = await ctx.app.inject({
-      method: 'DELETE',
-      url: '/staff/push/subscriptions/current',
+    const ownStatus = await ctx.app.inject({
+      method: 'POST',
+      url: '/staff/push/subscriptions/status',
       headers: { cookie: adminCookie },
       payload: { endpoint },
     });
-    expect(ownDelete.json()).toEqual({ removed: true });
-    expect((await subscriptionByEndpoint(endpoint))!.disabledReason).toBe('user_unsubscribed');
+    expect(ownStatus.json()).toEqual({ active: true });
     // Ein neuer Sitzungs-Cookie eines anderen Users kann keine fremde Session-ID vorgeben:
     // die Bindung entsteht ausschließlich serverseitig aus der eigenen Session.
     const subs = new PushSubscriptionService(ctx.db);

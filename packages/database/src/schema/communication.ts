@@ -71,9 +71,11 @@ export const mailDeliveries = pgTable(
     customerId: uuid('customer_id').references(() => customers.id),
     bookingId: uuid('booking_id').references(() => bookings.id),
     /** Eingefrorener Empfänger (Adresse + Anzeigename) – nie aus dem Live-Kunden nachgeladen. */
-    recipientEmail: text('recipient_email').notNull(),
+    /** Nach Retention-Scrub NULL (Phase-12-Finalisierung §4.5). */
+    recipientEmail: text('recipient_email'),
     recipientName: text('recipient_name'),
-    subject: text('subject').notNull(),
+    /** Nach Retention-Scrub NULL. */
+    subject: text('subject'),
     templateKind: text('template_kind').notNull(),
     templateVersion: integer('template_version').notNull().default(1),
     /** Nicht-geheime Render-Daten (Namen, Nummern, Daten, Beträge, Linkpfade ohne Token). */
@@ -105,10 +107,22 @@ export const mailDeliveries = pgTable(
     conversationMessageId: uuid('conversation_message_id'),
     createdBy: uuid('created_by').references(() => staffUsers.id),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    /**
+     * Retention-Anker (Phase-12-Finalisierung §4.5): Terminalzeitpunkt des
+     * Vorgangs (completed_at bzw. Stornozeitpunkt) für prozessgebundene
+     * Zustellungen; Scrub 12 Berliner Kalendermonate danach.
+     */
+    retentionAnchorAt: timestamp('retention_anchor_at', { withTimezone: true }),
+    /** Zeitpunkt der PII-/Renderdaten-Bereinigung (danach kein Resend). */
+    piiScrubbedAt: timestamp('pii_scrubbed_at', { withTimezone: true }),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
     index('mail_deliveries_process_idx').on(table.processId),
+    // Phase-12-Finalisierung (Retention-Backstop alle 2 min): nur Zeilen ohne Anker.
+    index('mail_deliveries_anchor_pending_idx')
+      .on(table.processId)
+      .where(sql`${table.retentionAnchorAt} IS NULL AND ${table.processId} IS NOT NULL`),
     index('mail_deliveries_status_next_idx').on(table.status, table.nextAttemptAt),
     check('mail_deliveries_attempts_check', sql`${table.attempts} >= 0`),
   ],
@@ -264,10 +278,22 @@ export const conversationMessages = pgTable(
     ignoredByStaffId: uuid('ignored_by_staff_id').references(() => staffUsers.id),
     /** Retention (Order §25): Text 12 Monate nach Vorgangsabschluss. */
     bodyDeletedAt: timestamp('body_deleted_at', { withTimezone: true }),
+    /**
+     * Retention-Anker (Phase-12-Finalisierung §4.1/§4.2): Terminalzeitpunkt,
+     * der für DIESE Nachricht gilt (erster Terminalzustand nach ihrem Entstehen).
+     * Reopen setzt ihn nicht zurück; neue Nachrichten erhalten den nächsten.
+     */
+    retentionAnchorAt: timestamp('retention_anchor_at', { withTimezone: true }),
+    /** Zeitpunkt der PII-Minimierung (Text, Betreff, Absender-Snapshot). */
+    piiScrubbedAt: timestamp('pii_scrubbed_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
     index('conversation_messages_process_idx').on(table.processId, table.createdAt),
+    // Phase-12-Finalisierung (Retention-Backstop alle 2 min): nur Zeilen ohne Anker.
+    index('conversation_messages_anchor_pending_idx')
+      .on(table.processId)
+      .where(sql`${table.retentionAnchorAt} IS NULL AND ${table.processId} IS NOT NULL`),
     index('conversation_messages_unmatched_idx')
       .on(table.createdAt)
       .where(sql`${table.processId} IS NULL AND ${table.ignoredAt} IS NULL`),
@@ -294,7 +320,13 @@ export const messagePhotos = pgTable(
     deletedAt: timestamp('deleted_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
-  (table) => [index('message_photos_message_idx').on(table.messageId)],
+  (table) => [
+    index('message_photos_message_idx').on(table.messageId),
+    // Phase-12-Finalisierung (Retention-Backstop): nur noch nicht gelöschte Fotos.
+    index('message_photos_pending_idx')
+      .on(table.messageId)
+      .where(sql`${table.deletedAt} IS NULL`),
+  ],
 );
 
 // ── Eingehende E-Mail (Order §21) ───────────────────────────────────────
@@ -315,8 +347,11 @@ export const inboundMailReceipts = pgTable(
     mailbox: text('mailbox').notNull(),
     uidValidity: text('uid_validity').notNull(),
     uid: integer('uid').notNull(),
-    /** RFC-5322-Message-ID (normalisiert), falls vorhanden. */
-    messageId: text('message_id'),
+    /**
+     * SHA-256 der normalisierten RFC-5322-Message-ID (Dedupe). Der Klartext
+     * wird nie gespeichert (Phase-12-Finalisierung §4.3).
+     */
+    messageIdHash: text('message_id_hash'),
     /** SHA-256 über From|Date|Subject|Body-Präfix als Fallback-Dedupe. */
     fingerprint: text('fingerprint').notNull(),
     fromAddress: text('from_address'),
@@ -327,13 +362,15 @@ export const inboundMailReceipts = pgTable(
     conversationMessageId: uuid('conversation_message_id').references(
       () => conversationMessages.id,
     ),
+    /** Zeitpunkt der PII-Bereinigung (fromAddress/subject entfernt). */
+    piiScrubbedAt: timestamp('pii_scrubbed_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
     uniqueIndex('inbound_mail_receipts_uid_idx').on(table.mailbox, table.uidValidity, table.uid),
-    uniqueIndex('inbound_mail_receipts_message_id_idx')
-      .on(table.messageId)
-      .where(sql`${table.messageId} IS NOT NULL`),
+    uniqueIndex('inbound_mail_receipts_message_id_hash_idx')
+      .on(table.messageIdHash)
+      .where(sql`${table.messageIdHash} IS NOT NULL`),
     uniqueIndex('inbound_mail_receipts_fingerprint_idx').on(table.fingerprint),
   ],
 );
@@ -442,6 +479,13 @@ export const pushDeliveries = pgTable(
     idempotencyKey: text('idempotency_key').notNull().unique(),
     /** Datenminimierte Nutzlast: { title, body, url } ohne Kundendaten. */
     payload: jsonb('payload').notNull(),
+    /**
+     * Phase-12-Finalisierung: Termin terminbezogener Pushes (1-h-Hinweis,
+     * Kurzfrist-Neuzuweisung). `push.send` prüft vor dem Versand, ob die
+     * Zustellung noch zum aktuellen Terminstand passt (sonst `skipped`,
+     * `SUPERSEDED`). NULL = nicht terminbezogen bzw. Altbestand.
+     */
+    appointmentId: uuid('appointment_id').references(() => appointments.id),
     status: pushDeliveryStatus('status').notNull().default('pending'),
     subscriptionsTargeted: integer('subscriptions_targeted').notNull().default(0),
     subscriptionsSucceeded: integer('subscriptions_succeeded').notNull().default(0),

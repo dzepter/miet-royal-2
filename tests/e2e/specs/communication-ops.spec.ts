@@ -140,6 +140,8 @@ const S_TEXT = 'Hallo, anbei ein Foto vom Kratzer, den wir bei der Abholung beme
 /** Neues Gerät für Szenario P (Geräte-Kennung „Mac · Safari“, auth/device.ts). */
 const MAC_SAFARI_UA =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15';
+const MAC_CHROME_UA =
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36';
 
 let staff: Page; // Erika (Admin)
 let viktor: Page; // Viktor (Verkauf, calendar.view – Vertretung in Q)
@@ -187,7 +189,9 @@ function receipt(messageId: string) {
     match_reason: string | null;
     conversation_message_id: string | null;
   }>(
-    'SELECT status, match_reason, conversation_message_id FROM inbound_mail_receipts WHERE message_id = $1',
+    // Phase 12 (retention-final): Message-ID nur noch als SHA-256 der normalisierten ID.
+    `SELECT status, match_reason, conversation_message_id FROM inbound_mail_receipts
+      WHERE message_id_hash = encode(sha256(convert_to($1, 'UTF8')), 'hex')`,
     [messageId],
   );
   expect(rows, `Eingangsbeleg ${messageId}`).toHaveLength(1);
@@ -892,13 +896,24 @@ test('O. Maschinenrisiko (Sperre nach Zuweisung): initial genau ein Push „Masc
 
 // ── P: Neues Gerät ⇒ Admin-Security-Push ─────────────────────────────────
 
-test('P. Anmeldung von einem neuen Gerät ⇒ genau ein Admin-Security-Push (ohne Namen/Gerätedaten, url /mitarbeiter); erneute Anmeldung vom nun bekannten Gerät ⇒ kein weiterer Push', async ({
+test('P. Neues Gerät = neuer serverseitiger Geräte-Cookie (nicht der User-Agent): genau ein Admin-Security-Push je Gerät (ohne Namen/Gerätedaten, url /mitarbeiter); derselbe Geräte-Cookie mit anderem Browser-Kennzeichen ⇒ bekannt, kein Push', async ({
   browser,
 }) => {
   test.setTimeout(180_000);
   await clearPushRequests();
+  const since = queryTestDb<{ now: string }>(`SELECT now()::text AS now`)[0]!.now;
+  const newDeviceEvents = () =>
+    queryTestDb<{ n: number }>(
+      `SELECT count(*)::int AS n FROM staff_security_events
+        WHERE type = 'session.new_device_login' AND created_at >= $1::timestamptz`,
+      [since],
+    )[0]!.n;
+  // Gerät A: frischer Browser ⇒ Server setzt mr_staff_device ⇒ neues Gerät.
   const deviceA = await browser.newContext({ userAgent: MAC_SAFARI_UA });
   await login(await deviceA.newPage(), ADMIN_EMAIL, ADMIN_PASSWORD, 'Erika');
+  const deviceCookie = (await deviceA.cookies()).find((c) => c.name === 'mr_staff_device');
+  expect(deviceCookie, 'Geräte-Cookie gesetzt').toBeDefined();
+  expect(deviceCookie!.httpOnly).toBe(true);
   await deviceA.close();
   await runDueJobsViaApi(staff);
   const [push] = await expectPushCount(keysErika, 'Neue Anmeldung', 1);
@@ -906,19 +921,31 @@ test('P. Anmeldung von einem neuen Gerät ⇒ genau ein Admin-Security-Push (ohn
   expect(push!.request.headers.ttl).toBe('3600');
   expect(push!.payload).toMatchObject({ kind: 'session_new_device_login', url: '/mitarbeiter' });
   expectNoneOf(push!.plaintext, ['Erika', 'E2E', 'Mac', 'Safari', ADMIN_EMAIL], 'Push-Nutzlast');
-  const events = queryTestDb<{ details: { deviceLabel?: string } }>(
-    `SELECT details FROM staff_security_events WHERE type = 'session.new_device_login'
-      AND details->>'deviceLabel' = 'Mac · Safari'`,
+  // Der Klartext des Geräte-Cookies steht nirgends in der Datenbank.
+  const plaintextHits = queryTestDb<{ n: number }>(
+    `SELECT count(*)::int AS n FROM staff_known_devices WHERE device_token_hash = $1`,
+    [deviceCookie!.value],
   );
-  expect(events).toHaveLength(1);
+  expect(plaintextHits[0]!.n).toBe(0);
+  expect(newDeviceEvents()).toBe(1);
 
-  // Dasselbe Gerät erneut ⇒ bekannt ⇒ kein Push (auch nicht über den Scan-Backstop).
-  const deviceB = await browser.newContext({ userAgent: MAC_SAFARI_UA });
-  await login(await deviceB.newPage(), ADMIN_EMAIL, ADMIN_PASSWORD, 'Erika');
-  await deviceB.close();
+  // Dasselbe Gerät (gleicher Geräte-Cookie) mit ANDEREM Browser-Kennzeichen ⇒ bekannt ⇒ kein Push.
+  const sameDevice = await browser.newContext({ userAgent: MAC_CHROME_UA });
+  await sameDevice.addCookies([deviceCookie!]);
+  await login(await sameDevice.newPage(), ADMIN_EMAIL, ADMIN_PASSWORD, 'Erika');
+  await sameDevice.close();
   await runDueJobsViaApi(staff);
   await scanDue();
   await expectPushCount(keysErika, 'Neue Anmeldung', 1);
+
+  // Gleiches Browser-Kennzeichen, aber anderes Gerät (kein Geräte-Cookie) ⇒ neues Gerät ⇒ genau ein weiterer Push.
+  const otherDevice = await browser.newContext({ userAgent: MAC_SAFARI_UA });
+  await login(await otherDevice.newPage(), ADMIN_EMAIL, ADMIN_PASSWORD, 'Erika');
+  await otherDevice.close();
+  await runDueJobsViaApi(staff);
+  await scanDue();
+  await expectPushCount(keysErika, 'Neue Anmeldung', 2);
+  expect(newDeviceEvents()).toBe(2);
 });
 
 // ── Q: Vertretung bekommt den 1-h-Push ───────────────────────────────────

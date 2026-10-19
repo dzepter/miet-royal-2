@@ -38,7 +38,7 @@ import type {
 } from '../accounting/transfer-service.ts';
 import { AuthError } from '../auth/service.ts';
 import { buildAccountingBlock, type AccountingBlockView } from '../lexware/transfer-readiness.ts';
-import { ProcessService } from '../crm/process-service.ts';
+import { ProcessService, type ProcessCompletionListener } from '../crm/process-service.ts';
 import { AssignmentService } from '../handover/assignment-service.ts';
 import { SchedulingService } from '../scheduling/scheduling-service.ts';
 import { MachineService } from '../warehouse/machine-service.ts';
@@ -236,6 +236,8 @@ export function createCancellationService(input: {
   transfers: AccountingTransferService;
   confirmations?: CancellationConfirmationMailer | null;
   logger?: CancellationLogger;
+  /** Phase-12-Finalisierung (Retention): Nach-Commit-Listener des Statusübergangs „storniert“. */
+  processListeners?: readonly ProcessCompletionListener[];
 }): CancellationService {
   const machineService = new MachineService(input.db, input.storage);
   return new CancellationService({
@@ -244,7 +246,7 @@ export function createCancellationService(input: {
     transfers: input.transfers,
     assignments: new AssignmentService(input.db, machineService, input.storage),
     scheduling: new SchedulingService(input.db),
-    processes: new ProcessService(input.db),
+    processes: new ProcessService(input.db, input.processListeners ?? []),
     confirmations: input.confirmations ?? null,
     ...(input.logger === undefined ? {} : { logger: input.logger }),
   });
@@ -709,6 +711,9 @@ export class CancellationService {
         'Buchung storniert',
       );
       await this.assignments.discardEvidence(evidenceKeys);
+      // Phase-12-Finalisierung (Retention §4.1): Storno ⇒ Chatfotos sofort löschen,
+      // Retention-Anker setzen (Listener reiht den Job ein; Backstop in scan_due).
+      await this.processes.notifyCancelled({ processId, cancelledAt: now });
       // Risiko-Incidents nach dem Commit neu bewerten (Order §56) – nie unter Sperren.
       try {
         await this.assignments.refreshRiskIncidents(now);

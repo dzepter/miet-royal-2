@@ -36,11 +36,28 @@ Vor Live noch offen: manueller Abo-Test auf iPhone/Mac mit echter HTTPS-Domain
 (Staff-Basis-URL in den Einstellungen).
 
 ## Kommunikation – offene Fachfragen (Phase 12)
-- Löschfristen für Kommunikation stornierter Vorgänge (Auftrag regelt nur „Abschluss“).
-- Löschfristen für nicht zugeordnete/ignorierte Nachrichten und deren Fotos.
-- Aufbewahrung von `mail_deliveries.context` (Empfänger/Adresse im Kontext) über 12 Monate.
-- Gültigkeit des Dokument-Links zum Rückgabeprotokoll (umgesetzt: 90 Tage).
 - Abholadresse in Erinnerungen nur, wenn `pickup_exact_address` gesetzt ist.
+
+Mit der Phase-12-Finalisierung entschieden (nicht mehr offen, siehe
+TECH_DECISIONS.md „Phase 12 Finalisierung: Retention“):
+- Storno-Retention: terminal = abgeschlossen ODER storniert; Chatfotos sofort,
+  Chattext 12 Berliner Kalendermonate nach dem Stornozeitpunkt
+  (`processes.cancelled_at`).
+- Nicht zugeordnete/ignorierte Nachrichten, Quarantäne-Belege und ihre Fotos:
+  90 Kalendertage nach Eingang bereinigen (technische Minimaldaten bleiben).
+- `mail_deliveries` (Empfänger, Betreff, Kontext, Anhänge, In-Reply-To,
+  Secret-Payload): prozessgebunden 12 Berliner Kalendermonate nach
+  Abschluss/Storno, sonst 90 Tage nach Endzustand; danach kein Resend.
+- Dokument-Link zum Rückgabeprotokoll: 90 Tage gültig (bestätigt).
+
+Bestätigte Produktentscheidungen (nicht mehr offen, siehe TECH_DECISIONS.md
+„Phase 12 Finalisierung: Bestätigte Produktentscheidungen“):
+- Reminder-Toleranz 6 h; keine verspätete 7-Tage-Mail, wenn die Buchung erst
+  nach dem 7-Tage-Zeitpunkt entsteht.
+- WhatsApp-Auto-Zuordnung nur zu offenen/wieder geöffneten Vorgängen, außer bei
+  eindeutigem Antwortkontext.
+- Push: bewusste Browserberechtigung, danach kein internes Opt-out.
+- Vertretungsende darf eine neue Erinnerung an die ursprüngliche Person auslösen.
 
 ## Routing (vor Phase 13)
 Provider, Kosten, Limits, Datenschutz, DE-Geocoding.

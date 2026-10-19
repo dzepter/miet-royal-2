@@ -1,22 +1,20 @@
 'use client';
 
 import { apiFetch } from './api';
+import { PUSH_DENIED_TEXT, type PushStateInput } from './push-state';
 
 /**
  * Web Push im Browser (Phase 12, Order §29): Registrierung NUR nach
  * bewusster Benutzeraktion (`subscribe()` im Klick-Handler ruft
  * Notification.requestPermission). Der Server erhält Endpoint + Schlüssel
  * genau einmal (POST) und gibt sie nie wieder heraus.
+ * Phase 12 Finalisierung: kein Push-Opt-out in Miet-Royal – es gibt keine
+ * Funktion zum Abmelden/Ausschalten; die Entscheidung trifft der Browser
+ * (Berechtigung). Hat der Browser die Subscription verloren, zeigt der
+ * Status wieder „aktivieren“ (erneute Registrierung reaktiviert serverseitig).
  */
 
-export interface PushStatus {
-  supported: boolean;
-  permission: NotificationPermission | 'unsupported';
-  /** Server-seitig konfiguriert (VAPID) – sonst kein Aktivieren möglich. */
-  serverEnabled: boolean;
-  /** Dieses Gerät hat eine aktive Subscription, die der Server kennt. */
-  active: boolean;
-}
+export type PushStatus = PushStateInput;
 
 export interface PushDevice {
   id: string;
@@ -123,7 +121,7 @@ export async function subscribeToPush(): Promise<SubscribeOutcome> {
     return {
       ok: false,
       reason: 'denied',
-      message: 'Benachrichtigungen wurden im Browser nicht erlaubt.',
+      message: PUSH_DENIED_TEXT,
     };
   }
   try {
@@ -159,19 +157,4 @@ export async function subscribeToPush(): Promise<SubscribeOutcome> {
   } catch {
     return { ok: false, reason: 'failed', message: 'Push konnte nicht aktiviert werden.' };
   }
-}
-
-export async function unsubscribeFromPush(): Promise<boolean> {
-  const subscription = await currentSubscription();
-  if (subscription === null) return true;
-  const result = await apiFetch('/staff/push/subscriptions/current', {
-    method: 'DELETE',
-    body: { endpoint: subscription.endpoint },
-  });
-  try {
-    await subscription.unsubscribe();
-  } catch {
-    // Browser-seitig bereits weg – serverseitig ist die Subscription deaktiviert.
-  }
-  return result.ok;
 }

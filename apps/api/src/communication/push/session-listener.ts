@@ -9,7 +9,11 @@ import type { PushSubscriptionService } from './subscription-service.ts';
  *   deaktiviert (`session_revoked`) – zusätzlich prüft der Versand lazy.
  * - Neues Gerät (`session.new_device_login`) ⇒ sofort ein Admin-Security-Push
  *   (Schlüssel je Session; der Scan ist nur Backstop).
- * Fehler landen im Log (nur IDs) und brechen Login/Logout nie.
+ * - Phase 12 Finalisierung (B1): neue Session ⇒ Subscriptions DESSELBEN Users
+ *   auf DEMSELBEN Gerät (gleicher Geräte-Hash) an die neue Session binden.
+ *   Abhängigkeitsrichtung wie beim newDeviceLogin-Hook: die Auth kennt Push
+ *   nicht, sie meldet nur das Ereignis; Push entscheidet selbst.
+ * Fehler landen im Log (nur IDs + neutraler Code) und brechen Login/Logout nie.
  */
 export function createPushSessionListener(deps: {
   subscriptions: PushSubscriptionService;
@@ -17,6 +21,29 @@ export function createPushSessionListener(deps: {
   logger?: JobRunnerLogger;
 }): SessionLifecycleListener {
   return {
+    async sessionCreated(event) {
+      try {
+        const rebound = await deps.subscriptions.rebindSameDeviceSessions(
+          event.userId,
+          event.sessionId,
+        );
+        if (rebound > 0) {
+          deps.logger?.info(
+            { userId: event.userId, sessionId: event.sessionId, rebound },
+            'Push-Subscriptions an die neue Session gebunden',
+          );
+        }
+      } catch (error) {
+        deps.logger?.warn(
+          {
+            userId: event.userId,
+            sessionId: event.sessionId,
+            error: error instanceof Error ? error.name : 'Error',
+          },
+          'Push-Subscriptions konnten nicht an die neue Session gebunden werden',
+        );
+      }
+    },
     async newDeviceLogin(event) {
       try {
         await deps.rules.notifyNewDeviceLogin(event.sessionId);

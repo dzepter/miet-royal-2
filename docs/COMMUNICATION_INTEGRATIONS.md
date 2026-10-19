@@ -124,6 +124,37 @@ SHA-256-Hash gespeichert.
   VAPID-Schlüsselpaar und IMAP-Postfach zusätzlich zu Datenbank, Storage,
   Auth- und Lexware-Schlüsseln.
 
+## Retention der Kommunikation (Phase-12-Finalisierung)
+
+Job `communication.cleanup_retention` (Code: `communication/retention/`),
+Einzelheiten und Begründungen in TECH_DECISIONS.md „Phase 12 Finalisierung:
+Retention“.
+
+- **Terminal** = abgeschlossen oder storniert; Terminalzeitpunkt
+  `processes.completed_at` bzw. `processes.cancelled_at` (persistierter
+  fachlicher Stornozeitpunkt beider Storno-Wege).
+- **Sofort beim Eintritt in terminal** (Listener am Abschluss und an beiden
+  Storno-Wegen ⇒ Job je Terminalzeitpunkt; Backstop in `communication.scan_due`
+  alle 2 min): Chatfotos (`message_photos`, nur Kommunikationsfotos) aus dem
+  Storage löschen + `deleted_at`; Retention-Anker (`retention_anchor_at`) aller
+  Nachrichten und prozessgebundenen Zustellungen ohne Anker setzen. Reopen
+  setzt nichts zurück und stellt nichts wieder her.
+- **Täglich** (`communication.cleanup_retention:<JJJJ-MM-TT>`): Chattext,
+  Betreff, Absender-Snapshot (⇒ `{"role":"customer"}`/`{"role":"staff"}`) und
+  Message-IDs/wamids 12 Berliner Kalendermonate nach dem Anker;
+  prozessgebundene `mail_deliveries` ebenso (Empfänger, Betreff, Kontext,
+  Anhänge, In-Reply-To, Secret-Payload ⇒ danach kein Resend, Audit-Rest bleibt);
+  nicht prozessgebundene Zustellungen 90 Tage nach Endzustand (nie pending/
+  retry/sending); Unzugeordnetes/Ignoriertes/Quarantäne 90 Kalendertage nach
+  Eingang (Text/Betreff/Absender/Fotos/Beleg-Absender weg, raus aus der
+  Unmatched-Inbox, nicht mehr zuordenbar; Mailbox/UIDVALIDITY/UID/Status/
+  receivedAt/Fingerprint/`message_id_hash` bleiben ⇒ IMAP-Dedupe bleibt
+  wirksam); WhatsApp-Kontakte ohne Kunde 90 Tage nach der letzten Nachricht
+  gelöscht, wamids in `whatsapp_events` nach 90 Tagen nur noch als
+  `sha256:<hex>`.
+- Nie berührt: Übergabe-/Rückgabe-/Schadens-/Defektfotos, Signaturen,
+  Dokumente (auch unterschriebene Protokolle) und alle übrigen Fachdaten.
+
 ## Bewusst nicht gebaut (Auftrag §45)
 
 Kundenportal, öffentliche Kundenchat-App, Website/Konfigurator, Newsletter
@@ -170,6 +201,19 @@ nimmt nur an); kein Notification-Center, keine Touren-/Reinigungs-Pushes.
 Apple verlangt ein echtes `sub` (mailto:/https:) – Platzhalter ⇒ 403
 BadJwtToken. Der VAPID-Private-Key liegt nur in der Server-Umgebung
 (Pino-Redaction, nie Status-API/Frontend/DB).
+
+**Kein Opt-out in Miet-Royal (Phase 12 Finalisierung, bestätigte
+Entscheidung):** Die bewusste Entscheidung ist die Browserberechtigung – nach
+Klick auf „Push-Benachrichtigungen aktivieren“ fragt der Browser; wer ablehnt,
+sieht „Push ist auf diesem Gerät im Browser nicht aktiviert.“ (änderbar nur in
+den Seiteneinstellungen des Browsers). Ist Push aktiv, zeigt die Seite nur den
+Status „Push ist auf diesem Gerät aktiv.“ und die eigenen Geräte – es gibt
+keinen Button und keine Route zum Ausschalten, Abmelden oder Pausieren
+(`DELETE /staff/push/subscriptions/current` entfernt). Deaktiviert wird nur
+technisch: Logout/Session-Widerruf, Inaktivität (30 Tage), Mitarbeiter
+gesperrt/deaktiviert, 404/410 des Push-Dienstes (auch wenn der Browser die
+Subscription verloren hat – dann zeigt die Seite wieder „aktivieren“),
+unzulässiger Endpoint, Übernahme des Endpoints durch einen anderen User.
 
 **Endpoint-Allowlist (Härtung Review B, B10):** Der Push-Endpoint kommt frei
 vom Browser; der Server baut dorthin Verbindungen auf. Deshalb gilt
@@ -250,7 +294,12 @@ lastSuccessAt, lastErrorCode); UIDVALIDITY-Wechsel ⇒ ab UID 1 neu lesen.
 `lastUid` wird erst nach erfolgreicher Verarbeitung JEDER Nachricht
 fortgeschrieben; nach einem Absturz werden Nachrichten erneut gelesen und über
 die Belege dedupliziert (`inbound_mail_receipts`: UNIQUE mailbox+UIDVALIDITY+
-UID, partial UNIQUE Message-ID, UNIQUE Fingerprint). Härtung RA-6: Mit
+UID, partial UNIQUE `message_id_hash`, UNIQUE Fingerprint). Phase-12-
+Finalisierung: Die Message-ID steht im Beleg NUR als `message_id_hash` =
+SHA-256 (hex) über die UTF-8-Bytes der normalisierten Message-ID (ohne
+spitze Klammern/Steuerzeichen, Groß-/Kleinschreibung erhalten) – der
+Klartext wird nie gespeichert (Migration 0024 hat Altbestände so gehasht und
+die Klartextspalte entfernt). Härtung RA-6: Mit
 Message-ID entscheidet ausschließlich die Message-ID (der gespeicherte
 Fingerprint ist dann ein eigener Namensraum je Message-ID); nur OHNE
 Message-ID dedupliziert der Fingerprint = SHA-256 über From | Date | Subject |
@@ -307,8 +356,8 @@ recipient_type:'individual', to, type:'text', text:{preview_url:false, body},
 context:{message_id}?}`; Antwort `messages[0].id` bedeutet nur „angenommen“,
 nicht „zugestellt“ – der Zustellstatus kommt über `statuses[]`-Webhooks
 (sent/delivered/read/failed; Rückschritte werden ignoriert). Host in
-production fest `graph.facebook.com`, Version konfigurierbar (Default v25.0,
-dokumentierte Beispiele; „latest v26.0“ für WhatsApp UNVERIFIED).
+production fest `graph.facebook.com`, Version konfigurierbar (Default v26.0,
+siehe „Graph-API-Version“ unten; nie „latest“ in der URL).
 Fehlerklassifikation: 130429/4/80007/131056/131000/131057 und HTTP 429/5xx
 transient (Queue-Retry mit Backoff); 131047 (>24 h, Template nötig) ⇒
 `WINDOW_CLOSED` permanent; 131026/131051/100/190/133010/131048–131050/130403 u. a.
@@ -353,6 +402,44 @@ Secrets (Token, App-Secret, Verify-Token) existieren nur in der Config
 (Pino-Redaction); Logs enthalten nur IDs/Typ/Ergebniscode – nie Nummern oder
 Inhalte. Smoke `pnpm whatsapp:smoke` nur mit WHATSAPP_SMOKE=true +
 WHATSAPP_SMOKE_TO, nie im Gate.
+
+**Graph-API-Version (Finalisierung, verifiziert 2026-10-19):** Quellen
+ausschließlich developers.facebook.com: „Graph API changelog“ („The latest
+Graph API version is: v26.0“), „Graph API changelog / versions“ (Tabelle),
+„Graph API versioning“ (jede Version mindestens zwei Jahre nutzbar; nicht mehr
+nutzbare Versionen werden auf die nächstältere nutzbare umgeleitet), WhatsApp
+Cloud API Reference „Messages“ (`POST /{Version}/{Phone-Number-ID}/messages`,
+Basis `https://graph.facebook.com`) und „Media“ (`GET /<API_VERSION>/<MEDIA_ID>`,
+Download der zurückgegebenen URL mit Bearer-Token, URL 5 min gültig; das
+offizielle Beispiel nutzt v26.0).
+
+| Version | veröffentlicht | verfügbar bis (laut Meta-Tabelle) |
+|---|---|---|
+| v26.0 | 2026-07-29 | TBD |
+| v25.0 | 2026-02-18 | 2028-07-29 |
+| v24.0 | 2025-10-08 | 2028-02-18 |
+| v23.0 | 2025-05-29 | 2027-10-08 |
+| v22.0 | 2025-01-21 | 2027-05-20 |
+| v21.0 | 2024-10-02 | 2027-01-21 |
+| v20.0 | 2024-05-21 | 2026-09-24 (abgelaufen) |
+
+Default `WHATSAPP_DEFAULT_GRAPH_API_VERSION = v26.0`. `WHATSAPP_GRAPH_API_VERSION`
+darf explizit überschrieben werden; Werte älter als v21.0 (am
+Verifikationsdatum abgelaufen) lehnt die Konfiguration ab. Die Meta-Tabelle und
+die Zwei-Jahres-Regel des Versioning-Guides weichen bei einzelnen Daten ab
+(z. B. v20.0: Tabelle 2026-09-24, Regel 2026-10-02) – maßgeblich ist die
+Tabelle; die Version muss bei jedem Meta-Release erneut geprüft werden
+(Betriebsaufgabe, DEPLOYMENT_NOTES). Die Cloud-API-Seiten nennen keine
+Mindestversion; der WhatsApp-Changelog enthält nur versionsbezogene Hinweise
+(„For version 24.0 and newer requests …“).
+
+**Media-Downloadhost (Live-Smoke-Voraussetzung):** Die offiziellen Seiten
+nennen für den Medien-Download nur den Platzhalter `<MEDIA_URL>` und keinen
+garantierten Host. Der Code bleibt fail-closed: Bearer-Token nur an die
+Allowlist (`lookaside.fbsbx.com` + Graph-Basis-Host, keine Wildcards), keine
+Redirects, unbekannter Host ⇒ `MEDIA_HOST_NOT_ALLOWED`. **Echten
+WhatsApp-Bildempfang vor Go-live gegen Meta-Testaccount prüfen und
+tatsächlichen Media-Downloadhost verifizieren.**
 
 **Grenzen/UNVERIFIED/bewusst nicht implementiert:** Marketing-/Utility-
 Templates und Opt-in-Regeln (nicht geladen, nicht benötigt), Messaging-

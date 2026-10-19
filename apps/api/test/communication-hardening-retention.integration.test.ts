@@ -5,12 +5,14 @@
  *      offen (kein deletedAt), der Backstop löscht beim nächsten Lauf,
  * sowie der geprüfte Punkt ohne Fund OK-5 (12-Monats-Grenze in Europe/Berlin).
  *
- * Hinweis (offene Fachregeln, bewusst NICHT umgesetzt/getestet): Review B
- * hat festgestellt, dass für Chatfotos/-texte STORNIERTER Vorgänge (B8) und
- * für unzugeordnete bzw. ignorierte Nachrichten ohne Vorgang (B9) keine
- * Retention greift. Order §25 regelt nur „Vorgangsabschluss“; Frist und
- * Bezugszeitpunkt für Storno/unzugeordnet sind fachlich nicht definiert ⇒
- * offene Punkte im Abschlussbericht, keine geratene Regel im Code.
+ * Hinweis: Die damals offenen Fachregeln aus Review B – Retention für
+ * STORNIERTE Vorgänge (B8) und für unzugeordnete/ignorierte Nachrichten
+ * (B9) – sind mit der Phase-12-Finalisierung entschieden und umgesetzt
+ * (terminal = abgeschlossen oder storniert; Unzugeordnetes 90 Tage); die
+ * Tests dazu stehen in communication-retention-final.integration.test.ts
+ * (R1–R20). Der OK-5-Test unten rechnet weiterhin über `completed_at`:
+ * `purgeExpiredChatText` setzt fehlende Anker zuerst aus dem aktuellen
+ * Terminalzeitpunkt (ProcessService ohne Listener ⇒ Anker erst im Backstop).
  */
 import { conversationMessages, messagePhotos, processes } from '@mietroyal/database';
 import { StorageObjectNotFoundError, type StorageProvider } from '@mietroyal/integrations';

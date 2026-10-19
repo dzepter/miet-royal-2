@@ -2,12 +2,17 @@ import type { AppConfig } from '@mietroyal/config';
 import { parseOrThrow, z } from '@mietroyal/validation';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import QRCode from 'qrcode';
-import { deviceLabelFromUserAgent } from '../auth/device.ts';
+import {
+  DEVICE_COOKIE_NAME,
+  deviceLabelFromUserAgent,
+  resolveDeviceToken,
+} from '../auth/device.ts';
 import {
   clearSessionCookie,
   requireAuth,
   sendAuthError,
   sendError,
+  setDeviceCookie,
   setSessionCookie,
 } from '../auth/http.ts';
 import { NEUTRAL_LOGIN_MESSAGE, type StaffAuthService } from '../auth/service.ts';
@@ -100,12 +105,20 @@ export function registerAuthRoutes(app: FastifyInstance, options: AuthRouteOptio
   app.post('/auth/login', { config: strictLimit }, async (request, reply) => {
     const body = parseOrThrow(loginSchema, request.body);
     const deviceLabel = deviceLabelFromUserAgent(request.headers['user-agent']);
-    const result = await auth.login({ ...body, deviceLabel });
+    // Phase-12-Finalisierung: Geräteidentität NUR aus dem HttpOnly-Cookie
+    // (nie aus dem Body – loginSchema verwirft Zusatzfelder); fehlt es oder
+    // ist es ungültig, entsteht serverseitig ein neuer Wert. Der Hash reist
+    // über die Login-Challenge bis zur Session (TOTP/Recovery/Ersteinrichtung).
+    const device = resolveDeviceToken(request.cookies?.[DEVICE_COOKIE_NAME]);
+    const result = await auth.login({ ...body, deviceLabel, deviceTokenHash: device.hash });
 
     if (result.kind === 'failed') {
+      // Kein Geräte-Cookie bei Fehlschlag: Antwort bleibt neutral und identisch.
       sendError(request, reply, 401, 'LOGIN_FAILED', NEUTRAL_LOGIN_MESSAGE);
       return;
     }
+    // Nach bestandener Passwortprüfung setzen bzw. Laufzeit erneuern (gleicher Wert).
+    setDeviceCookie(reply, config, device.token);
     if (result.kind === 'totp_required' || result.kind === 'totp_setup_required') {
       return { next: result.kind, challengeToken: result.challengeToken };
     }

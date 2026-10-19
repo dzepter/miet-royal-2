@@ -24,9 +24,10 @@
  *     einen Job mit Bucket-Schlüssel (`mail.send:<id>:backstop:<bucket>`);
  *     veraltete `sending`-Zeilen sendet der Job NICHT erneut, sondern schließt
  *     sie als `outcome_unknown` (SENDING_STALE) ab (Härtung RA-2);
- *  3. den Retention-Backstop: Chatfotos abgeschlossener Vorgänge bei jedem
- *     Lauf, Text-Retention täglich als eigener Job `communication.cleanup_
- *     retention:<JJJJ-MM-TT>`.
+ *  3. den Retention-Backstop: Retention-Anker + Chatfotos terminaler
+ *     (abgeschlossener/stornierter) Vorgänge bei jedem Lauf, Fristen (Text,
+ *     Zustellungen, Unzugeordnetes, WhatsApp) täglich als eigener Job
+ *     `communication.cleanup_retention:<JJJJ-MM-TT>`.
  */
 import { integrationJobs, mailDeliveries, type Database } from '@mietroyal/database';
 import type { JobHandler, JobQueue, JobRunnerLogger } from '@mietroyal/integrations';
@@ -208,12 +209,22 @@ export async function runScanDue(
     );
   }
   try {
-    result.retention.photosDeleted = (await deps.retention.cleanupPhotosBackstop()).deleted;
-    result.retention.textJobEnqueued = await enqueueDailyRetentionBackstop(deps.queue, now);
+    // Phase-12-Finalisierung (Retention): Anker + Chatfotos terminaler (abgeschlossener
+    // UND stornierter) Vorgänge bei jedem Lauf; Fristen täglich im eigenen Job.
+    result.retention.photosDeleted = (await deps.retention.runFrequentBackstop()).photos.deleted;
   } catch (error) {
     logger?.error(
       { scanner: 'retention_backstop', errorCode: errorCode(error) },
       'communication.scan_due: Retention-Backstop fehlgeschlagen',
+    );
+  }
+  try {
+    // Review-Fund (Robustheit): Tagesjob unabhängig vom 2-min-Backstop einreihen.
+    result.retention.textJobEnqueued = await enqueueDailyRetentionBackstop(deps.queue, now);
+  } catch (error) {
+    logger?.error(
+      { scanner: 'retention_daily', errorCode: errorCode(error) },
+      'communication.scan_due: Retention-Tagesjob nicht eingereiht',
     );
   }
   logger?.info(

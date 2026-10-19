@@ -29,6 +29,7 @@ import {
   TEST_CA_FILE,
   WHATSAPP_ACCESS_TOKEN,
   WHATSAPP_APP_SECRET,
+  WHATSAPP_GRAPH_API_VERSION,
   WHATSAPP_GRAPH_FAKE_ORIGIN,
   WHATSAPP_PHONE_NUMBER_ID,
   WHATSAPP_VERIFY_TOKEN,
@@ -682,7 +683,7 @@ test('Z. Kommunikations-Fakes (Smoke): Admin-Status ohne Secrets, SMTP-Check üb
   expect(JSON.parse(accepted.body)).toMatchObject({ received: true, messages: 1 });
   await clearWhatsAppFake();
   const graph = await fetch(
-    `${WHATSAPP_GRAPH_FAKE_ORIGIN}/v25.0/${WHATSAPP_PHONE_NUMBER_ID}/messages`,
+    `${WHATSAPP_GRAPH_FAKE_ORIGIN}/${WHATSAPP_GRAPH_API_VERSION}/${WHATSAPP_PHONE_NUMBER_ID}/messages`,
     {
       method: 'POST',
       headers: {
@@ -699,7 +700,7 @@ test('Z. Kommunikations-Fakes (Smoke): Admin-Status ohne Secrets, SMTP-Check üb
   );
   await registerWhatsAppMedia('e2e-media-1', 'image/png', PNG_1X1);
   const meta = (await (
-    await fetch(`${WHATSAPP_GRAPH_FAKE_ORIGIN}/v25.0/e2e-media-1`, {
+    await fetch(`${WHATSAPP_GRAPH_FAKE_ORIGIN}/${WHATSAPP_GRAPH_API_VERSION}/e2e-media-1`, {
       headers: { authorization: `Bearer ${WHATSAPP_ACCESS_TOKEN}`, connection: 'close' },
     })
   ).json()) as { url: string; mime_type: string };
@@ -729,7 +730,8 @@ test('Z. Kommunikations-Fakes (Smoke): Admin-Status ohne Secrets, SMTP-Check üb
   await clearPushRequests();
   const keys = createPushSubscriptionKeys();
   await registerPushSubscription(staff, keys);
-  // „Neues Gerät“ = neue Geräte-Kennung (aus dem User-Agent abgeleitet, auth/device.ts).
+  // „Neues Gerät“ = neuer serverseitiger Geräte-Cookie mr_staff_device (frischer Browser-Kontext
+  // ohne Cookie, auth/device.ts); der User-Agent ist nur Anzeige-Label, keine Identität.
   const otherDevice = await browser.newContext({
     userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:130.0) Gecko/20100101 Firefox/130.0',
   });

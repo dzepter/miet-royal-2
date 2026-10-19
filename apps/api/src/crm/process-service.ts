@@ -45,9 +45,13 @@ const LOCKED_MESSAGE =
  * Phase 12 (reminders/retention): Nach-Commit-Listener für den
  * Vorgangsabschluss (z. B. Retention-Job für Chatfotos). Fehler im Listener
  * machen den Abschluss nie rückgängig.
+ * Phase-12-Finalisierung (Retention §4.1): optional auch für den Eintritt in
+ * „storniert“ – beide Storno-Wege (Legacy ohne Buchung, Phase-9-Storno mit
+ * Buchung) melden nach ihrem Commit mit `processes.cancelled_at`.
  */
 export interface ProcessCompletionListener {
   processCompleted(event: { processId: string; completedAt: Date }): Promise<void>;
+  processCancelled?(event: { processId: string; cancelledAt: Date }): Promise<void>;
 }
 
 export class ProcessService {
@@ -316,7 +320,7 @@ export class ProcessService {
    * storniert: Stornoberechnung, Ressourcenfreigabe, Stornorechnung.
    */
   async cancel(processId: string, ctx: ProcessVisibilityContext): Promise<void> {
-    await this.db.transaction(async (tx) => {
+    const cancelledAt = await this.db.transaction(async (tx) => {
       const process = await this.lockVisibleProcess(tx, processId, ctx);
       if (process.mainStatus !== 'open' && process.mainStatus !== 'reopened') {
         throw new AuthError('CONFLICT', 'Nur offene Vorgänge können storniert werden.');
@@ -331,14 +335,38 @@ export class ProcessService {
           'Der Vorgang hat eine bestätigte Buchung – bitte über „Buchung stornieren“ (Stornovorschau) stornieren.',
         );
       }
-      await this.markCancelledWithin(tx, processId, new Date());
+      const now = new Date();
+      await this.markCancelledWithin(tx, processId, now);
+      return now;
     });
+    // Phase-12-Finalisierung (Retention): Listener NACH dem Commit, nie unter Sperren.
+    await this.notifyCancelled({ processId, cancelledAt });
+  }
+
+  /**
+   * Phase-12-Finalisierung (Retention §4.1): Storno-Listener nach dem Commit
+   * benachrichtigen – auch vom Phase-9-Storno (CancellationService) nach
+   * dessen Commit aufgerufen. Fehler machen das Storno nie rückgängig (der
+   * Retention-Backstop in scan_due holt die Arbeit nach).
+   */
+  async notifyCancelled(event: { processId: string; cancelledAt: Date }): Promise<void> {
+    for (const listener of this.completionListeners) {
+      if (listener.processCancelled === undefined) continue;
+      try {
+        await listener.processCancelled(event);
+      } catch (error) {
+        console.error('Storno-Listener fehlgeschlagen', error);
+      }
+    }
   }
 
   /**
    * Statusübergang „storniert“ unter bereits gehaltener Vorgangssperre –
    * EINE Stelle für den Übergang (Legacy-Storno ohne Buchung und Phase-9-
    * Storno mit Buchung): Status, Zeitstempel, ephemere Telefonnummern.
+   * `processes.cancelled_at` ist damit der persistierte fachliche
+   * Stornozeitpunkt beider Wege (beim Phase-9-Storno identisch mit
+   * `cancellations.cancelled_at`) – Retention-Anker der Kommunikation.
    */
   async markCancelledWithin(tx: DatabaseTransaction, processId: string, now: Date): Promise<void> {
     await tx

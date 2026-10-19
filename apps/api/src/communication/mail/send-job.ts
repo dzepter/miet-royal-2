@@ -29,6 +29,7 @@ import { and, eq, inArray, lt, or, sql } from 'drizzle-orm';
 import type { DocumentService } from '../../commerce/document-service.ts';
 import type { PayloadCrypto } from '../payload-crypto.ts';
 import {
+  MAIL_BLOCKED_NO_RECIPIENT,
   MAIL_BLOCKED_SECRET_UNDECRYPTABLE,
   MAIL_SEND_JOB_TYPE,
   type MailAttachmentRef,
@@ -105,7 +106,7 @@ export function publicWebBaseUrlFor(config: AppConfig): string | null {
 }
 
 export function buildOutboundMessage(
-  delivery: MailDeliveryRow,
+  delivery: MailDeliveryRow & { recipientEmail: string },
   rendered: { subject: string; text: string; html: string },
   attachments: OutboundMailMessage['attachments'],
   config: AppConfig,
@@ -186,7 +187,10 @@ export class MailSendProcessor {
 
     // 0. Vor dem Versand erneut prüfen (Härtung RA-13/B7): Empfänger/Konfiguration
     //    (z. B. inzwischen verschärfte Demo-Whitelist) und fachliche Guards.
-    const recipientBlock = this.recipientPolicy.blockReasonFor(delivery.recipientEmail);
+    // Phase-12-Finalisierung (Retention §4.6): ohne Empfänger (bereinigt) nie senden.
+    const recipientEmail = delivery.piiScrubbedAt === null ? delivery.recipientEmail : null;
+    if (recipientEmail === null) return this.block(delivery, MAIL_BLOCKED_NO_RECIPIENT);
+    const recipientBlock = this.recipientPolicy.blockReasonFor(recipientEmail);
     if (recipientBlock !== null) return this.block(delivery, recipientBlock);
     for (const guard of this.deps.preSendGuards?.() ?? []) {
       let guardCode: string | null;
@@ -237,7 +241,12 @@ export class MailSendProcessor {
     }
 
     // 4. Versand über das Gateway (außerhalb jeder Transaktion).
-    const message = buildOutboundMessage(delivery, rendered, attachments, config);
+    const message = buildOutboundMessage(
+      { ...delivery, recipientEmail },
+      rendered,
+      attachments,
+      config,
+    );
     let outcome;
     try {
       outcome = await gateway.send(message);

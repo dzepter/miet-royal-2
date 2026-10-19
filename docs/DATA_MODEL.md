@@ -148,19 +148,39 @@ stabil über alle Versuche), `in_reply_to_message_id`, `attempts`,
 DEMO_NOT_WHITELISTED, NO_RECIPIENT, INVALID_RECIPIENT, SECRET_UNDECRYPTABLE,
 PUBLIC_WEB_BASE_URL_MISSING, …), `conversation_message_id`, `created_by`.
 Kein Mailbody, kein Klartext-Geheimnis in irgendeiner Spalte.
+Phase-12-Finalisierung (Retention): `recipient_email` und `subject` sind
+NULLable (nur nach der Bereinigung NULL); `retention_anchor_at` =
+Terminalzeitpunkt des Vorgangs (completed_at bzw. cancelled_at, gesetzt beim
+Eintritt in terminal, nur prozessgebundene Zeilen); `pii_scrubbed_at` =
+Zeitpunkt der Bereinigung (prozessgebunden 12 Berliner Kalendermonate nach dem
+Anker, sonst 90 Tage nach Endzustand sent ⇒ `sent_at`, failed/blocked/
+outcome_unknown ⇒ `updated_at`; nie pending/retry/sending): `recipient_email`,
+`recipient_name`, `subject`, `in_reply_to_message_id`,
+`secret_payload_ciphertext` ⇒ NULL, `context` ⇒ `{}`, `attachments` ⇒ `[]`;
+danach kein Resend. Audit-Rest bleibt (id, kind, Bezüge, Status,
+Idempotenzschlüssel, Message-ID, Versuche, Zeiten, neutrale Codes).
 
 ### PushSubscription / PushDelivery (Phase 12, `push_subscriptions`, `push_deliveries`)
 `push_subscriptions`: `user_id`, `session_id` (registrierende Gerätesession),
 `endpoint` (UNIQUE, Capability-URL – nie loggen/ausgeben), `p256dh`, `auth`,
 `user_agent_label`, `created_at`, `last_success_at`, `disabled_at`,
-`disabled_reason` (user_unsubscribed | gone | session_revoked | user_inactive |
-reassigned). Versand nur an Zeilen mit `disabled_at IS NULL`, aktivem User
+`disabled_reason` (gone | session_revoked | user_inactive | session_expired |
+endpoint_not_allowed | reassigned; `user_unsubscribed` nur noch in
+Bestandszeilen – Phase 12 Finalisierung: kein Push-Opt-out, wird nicht mehr
+erzeugt). Versand nur an Zeilen mit `disabled_at IS NULL`, aktivem User
 und nicht widerrufener Session. `push_deliveries`: `kind` (appointment_1h,
 return_overdue, machine_risk, machine_risk_6h, session_new_device_login,
 substitution_started), `user_id`, `idempotency_key` (UNIQUE, z. B.
 `push:return_overdue:<incidentId>:<userId>`), `payload` (jsonb {kind, title,
 body, url, tag} – datenminimiert), `status` (pending | sent | failed |
 skipped), `subscriptions_targeted`/`_succeeded`, `last_error_code`, `sent_at`.
+Phase 12 Finalisierung (Migration 0025): `appointment_id` (uuid NULL, FK
+appointments) bei `appointment_1h`/`assignment_reassigned` – `push.send` prüft
+vor jedem Versand, ob die Zustellung noch zum aktuellen Terminstand passt,
+sonst `skipped` mit `last_error_code = 'SUPERSEDED'`; NULL = nicht
+terminbezogen bzw. Altbestand (ungeprüft). `session_id` eines Abos folgt bei
+erneutem Login desselben Users auf demselben Gerät bzw. über die Statusroute
+der aktuellen Session.
 
 ### CalendarFeedToken (Phase 12, `calendar_feed_tokens`)
 Ein Eintrag je User (`user_id` UNIQUE): `token_hash` (SHA-256 des 32-Byte-
@@ -237,21 +257,37 @@ delivered | read | failed | blocked; wird aus Outbox-Status bzw. WhatsApp-
 statuses gespiegelt), `sent_at`/`received_at`, `created_by_staff_id`,
 Zuordnung durch Staff (`assigned_by_staff_id`, `assigned_at`) bzw. Ignorieren
 (`ignored_at`, `ignored_by_staff_id`), Retention `body_deleted_at` (Text
-12 Monate nach Vorgangsabschluss geleert; Zeile bleibt als Metadatum).
+geleert; Zeile bleibt als Metadatum). Phase-12-Finalisierung:
+`retention_anchor_at` = Terminalzeitpunkt (Abschluss/Storno), der für DIESE
+Zeile gilt – gesetzt beim ersten Terminalzustand nach ihrem Entstehen bzw.
+ihrer Zuordnung, nie zurückgesetzt (Reopen); `pii_scrubbed_at` = Zeitpunkt
+der PII-Minimierung: zugeordnet 12 Berliner Kalendermonate nach dem Anker
+(`body` '', `subject`/`provider_message_id`/`reply_to_provider_message_id`
+NULL, `sender_snapshot` ⇒ `{"role":"customer"}` bzw. `{"role":"staff"}`),
+nicht zugeordnet/ignoriert 90 Kalendertage nach Eingang
+(LEAST(`received_at`, `created_at`); `sender_snapshot` ⇒ `{}`; danach nicht
+mehr in der Unmatched-Inbox und nicht zuordenbar).
 ### MessagePhoto (Phase 12, `message_photos`)
 Eingehendes Bild (nur JPEG/PNG/WebP nach MIME + Magic Bytes + Größenlimit):
 `message_id`, `storage_key` (privat, `communication/messages/<messageId>/<uuid>.<ext>`,
-UNIQUE), `mime_type`, `byte_size`, `sha256`, `deleted_at` (bei
-Vorgangsabschluss gelöscht – nur Kommunikationsfotos, nie Übergabe-/
-Rückgabe-/Schadensfotos). Auslieferung ausschließlich über
+UNIQUE), `mime_type`, `byte_size`, `sha256`, `deleted_at` (beim Eintritt des
+Vorgangs in terminal – Abschluss ODER Storno – bzw. 90 Tage nach Eingang
+nicht zugeordneter Nachrichten gelöscht; gesetzt erst nach erfolgreichem
+Storage-Löschen – nur Kommunikationsfotos, nie Übergabe-/Rückgabe-/
+Schadensfotos). Auslieferung ausschließlich über
 `GET /staff/messages/:id/photos/:photoId` (Vorgangssichtbarkeit).
 ### InboundMailReceipt / InboundMailState (Phase 12, `inbound_mail_receipts`, `inbound_mail_state`)
 Beleg je verarbeiteter eingehender Mail: `mailbox`, `uid_validity`, `uid`
-(UNIQUE Tripel), `message_id` (partial UNIQUE), `fingerprint` (SHA-256 über
-From|Date|Subject|Textanfang, UNIQUE), `from_address`, `subject`,
-`received_at`, `status` (matched | unmatched | ignored | rejected),
-`match_reason` (in_reply_to | references | process_number_sender | manual),
-`conversation_message_id`. Poller-Zustand je Mailbox: `uid_validity`,
+(UNIQUE Tripel), `message_id_hash` (SHA-256 hex der normalisierten
+Message-ID, partial UNIQUE – Phase-12-Finalisierung: KEIN Klartext, die
+frühere Spalte `message_id` ist entfernt), `fingerprint` (SHA-256, UNIQUE),
+`from_address`, `subject`, `received_at`, `status` (matched | unmatched |
+ignored | rejected), `match_reason` (in_reply_to | references |
+process_number_sender | manual | `quarantined:<code>`),
+`conversation_message_id`, `pii_scrubbed_at` (unmatched/ignored/rejected 90
+Kalendertage nach Eingang bzw. zugeordnete Belege mit ihrer Nachricht:
+`from_address`/`subject` ⇒ NULL; Tripel, Status, `received_at`, Fingerprint
+und Hash bleiben für die Deduplizierung). Poller-Zustand je Mailbox: `uid_validity`,
 `last_uid` (erst nach erfolgreicher Verarbeitung fortgeschrieben),
 `last_poll_at`, `last_success_at`, `last_error_code` (neutral, nie Inhalte).
 ### WhatsAppEvent / WhatsAppContact (Phase 12, `whatsapp_events`, `whatsapp_contacts`)
@@ -261,9 +297,12 @@ From|Date|Subject|Textanfang, UNIQUE), `from_address`, `subject`,
 `phone_number_id`, `status` (queued | processed | ignored | failed),
 `result_code` (Zuordnungsgrund, `UNSUPPORTED_<TYP>`, Graph-Fehlercode),
 `received_at`, `processed_at`, `conversation_message_id`; nie Nutzlast/Inhalt.
+Phase-12-Finalisierung: Die wamid ist aus der wa_id (Telefonnummer)
+abgeleitet ⇒ `provider_message_id` nach 90 Tagen nur noch `sha256:<hex>`.
 `whatsapp_contacts`: `wa_id` (PK, Ziffern ohne Plus), `customer_id` (wenn
 eindeutig zugeordnet), `last_inbound_at` (Basis des 24-h-Service-Fensters),
-`profile_name`.
+`profile_name`. Zeilen ohne `customer_id`, deren letzte Nachricht > 90 Tage
+zurückliegt, werden gelöscht (keine Referenz zeigt auf die Tabelle).
 ### InternalNote
 Vorgang, Autor, Text.
 
@@ -277,6 +316,27 @@ Vorlage.
 User, Permission, allow, optional valid_from/until.
 ### DeviceSession
 Gerät, last_seen, revoked.
+<!-- Phase 12 Finalisierung (Geräteidentität) -->
+`staff_sessions.device_label` (aus dem User-Agent) ist reine Anzeige und
+entscheidet nicht über „neues Gerät“.
+<!-- Phase 12 Finalisierung (Push-Session-Bindung, Migration 0025) -->
+`staff_sessions.device_token_hash` (text NULL): SHA-256 des Geräte-Cookies
+`mr_staff_device` der Anmeldung (alle Loginpfade; nie Klartext, nie API-Feld).
+NULL = Session vor dem Rollout. Index (`user_id`, `device_token_hash`) WHERE
+NOT NULL. Einziger Zweck: nach einem erneuten Login desselben Mitarbeiters auf
+demselben Gerät dessen aktive Push-Abos an die neue Session binden (nie an eine
+andere Person).
+
+### StaffKnownDevice (Phase 12 Finalisierung)
+Tabelle `staff_known_devices`: bekannte Geräte je Mitarbeiter – `id`,
+`user_id`, `device_token_hash` (NUR SHA-256 des serverseitig erzeugten
+HttpOnly-Cookies `mr_staff_device`, 32 Zufallsbytes base64url; nie Klartext),
+`display_label` (Anzeige aus dem User-Agent, wird beim Login aktualisiert),
+`first_seen_at`, `last_seen_at`. UNIQUE(`user_id`, `device_token_hash`):
+„neues Gerät“ ⇔ das Paar existiert noch nicht ⇒ atomar genau ein
+`session.new_device_login` (Admin-Push). Logout/Session-Widerruf lassen den
+Eintrag bestehen. `staff_login_challenges.device_token_hash` trägt denselben
+Hash vom Passwortschritt bis zum Abschluss (TOTP/Recovery/Ersteinrichtung).
 
 ### Substitution
 Ursprung, Vertreter, von/bis.

@@ -203,9 +203,11 @@ Admin kann Gate manuell übersteuern.
 ## Web Push & Kalender-Feed (Phase 12)
 
 - **Kein neues Recht für Push-Geräte.** Jede gültige Session darf das EIGENE
-  Gerät registrieren (`POST /staff/push/subscriptions`), abmelden
-  (`DELETE /staff/push/subscriptions/current`) und die eigenen Geräte sehen
+  Gerät registrieren (`POST /staff/push/subscriptions`), dessen Status prüfen
+  (`POST /staff/push/subscriptions/status`) und die eigenen Geräte sehen
   (`GET /staff/push/subscriptions`, nur Label/Zeiten – nie Endpoint/Keys).
+  Phase 12 Finalisierung: KEINE Abmelde-/Opt-out-Route (bestätigte
+  Entscheidung; Deaktivierung nur technisch, z. B. Logout/Revoke).
   Push ist ein Werkzeug, keine Datenfreigabe: Nachrichten enthalten nur
   Vorgangsnummer/Terminart und öffnen die Staff-App, deren Rechteprüfung
   unverändert greift.

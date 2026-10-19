@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { WHATSAPP_GRAPH_API_VERSION } from './constants.ts';
 
 /**
  * Phase 12 (E2E): Fake der WhatsApp Business Cloud API (Meta Graph API) für
@@ -156,7 +157,8 @@ export function createWhatsAppGraphFake(options: WhatsAppGraphFakeOptions): What
           );
           return;
         }
-        if (messages[2] !== options.phoneNumberId) {
+        // Vertrag: nur die konfigurierte Graph-Version (Default v26.0, verifiziert 2026-10-19).
+        if (messages[1] !== WHATSAPP_GRAPH_API_VERSION || messages[2] !== options.phoneNumberId) {
           sendFailure(
             request,
             response,
@@ -182,6 +184,16 @@ export function createWhatsAppGraphFake(options: WhatsAppGraphFakeOptions): What
       }
       const meta = /^\/(v\d{1,3}\.\d{1,3})\/([A-Za-z0-9_-]{1,128})$/.exec(url.pathname);
       if (meta !== null && request.method === 'GET') {
+        if (meta[1] !== WHATSAPP_GRAPH_API_VERSION) {
+          sendFailure(
+            request,
+            response,
+            'media_meta',
+            { endpoint: 'media_meta', status: 400, graphCode: 100, times: 1 },
+            null,
+          );
+          return;
+        }
         if (!authorized(request)) {
           sendFailure(
             request,

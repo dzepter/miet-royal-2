@@ -4,6 +4,7 @@ import {
   ConfigError,
   EnvironmentIsolationError,
   loadConfig,
+  WHATSAPP_DEFAULT_GRAPH_API_VERSION,
 } from '../src/index.ts';
 
 describe('loadConfig', () => {
@@ -516,7 +517,20 @@ describe('Kommunikations-Konfiguration (Phase 12)', () => {
     const live = loadConfig({ ...production, ...whatsappLive });
     expect(live.whatsapp.mode).toBe('live');
     expect(live.whatsapp.baseUrl).toBe('https://graph.facebook.com');
-    expect(live.whatsapp.graphApiVersion).toBe('v25.0');
+    // W1: Default = aktuelle offiziell veröffentlichte Graph-Version (verifiziert 2026-10-19).
+    expect(live.whatsapp.graphApiVersion).toBe('v26.0');
+    expect(WHATSAPP_DEFAULT_GRAPH_API_VERSION).toBe('v26.0');
+    // Explizite, noch unterstützte Version bleibt möglich; abgelaufene werden abgelehnt.
+    expect(
+      loadConfig({ ...production, ...whatsappLive, WHATSAPP_GRAPH_API_VERSION: 'v25.0' }).whatsapp
+        .graphApiVersion,
+    ).toBe('v25.0');
+    expect(() =>
+      loadConfig({ ...production, ...whatsappLive, WHATSAPP_GRAPH_API_VERSION: 'v20.0' }),
+    ).toThrow(/WHATSAPP_GRAPH_API_VERSION/);
+    expect(() =>
+      loadConfig({ ...production, ...whatsappLive, WHATSAPP_GRAPH_API_VERSION: 'latest' }),
+    ).toThrow(/WHATSAPP_GRAPH_API_VERSION/);
     expect(live.whatsapp.appSecret).toBe('SYNTH-app-secret-0123456789');
     const { WHATSAPP_APP_SECRET: _omit, ...incomplete } = whatsappLive;
     expect(() => loadConfig({ ...production, ...incomplete })).toThrow(/WHATSAPP_APP_SECRET/);

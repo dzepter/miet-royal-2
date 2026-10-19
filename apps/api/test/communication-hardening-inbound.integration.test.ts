@@ -22,6 +22,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import {
   chooseInboundBody,
   inboundMailFingerprint,
+  inboundMessageIdHash,
   stripControlChars,
 } from '../src/communication/inbound/content.ts';
 import { enqueueInboundPoll } from '../src/communication/inbound/poll-job.ts';
@@ -145,10 +146,13 @@ describe('Härtung Review A – Fingerprint-Dedupe verwirft keine legitimen Mail
     expect(await ctx.db.select().from(conversationMessages)).toHaveLength(2);
     expect(await ctx.db.select().from(messagePhotos)).toHaveLength(2);
     const receipts = await ctx.db.select().from(inboundMailReceipts);
-    expect(receipts.map((r) => r.messageId).sort()).toEqual([
-      'foto-1@example.com',
-      'foto-2@example.com',
-    ]);
+    // Phase-12-Finalisierung §4.3: Message-ID nur als SHA-256 der normalisierten ID.
+    expect(receipts.map((r) => r.messageIdHash).sort()).toEqual(
+      [
+        inboundMessageIdHash('foto-1@example.com'),
+        inboundMessageIdHash('foto-2@example.com'),
+      ].sort(),
+    );
   });
 
   it('RA-6a2 inhaltsgleiche Mails ohne Anhang mit verschiedener Message-ID ⇒ beide erhalten; gleiche Message-ID ⇒ Duplikat', async () => {
@@ -408,7 +412,7 @@ describe('Härtung Review A – Poison Message im IMAP-Eingang (RA-10, Order §�
       uid: 1,
       status: 'rejected',
       matchReason: 'quarantined:PG_22021',
-      messageId: null,
+      messageIdHash: null,
       subject: null,
       fromAddress: null,
       conversationMessageId: null,

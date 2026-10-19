@@ -3,6 +3,7 @@ import {
   bigint,
   boolean,
   index,
+  uniqueIndex,
   jsonb,
   pgEnum,
   pgTable,
@@ -73,12 +74,24 @@ export const staffSessions = pgTable(
     tokenHash: text('token_hash').notNull().unique(),
     /** Grober Gerätename/Browser zur Wiedererkennung – kein Fingerprinting. */
     deviceLabel: text('device_label').notNull(),
+    /**
+     * Phase-12-Finalisierung: SHA-256 des Geräte-Cookies `mr_staff_device`
+     * der Anmeldung (nie Klartext, nie API-Feld). NULL = Session vor dem
+     * Rollout. Dient nur dazu, Push-Abos desselben Mitarbeiters auf demselben
+     * Gerät beim erneuten Login an die neue Session zu binden.
+     */
+    deviceTokenHash: text('device_token_hash'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     lastActivityAt: timestamp('last_activity_at', { withTimezone: true }).notNull().defaultNow(),
     revokedAt: timestamp('revoked_at', { withTimezone: true }),
     revokedReason: text('revoked_reason'),
   },
-  (table) => [index('staff_sessions_user_idx').on(table.userId, table.revokedAt)],
+  (table) => [
+    index('staff_sessions_user_idx').on(table.userId, table.revokedAt),
+    index('staff_sessions_user_device_idx')
+      .on(table.userId, table.deviceTokenHash)
+      .where(sql`${table.deviceTokenHash} IS NOT NULL`),
+  ],
 );
 
 /**
@@ -100,11 +113,45 @@ export const staffLoginChallenges = pgTable(
     /** 'totp' (Code eingeben) oder 'totp_setup' (erzwungene Einrichtung). */
     purpose: text('purpose').notNull(),
     deviceLabel: text('device_label').notNull(),
+    /**
+     * Phase-12-Finalisierung: SHA-256 des serverseitig gesetzten
+     * Geräte-Cookies (`mr_staff_device`) aus dem ersten Loginschritt – die
+     * Geräteidentität bleibt über TOTP/Recovery/TOTP-Einrichtung erhalten.
+     * Nie Klartext, nie vom Client im Body wählbar.
+     */
+    deviceTokenHash: text('device_token_hash'),
     expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
     consumedAt: timestamp('consumed_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [index('staff_login_challenges_user_idx').on(table.userId)],
+);
+
+/**
+ * Phase-12-Finalisierung: bekannte Geräte je Mitarbeiter. Geräteidentität ist
+ * ein serverseitig erzeugter Zufallswert im HttpOnly-Cookie `mr_staff_device`
+ * (≥ 32 Byte); gespeichert wird ausschließlich dessen SHA-256. Der User-Agent
+ * (`displayLabel`) dient nur der Anzeige und entscheidet nie über „neues Gerät“.
+ * UNIQUE(user_id, device_token_hash) macht den Erst-Login atomar: genau ein
+ * `session.new_device_login` je Gerät und Mitarbeiter.
+ */
+export const staffKnownDevices = pgTable(
+  'staff_known_devices',
+  {
+    id: uuid('id')
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => staffUsers.id),
+    deviceTokenHash: text('device_token_hash').notNull(),
+    displayLabel: text('display_label').notNull(),
+    firstSeenAt: timestamp('first_seen_at', { withTimezone: true }).notNull().defaultNow(),
+    lastSeenAt: timestamp('last_seen_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex('staff_known_devices_user_device_idx').on(table.userId, table.deviceTokenHash),
+  ],
 );
 
 export const staffPasswordResetTokens = pgTable(

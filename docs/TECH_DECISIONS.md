@@ -2230,7 +2230,8 @@ Shell cwd was reset to /home/user/Sparkoffer.de
   deaktiviert als Backstop. `endpoint` ist UNIQUE: registriert ein anderer
   User denselben Browser-Endpoint, wird die Zeile ihm zugeordnet
   (`reassigned`, Zähler zurückgesetzt) – der alte User sieht/erreicht das
-  Gerät nie wieder. Registrierung/Abmeldung braucht kein neues Recht (jede
+  Gerät nie wieder. Registrierung braucht kein neues Recht (Phase 12 Finalisierung:
+  keine Abmelde-Route mehr, siehe unten; jede
   gültige Session, nur das eigene Gerät); Push gibt keine Daten frei.
 - **Push-Outbox + Job.** `PushService.enqueue` schreibt genau eine Zeile je
   Idempotenzschlüssel in `push_deliveries` (UNIQUE ⇒ Dedupe) und reiht
@@ -2266,7 +2267,9 @@ Shell cwd was reset to /home/user/Sparkoffer.de
   `admin_notification_due_at ≤ now` ⇒ ein Push, `follow_up_due_at = +6 h`;
   Follow-up genau einmal (`follow_up_sent_at`), nie mehr; Empfänger wie (c).
   (e) Neues Gerät: Sofort-Hook nach `session.new_device_login`
-  (= erste Session eines Users mit bisher unbekanntem `device_label`) an
+  (= erste Session eines Users mit bisher unbekanntem Geräte-Cookie
+  `mr_staff_device` – Phase-12-Finalisierung, siehe „Phase 12 Finalisierung:
+  Geräteidentität“; vorher fälschlich über `device_label`) an
   Nutzer mit `employee.manage`; der Scan holt verpasste Ereignisse der letzten
   24 h mit demselben Schlüssel nach. (f) Reinigung > 24 h: bewusst kein Push;
   Touren existieren nicht (`tour.delay_risk` bleibt Grenzbegriff, kein
@@ -2276,7 +2279,8 @@ Shell cwd was reset to /home/user/Sparkoffer.de
   <Terminart> <Vorgangsnummer>“ an die neu zuständige Person
   (`push:assignment_reassigned:<termin>:<requestedAt>:<user>`), danach
   `assignment_notified_at` – nur wenn die Zuweisung seit dem Lesen nicht erneut
-  geändert wurde; eine weitere Neuzuweisung erzeugt eine neue Benachrichtigung.
+  geändert wurde (Phase 12 Finalisierung: ersetzt durch atomaren Claim, siehe
+  unten); eine weitere Neuzuweisung erzeugt eine neue Benachrichtigung.
   Erstzuweisungen und Wechsel an anderen Tagen lösen keinen Kurzfrist-Push aus
   (der 1-h-Push geht ohnehin an die aktuelle Zuständigkeit).
 - **ICS-Feed.** Token 32 Random-Bytes base64url (43 Zeichen), nur SHA-256 in
@@ -2790,3 +2794,473 @@ Reproduzierte Funde aus Review B, behoben und als Regressionstests in
   Nachrichten (ohne Vorgang). Order §25 regelt nur den Vorgangsabschluss;
   Frist und Bezugszeitpunkt (Storno-Datum? Eingang? Ignorieren?) sind fachlich
   festzulegen.
+
+## Phase 12 Finalisierung: Geräteidentität
+
+- **Problem (alt, fachlich falsch):** „Neues Gerät“ war die erste Session mit
+  bisher unbekanntem `device_label` (grob aus dem User-Agent). Zwei echte
+  Geräte mit gleichem Browser/OS galten als eines (Admin-Hinweis blieb aus),
+  ein anderer User-Agent auf demselben Gerät als neues.
+- **Identität = Cookie `mr_staff_device`:** 32 Zufallsbytes base64url
+  (43 Zeichen, `generateToken`), ausschließlich serverseitig erzeugt.
+  HttpOnly, SameSite=Strict (wie `mr_staff_session`; der Login ist ein
+  same-origin-`fetch` über den Staff-Proxy `/api`, Strict ist verträglich),
+  Secure außer `APP_ENV=development` (exakt die Session-Cookie-Regel), Path=/,
+  Max-Age 400 Tage (Browser-Obergrenze, länger als die 30-Tage-Session). Kein
+  Auth-Token (öffnet keine Session, ersetzt nie Passwort/2FA), kein
+  Fingerprinting. `staff_sessions.device_label` bleibt unverändert befüllt –
+  nur Anzeige (Geräteübersicht, Push-Gerätename).
+- **Setzen:** nur in `POST /auth/login` NACH bestandener Passwortprüfung
+  (Session oder Challenge entsteht). Gültiges Cookie (`^[A-Za-z0-9_-]{43}$`)
+  ⇒ derselbe Wert wird mit frischem Max-Age erneut gesetzt; fehlt es oder ist
+  es ungültig ⇒ neuer Wert (ein ungültiger Wert wird nie gehasht/gespeichert).
+  Fehlversuch ⇒ kein Set-Cookie (Antwort bleibt neutral und identisch für
+  falsches Passwort/gesperrt/unbekannt). Niemals aus dem Body: `loginSchema`
+  kennt nur `email`/`password`, Zusatzfelder (`deviceId` …) werden verworfen.
+- **Speicherung:** nur SHA-256 (`sha256Hex`) – `staff_known_devices`
+  (UNIQUE `user_id`+`device_token_hash`) und
+  `staff_login_challenges.device_token_hash`; der Service lehnt Nicht-Hex-
+  Werte ab (Schutz vor versehentlichem Klartext). Klartext nie in Logs
+  (Request-Serializer nur Methode + maskierter Pfad, `req.headers.cookie`
+  redigiert, kein Response-Header-Logging) und nie in API-Feldern.
+- **Atomare Neu-Entscheidung:** `createSession` führt in EINER Transaktion
+  `INSERT … ON CONFLICT (user_id, device_token_hash) DO NOTHING RETURNING id`
+  aus. Neue Zeile ⇒ genau ein `session.new_device_login` (details nur
+  `{deviceLabel}`), sonst `UPDATE last_seen_at, display_label`. Session-Zeile
+  und `session.created` (`{deviceLabel, newDevice}`) entstehen in derselben
+  Transaktion – kein „Gerät bekannt, aber nie gemeldet“ nach einem Abbruch.
+  Parallele Erst-Logins: der zweite INSERT wartet auf den Index-Eintrag des
+  ersten und läuft nach dessen Commit in den Konflikt ⇒ genau ein Ereignis.
+  `SessionLifecycleListener.newDeviceLogin` (Admin-Push) läuft erst nach dem
+  Commit; Push-Regeln unverändert (Sofort-Hook + Scan-Backstop über
+  `staff_security_events`, Schlüssel `push:new_device:<sessionId>:<adminId>`
+  ⇒ ein Ereignis = genau ein Push je Admin-Empfänger).
+- **Zweistufige Logins (TOTP, Recovery-Code, erzwungene Ersteinrichtung):**
+  Der Hash wird im Passwortschritt ermittelt und in der Challenge gespeichert;
+  der Abschluss verwendet GENAU diesen Hash. Ein Geräte-Cookie im zweiten
+  Request wird bewusst nicht ausgewertet. Begründung: (1) im zweiten Schritt
+  ist der Klartext des Challenge-Geräts unbekannt, ein abweichendes/fehlendes
+  Cookie kann also nicht „zurückgesetzt“ werden; (2) „Cookie aus Schritt 2
+  nur bei Gleichheit mit dem Challenge-Hash, sonst Challenge-Hash“ ist im
+  Ergebnis identisch mit „immer Challenge-Hash“; (3) maßgeblich ist das
+  Gerät, das die Passwortprüfung bestanden hat – wer Schritt 1 kontrolliert,
+  wählt das Cookie ohnehin, ein abweichendes Cookie in Schritt 2 kann daher
+  keine Meldung unterdrücken: jeder Cookie-Wert wird bei seinem eigenen
+  ersten vollständigen Login gemeldet (konservativ: eher eine Meldung zu viel
+  als eine zu wenig). Zwei parallele Tabs eines frischen Browsers erhalten je
+  einen eigenen Wert, der Browser behält den zuletzt gesetzten ⇒ höchstens
+  einmal zusätzlich „neu“. Challenges ohne Hash (nur die ≤ 5 Minuten alten
+  aus der Zeit vor dem Rollout) gelten als ungültig (neutrale 401).
+- **Lebenszyklus:** Logout löscht nur `mr_staff_session`, nie
+  `mr_staff_device`. Session-Widerruf, „alle Geräte abmelden“, Sperre,
+  Passwortwechsel/-reset und 2FA-Reset lassen `staff_known_devices`
+  unverändert (Gerät bleibt bekannt; nur echte neue Cookies melden). Gelöschte
+  Website-Daten/Privatmodus ⇒ neues Gerät.
+- **Rollout:** Altbestand hat kein Cookie ⇒ jedes Gerät ist beim ersten Login
+  nach dem Deploy einmal „neu“ (konservativ korrekt, DEPLOYMENT_NOTES.md).
+- **Bewusst nicht gebaut (keine Fachregel):** keine UI-Liste „bekannte
+  Geräte“, kein Vergessen/Aufräumen bekannter Geräte.
+- **Restrisiko Geräte-ID-Fixation (adversarialer Review, bewertet):** Der
+  Server übernimmt jeden formal gültigen Cookie-Wert. Wer per XSS auf dem
+  Staff-Origin oder per Cookie-Tossing von einer Schwester-Subdomain einen ihm
+  bekannten Wert in den Browser des Opfers setzt, kann nach einem späteren
+  Login mit gestohlenen Zugangsdaten (Passwort UND 2FA) die Meldung „neues
+  Gerät“ unterdrücken – keine Anmeldeumgehung. Ein HMAC-signierter
+  Cookie-Wert wurde geprüft und verworfen: der Angreifer kann sich mit einem
+  eigenen Konto jederzeit einen gültig signierten Wert holen und diesen
+  setzen, die Signatur verhindert die Fixation also nicht. Wirksam wäre nur
+  das Präfix `__Host-` (verhindert Cookie-Tossing von Subdomains); das
+  kollidiert mit dem vorgegebenen Namen `mr_staff_device` und braucht eine
+  Entscheidung. Voraussetzung bleibt ohnehin XSS oder eine kompromittierte
+  Subdomain.
+- **Offen (Entscheidung nötig):** Ein Gerät bleibt auch nach Sperre,
+  „alle Geräte abmelden“, Passwort- und 2FA-Reset bekannt (Vorgabe: Widerruf
+  hält das Gerät bekannt). Ob ein Admin-Passwort- oder 2FA-Reset die bekannten
+  Geräte des Mitarbeiters vergessen soll, ist eine Produktentscheidung.
+- **Session-Bezug:** `staff_sessions.device_token_hash` (nur Hash, Migration
+  0025) hält fest, mit welchem Gerät eine Session entstand – genutzt
+  ausschließlich, um Push-Abos desselben Mitarbeiters auf demselben Gerät bei
+  einem erneuten Login an die neue Session zu binden (siehe Push-Abschnitt).
+- Tests: `apps/api/test/auth-device-identity.integration.test.ts` (D1–D13).
+
+## Phase 12 Finalisierung: kein Push-Opt-out, Reassignment-Claim
+
+- **Kein Push-Opt-out in Miet-Royal (bestätigte Produktentscheidung).** Die
+  bewusste Entscheidung ist die Browserberechtigung (`Notification.
+  requestPermission` nach Klick auf „Push-Benachrichtigungen aktivieren“);
+  danach gibt es in Miet-Royal keinen Schalter zum Ausschalten, Abmelden oder
+  Pausieren. Entfernt: Route `DELETE /staff/push/subscriptions/current`,
+  `PushSubscriptionService.unsubscribe` und der Grund `user_unsubscribed`
+  (wird nicht mehr erzeugt; Bestandszeilen dürfen ihn behalten), Staff-UI-Button
+  `push-disable` und `unsubscribeFromPush`. Die Route hatte keinen anderen Zweck
+  (nur der Ausschalt-Button rief sie auf). Ersatzlos – keine Alternative.
+- **Technische Deaktivierung bleibt:** Logout/Session-Revoke/„alle Geräte
+  abmelden“ (Listener ⇒ `session_revoked`), Inaktivität nach der Auth-Regel
+  (`isSessionExpiredByInactivity` ⇒ `session_expired`, lazy beim Versand),
+  Mitarbeiter gesperrt/deaktiviert (`session_revoked` bzw. lazy
+  `user_inactive`), Push-Dienst 404/410 (`gone`), unzulässiger Endpoint
+  (`endpoint_not_allowed`), Übernahme des Endpoints durch einen anderen User.
+  Hat der Browser die Subscription verloren, meldet der Dienst 404/410; die
+  Einstellungsseite zeigt dann wieder „aktivieren“, eine erneute Registrierung
+  (gleicher oder neuer Endpoint) reaktiviert. Kein `pushsubscriptionchange`-
+  Handler im Service Worker (der Worker ruft bewusst keine API auf; wäre ein
+  neues Feature).
+- **UI-Zustände** kommen aus einer reinen Funktion (`apps/staff/lib/push-
+  state.ts`, `derivePushViewState`): vor Aktivierung Button „Push-
+  Benachrichtigungen aktivieren“ (`push-enable`); `Notification.permission ===
+  'denied'` ⇒ „Push ist auf diesem Gerät im Browser nicht aktiviert.“
+  (`push-denied`); aktiv ⇒ „Push ist auf diesem Gerät aktiv.“ (`push-status`)
+  + Geräteliste (`push-device-list`). Kein Zustand bietet eine Ausschaltaktion.
+- **Reassignment-Claim (Regel g).** Vorher: lesen → Zustellung einreihen →
+  bedingt markieren; ein Wechsel Bernd → Carla zwischen Lesen und Einreihen
+  erzeugte einen Push an Bernd. Jetzt je Kandidat EINE Transaktion:
+  (1) `UPDATE appointments SET assignment_notified_at = now WHERE id = … AND
+  date_trunc('milliseconds', acknowledgement_requested_at) = … AND
+  acknowledgement_requested_for = … AND assigned_user_id = requested_for AND
+  assignment_notified_at IS NULL AND status = 'scheduled' RETURNING …` (CAS auf
+  genau diese Zuweisungs-Version; `SchedulingService.assign()`/Storno sperren
+  den Termin `FOR NO KEY UPDATE` ⇒ serialisiert); (2) Empfänger aktiv und
+  Vorgang nicht storniert frisch in derselben Transaktion prüfen, nur dann
+  `PushService.createDelivery(input, tx)` (Schlüssel
+  `push:assignment_reassigned:<termin>:<requestedAt>:<user>`); (3) Commit;
+  (4) danach `enqueueSendJob` (`push.send:<deliveryId>`). Fehler in (1)–(2) ⇒
+  Rollback inkl. Claim ⇒ der nächste Scan holt nach. Storno vor dem Claim ⇒
+  `status ≠ scheduled` ⇒ kein Claim, kein Push. Nicht aktiver Empfänger bzw.
+  stornierter Vorgang bei noch offenem Termin ⇒ Claim OHNE Push (diese
+  Zuweisungs-Version ist erledigt und wird nicht endlos gescannt; eine neue
+  Zuweisung setzt einen neuen requestedAt und damit einen neuen Anspruch; ein
+  inaktiver User hätte ohnehin keine aktiven Subscriptions). Millisekunden-
+  Vergleich, weil die Werte aus JS-Dates stammen (kein Dauer-Scheitern bei µs-
+  genauen Altwerten).
+- **PushService geteilt:** `createDelivery(input, executor)` (Zeile, optional in
+  einer Fachtransaktion) + `enqueueSendJob(deliveryId)` (nach Commit, stabiler
+  Schlüssel); `enqueue` = beides wie bisher.
+- **Push-Outbox-Backstop** (`PushRuleScanner.scheduleOutboxBackstop`, läuft am
+  Ende jedes `scanDue`, auch wenn eine Regel scheitert, selbst fehlertolerant):
+  `pending`-Zustellungen der letzten 24 h, für die KEIN Job mit dem Schlüssel
+  `push.send:<deliveryId>` existiert (Absturz zwischen Commit und Einreihen),
+  erhalten genau diesen Job. Bewusst der stabile Schlüssel statt eines
+  Bucket-Schlüssels: „kein Job vorhanden“ heißt, der Schlüssel ist frei; reiht
+  der Normalpfad verspätet doch ein, dedupliziert die Queue – nie zwei Jobs
+  (und damit nie zwei Sendungen) je Zustellung. Zustellungen mit bereits
+  existierendem Job (auch `dead`) werden nicht angefasst ⇒ keine
+  Endlosschleife. `push.send` ist für nicht mehr ausstehende Zustellungen ein
+  No-op (Replay-sicher).
+- **Prüfung der übrigen Regeln auf Read-then-act-Races:** (a) 1h-Push: falscher
+  Empfänger möglich (Neuzuweisung/Vertretung zwischen Lesen und Einreihen) ⇒
+  behoben: unter Terminsperre Status/Zeit/Vorgang und – mit frisch geladenen
+  Vertretungen – die effektive Zuständigkeit erneut prüfen, Zustellung +
+  Reminder-Marke in einer Transaktion, Job nach Commit (Backstop). Restfenster:
+  eine Vertretung, die parallel zu dieser kurzen Transaktion angelegt wird
+  (Vertretungen sperren keine Termine) – die Vertretung bekommt dann mit
+  neuem Fingerprint beim nächsten Scan ihren eigenen Push. (b) Vertretungs-
+  beginn: Empfänger unveränderlich (Vertretung ist nicht editierbar, nur
+  vorzeitig beendbar) ⇒ kein falscher Empfänger, kein Verlust; höchstens ein
+  Hinweis zu einer gerade beendeten Vertretung – unverändert. (c) Overdue /
+  (d) Maschinenrisiko: Empfänger sind rollenbasiert (Planung/Admin), Schlüssel
+  je Incident + User, Markierung nach dem Einreihen ⇒ Absturz = Nachholen ohne
+  Duplikat; kein falscher Empfänger ⇒ unverändert. (e) Neues Gerät: Schlüssel
+  je Session + Admin ⇒ unverändert.
+- Tests: `apps/api/test/communication-push-final.integration.test.ts`
+  (P1–P10, RA1–RA9 inkl. RA3b 1h-Regel, RA5b Altbestand, RA6b paralleler
+  Claim/Neuzuweisung).
+- **Push-Abo folgt der Session desselben Geräts (Review-Befund B1).** Problem:
+  Session-Cookie mit festem `maxAge` 30 Tage, Server-Session gleitend ⇒ ein
+  dauerhaft aktiver Mitarbeiter meldet sich nach 30 Tagen neu an (S2), S1 bleibt
+  serverseitig gültig, das Abo hing an S1: lief S1 später per Inaktivität ab,
+  wurde es still `session_expired` (Statusroute meldete vorher `active:true`),
+  und ein Logout von S2 deaktivierte es nicht. Jetzt:
+  (1) `createSession` (alle Loginpfade: Passwort, TOTP, Recovery,
+  Ersteinrichtung) speichert `staff_sessions.device_token_hash` = SHA-256 des
+  Geräte-Cookies der Anmeldung (nur Hash; Sessionlisten/`me` geben nur explizite
+  Spalten aus). (2) Neuer Auth-Hook `SessionLifecycleListener.sessionCreated`
+  (nach dem Commit, nur IDs) – Abhängigkeitsrichtung wie beim
+  `newDeviceLogin`-Hook: die Auth kennt Push nicht, das Push-Modul
+  (`session-listener.ts` → `PushSubscriptionService.rebindSameDeviceSessions`)
+  bindet in EINEM UPDATE die nicht deaktivierten Abos DESSELBEN Users, deren
+  Session eine andere, noch gültige (nicht widerrufen, nicht per Inaktivität
+  abgelaufen) Session dieses Users mit DEMSELBEN Geräte-Hash ist, an die neue
+  Session. Nie umgebunden: Abos anderer User auf demselben Gerät (keine
+  Übertragung zwischen Personen), deaktivierte Abos, Bindungen an
+  widerrufene/abgelaufene Sessions (technisch beendet – Logout bleibt Logout),
+  Sessions ohne Hash (vor dem Rollout). Fehler ⇒ Log nur IDs + Fehlername; der
+  Login scheitert nie (zusätzlich fängt `emitSessionEvent` ab). Ergebnis:
+  Ablauf von S1 beendet Push nicht mehr, Logout von S2 deaktiviert es.
+  (3) Statusroute `POST /staff/push/subscriptions/status`
+  (`statusForSession`, Zeilensperre): `active:true` nur, wenn das Abo mit
+  diesem Endpoint DIESEM User gehört und nicht deaktiviert ist; an eine andere
+  gültige Session (oder an keine – Altbestand) gebunden ⇒ an die aktuelle
+  Session umbinden (Besitz des Endpoints + gültige Session desselben Users =
+  dasselbe Browserprofil, kein neues Opt-in; deckt Sessions ohne Hash ab). An
+  eine widerrufene/abgelaufene Session gebunden ⇒ technisch deaktiviert (wie der
+  Lazy-Backstop des Versands, derselbe Helfer `sessionDisableReason`) und
+  `false`. Fremder User/unbekannter Endpoint ⇒ `false`, nichts geändert.
+  Deaktivierte Abos werden NIE automatisch reaktiviert (UI zeigt „aktivieren“;
+  die erneute Registrierung ist die Reaktivierung). Kein Opt-out, keine
+  UI-Änderung (Antwortform `{active}` unverändert).
+- **Versandzeit-Prüfung terminbezogener Pushes (B2).** Der Claim garantiert
+  nur den Stand beim Anlegen der Zustellung; zwischen Commit und `push.send`
+  (Queue-Latenz, Retry-Backoff +30 s …) konnten Neuzuweisung, Verschiebung oder
+  Storno liegen ⇒ Push an Nicht-mehr-Zuständige. Jetzt tragen Zustellungen von
+  `appointment_1h` und `assignment_reassigned` `push_deliveries.appointment_id`;
+  `push.send` berechnet vor JEDEM Gateway-Aufruf (auch in Retries, auch vor
+  jedem weiteren Gerät desselben Empfängers) den Schlüssel, den der aktuelle
+  Stand erzeugen würde (`communication/push/supersede.ts`, dieselben Bausteine
+  `pushKeys`/`appointmentPushFingerprint`/`effectiveAssigneeForAppointment` +
+  `loadSubstitutions`), und vergleicht ihn mit `idempotency_key` und
+  `user_id`: 1h ⇒ Termin `scheduled`, Vorgang nicht storniert, `start_at`
+  gesetzt, effektiver Zuständiger = Empfänger, Fingerprint gleich;
+  Neuzuweisung ⇒ Termin `scheduled`, Vorgang nicht storniert,
+  `acknowledgement_requested_at/_for` gesetzt, `assigned_user_id` =
+  `requested_for` = Empfänger, Schlüssel mit demselben (ms-genauen) requestedAt.
+  Passt es nicht ⇒ Zustellung `skipped`, `last_error_code = 'SUPERSEDED'`, KEIN
+  (weiterer) Gateway-Aufruf, Job endet erfolgreich (kein Retry). Die aktuell
+  zuständige Person erhält ihren eigenen Push über die Regel (neuer
+  Fingerprint bzw. neuer requestedAt). Zustellungen ohne `appointment_id`
+  (Altbestand, andere Kinds) unverändert. **Restfenster:** Gateways laufen nie
+  in einer offenen Transaktion, also ohne Sperre über den Versand – eine
+  Änderung, die nach der letzten Prüfung und während eines laufenden
+  Gateway-Aufrufs committed wird, kann genau diesen einen Aufruf nicht mehr
+  verhindern (RA10e).
+  **Rücknahme (Review Runde 2):** Wurde noch kein Gerät erreicht, gibt die
+  überholte Zustellung in derselben Transaktion ihren fachlichen Schlüssel frei
+  (`idempotency_key || ':superseded:' || id`) und löst die 1-h-Marke
+  (`appointment_reminders.push_delivery_id`/`sent_at` = NULL). Kehrt der
+  Termin zum selben Stand zurück (Rückzuweisung Anna → Bernd → Anna,
+  Rückverschiebung auf die ursprüngliche Zeit ⇒ gleicher Fingerprint), legt der
+  nächste Scan eine NEUE Zustellung mit eigenem `push.send`-Job an – ohne das
+  ginge der 1-h-Push dauerhaft verloren (RA14, RA15). Wurde bereits ein Gerät
+  erreicht, bleibt der Schlüssel belegt (kein zweiter Push für denselben
+  Stand).
+- **24-h-Grenze der Kurzfrist-Regel (g) (B3).** Kandidaten nur mit
+  `acknowledgement_requested_at > now − 24 h` (`LOOKBACK_MS`, wie die übrigen
+  Regeln). Ältere Neuzuweisungen (Bestandsdaten, Scan-Ausfall) werden weder
+  gepusht noch geclaimt – sie fallen nur aus der Kandidatenmenge. Offen (keine
+  Fachregel): „am Durchführungstag zugewiesen, dann auf nächste Woche
+  verschoben“ löst innerhalb der 24 h weiterhin den Kurzfrist-Push aus.
+- Tests (Fortsetzung): P11–P17 (Session-Bindung, Statusroute), RA10–RA12
+  (SUPERSEDED inkl. Retry und Restfenster), RA13 (24 h), RA14/RA15 (Rücknahme
+  nach SUPERSEDED); RA6b verschärft (Bernd
+  erhält deterministisch keinen Push), RA7 sendet je Zuweisung, solange sie
+  aktuell ist.
+
+## Phase 12 Finalisierung: Retention
+
+- **Terminal = abgeschlossen ODER storniert** (`communication/retention/
+  terminal.ts`, eine Definition). Terminalzeitpunkt: `processes.completed_at`
+  bzw. `processes.cancelled_at`. Geprüfte Storno-Domain: Beide Wege – Legacy-
+  Storno ohne Buchung (`ProcessService.cancel`, Route `POST /staff/processes/
+  :id/cancel`) und Phase-9-Storno mit Buchung (`CancellationService.cancel`,
+  Routen `…/cancellation` und Legacy-Route mit Buchung) – setzen den Status an
+  EINER Stelle (`ProcessService.markCancelledWithin`), die `cancelled_at`
+  schreibt; beim Phase-9-Storno ist er identisch mit `cancellations.
+  cancelled_at` (derselbe Zeitstempel in derselben Transaktion). Kein Worker-
+  Pfad storniert. `updated_at` wird nie verwendet.
+- **Eintritt in terminal:** `ProcessCompletionListener` hat zusätzlich
+  `processCancelled` (optional); `ProcessService.cancel` und
+  `CancellationService.cancel` melden NACH ihrem Commit
+  (`ProcessService.notifyCancelled`). Der Retention-Listener reiht wie beim
+  Abschluss `communication.cleanup_retention:<processId>:photos:<terminalAt>`
+  ein (Payload mit `terminalAt`). Verdrahtet in app.ts (`createCancellation
+  Service({ processListeners })`) – die Storno-Routen und die Legacy-Route
+  teilen diese Instanz. Der Job setzt `retention_anchor_at` = Terminalzeitpunkt
+  für alle `conversation_messages` und prozessgebundenen `mail_deliveries`
+  ohne Anker und löscht die Chatfotos (Härtung B15: `deleted_at` erst nach
+  erfolgreichem Storage-Löschen, `StorageObjectNotFoundError` = Erfolg).
+  **Snapshot-Semantik IMMER** (Review-Fund Reopen-Rennen; früher Modus
+  `current` = Status lesen, dann ohne erneute Prüfung schreiben): T =
+  `terminalAt` der Payload (Altpayload ohne Zeitpunkt: aktueller Terminal-
+  zeitpunkt, sonst no-op); Anker und Fotos nur für Zeilen mit
+  `COALESCE(assigned_at, created_at) ≤ T` (Zustellungen `created_at ≤ T`) –
+  unabhängig davon, ob der Vorgang inzwischen wieder geöffnet oder erneut
+  terminal ist. Eine Nachricht, die Millisekunden nach einem Reopen entsteht,
+  behält Anker NULL und ihr Foto (R23). Spätere Zuordnungen zu einem
+  terminalen Vorgang erledigen `deletePhotosIfProcessTerminal` + Backstop.
+  **Retry bei Fotofehlern:** Ist nach getaner Arbeit `failed > 0`, wirft der
+  Job den neutralen `RetentionPhotoDeletePendingError` ⇒ Queue-Retry
+  (maxAttempts 5); dank Snapshot wirkt der Retry auch nach einem schnellen
+  Reopen, wo der Backstop nicht mehr greift (R25). Anker bleiben idempotent.
+  Bewusst NICHT in der
+  Terminal-Transaktion: kein zusätzliches Sperren von Outbox-/Konversations-
+  zeilen unter der Vorgangssperre (Deadlock-Risiko mit Resend/Zuordnung).
+- **Backstops:** `communication.scan_due` (2 min) ruft `runFrequentBackstop`:
+  Anker für alle terminalen Vorgänge (`UPDATE … FROM processes`, Wert = AKTUELLER
+  Terminalzeitpunkt) + Chatfotos abgeschlossener UND stornierter Vorgänge.
+  Täglich (`communication.cleanup_retention:<JJJJ-MM-TT>`) zusätzlich alle
+  Fristen. Alles idempotent über `retention_anchor_at IS NULL`,
+  `pii_scrubbed_at IS NULL`, `deleted_at IS NULL`. Konsistenz (Review-Fund
+  Reopen-Rennen): der Anker-Backstop ist je Tabelle EIN `UPDATE … FROM
+  processes` (Status und Zielzeilen aus demselben Statement-Snapshot –
+  bestätigt); die Fotoauswahl je Vorgang (`deleteChatPhotosForProcess(…,
+  { onlyWhileTerminal })`) und `deletePhotosIfProcessTerminal` prüfen den
+  Terminalzustand per `EXISTS` in DERSELBEN Anweisung – nach einem Reopen
+  committete Nachrichten sind nie enthalten (R24). Der Tagesjob wird in
+  `scan_due` in einem eigenen try/catch eingereiht (ein Fehler des 2-min-
+  Backstops verhindert ihn nicht; Log nur Code, R29). Teilindizes (Migration
+  0025): `conversation_messages_anchor_pending_idx` und
+  `mail_deliveries_anchor_pending_idx` (`process_id` WHERE `retention_anchor_at
+  IS NULL AND process_id IS NOT NULL`), `message_photos_pending_idx`
+  (`message_id` WHERE `deleted_at IS NULL`) halten den 2-min-Backstop klein.
+- **Reopen** setzt nichts zurück und stellt nichts wieder her; neue Nachrichten
+  bleiben ohne Anker bis zum nächsten Terminalzustand (dann dessen Zeitpunkt).
+  Alte Daten laufen weiter nach ihrem alten Anker ab – auch wenn der Vorgang
+  inzwischen wieder geöffnet ist.
+- **Spätere Zuordnung zu einem terminalen Vorgang** (In-Reply-To/References im
+  IMAP-Eingang, WhatsApp-Reply-Kontext, manuelle Zuordnung aus der Unmatched-
+  Inbox): Chatfotos werden sofort nach dem Commit gelöscht (`Conversation
+  Service.deletePhotosIfProcessTerminal` bzw. in `assignUnmatched`; WhatsApp-
+  Medien werden für terminale Vorgänge gar nicht erst geladen); den Anker
+  setzt der nächste 2-min-Backstop auf den AKTUELLEN Terminalzeitpunkt (für
+  den Vorgang ist das der maßgebliche Abschluss/Storno; dokumentierte Folge:
+  eine Nachricht, die einem vor 11 Monaten abgeschlossenen Vorgang zugeordnet
+  wird, verliert ihren Text nach einem Monat).
+- **Chattext (12 Berliner Kalendermonate):** fällig, wenn
+  `addBerlinCalendarMonths(anchor, 12) ≤ now` (zentrale Domänenfunktion; die
+  SQL-Vorauswahl ist eine Obermenge, exakt entschieden wird je Zeile – z. B.
+  29.02. ⇒ 28.02.). Minimierung (`ConversationService.scrubMessages`, Modus
+  `matched`): `body` '' (Spalte NOT NULL), `subject` NULL, `sender_snapshot` ⇒
+  `{"role":"customer"}` (inbound) bzw. `{"role":"staff"}` (outbound, auch
+  Systemereignisse), `provider_message_id` und `reply_to_provider_message_id`
+  NULL, `body_deleted_at` (bleibt, falls schon gesetzt), `pii_scrubbed_at`.
+  Verknüpfte Eingangsbelege verlieren `from_address`/`subject`. **WhatsApp-
+  wamid wird ebenfalls entfernt:** sie ist NICHT opak – die base64-Nutzlast
+  enthält die wa_id (Telefonnummer) der Gegenstelle; nach 12 Monaten gibt es
+  keinen Bedarf mehr (Status-Webhooks und Reply-Kontexte kommen innerhalb von
+  Tagen; danach landet ein Reply über den normalen Telefon-Abgleich).
+- **Unzugeordnet/ignoriert/Quarantäne (90 Kalendertage):** Bezugszeitpunkt
+  ausschließlich `created_at` (serverseitiger Eingang/Speicherung) – für
+  `conversation_messages` und `inbound_mail_receipts`. `received_at` (Date-
+  Header bzw. WhatsApp-Zeitstempel; `InboundMailProcessor` setzt receivedAt =
+  Date-Header) ist absendergesteuert: ein zurückdatierter Header (z. B. 2001)
+  darf die Frist nicht verkürzen (Review-Fund; früher `LEAST(received_at,
+  created_at)` ⇒ sofortige Bereinigung, R22), ein Zukunfts-Header sie nicht
+  verlängern (R12). Auswahl und Wirkung (Review-Fund): `scrubMessages` im
+  Modus `unmatched` prüft `process_id IS NULL` IN der UPDATE-Bedingung, die
+  Fotolöschung nur Nachrichten, die in derselben Anweisung noch unzugeordnet
+  sind (`onlyUnassigned`), Belege nur zu tatsächlich minimierten Nachrichten
+  bzw. mit Status unmatched/ignored/rejected in der UPDATE-Bedingung – eine
+  Zuordnung zwischen Auswahl und Scrub lässt Nachricht/Foto/Beleg unberührt
+  (R27). Fällig ⇒ Chatfotos löschen (eigene Abfrage
+  ohne `pii_scrubbed_at`-Filter, damit ein Storage-Fehler am nächsten Tag
+  erneut versucht wird), Nachricht `body` '', `subject` NULL,
+  `sender_snapshot` `{}`, Message-IDs NULL, `pii_scrubbed_at`; Belege
+  unmatched/ignored/rejected: `from_address`/`subject` NULL, `pii_scrubbed_at`.
+  Danach filtert `listUnmatched` die Zeile aus, Zuordnen/Ignorieren antworten
+  404. Technische Minimaldaten bleiben (mailbox, uid_validity, uid, status,
+  received_at, fingerprint, message_id_hash, match_reason).
+- **IMAP-Dedupe nach dem Scrub** (R13) bleibt vollständig: UID-Tripel,
+  `message_id_hash` und Fingerprint werden nie verändert.
+- **Message-ID nur als Hash:** `inbound_mail_receipts.message_id_hash` =
+  SHA-256 (hex) über die UTF-8-Bytes der normalisierten Message-ID
+  (`normalizeMessageId`, unverändert) – identisch mit dem Backfill der
+  Migration 0024. Die Konversationszeile behält die Message-ID bis zur
+  Retention (In-Reply-To der Staff-Antwort).
+- **WhatsApp-Technik:** `whatsapp_contacts` ohne `customer_id`, deren letzte
+  Nachricht (`COALESCE(last_inbound_at, updated_at)`) ≥ 90 Tage zurückliegt,
+  werden GELÖSCHT (wa_id = Telefonnummer; keine FK zeigt auf die Tabelle; das
+  24-h-Fenster ist längst zu; eine neue Nachricht legt die Zeile neu an);
+  Kontakte MIT Kunde bleiben (Kundenstammdaten-Lebenszyklus). `whatsapp_
+  events` enthalten nur IDs/Typ/Status/Codes, aber die wamid ist telefon-
+  abgeleitet ⇒ nach 90 Tagen `provider_message_id` = `sha256:<hex>` (UNIQUE
+  bleibt gültig; Metas Webhook-Wiederholungen enden nach Tagen). Eine
+  verspätete Wiederholung desselben Ereignisses, die nach dem Hashen noch
+  einmal im Klartext ankommt, wird beim nächsten Lauf entfernt (kein UNIQUE-
+  Konflikt). Zusätzlich prüft der Webhook vor dem Anlegen der Eventzeile die
+  gehashte Form (`retainedWhatsAppEventId`): eine späte Wiederholung einer
+  bereits gehashten Nachricht bzw. eines Status ist ein Duplikat und erzeugt
+  weder eine neue Konversationszeile noch einen Kontakt (R15b). `outbound:<uuid>`
+  (eigene IDs) bleibt. **Media-Job-Schlüssel** (Review-Fund: integration_jobs
+  ist dauerhaft): `whatsapp.media_fetch:<conversationMessageId>` statt der
+  wamid (1:1 zur wamid, auch im Duplikatpfad `mediaFor` ⇒ Dedupe bleibt;
+  Payload unverändert `{messageId, mediaId}`). Altschlüssel `whatsapp.
+  media_fetch:<wamid>` (nicht UUID, nicht schon `sha256:`), deren Job älter als
+  90 Tage ist, schreibt `purgeWhatsAppTechnical` auf `whatsapp.media_fetch:
+  sha256:<hex>` um (bei UNIQUE-Kollision zusätzlich `:<job-id>`; R21). grep
+  aller übrigen Job-Schlüssel/Payloads in integration_jobs: nur IDs, Zeit-
+  Buckets, Fingerprint-Hashes (Lexware) – keine Telefonnummer, E-Mail, wamid
+  oder Message-ID. WhatsApp-Medien werden nicht geladen, wenn die Nachricht
+  einen Retention-Anker hat (Terminalphase, z. B. Abschluss + Reopen vor dem
+  Job) oder bereinigt ist; vor dem Registrieren wird das unter Zeilensperre
+  erneut geprüft, sonst die gespeicherte Datei wieder entfernt (R28).
+  **Review Runde 2:** Der Storage-Schlüssel eines WhatsApp-Bildes ist je
+  Konversationszeile deterministisch (`communication/messages/<id>/
+  whatsapp-media.<ext>`, eine WhatsApp-Nachricht trägt genau ein Bild).
+  Scheitert das Entfernen einer gespeicherten, aber nicht registrierten Datei,
+  wirft der Job (Queue-Retry); jeder spätere Lauf einer blockierten Nachricht
+  entfernt die Datei über diesen Schlüssel („nicht vorhanden“ = Erfolg) – keine
+  verwaiste Datei ohne DB-Zeile mehr (R30). `scrubMessages` minimiert
+  Nachricht und verknüpften Beleg in EINER Transaktion; ein Abbruch dazwischen
+  rollt beides zurück, der nächste Lauf erfasst beide (R31).
+- **mail_deliveries:** prozessgebunden fällig 12 Berliner Kalendermonate nach
+  `retention_anchor_at`, nicht prozessgebunden 90 Berliner Kalendertage nach
+  dem Endzustand (`sent` ⇒ `sent_at`; `failed`/`blocked`/`outcome_unknown` ⇒
+  `updated_at` – jeder Statuswechsel des Send-Jobs schreibt `updated_at`, es
+  ist der persistierte Zeitpunkt des letzten Statuswechsels; die Bereinigung
+  selbst ändert `updated_at` nicht, ebenso wenig das reine Neuverschlüsseln
+  durch `communication:rewrap-secrets` – Review-Fund, R26; die Blockierung
+  bei nicht entschlüsselbarem Payload ist ein Statuswechsel und setzt es).
+  `pending`/`retry`/`sending` werden nie
+  bereinigt (auch im UPDATE erneut geprüft). Scrub: `recipient_email`,
+  `recipient_name`, `subject`, `in_reply_to_message_id`,
+  `secret_payload_ciphertext` NULL, `context` `{}`, `attachments` `[]`,
+  `pii_scrubbed_at`; verknüpfte Systemereignisse der Konversation (Betreff im
+  Text) werden mit `matched` minimiert. Danach: `isResendable` ⇒ false,
+  Resend-Route 409, Listen/Kommunikationsstatus zeigen `recipientEmail: ''`
+  und den Betreff-Platzhalter `MAIL_DELIVERY_SCRUBBED_SUBJECT` + `piiScrubbed:
+  true` (Staff-UI zeigt „an –“, keine UI-Änderung nötig); der Send-Job
+  blockiert eine Zeile ohne Empfänger (`NO_RECIPIENT`), nie Versand.
+  Audit-Rest: id, kind, process/customer/booking, status,
+  idempotency_key, message_id, attempts, Zeiten, provider_code,
+  last_error_code, blocked_reason, template_kind/-version.
+- **Nie berührt:** `documents`, `handover_photos`, `handover_signatures`,
+  `return_photos`, `damage_photos`, `technical_defects`, `return_signatures`
+  und deren Storage-Dateien (R19 vergleicht Zeilen und Datei-Hashes vor/nach
+  allen Retention-Stufen).
+- **Bestandstests angepasst (altes Verhalten):** 95 und E2E-Helfer
+  `backdateProcessCompletion` verschieben neben `completed_at` auch den Anker
+  (Fristbeginn ist jetzt der beim Eintritt in terminal gesetzte Anker, nicht
+  das jeweils aktuelle `completed_at`); 92 erwartet den minimierten Absender
+  (`{ role: 'customer' }`) statt der E-Mail; Inbound-Tests prüfen
+  `messageIdHash` statt der entfernten Klartextspalte. Nach dem Review:
+  R20 erwartet Modus `snapshot` (+ `terminalAt`) statt `current`; R11–R13/R20
+  datieren nur noch `created_at` zurück (`received_at` = Date-Header bleibt,
+  R11 prüft das); R15 erwartet zusätzlich `mediaJobKeysHashed`;
+  `communication-whatsapp` 105 erwartet den Media-Job-Schlüssel mit der
+  Konversationszeilen-ID statt der wamid.
+- **Restrisiken (dokumentiert, nicht gebaut):** (1) Einreihen des Terminal-
+  Jobs scheitert UND der Vorgang wird innerhalb von 2 min (vor dem nächsten
+  Backstop) wieder geöffnet ⇒ die Chatfotos der Terminalphase bleiben bis zum
+  nächsten Terminalzustand abrufbar (R24 zeigt das Verhalten). (2) Läuft der
+  Job zu T1 erst NACH dem Backstop eines späteren Terminalzustands T2, haben
+  die Zeilen der ersten Phase bereits den Anker T2 (statt T1) – die Frist
+  verlängert sich um höchstens den Worker-Verzug. (3) Zwischen Fotoauswahl
+  und Storage-Löschung bleibt ein Fenster ohne Sperre (Storage nie unter
+  offener Transaktion): eine Zuordnung genau in diesem Fenster kann das Foto
+  einer > 90 Tage alten unzugeordneten Nachricht noch löschen; nach einem
+  Reopen in diesem Fenster betrifft die Löschung nur Fotos der Terminalphase.
+  (4) Der Snapshot vergleicht `created_at` (DB-Uhr) mit dem Terminalzeitpunkt
+  (App-Uhr): bei Uhrenversatz kann eine Zeile knapp vor T außerhalb des
+  Snapshots liegen – sie erledigt dann der Backstop (solange terminal).
+- Tests: `apps/api/test/communication-retention-final.integration.test.ts`
+  (R1–R20, R15b; Review-Befunde R21–R29).
+
+## Phase 12 Finalisierung: Bestätigte Produktentscheidungen
+
+Vom Auftraggeber bestätigt (2026-10-19) – keine offenen Fachfragen mehr:
+
+- **Dokument-Link zum Rückgabeprotokoll: 90 Tage gültig** (wie umgesetzt,
+  `communication/document-links`).
+- **Reminder-Toleranz 6 h** (`REMINDER_TOLERANCE_MS`): liegt `due_at` mehr als
+  6 h zurück, wird nicht nachgeholt. Entsteht eine Buchung erst nach dem
+  7-Tage-Zeitpunkt (`bookings.created_at > due_at`), gibt es keine verspätete
+  7-Tage-Mail (Marker ohne Zustellung); die 1-Tages-Erinnerung bleibt davon
+  unberührt.
+- **WhatsApp-Auto-Zuordnung** nur zu Vorgängen im Status `open`/`reopened`
+  (`WHATSAPP_ACTIVE_PROCESS_STATUSES`); Ausnahme ist ein eindeutiger
+  Antwortkontext (Reply auf eine bekannte, einem Vorgang zugeordnete
+  WhatsApp-Nachricht ⇒ deren Vorgang, `reason = reply_context`).
+- **Push:** Die bewusste Entscheidung ist die Browserberechtigung; danach gibt
+  es in Miet-Royal kein internes Opt-out (siehe „kein Push-Opt-out“ oben).
+- **Vertretungsende:** Endet eine Vertretung, fällt die Zuständigkeit an die
+  ursprüngliche Person zurück; das darf eine neue Erinnerung (1-h-Push, neuer
+  Fingerprint) an die ursprüngliche Person auslösen.

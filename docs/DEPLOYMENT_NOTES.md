@@ -185,3 +185,58 @@ Claude Code deployt niemals eigenmächtig auf Produktion.
   API selbst maskiert ihre Request-Logs (`maskLoggedPath`); Proxy-Logs
   liegen außerhalb und brauchen eine eigene Regel (z. B. nginx `map` auf
   `$request_uri` ⇒ `…/***`) oder Access-Log für diese Pfade abschalten.
+
+## WhatsApp Graph-API-Version (Phase 12 Finalisierung)
+
+- Default `v26.0` (verifiziert 2026-10-19 auf developers.facebook.com). Bei
+  jedem neuen Meta-Release Versionstabelle prüfen und ggf.
+  `WHATSAPP_GRAPH_API_VERSION` setzen bzw. den Default anheben; Werte älter als
+  v21.0 werden beim Start abgelehnt.
+- Vor Go-live: echten WhatsApp-Bildempfang gegen einen Meta-Testaccount prüfen
+  und den tatsächlichen Media-Downloadhost verifizieren (Allowlist
+  `WHATSAPP_MEDIA_DOWNLOAD_HOSTS` in `apps/api/src/communication/whatsapp/gateways.ts`).
+
+
+## Staff-Geräteidentität `mr_staff_device` (Phase 12 Finalisierung)
+
+- Neues HttpOnly-Cookie `mr_staff_device` (32 Zufallsbytes base64url,
+  SameSite=Strict, Path=/, Max-Age 400 Tage, Secure außer
+  `APP_ENV=development` – gleiche Regel wie `mr_staff_session`). Es wird vom
+  API-Server beim Login nach bestandener Passwortprüfung gesetzt und erkennt
+  „neues Gerät“ (Admin-Security-Push); in der DB liegt nur der SHA-256
+  (`staff_known_devices`, Migration 0023). Kein Auth-Token, keine neue
+  Konfiguration/kein Secret nötig.
+- Reverse Proxy/Staff-Proxy müssen – wie für `mr_staff_session` – mehrere
+  `Set-Cookie`-Header unverändert durchreichen (Next-Rewrite `/api/*` tut das).
+  Cookie-Header nie im Access-Log protokollieren (gilt bereits für die Session).
+- **Rollout-Effekt (bewusst, konservativ):** Kein Browser besitzt das Cookie vor
+  dem Rollout. Daher gilt nach dem Deploy JEDES Gerät jedes Mitarbeiters beim
+  ersten Login einmal als „neu“ ⇒ je (Mitarbeiter, Gerät) einmalig ein
+  `session.new_device_login` und ein Admin-Push „Neue Anmeldung von einem
+  neuen Gerät“. Admins vorab informieren; danach nur noch echte neue Geräte
+  bzw. Browser mit gelöschten Website-Daten. Bestehende Sessions bleiben
+  gültig (kein erzwungener Re-Login).
+- Login-Challenges (TOTP/Ersteinrichtung), die in den ≤ 5 Minuten vor dem
+  Deploy begonnen wurden, haben keinen Geräte-Hash und werden neutral
+  abgelehnt – die Person meldet sich einfach erneut an.
+- Löscht ein Browser seine Website-Daten (oder Privat-Modus), ist das Gerät
+  beim nächsten Login wieder „neu“ (erwartetes Verhalten).
+
+## Migrationen der Phase-12-Finalisierung (0023–0025)
+
+- **0023** `staff_known_devices`, Geräte-Hash an der Login-Challenge,
+  Retention-Anker/PII-Scrub-Spalten, `mail_deliveries.recipient_email`/
+  `subject` nullable, `inbound_mail_receipts.message_id_hash`.
+- **0024** füllt `message_id_hash` aus der bisherigen Klartext-Message-ID
+  (SHA-256, UTF-8) und entfernt die Klartextspalte – nicht umkehrbar
+  (Backup vor dem Deploy wie üblich).
+- **0025** `staff_sessions.device_token_hash` (nur Hash; Push-Abos desselben
+  Mitarbeiters auf demselben Gerät folgen beim erneuten Login der neuen
+  Session), `push_deliveries.appointment_id` (Versandzeit-Prüfung
+  terminbezogener Pushes) und Teilindizes für den Retention-Backstop.
+  Sessions vor dem Deploy haben keinen Hash ⇒ kein Umbinden, bis die Person
+  sich einmal neu anmeldet.
+- Nach dem Deploy erhalten Vorgänge, die bereits abgeschlossen/storniert sind,
+  ihren Retention-Anker beim ersten 2-min-Backstop (Anker = vorhandener
+  Abschluss-/Stornozeitpunkt); ältere Daten können dadurch beim ersten
+  Tageslauf sofort fällig sein.

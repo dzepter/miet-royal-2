@@ -3,8 +3,10 @@ import {
   appointmentOverdueIncidents,
   appointmentReminders,
   appointments,
+  integrationJobs,
   machineRiskIncidents,
   processes,
+  pushDeliveries,
   staffSecurityEvents,
   staffSubstitutions,
   staffUsers,
@@ -13,6 +15,7 @@ import {
 import type { JobRunnerLogger } from '@mietroyal/integrations';
 import { substitutionEffectiveEnd } from '@mietroyal/domain';
 import { and, eq, gt, isNotNull, isNull, lte, ne, sql } from 'drizzle-orm';
+import { PUSH_SEND_JOB_TYPE } from '../types.ts';
 import { getAppointmentReminderMinutes } from '../../crm/settings-service.ts';
 import { effectiveAssigneeForAppointment, loadSubstitutions } from '../../scheduling/assignee.ts';
 import { SchedulingService } from '../../scheduling/scheduling-service.ts';
@@ -36,7 +39,11 @@ import {
  *     Vertretung; Fingerprint = sha256(appointmentId|startAt|assignee):
  *     Reschedule/Neuzuweisung ⇒ neuer Fingerprint ⇒ neuer Empfänger bekommt
  *     den Hinweis, alte Zeile bleibt (no-op). Ungeplante Termine nie.
- *     Härtung B14: erst Push-Zustellung, dann Reminder-Marke (absturzsicher).
+ *     Härtung B14: Zustellung und Reminder-Marke entstehen gemeinsam.
+ *     Phase 12 Finalisierung: unter Terminsperre wird die Zuständigkeit erneut
+ *     geprüft (kein 1h-Push an eine Person, der der Termin zwischen Lesen und
+ *     Markieren entzogen wurde); Zustellung + Marke in EINER Transaktion,
+ *     Job erst nach dem Commit (fehlt er, holt ihn der Outbox-Backstop nach).
  * (b) Vertretungsbeginn: kleiner Hinweis an die Vertretung (Key je Vertretung).
  * (c) Überfällige Rückgabe: genau EIN Push je Incident an Planung/Admin.
  * (d) Maschinenrisiko: ein Push bei Entstehung, genau EINE Erinnerung ≥ 6 h
@@ -44,23 +51,66 @@ import {
  * (e) Neues Gerät: Backstop zum Sofort-Hook der Anmeldung (gleicher Schlüssel).
  * (g) Kurzfristige Neuzuweisung am Durchführungstag (Phase-4-Kriterium
  *     „acknowledgementRequestedAt gesetzt UND assignmentNotifiedAt NULL“):
- *     genau ein Push an die neu zuständige Person je Neuzuweisung; danach
- *     assignmentNotifiedAt (nur, wenn die Zuweisung inzwischen nicht erneut
- *     geändert wurde). Erst Zustellung einreihen, dann markieren.
+ *     genau ein Push an die neu zuständige Person je Neuzuweisung.
+ *     Phase 12 Finalisierung (Punkt 5): je Kandidat EINE Transaktion –
+ *     atomarer Claim (CAS auf Termin + requestedAt + requestedFor +
+ *     notifiedAt IS NULL + status scheduled), nur bei Erfolg in derselben
+ *     Transaktion die Zustellung; Job nach dem Commit. Eine zwischenzeitlich
+ *     geänderte Zuweisung lässt den Claim scheitern ⇒ kein Push an die alte
+ *     Person; ein Fehler vor dem Commit rollt den Claim zurück ⇒ der nächste
+ *     Scan holt nach. B3: nur Neuzuweisungen der letzten 24 h (LOOKBACK_MS).
+ * Versandzeit (B2, send-job.ts + supersede.ts): Zustellungen von (a) und (g)
+ *     tragen `appointmentId`; `push.send` vergleicht vor jedem Gateway-Aufruf
+ *     den gespeicherten Schlüssel mit dem, den der aktuelle Stand erzeugen
+ *     würde – passt er nicht mehr ⇒ `skipped`/`SUPERSEDED`, kein Versand.
  * (f) Reinigung > 24 h: bewusst KEIN Push. Touren existieren nicht
  *     (tour.delay_risk bleibt Grenze, kein PushKind).
+ * Outbox-Backstop: ausstehende Zustellungen ohne `push.send`-Job erhalten
+ * ihren Job (stabiler Schlüssel ⇒ nie zwei Jobs je Zustellung).
  */
 
 export const RISK_FOLLOW_UP_DELAY_MS = 6 * 3_600_000;
-/** Rückschau für Vertretungsbeginn/neues Gerät – Dedupe über Schlüssel, daher großzügig. */
+/**
+ * Rückschau für Vertretungsbeginn/neues Gerät/Outbox-Backstop – Dedupe über
+ * Schlüssel, daher großzügig; Phase 12 Finalisierung (B3) auch Zeitgrenze der
+ * Kurzfrist-Regel (g).
+ */
 const LOOKBACK_MS = 24 * 3_600_000;
+
+/** Kandidat einer Regel mit Claim (Testhook `onCandidateRead`). */
+export interface PushRuleCandidate {
+  rule: 'appointment_1h' | 'assignment_reassigned';
+  appointmentId: string;
+}
 
 export interface PushRuleScannerDeps {
   db: Database;
   push: PushService;
   auth: PermissionResolver;
   logger?: JobRunnerLogger;
+  /**
+   * NUR Tests (Phase 12 Finalisierung, RA3): wird je Kandidat NACH dem Lesen
+   * und VOR Claim/Transaktion aufgerufen – macht „Zuweisung ändert sich
+   * zwischen Lesen und Claim“ deterministisch prüfbar. Produktion setzt ihn nie.
+   */
+  onCandidateRead?: (candidate: PushRuleCandidate) => Promise<void>;
 }
+
+/** Kandidat der Kurzfrist-Regel (g): genau diese Zuweisungs-Version wird geclaimt. */
+export interface ReassignmentCandidate {
+  appointmentId: string;
+  requestedAt: Date;
+  requestedFor: string;
+}
+
+/**
+ * Ergebnis des Claims (g): `null` ⇒ Claim gescheitert (Zuweisung geändert,
+ * Termin nicht mehr geplant oder bereits benachrichtigt); `deliveryId: null`
+ * ⇒ geclaimt, bewusst ohne Push (Empfänger nicht aktiv / Vorgang storniert).
+ */
+export type ReassignmentClaim =
+  | { deliveryId: string; deduplicated: boolean }
+  | { deliveryId: null; skipped: 'recipient_inactive' | 'process_cancelled' };
 
 export interface PushScanSummary {
   appointment1h: number;
@@ -70,6 +120,12 @@ export interface PushScanSummary {
   machineRisk6h: number;
   newDevice: number;
   reassignment: number;
+  /** Phase 12 Finalisierung: nachgeholte `push.send`-Jobs (Outbox-Backstop). */
+  outboxBackstop: number;
+}
+
+function errorCode(error: unknown): string {
+  return error instanceof Error ? error.name || 'Error' : 'Error';
 }
 
 export function appointmentPushFingerprint(
@@ -106,19 +162,36 @@ export class PushRuleScanner {
 
   async scanDue(now = new Date()): Promise<PushScanSummary> {
     const summary: PushScanSummary = {
-      appointment1h: await this.scanAppointmentReminders(now),
-      substitutionStarted: await this.scanSubstitutionStarts(now),
-      returnOverdue: await this.scanOverdueReturns(now),
+      appointment1h: 0,
+      substitutionStarted: 0,
+      returnOverdue: 0,
       machineRisk: 0,
       machineRisk6h: 0,
       newDevice: 0,
       reassignment: 0,
+      outboxBackstop: 0,
     };
-    const risk = await this.scanMachineRisks(now);
-    summary.machineRisk = risk.initial;
-    summary.machineRisk6h = risk.followUp;
-    summary.newDevice = await this.scanNewDeviceLogins(now);
-    summary.reassignment = await this.scanSameDayReassignments(now);
+    try {
+      summary.appointment1h = await this.scanAppointmentReminders(now);
+      summary.substitutionStarted = await this.scanSubstitutionStarts(now);
+      summary.returnOverdue = await this.scanOverdueReturns(now);
+      const risk = await this.scanMachineRisks(now);
+      summary.machineRisk = risk.initial;
+      summary.machineRisk6h = risk.followUp;
+      summary.newDevice = await this.scanNewDeviceLogins(now);
+      summary.reassignment = await this.scanSameDayReassignments(now);
+    } finally {
+      // Phase 12 Finalisierung: Outbox-Backstop IMMER zuletzt – auch wenn eine
+      // Regel oben scheitert – und selbst fehlertolerant.
+      try {
+        summary.outboxBackstop = await this.scheduleOutboxBackstop(now);
+      } catch (error) {
+        this.deps.logger?.error(
+          { rule: 'push_outbox_backstop', errorCode: errorCode(error) },
+          'Push-Outbox-Backstop fehlgeschlagen',
+        );
+      }
+    }
     this.deps.logger?.info({ ...summary }, 'Push-Regeln geprüft');
     return summary;
   }
@@ -149,11 +222,8 @@ export class PushRuleScanner {
       const assignee = effectiveAssigneeForAppointment(appointment, substitutions, now);
       if (assignee === null) continue; // ohne Zuständigkeit kein Empfänger
       const fingerprint = appointmentPushFingerprint(appointment.id, startAt, assignee);
-      // Härtung B14: Reihenfolge wie bei Overdue/Risiko – ZUERST die Push-
-      // Zustellung (+ Job; Schlüssel je Fingerprint ⇒ dedupliziert), DANACH die
-      // Reminder-Zeile als „erledigt“-Marke. Ein Absturz dazwischen lässt die
-      // Marke fehlen ⇒ der nächste Scan holt nach (gleicher Schlüssel ⇒ kein
-      // zweiter Push). Eine Marke ohne Zustellung (Altbestand) wird ergänzt.
+      // Härtung B14: eine Marke MIT Zustellung ⇒ erledigt; eine Marke ohne
+      // Zustellung (Altbestand vor der Härtung) wird unten ergänzt.
       const existing = await this.deps.db
         .select({
           id: appointmentReminders.id,
@@ -169,53 +239,137 @@ export class PushRuleScanner {
         );
       const marker = existing[0];
       if (marker !== undefined && marker.pushDeliveryId !== null) continue; // bereits behandelt
-      const payload = buildPushPayload({
-        kind: 'appointment_1h',
-        processId: appointment.processId,
-        processNumber,
-        appointmentKind: appointment.kind as PushAppointmentKind,
-      });
-      const result = await this.deps.push.enqueue({
-        kind: 'appointment_1h',
-        userId: assignee,
-        idempotencyKey: pushKeys.appointment1h(appointment.id, fingerprint),
-        payload,
-      });
-      const marked = await this.deps.db.transaction(async (tx) => {
-        const rows =
-          marker === undefined
-            ? await tx
-                .insert(appointmentReminders)
-                .values({
-                  appointmentId: appointment.id,
-                  kind: 'push_1_hour',
-                  fingerprint,
-                  dueAt: new Date(startAt.getTime() - minutes * 60_000),
-                  pushDeliveryId: result.deliveryId,
-                  sentAt: now,
-                })
-                .onConflictDoNothing()
-                .returning({ id: appointmentReminders.id })
-            : await tx
-                .update(appointmentReminders)
-                .set({ pushDeliveryId: result.deliveryId, sentAt: now })
-                .where(
-                  and(
-                    eq(appointmentReminders.id, marker.id),
-                    isNull(appointmentReminders.pushDeliveryId),
-                  ),
-                )
-                .returning({ id: appointmentReminders.id });
-        if (rows.length === 0) return false; // paralleler Scan war schneller
-        await tx
-          .update(appointments)
-          .set({ reminderSentAt: now })
-          .where(eq(appointments.id, appointment.id));
-        return true;
-      });
-      if (marked) enqueued += 1;
+      await this.deps.onCandidateRead?.({ rule: 'appointment_1h', appointmentId: appointment.id });
+      try {
+        const deliveryId = await this.claimAppointmentReminder(
+          {
+            appointmentId: appointment.id,
+            processId: appointment.processId,
+            processNumber,
+            kind: appointment.kind as PushAppointmentKind,
+            startAt,
+            assignee,
+            fingerprint,
+            markerId: marker?.id ?? null,
+            dueAt: new Date(startAt.getTime() - minutes * 60_000),
+          },
+          now,
+        );
+        if (deliveryId === null) continue;
+        enqueued += 1;
+        // Job erst NACH dem Commit (Gateway/Queue nie in offener Transaktion).
+        await this.deps.push.enqueueSendJob(deliveryId);
+      } catch (error) {
+        this.logCandidateFailure('appointment_1h', appointment.id, error);
+      }
     }
     return enqueued;
+  }
+
+  /**
+   * (a) unter Terminsperre (`FOR NO KEY UPDATE` wie `SchedulingService.
+   * lockAppointment` ⇒ serialisiert gegen assign/reschedule/Storno): Termin
+   * noch geplant, gleiche Zeit, Vorgang nicht storniert und – mit frisch
+   * geladenen Vertretungen – noch dieselbe effektive Zuständigkeit? Nur dann
+   * Zustellung + Reminder-Marke in DIESER Transaktion. Sonst `null`: der
+   * nächste Scan sieht den neuen Stand (neuer Fingerprint ⇒ neue Person).
+   * Rückgabe: neu markierte Zustellung (Job reiht der Aufrufer nach dem Commit ein).
+   */
+  private async claimAppointmentReminder(
+    candidate: {
+      appointmentId: string;
+      processId: string;
+      processNumber: string;
+      kind: PushAppointmentKind;
+      startAt: Date;
+      assignee: string;
+      fingerprint: string;
+      markerId: string | null;
+      dueAt: Date;
+    },
+    now: Date,
+  ): Promise<string | null> {
+    return this.deps.db.transaction(async (tx) => {
+      const locked = await tx
+        .select()
+        .from(appointments)
+        .where(eq(appointments.id, candidate.appointmentId))
+        .for('no key update');
+      const current = locked[0];
+      if (
+        current === undefined ||
+        current.status !== 'scheduled' ||
+        current.startAt?.getTime() !== candidate.startAt.getTime()
+      ) {
+        return null;
+      }
+      const processRows = await tx
+        .select({ mainStatus: processes.mainStatus })
+        .from(processes)
+        .where(eq(processes.id, current.processId));
+      if (processRows[0] === undefined || processRows[0].mainStatus === 'cancelled') return null;
+      const substitutions = await loadSubstitutions(tx);
+      if (effectiveAssigneeForAppointment(current, substitutions, now) !== candidate.assignee) {
+        return null; // Zuständigkeit inzwischen anders ⇒ kein Push an die alte Person
+      }
+      const delivery = await this.deps.push.createDelivery(
+        {
+          kind: 'appointment_1h',
+          userId: candidate.assignee,
+          idempotencyKey: pushKeys.appointment1h(candidate.appointmentId, candidate.fingerprint),
+          appointmentId: candidate.appointmentId, // B2: Versandzeit-Prüfung (SUPERSEDED)
+          payload: buildPushPayload({
+            kind: 'appointment_1h',
+            processId: candidate.processId,
+            processNumber: candidate.processNumber,
+            appointmentKind: candidate.kind,
+          }),
+        },
+        tx,
+      );
+      const marked =
+        candidate.markerId === null
+          ? await tx
+              .insert(appointmentReminders)
+              .values({
+                appointmentId: candidate.appointmentId,
+                kind: 'push_1_hour',
+                fingerprint: candidate.fingerprint,
+                dueAt: candidate.dueAt,
+                pushDeliveryId: delivery.deliveryId,
+                sentAt: now,
+              })
+              .onConflictDoNothing()
+              .returning({ id: appointmentReminders.id })
+          : await tx
+              .update(appointmentReminders)
+              .set({ pushDeliveryId: delivery.deliveryId, sentAt: now })
+              .where(
+                and(
+                  eq(appointmentReminders.id, candidate.markerId),
+                  isNull(appointmentReminders.pushDeliveryId),
+                ),
+              )
+              .returning({ id: appointmentReminders.id });
+      if (marked.length === 0) return null; // paralleler Scan war schneller (gleiche Zustellung)
+      await tx
+        .update(appointments)
+        .set({ reminderSentAt: now })
+        .where(eq(appointments.id, candidate.appointmentId));
+      return delivery.deliveryId;
+    });
+  }
+
+  /** Fehler eines Kandidaten: nur IDs + Code loggen, nächster Scan holt nach. */
+  private logCandidateFailure(
+    rule: PushRuleCandidate['rule'],
+    appointmentId: string,
+    error: unknown,
+  ) {
+    this.deps.logger?.warn(
+      { rule, appointmentId, errorCode: errorCode(error) },
+      'Push-Regel: Kandidat nicht verarbeitet – nächster Scan holt nach',
+    );
   }
 
   // (b) ─────────────────────────────────────────────────────────────────────
@@ -250,60 +404,163 @@ export class PushRuleScanner {
     const rows = await this.deps.db
       .select({
         appointmentId: appointments.id,
-        kind: appointments.kind,
         requestedAt: appointments.acknowledgementRequestedAt,
         requestedFor: appointments.acknowledgementRequestedFor,
-        processId: appointments.processId,
-        processNumber: processes.processNumber,
-        processStatus: processes.mainStatus,
-        userStatus: staffUsers.status,
       })
       .from(appointments)
-      .innerJoin(processes, eq(processes.id, appointments.processId))
-      .innerJoin(staffUsers, eq(staffUsers.id, appointments.acknowledgementRequestedFor))
       .where(
         and(
           eq(appointments.status, 'scheduled'),
           isNotNull(appointments.acknowledgementRequestedAt),
+          isNotNull(appointments.acknowledgementRequestedFor),
           isNull(appointments.assignmentNotifiedAt),
+          // Phase 12 Finalisierung (B3): nur Neuzuweisungen der letzten 24 h –
+          // ältere (Bestandsdaten, Scan-Ausfall) sind nicht mehr „kurzfristig“:
+          // weder Push noch Claim, sie fallen nur aus der Kandidatenmenge.
+          gt(appointments.acknowledgementRequestedAt, new Date(now.getTime() - LOOKBACK_MS)),
         ),
       );
     let enqueued = 0;
     for (const row of rows) {
       if (row.requestedAt === null || row.requestedFor === null) continue;
-      const deliver = row.userStatus === 'active' && row.processStatus !== 'cancelled';
-      if (deliver) {
-        const result = await this.deps.push.enqueue({
-          kind: 'assignment_reassigned',
-          userId: row.requestedFor,
-          idempotencyKey: pushKeys.reassignment(
-            row.appointmentId,
-            row.requestedAt,
-            row.requestedFor,
-          ),
-          payload: buildPushPayload({
-            kind: 'assignment_reassigned',
-            processId: row.processId,
-            processNumber: row.processNumber,
-            appointmentKind: row.kind as PushAppointmentKind,
-          }),
-        });
-        if (!result.deduplicated) enqueued += 1;
+      await this.deps.onCandidateRead?.({
+        rule: 'assignment_reassigned',
+        appointmentId: row.appointmentId,
+      });
+      try {
+        const claim = await this.claimReassignment(
+          {
+            appointmentId: row.appointmentId,
+            requestedAt: row.requestedAt,
+            requestedFor: row.requestedFor,
+          },
+          now,
+        );
+        if (claim === null || claim.deliveryId === null) continue;
+        if (!claim.deduplicated) enqueued += 1;
+        // (4) Job erst NACH dem Commit; fehlt er (Absturz), holt ihn der Backstop nach.
+        await this.deps.push.enqueueSendJob(claim.deliveryId);
+      } catch (error) {
+        // Fehler vor dem Commit ⇒ Rollback ⇒ Claim zurück ⇒ nächster Scan holt nach.
+        this.logCandidateFailure('assignment_reassigned', row.appointmentId, error);
       }
-      // Genau einmal je Neuzuweisung: nur markieren, wenn die Zuweisung seit dem
-      // Lesen nicht erneut geändert wurde (dann gilt der neue requestedAt-Wert).
-      await this.deps.db
+    }
+    return enqueued;
+  }
+
+  /**
+   * (g) Atomarer Claim GENAU dieser Zuweisungs-Version (Phase 12
+   * Finalisierung, Punkt 5) in EINER Transaktion:
+   *  1. `UPDATE appointments SET assignment_notified_at = now WHERE id AND
+   *     acknowledgement_requested_at/_for = gelesene Werte AND assigned_user_id
+   *     = requested_for AND assignment_notified_at IS NULL AND status =
+   *     'scheduled' RETURNING …` – `SchedulingService.assign()` sperrt den
+   *     Termin (FOR NO KEY UPDATE), beide serialisieren; eine inzwischen
+   *     geänderte/stornierte Zuweisung lässt den Claim leer laufen ⇒ kein Push.
+   *  2. Empfänger/Vorgang frisch in derselben Transaktion prüfen; nur dann die
+   *     Zustellung (`push_deliveries`, Schlüssel je Termin/requestedAt/Person)
+   *     anlegen. Nicht aktiver Empfänger oder stornierter Vorgang ⇒ Claim bleibt
+   *     bestehen, bewusst OHNE Push (diese Zuweisungs-Version ist erledigt und
+   *     wird nicht endlos erneut gescannt; eine neue Zuweisung setzt einen neuen
+   *     requestedAt und damit einen neuen Anspruch).
+   *  3. Commit. Ein Fehler in 1–2 rollt alles zurück (Claim inklusive).
+   * Der Job (`push.send`) wird vom Aufrufer nach dem Commit eingereiht.
+   * Vergleich auf Millisekunden: Werte stammen aus JS-Dates (ms-genau); so
+   * scheitert der CAS auch bei µs-genau geschriebenen Altwerten nicht dauerhaft.
+   */
+  async claimReassignment(
+    candidate: ReassignmentCandidate,
+    now: Date,
+  ): Promise<ReassignmentClaim | null> {
+    return this.deps.db.transaction(async (tx) => {
+      const claimed = await tx
         .update(appointments)
         .set({ assignmentNotifiedAt: now })
         .where(
           and(
-            eq(appointments.id, row.appointmentId),
-            eq(appointments.acknowledgementRequestedAt, row.requestedAt),
+            eq(appointments.id, candidate.appointmentId),
+            sql`date_trunc('milliseconds', ${appointments.acknowledgementRequestedAt}) = ${candidate.requestedAt}`,
+            eq(appointments.acknowledgementRequestedFor, candidate.requestedFor),
+            eq(appointments.assignedUserId, candidate.requestedFor),
             isNull(appointments.assignmentNotifiedAt),
+            eq(appointments.status, 'scheduled'),
           ),
-        );
+        )
+        .returning({ processId: appointments.processId, kind: appointments.kind });
+      const appointment = claimed[0];
+      if (appointment === undefined) return null;
+      const processRows = await tx
+        .select({ processNumber: processes.processNumber, mainStatus: processes.mainStatus })
+        .from(processes)
+        .where(eq(processes.id, appointment.processId));
+      const process = processRows[0];
+      if (process === undefined || process.mainStatus === 'cancelled') {
+        return { deliveryId: null, skipped: 'process_cancelled' };
+      }
+      const recipientRows = await tx
+        .select({ status: staffUsers.status })
+        .from(staffUsers)
+        .where(eq(staffUsers.id, candidate.requestedFor));
+      if (recipientRows[0]?.status !== 'active') {
+        return { deliveryId: null, skipped: 'recipient_inactive' };
+      }
+      return this.deps.push.createDelivery(
+        {
+          kind: 'assignment_reassigned',
+          userId: candidate.requestedFor,
+          idempotencyKey: pushKeys.reassignment(
+            candidate.appointmentId,
+            candidate.requestedAt,
+            candidate.requestedFor,
+          ),
+          appointmentId: candidate.appointmentId, // B2: Versandzeit-Prüfung (SUPERSEDED)
+          payload: buildPushPayload({
+            kind: 'assignment_reassigned',
+            processId: appointment.processId,
+            processNumber: process.processNumber,
+            appointmentKind: appointment.kind as PushAppointmentKind,
+          }),
+        },
+        tx,
+      );
+    });
+  }
+
+  // Outbox-Backstop ──────────────────────────────────────────────────────────
+  /**
+   * Ausstehende Zustellungen der letzten 24 h, für die KEIN `push.send`-Job
+   * existiert (Absturz zwischen Commit und Job-Einreihung), erhalten ihren Job.
+   * Bewusst mit dem STABILEN Schlüssel `push.send:<deliveryId>` statt eines
+   * Bucket-Schlüssels: „kein Job vorhanden“ heißt, dieser Schlüssel ist frei;
+   * reiht der Normalpfad verspätet doch noch ein, dedupliziert die Queue – es
+   * entstehen nie zwei Jobs (und damit nie zwei Sendungen) je Zustellung.
+   * Eine Zustellung mit bereits existierendem (auch `dead`) Job wird nicht
+   * angefasst ⇒ höchstens ein nachgeholter Job, keine Endlosschleife. Der Job
+   * selbst ist für nicht mehr ausstehende Zustellungen ein No-op.
+   */
+  async scheduleOutboxBackstop(now: Date): Promise<number> {
+    const rows = await this.deps.db
+      .select({ id: pushDeliveries.id })
+      .from(pushDeliveries)
+      .where(
+        and(
+          eq(pushDeliveries.status, 'pending'),
+          gt(pushDeliveries.createdAt, new Date(now.getTime() - LOOKBACK_MS)),
+          sql`NOT EXISTS (
+            SELECT 1 FROM ${integrationJobs} j
+            WHERE j.idempotency_key = ${`${PUSH_SEND_JOB_TYPE}:`} || ${pushDeliveries.id}::text
+          )`,
+        ),
+      )
+      .limit(200);
+    let scheduled = 0;
+    for (const row of rows) {
+      if (await this.deps.push.enqueueSendJob(row.id)) scheduled += 1;
     }
-    return enqueued;
+    if (scheduled > 0) {
+      this.deps.logger?.info({ scheduled }, 'Push-Outbox-Backstop: fehlende Jobs nachgeholt');
+    }
+    return scheduled;
   }
 
   // (c) ─────────────────────────────────────────────────────────────────────

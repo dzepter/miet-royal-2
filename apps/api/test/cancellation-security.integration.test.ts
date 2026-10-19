@@ -237,7 +237,11 @@ describe('145. Production: keine Mock-Buchhaltung, kein Versand', () => {
         accountingProvider: 'disabled',
         permissions: { canManualTransfer: false },
       });
-      expect(await ctx.db.select().from(integrationJobs)).toHaveLength(0);
+      // Kein Buchhaltungs-Job (kein Endlos-Retry ohne Anbindung). Phase-12-Finalisierung
+      // (Retention): einzig der Retention-Job des Stornos (Chatfotos sofort löschen,
+      // Anker setzen) wird eingereiht – er hat mit der Buchhaltung nichts zu tun.
+      const jobs = await ctx.db.select().from(integrationJobs);
+      expect(jobs.map((job) => job.type)).toEqual(['communication.cleanup_retention']);
       const transfer = await app.inject({
         method: 'POST',
         url: `/staff/cancellations/${view.id as string}/transfer`,

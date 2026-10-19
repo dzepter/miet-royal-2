@@ -1,5 +1,6 @@
 import type { AppConfig } from '@mietroyal/config';
 import {
+  staffKnownDevices,
   staffLoginChallenges,
   staffPasswordResetTokens,
   staffRecoveryCodes,
@@ -30,6 +31,7 @@ import {
   normalizeRecoveryCode,
   sha256Hex,
 } from './crypto.ts';
+import { isDeviceTokenHash } from './device.ts';
 import type { StaffMailPort } from './mail.ts';
 import { hashPassword, validateNewPassword, verifyPassword } from './passwords.ts';
 import { buildOtpauthUri, generateTotpSecret, verifyTotpCode } from './totp.ts';
@@ -96,6 +98,15 @@ export type LoginResult =
   | { kind: 'totp_setup_required'; challengeToken: string }
   | { kind: 'session'; sessionToken: string; user: StaffUser };
 
+/**
+ * Phase-12-Finalisierung: Gerät eines Logins – Anzeigename (aus dem
+ * User-Agent, nur Anzeige) und SHA-256 des Geräte-Cookies (Identität).
+ */
+interface LoginDevice {
+  label: string;
+  tokenHash: string;
+}
+
 export interface AuthenticatedContext {
   user: StaffUser;
   session: StaffSession;
@@ -113,6 +124,12 @@ export function normalizeEmail(email: string): string {
  * Listener laufen NACH der Auth-Mutation und können Login/Logout nie brechen.
  */
 export interface SessionLifecycleListener {
+  /**
+   * Phase 12 Finalisierung (Push-Session-Bindung): nach JEDER neu angelegten
+   * Session (alle Loginpfade), nach dem Commit. Nur IDs – den Geräte-Hash
+   * liest ein Listener bei Bedarf selbst aus `staff_sessions`.
+   */
+  sessionCreated?(event: { userId: string; sessionId: string }): Promise<void>;
   newDeviceLogin?(event: { userId: string; sessionId: string }): Promise<void>;
   sessionRevoked?(event: { userId: string; sessionId: string }): Promise<void>;
   sessionsRevoked?(event: { userId: string; sessionIds: readonly string[] }): Promise<void>;
@@ -202,7 +219,17 @@ export class StaffAuthService {
     email: string;
     password: string;
     deviceLabel: string;
+    /**
+     * Phase-12-Finalisierung: SHA-256 des Geräte-Cookies (auth/device.ts) –
+     * vom Server aus dem Cookie ermittelt bzw. neu erzeugt, nie aus dem Body.
+     */
+    deviceTokenHash: string;
   }): Promise<LoginResult> {
+    if (!isDeviceTokenHash(input.deviceTokenHash)) {
+      // Programmierfehler-Schutz: niemals einen Klartext als „Hash“ speichern.
+      throw new Error('deviceTokenHash muss ein SHA-256-Hexwert sein.');
+    }
+    const device = { label: input.deviceLabel, tokenHash: input.deviceTokenHash };
     const email = normalizeEmail(input.email);
     const user = await this.findUserByEmail(email);
 
@@ -220,33 +247,31 @@ export class StaffAuthService {
     if (user.status !== 'active') return { kind: 'failed' };
 
     if (user.totpEnabled) {
-      const challengeToken = await this.createLoginChallenge(user.id, 'totp', input.deviceLabel);
+      const challengeToken = await this.createLoginChallenge(user.id, 'totp', device);
       return { kind: 'totp_required', challengeToken };
     }
     if (user.totpRequired) {
-      const challengeToken = await this.createLoginChallenge(
-        user.id,
-        'totp_setup',
-        input.deviceLabel,
-      );
+      const challengeToken = await this.createLoginChallenge(user.id, 'totp_setup', device);
       return { kind: 'totp_setup_required', challengeToken };
     }
 
-    const sessionToken = await this.createSession(user, input.deviceLabel);
+    const sessionToken = await this.createSession(user, device);
     return { kind: 'session', sessionToken, user };
   }
 
   private async createLoginChallenge(
     userId: string,
     purpose: 'totp' | 'totp_setup',
-    deviceLabel: string,
+    device: LoginDevice,
   ): Promise<string> {
     const token = generateToken();
     await this.db.insert(staffLoginChallenges).values({
       userId,
       tokenHash: sha256Hex(token),
       purpose,
-      deviceLabel,
+      deviceLabel: device.label,
+      // Phase-12-Finalisierung: Gerät, das die Passwortprüfung bestanden hat.
+      deviceTokenHash: device.tokenHash,
       expiresAt: new Date(Date.now() + LOGIN_CHALLENGE_TTL_MS),
     });
     return token;
@@ -255,7 +280,7 @@ export class StaffAuthService {
   private async consumeableChallenge(
     challengeToken: string,
     purpose: 'totp' | 'totp_setup',
-  ): Promise<{ id: string; userId: string; deviceLabel: string; user: StaffUser }> {
+  ): Promise<{ id: string; userId: string; device: LoginDevice; user: StaffUser }> {
     const rows = await this.db
       .select()
       .from(staffLoginChallenges)
@@ -265,7 +290,10 @@ export class StaffAuthService {
       challenge === undefined ||
       challenge.purpose !== purpose ||
       challenge.consumedAt !== null ||
-      challenge.expiresAt.getTime() <= Date.now()
+      challenge.expiresAt.getTime() <= Date.now() ||
+      // Phase-12-Finalisierung: Challenges ohne Geräteidentität (nur aus den
+      // ≤ 5 Minuten vor dem Rollout) sind ungültig ⇒ Anmeldung neu beginnen.
+      !isDeviceTokenHash(challenge.deviceTokenHash)
     ) {
       throw new AuthError('INVALID_TOKEN', NEUTRAL_LOGIN_MESSAGE);
     }
@@ -273,7 +301,15 @@ export class StaffAuthService {
     if (user === undefined || user.status !== 'active') {
       throw new AuthError('INVALID_TOKEN', NEUTRAL_LOGIN_MESSAGE);
     }
-    return { id: challenge.id, userId: challenge.userId, deviceLabel: challenge.deviceLabel, user };
+    return {
+      id: challenge.id,
+      userId: challenge.userId,
+      // Maßgeblich ist GENAU das Gerät aus dem ersten Schritt – ein Geräte-
+      // Cookie im zweiten Request wird bewusst nicht ausgewertet (Begründung:
+      // docs/TECH_DECISIONS.md „Phase 12 Finalisierung: Geräteidentität“).
+      device: { label: challenge.deviceLabel, tokenHash: challenge.deviceTokenHash },
+      user,
+    };
   }
 
   /** Atomar: schlägt fehl, wenn die Challenge parallel bereits verbraucht wurde. */
@@ -319,7 +355,7 @@ export class StaffAuthService {
       );
     }
     await this.consumeChallenge(challenge.id);
-    const sessionToken = await this.createSession(challenge.user, challenge.deviceLabel);
+    const sessionToken = await this.createSession(challenge.user, challenge.device);
     return { sessionToken, user: challenge.user };
   }
 
@@ -354,7 +390,7 @@ export class StaffAuthService {
     }
     await this.consumeChallenge(challenge.id);
     await this.audit({ type: 'twofa.recovery_code_used', targetUserId: challenge.userId });
-    const sessionToken = await this.createSession(challenge.user, challenge.deviceLabel);
+    const sessionToken = await this.createSession(challenge.user, challenge.device);
     return { sessionToken, user: challenge.user };
   }
 
@@ -363,41 +399,95 @@ export class StaffAuthService {
   /**
    * Session-IDs entstehen ausschließlich hier, serverseitig, NACH
    * vollständiger Authentifizierung – Schutz gegen Session-Fixation.
+   *
+   * Phase-12-Finalisierung (stabile Geräteidentität): „neues Gerät“ ⇔ das
+   * Paar (user_id, SHA-256 des Geräte-Cookies) war noch nicht in
+   * `staff_known_devices`. Der User-Agent (`device.label`) ist nur Anzeige.
+   * Atomar: INSERT … ON CONFLICT DO NOTHING RETURNING auf dem UNIQUE-Index –
+   * zwei parallele Erst-Logins desselben Geräts ⇒ genau EINE neue Zeile und
+   * genau EIN `session.new_device_login`. Geräteeintrag, Session und
+   * Audit-Ereignisse entstehen in einer Transaktion (kein „bekannt, aber nie
+   * gemeldet“ nach einem Abbruch); der Push-Hook läuft erst nach dem Commit.
+   * Die Session speichert den Geräte-Hash (`staff_sessions.device_token_hash`);
+   * der Hook `sessionCreated` bindet damit Push-Abos desselben Mitarbeiters auf
+   * demselben Gerät an die neue Session (docs/TECH_DECISIONS.md).
    */
-  private async createSession(user: StaffUser, deviceLabel: string): Promise<string> {
-    const knownDevice = await this.db
-      .select({ id: staffSessions.id })
-      .from(staffSessions)
-      .where(and(eq(staffSessions.userId, user.id), eq(staffSessions.deviceLabel, deviceLabel)))
-      .limit(1);
-    const isNewDevice = knownDevice.length === 0;
-
+  private async createSession(user: StaffUser, device: LoginDevice): Promise<string> {
     const token = generateToken();
-    const inserted = await this.db
-      .insert(staffSessions)
-      .values({ userId: user.id, tokenHash: sha256Hex(token), deviceLabel })
-      .returning({ id: staffSessions.id });
-
-    await this.audit({
-      type: 'session.created',
-      targetUserId: user.id,
-      sessionId: inserted[0]?.id ?? null,
-      details: { deviceLabel, newDevice: isNewDevice },
-    });
-    if (isNewDevice) {
-      // Audit-Grundlage für den späteren Admin-Push „neues Gerät“ (Phase 12).
-      await this.audit({
-        type: 'session.new_device_login',
-        targetUserId: user.id,
-        sessionId: inserted[0]?.id ?? null,
-        details: { deviceLabel },
-      });
-      const sessionId = inserted[0]?.id;
-      if (sessionId !== undefined) {
-        await this.emitSessionEvent((listener) =>
-          listener.newDeviceLogin?.({ userId: user.id, sessionId }),
-        );
+    const { sessionId, isNewDevice } = await this.db.transaction(async (tx) => {
+      const now = new Date();
+      const registered = await tx
+        .insert(staffKnownDevices)
+        .values({
+          userId: user.id,
+          deviceTokenHash: device.tokenHash,
+          displayLabel: device.label,
+          firstSeenAt: now,
+          lastSeenAt: now,
+        })
+        .onConflictDoNothing({
+          target: [staffKnownDevices.userId, staffKnownDevices.deviceTokenHash],
+        })
+        .returning({ id: staffKnownDevices.id });
+      const newDevice = registered.length > 0;
+      if (!newDevice) {
+        // Bekanntes Gerät: nur „zuletzt gesehen“ und Anzeigename aktualisieren.
+        await tx
+          .update(staffKnownDevices)
+          .set({ lastSeenAt: now, displayLabel: device.label })
+          .where(
+            and(
+              eq(staffKnownDevices.userId, user.id),
+              eq(staffKnownDevices.deviceTokenHash, device.tokenHash),
+            ),
+          );
       }
+
+      const inserted = await tx
+        .insert(staffSessions)
+        .values({
+          userId: user.id,
+          tokenHash: sha256Hex(token),
+          deviceLabel: device.label,
+          // Phase 12 Finalisierung: nur der Hash (nie Klartext, nie API-Feld) –
+          // Grundlage für das Umbinden der Push-Abos desselben Geräts.
+          deviceTokenHash: device.tokenHash,
+        })
+        .returning({ id: staffSessions.id });
+      const createdSessionId = inserted[0]?.id ?? null;
+
+      // Details nur mit Anzeigename/Flag – nie Hash oder Cookie-Wert.
+      await recordSecurityEvent(tx, {
+        type: 'session.created',
+        targetUserId: user.id,
+        sessionId: createdSessionId,
+        details: { deviceLabel: device.label, newDevice },
+      });
+      if (newDevice) {
+        // Grundlage für den Admin-Security-Push „neues Gerät“ (Sofort-Hook +
+        // Scan-Backstop lesen genau dieses Ereignis, Schlüssel je Session).
+        await recordSecurityEvent(tx, {
+          type: 'session.new_device_login',
+          targetUserId: user.id,
+          sessionId: createdSessionId,
+          details: { deviceLabel: device.label },
+        });
+      }
+      return { sessionId: createdSessionId, isNewDevice: newDevice };
+    });
+
+    if (sessionId !== null) {
+      // Phase 12 Finalisierung: zuerst die Session-Bindung (Push-Abos desselben
+      // Geräts an die neue Session), dann ggf. „neues Gerät“. Fehler der Listener
+      // brechen den Login nie (emitSessionEvent fängt ab).
+      await this.emitSessionEvent((listener) =>
+        listener.sessionCreated?.({ userId: user.id, sessionId }),
+      );
+    }
+    if (isNewDevice && sessionId !== null) {
+      await this.emitSessionEvent((listener) =>
+        listener.newDeviceLogin?.({ userId: user.id, sessionId }),
+      );
     }
     return token;
   }
@@ -675,7 +765,7 @@ export class StaffAuthService {
     const challenge = await this.consumeableChallenge(input.challengeToken, 'totp_setup');
     const { recoveryCodes } = await this.confirmTotpSetupForUser(challenge.userId, input.code);
     await this.consumeChallenge(challenge.id);
-    const sessionToken = await this.createSession(challenge.user, challenge.deviceLabel);
+    const sessionToken = await this.createSession(challenge.user, challenge.device);
     return { sessionToken, user: challenge.user, recoveryCodes };
   }
 

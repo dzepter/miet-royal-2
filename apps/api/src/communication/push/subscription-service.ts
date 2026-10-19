@@ -5,7 +5,8 @@ import {
   type Database,
   type DatabaseExecutor,
 } from '@mietroyal/database';
-import { and, count, eq, inArray, isNull, sql } from 'drizzle-orm';
+import { and, count, eq, gte, inArray, isNotNull, isNull, ne, sql } from 'drizzle-orm';
+import { alias } from 'drizzle-orm/pg-core';
 import { isSessionExpiredByInactivity, sessionInactivityCutoff } from '../../auth/service.ts';
 import type { PushSubscriptionTarget } from '../types.ts';
 
@@ -25,8 +26,12 @@ import type { PushSubscriptionTarget } from '../types.ts';
  *   Label/Zeitpunkte), werden nie geloggt.
  */
 
+/**
+ * Gründe einer TECHNISCHEN Deaktivierung. Phase 12 Finalisierung: kein
+ * Push-Opt-out in Miet-Royal – `user_unsubscribed` wird nicht mehr erzeugt
+ * (Bestandszeilen mit diesem Grund dürfen bleiben, siehe DATA_MODEL).
+ */
 export type SubscriptionDisableReason =
-  | 'user_unsubscribed'
   | 'gone'
   | 'session_revoked'
   | 'user_inactive'
@@ -55,6 +60,32 @@ export interface OwnDeviceView {
 
 export interface ActiveTarget extends PushSubscriptionTarget {
   id: string;
+}
+
+/**
+ * Phase 12 Finalisierung: technischer Deaktivierungsgrund einer (noch nicht
+ * deaktivierten) Subscription aus dem Zustand ihrer gebundenen Session –
+ * `null` ⇒ Bindung gültig. EINE Stelle für Versand (Lazy-Backstop) und
+ * Statusroute: widerrufen ⇒ `session_revoked`, per Inaktivitätsregel der
+ * Auth abgelaufen ⇒ `session_expired` (B11). Ohne Session (Altbestand) gültig.
+ */
+function sessionDisableReason(
+  binding: {
+    sessionId: string | null;
+    sessionRevokedAt: Date | null;
+    sessionLastActivityAt: Date | null;
+  },
+  now: Date,
+): SubscriptionDisableReason | null {
+  if (binding.sessionId === null) return null;
+  if (binding.sessionRevokedAt !== null) return 'session_revoked';
+  if (
+    binding.sessionLastActivityAt !== null &&
+    isSessionExpiredByInactivity(binding.sessionLastActivityAt, now)
+  ) {
+    return 'session_expired';
+  }
+  return null;
 }
 
 /** SQL-Form derselben Gültigkeit (nicht widerrufen, nicht per Inaktivität abgelaufen; B11). */
@@ -109,22 +140,6 @@ export class PushSubscriptionService {
     });
   }
 
-  /** Eigene Subscription abmelden – nur die eigene (fremder Endpoint ⇒ false, neutral). */
-  async unsubscribe(userId: string, endpoint: string): Promise<boolean> {
-    const updated = await this.db
-      .update(pushSubscriptions)
-      .set({ disabledAt: new Date(), disabledReason: 'user_unsubscribed' })
-      .where(
-        and(
-          eq(pushSubscriptions.endpoint, endpoint),
-          eq(pushSubscriptions.userId, userId),
-          isNull(pushSubscriptions.disabledAt),
-        ),
-      )
-      .returning({ id: pushSubscriptions.id });
-    return updated.length > 0;
-  }
-
   async listOwn(userId: string, currentSessionId: string): Promise<OwnDeviceView[]> {
     const rows = await this.db
       .select({
@@ -150,20 +165,109 @@ export class PushSubscriptionService {
       }));
   }
 
-  /** Ist der Endpoint dieses Users aktuell aktiv registriert? (Status-Anzeige) */
-  async isActiveForUser(userId: string, endpoint: string): Promise<boolean> {
-    const rows = await this.db
-      .select({ id: pushSubscriptions.id })
-      .from(pushSubscriptions)
+  /**
+   * Status des eigenen Browsers (POST /staff/push/subscriptions/status) –
+   * Phase 12 Finalisierung (B1): `true` NUR, wenn die Subscription mit diesem
+   * Endpoint DIESEM User gehört, nicht deaktiviert ist und danach an die
+   * aktuelle Session gebunden ist:
+   * - fremder User / unbekannter Endpoint / deaktiviert ⇒ `false`, keine
+   *   Änderung (deaktivierte Abos werden nie automatisch reaktiviert – die UI
+   *   zeigt „aktivieren“, die erneute Registrierung ist die Reaktivierung);
+   * - an eine ANDERE, noch gültige Session (oder an keine – Altbestand)
+   *   gebunden ⇒ auf `currentSessionId` umbinden: Besitz des Endpoints (nur
+   *   der eigene Browser kennt ihn) + gültige Session desselben Users belegen
+   *   dasselbe Browserprofil – kein neues Opt-in nötig;
+   * - an eine widerrufene/per Inaktivität abgelaufene Session gebunden ⇒
+   *   technisch deaktiviert (wie der Lazy-Backstop des Versands), `false`.
+   * Sperre auf der Subscription-Zeile (FOR UPDATE) gegen parallele
+   * Registrierung/Übernahme.
+   */
+  async statusForSession(
+    userId: string,
+    currentSessionId: string,
+    endpoint: string,
+    now = new Date(),
+  ): Promise<boolean> {
+    return this.db.transaction(async (tx) => {
+      const rows = await tx
+        .select({
+          id: pushSubscriptions.id,
+          userId: pushSubscriptions.userId,
+          sessionId: pushSubscriptions.sessionId,
+          disabledAt: pushSubscriptions.disabledAt,
+          sessionRevokedAt: staffSessions.revokedAt,
+          sessionLastActivityAt: staffSessions.lastActivityAt,
+        })
+        .from(pushSubscriptions)
+        .leftJoin(staffSessions, eq(staffSessions.id, pushSubscriptions.sessionId))
+        .where(eq(pushSubscriptions.endpoint, endpoint))
+        .for('update', { of: pushSubscriptions });
+      const row = rows[0];
+      if (row === undefined || row.userId !== userId || row.disabledAt !== null) return false;
+      if (row.sessionId === currentSessionId) return true;
+      const reason = sessionDisableReason(row, now);
+      if (reason !== null) {
+        await tx
+          .update(pushSubscriptions)
+          .set({ disabledAt: now, disabledReason: reason })
+          .where(eq(pushSubscriptions.id, row.id));
+        return false;
+      }
+      await tx
+        .update(pushSubscriptions)
+        .set({ sessionId: currentSessionId })
+        .where(eq(pushSubscriptions.id, row.id));
+      return true;
+    });
+  }
+
+  /**
+   * Phase 12 Finalisierung (B1): nach einem Login die aktiven Subscriptions
+   * DESSELBEN Users, die an eine andere, noch gültige Session MIT DEMSELBEN
+   * Geräte-Hash (`staff_sessions.device_token_hash`) gebunden sind, an die neue
+   * Session binden – sonst hinge das Abo an der alten Session (festes
+   * Cookie-maxAge, gleitende Server-Session): deren Ablauf beendete Push still,
+   * ein Logout der neuen Session deaktivierte es nicht.
+   * Nie umgebunden: Subscriptions anderer User (auch auf demselben Gerät –
+   * keine Übertragung zwischen Personen), deaktivierte Abos, Bindungen an
+   * widerrufene/abgelaufene Sessions (technisch beendet), Sessions ohne Hash
+   * (vor dem Rollout). Ein einziges UPDATE ⇒ idempotent und race-arm.
+   * Rückgabe: Anzahl umgebundener Subscriptions.
+   */
+  async rebindSameDeviceSessions(
+    userId: string,
+    newSessionId: string,
+    now = new Date(),
+  ): Promise<number> {
+    const current = alias(staffSessions, 'current_session');
+    const previousSameDevice = this.db
+      .select({ id: staffSessions.id })
+      .from(staffSessions)
+      .innerJoin(current, eq(current.id, newSessionId))
       .where(
         and(
-          eq(pushSubscriptions.endpoint, endpoint),
+          eq(current.userId, userId),
+          isNull(current.revokedAt),
+          isNotNull(current.deviceTokenHash),
+          eq(staffSessions.userId, userId),
+          ne(staffSessions.id, current.id),
+          eq(staffSessions.deviceTokenHash, current.deviceTokenHash),
+          isNull(staffSessions.revokedAt),
+          gte(staffSessions.lastActivityAt, sessionInactivityCutoff(now)),
+        ),
+      );
+    const updated = await this.db
+      .update(pushSubscriptions)
+      .set({ sessionId: newSessionId })
+      .where(
+        and(
           eq(pushSubscriptions.userId, userId),
           isNull(pushSubscriptions.disabledAt),
+          inArray(pushSubscriptions.sessionId, previousSameDevice),
         ),
       )
-      .limit(1);
-    return rows.length > 0;
+      .returning({ id: pushSubscriptions.id });
+    return updated.length;
   }
 
   async disableForSession(
@@ -237,16 +341,9 @@ export class PushSubscriptionService {
         await this.disableById(row.id, 'user_inactive');
         continue;
       }
-      if (row.sessionId !== null && row.sessionRevokedAt !== null) {
-        await this.disableById(row.id, 'session_revoked');
-        continue;
-      }
-      if (
-        row.sessionId !== null &&
-        row.sessionLastActivityAt !== null &&
-        isSessionExpiredByInactivity(row.sessionLastActivityAt, now)
-      ) {
-        await this.disableById(row.id, 'session_expired');
+      const sessionReason = sessionDisableReason(row, now);
+      if (sessionReason !== null) {
+        await this.disableById(row.id, sessionReason);
         continue;
       }
       targets.push({ id: row.id, endpoint: row.endpoint, p256dh: row.p256dh, auth: row.auth });

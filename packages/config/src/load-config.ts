@@ -91,7 +91,24 @@ export interface CommunicationConfig {
 }
 
 export const WHATSAPP_GRAPH_BASE_URL = 'https://graph.facebook.com';
-export const WHATSAPP_DEFAULT_GRAPH_API_VERSION = 'v25.0';
+/**
+ * Graph-API-Version (verifiziert 2026-10-19, developers.facebook.com
+ * „Graph API changelog / versions“): aktuell v26.0 (veröffentlicht 2026-07-29,
+ * Ablauf „TBD“); auch das offizielle Cloud-API-Media-Beispiel nutzt v26.0.
+ * Kein „latest“ in URLs – die Version wird immer explizit gesetzt.
+ */
+export const WHATSAPP_DEFAULT_GRAPH_API_VERSION = 'v26.0';
+/**
+ * Älteste beim Verifikationsdatum noch nicht abgelaufene Version laut
+ * Meta-Versionstabelle (v21.0: verfügbar bis 2027-01-21; v20.0 seit
+ * 2026-09-24 abgelaufen). Ältere explizite Werte werden abgelehnt.
+ */
+export const WHATSAPP_MIN_GRAPH_API_VERSION = 'v21.0';
+
+function graphVersionNumber(version: string): number {
+  const match = /^v(\d{1,3})\.(\d{1,3})$/.exec(version);
+  return match === null ? Number.NaN : Number(match[1]) * 1000 + Number(match[2]);
+}
 
 /**
  * WhatsApp-Konfiguration (Phase 12):
@@ -637,6 +654,16 @@ function buildWhatsAppConfig(raw: RawEnv, problems: string[]): WhatsAppConfig {
     } else if (raw.WHATSAPP_BASE_URL !== undefined) {
       baseUrl = raw.WHATSAPP_BASE_URL.replace(/\/+$/, '');
     }
+  }
+
+  if (
+    raw.WHATSAPP_GRAPH_API_VERSION !== undefined &&
+    graphVersionNumber(raw.WHATSAPP_GRAPH_API_VERSION) <
+      graphVersionNumber(WHATSAPP_MIN_GRAPH_API_VERSION)
+  ) {
+    problems.push(
+      `WHATSAPP_GRAPH_API_VERSION: Version ist laut Meta nicht mehr verfügbar (mindestens ${WHATSAPP_MIN_GRAPH_API_VERSION})`,
+    );
   }
 
   const live = mode === 'live';

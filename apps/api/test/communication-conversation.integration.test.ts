@@ -465,16 +465,26 @@ describe('Retention-Hilfen (92)', () => {
       .select()
       .from(conversationMessages)
       .where(eq(conversationMessages.id, inboundB.id));
-    expect(textA).toMatchObject({ body: '', subject: null });
+    // Phase-12-Finalisierung §4.3: zusätzlich Absender-Snapshot minimiert (nur Rolle),
+    // E-Mail-Message-IDs entfernt.
+    expect(textA).toMatchObject({
+      body: '',
+      subject: null,
+      senderSnapshot: { role: 'customer' },
+      providerMessageId: null,
+    });
     expect(textA!.bodyDeletedAt?.toISOString()).toBe(now.toISOString());
+    expect(textA!.piiScrubbedAt?.toISOString()).toBe(now.toISOString());
     expect(textB).toMatchObject({ body: 'Text B bleibt', bodyDeletedAt: null });
-    // Liste zeigt gelöschte Texte als leer markiert; Metadaten (Absender, Zeit) bleiben.
+    // Liste zeigt gelöschte Texte als leer markiert; Zeiten bleiben, der Absender
+    // nur noch als neutrale Rolle (keine Namen/E-Mail/Telefon).
     const list = (await conversation(a.process.id)).json().messages;
     expect(list[0]).toMatchObject({
       body: '',
       bodyDeleted: true,
-      sender: { email: 'max.mustermann@example.com' },
+      sender: { role: 'customer' },
     });
+    expect(JSON.stringify(list[0])).not.toContain('max.mustermann@example.com');
     expect(list[0].photos[0]).toMatchObject({ deleted: true });
   });
 });

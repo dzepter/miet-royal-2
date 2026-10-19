@@ -262,6 +262,17 @@ export function inboundMailFingerprint(input: {
 }
 
 /**
+ * Phase-12-Finalisierung (Retention §4.3): Dedupe-Schlüssel `message_id_hash`
+ * = SHA-256 (hex) über die UTF-8-Bytes der NORMALISIERTEN Message-ID
+ * (`normalizeMessageId`) – identisch mit dem Backfill der Migration 0024
+ * (`encode(sha256(convert_to(message_id, 'UTF8')), 'hex')`). Der Klartext
+ * wird in `inbound_mail_receipts` nie gespeichert.
+ */
+export function inboundMessageIdHash(normalizedMessageId: string): string {
+  return createHash('sha256').update(normalizedMessageId, 'utf8').digest('hex');
+}
+
+/**
  * Pflichtwert der Spalte `fingerprint` (UNIQUE) für Mails MIT Message-ID:
  * eigener Namensraum je Message-ID – inhaltsgleiche, aber verschiedene Mails
  * kollidieren dadurch nie (Härtung RA-6).

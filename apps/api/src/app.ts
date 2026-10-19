@@ -436,6 +436,9 @@ export function buildApp({
         transfers,
         logger: app.log,
       });
+      // Phase 12 (scan): Vorgangsabschluss ⇒ Retention-Job für Chatfotos (Order §25).
+      // Phase 12 (retention-final): derselbe Listener auch für „storniert“ (beide Wege).
+      const retentionListener = createRetentionCompletionListener(queue, app.log);
       // Eine Storno-Instanz für die Storno-Routen UND die Legacy-Storno-Route
       // (Vorgänge mit bestätigter Buchung werden nur über diesen Pfad storniert).
       const cancellationService = createCancellationService({
@@ -445,9 +448,8 @@ export function buildApp({
         transfers,
         confirmations: transactional.cancellationMailer, // Phase 12 (transactional)
         logger: app.log,
+        processListeners: [retentionListener], // Phase 12 (retention-final)
       });
-      // Phase 12 (scan): Vorgangsabschluss ⇒ Retention-Job für Chatfotos (Order §25).
-      const retentionListener = createRetentionCompletionListener(queue, app.log);
       registerCrmRoutes(instance, {
         db,
         auth: authService,

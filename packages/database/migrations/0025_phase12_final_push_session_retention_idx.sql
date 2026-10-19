@@ -1,0 +1,7 @@
+ALTER TABLE "staff_sessions" ADD COLUMN "device_token_hash" text;--> statement-breakpoint
+ALTER TABLE "push_deliveries" ADD COLUMN "appointment_id" uuid;--> statement-breakpoint
+ALTER TABLE "push_deliveries" ADD CONSTRAINT "push_deliveries_appointment_id_appointments_id_fk" FOREIGN KEY ("appointment_id") REFERENCES "public"."appointments"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+CREATE INDEX "staff_sessions_user_device_idx" ON "staff_sessions" USING btree ("user_id","device_token_hash") WHERE "staff_sessions"."device_token_hash" IS NOT NULL;--> statement-breakpoint
+CREATE INDEX "conversation_messages_anchor_pending_idx" ON "conversation_messages" USING btree ("process_id") WHERE "conversation_messages"."retention_anchor_at" IS NULL AND "conversation_messages"."process_id" IS NOT NULL;--> statement-breakpoint
+CREATE INDEX "mail_deliveries_anchor_pending_idx" ON "mail_deliveries" USING btree ("process_id") WHERE "mail_deliveries"."retention_anchor_at" IS NULL AND "mail_deliveries"."process_id" IS NOT NULL;--> statement-breakpoint
+CREATE INDEX "message_photos_pending_idx" ON "message_photos" USING btree ("message_id") WHERE "message_photos"."deleted_at" IS NULL;

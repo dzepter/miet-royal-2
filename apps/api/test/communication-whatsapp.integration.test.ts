@@ -114,7 +114,7 @@ describe('Gateway-Wahl und Graph-Vertrag (97, 98, 116)', () => {
     expect(config.whatsapp).toMatchObject({
       mode: 'live',
       baseUrl: 'https://graph.facebook.com',
-      graphApiVersion: 'v25.0',
+      graphApiVersion: 'v26.0',
     });
     const requests: { url: string; init: RequestInit }[] = [];
     const fetchFake = async (url: string, init?: RequestInit) => {
@@ -138,7 +138,7 @@ describe('Gateway-Wahl und Graph-Vertrag (97, 98, 116)', () => {
     });
     expect(outcome).toEqual({ outcome: 'accepted', providerMessageId: 'wamid.HBgL' });
     expect(requests).toHaveLength(1);
-    expect(requests[0]!.url).toBe('https://graph.facebook.com/v25.0/123456789012345/messages');
+    expect(requests[0]!.url).toBe('https://graph.facebook.com/v26.0/123456789012345/messages');
     expect(requests[0]!.init.method).toBe('POST');
     const headers = requests[0]!.init.headers as Record<string, string>;
     expect(headers.Authorization).toBe('Bearer EAAG-prod-token-never-logged');
@@ -390,8 +390,10 @@ describe('Eingehend: Text, Dedupe, Bilder, Dokumente (103–106)', () => {
     const jobs = await ctx.pool.query<{ type: string; idempotency_key: string }>(
       "SELECT type, idempotency_key FROM integration_jobs WHERE type = 'whatsapp.media_fetch'",
     );
+    // Phase-12-Finalisierung (Retention-Review): Key je Konversationszeile, nie die
+    // telefonabgeleitete wamid (integration_jobs ist dauerhaft).
     expect(jobs.rows).toEqual([
-      { type: 'whatsapp.media_fetch', idempotency_key: 'whatsapp.media_fetch:wamid.img-1' },
+      { type: 'whatsapp.media_fetch', idempotency_key: `whatsapp.media_fetch:${message!.id}` },
     ]);
     await drainJobs(ctx);
     expect(ctx.whatsapp.mediaCalls).toEqual(['media-ok']);

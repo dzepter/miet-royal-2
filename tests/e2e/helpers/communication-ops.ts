@@ -112,6 +112,15 @@ export function backdateProcessCompletion(processId: string, months: number): vo
     [processId, months],
   );
   expect(rows, 'abgeschlossener Vorgang').toHaveLength(1);
+  // Phase 12 (retention-final): Fristbeginn ist der beim Eintritt in terminal gesetzte
+  // Retention-Anker – die Zeitreise verschiebt ihn mit (Nachrichten + Zustellungen).
+  for (const table of ['conversation_messages', 'mail_deliveries']) {
+    queryTestDb(
+      `UPDATE ${table} SET retention_anchor_at = retention_anchor_at - make_interval(months => $2::int)
+        WHERE process_id = $1 AND retention_anchor_at IS NOT NULL`,
+      [processId, months],
+    );
+  }
 }
 
 /** Einen Retention-Lauf (Fotos + 12-Monats-Text) sofort fällig einreihen (eindeutiger Schlüssel). */

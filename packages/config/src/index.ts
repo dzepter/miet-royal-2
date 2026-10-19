@@ -5,6 +5,7 @@ export {
   LEXWARE_PRODUCTION_BASE_URL,
   WHATSAPP_GRAPH_BASE_URL,
   WHATSAPP_DEFAULT_GRAPH_API_VERSION,
+  WHATSAPP_MIN_GRAPH_API_VERSION,
   type LexwareConfig,
   type MailConfig,
   type CommunicationConfig,

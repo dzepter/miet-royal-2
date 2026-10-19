@@ -501,7 +501,7 @@ describe('Härtung Review A – Demo-Resend (kein Fund)', () => {
       appEnv: 'demo',
     });
     expect(reply.deliveryState).toBe('blocked');
-    expect((await row(reply.mailDeliveryId)).subject.startsWith('[DEMO] ')).toBe(true);
+    expect((await row(reply.mailDeliveryId)).subject?.startsWith('[DEMO] ')).toBe(true);
     expect(gateway.attempts).toHaveLength(0);
   });
 });

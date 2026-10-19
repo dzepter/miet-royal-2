@@ -179,14 +179,21 @@ describe('95.–96. 12-Monats-Text-Retention und Reopen', () => {
     expect(await completeViaRoute(cookie, recent.process.id)).toBe(200);
     await drain();
     const now = new Date('2027-06-15T10:00:00.000Z');
-    await ctx.db
-      .update(processes)
-      .set({ completedAt: addBerlinCalendarMonths(now, -12) }) // exakt 12 Monate ⇒ fällig
-      .where(eq(processes.id, old.process.id));
-    await ctx.db
-      .update(processes)
-      .set({ completedAt: new Date(addBerlinCalendarMonths(now, -12).getTime() + 60_000) })
-      .where(eq(processes.id, recent.process.id));
+    // Phase-12-Finalisierung: Fristbeginn ist der beim Abschluss gesetzte
+    // Retention-Anker (nicht mehr das jeweils aktuelle completed_at) – die
+    // Zeitreise verschiebt deshalb Abschluss UND Anker gemeinsam.
+    const backdate = async (processId: string, at: Date) => {
+      await ctx.db.update(processes).set({ completedAt: at }).where(eq(processes.id, processId));
+      await ctx.db
+        .update(conversationMessages)
+        .set({ retentionAnchorAt: at })
+        .where(eq(conversationMessages.processId, processId));
+    };
+    await backdate(old.process.id, addBerlinCalendarMonths(now, -12)); // exakt 12 Monate ⇒ fällig
+    await backdate(
+      recent.process.id,
+      new Date(addBerlinCalendarMonths(now, -12).getTime() + 60_000),
+    );
     // Offener Vorgang mit uraltem (unplausiblem) completedAt-Rest darf nie geleert werden.
     await ctx.db
       .update(processes)

@@ -5,7 +5,7 @@
  *  1. Zustand der Mailbox laden (`inbound_mail_state`: UIDVALIDITY, lastUid).
  *  2. Quelle fragen (UID > lastUid; bei UIDVALIDITY-Wechsel ab 1).
  *  3. Je Nachricht: parsen (mailparser), deduplizieren (UID-Tripel,
- *     Message-ID, Fingerprint), zuordnen (In-Reply-To/References ⇒
+ *     SHA-256 der Message-ID, Fingerprint), zuordnen (In-Reply-To/References ⇒
  *     mail_deliveries.message_id; sonst genau EINE Vorgangsnummer + Absender
  *     = Kunden-E-Mail; sonst unmatched), Bilder prüfen/speichern, Beleg +
  *     Konversationszeile in EINER Transaktion schreiben.
@@ -52,6 +52,7 @@ import {
   imageExtensionFor,
   inboundMailFingerprint,
   inboundMessageIdFingerprint,
+  inboundMessageIdHash,
   INBOUND_MAIL_PHOTO_MAX_BYTES,
   normalizeMessageId,
   parseMessageIdList,
@@ -246,7 +247,6 @@ export class InboundMailProcessor {
         mailbox: envelope.mailbox,
         uidValidity,
         uid: envelope.uid,
-        messageId: null,
         fingerprint: createHash('sha256')
           .update(`quarantine|${envelope.mailbox}|${uidValidity}|${envelope.uid}`, 'utf8')
           .digest('hex'),
@@ -314,11 +314,14 @@ export class InboundMailProcessor {
         : inboundMessageIdFingerprint(parsed.messageId);
 
     // Dedupe 2/3: Message-ID bzw. (nur ohne Message-ID) Fingerprint – z. B. Kopie in
-    // zweiter Mailbox, Re-Delivery.
+    // zweiter Mailbox, Re-Delivery. Phase-12-Finalisierung §4.3: die Message-ID
+    // liegt nur als SHA-256 (`message_id_hash`) vor – nie im Klartext; bleibt
+    // auch nach der Retention-Bereinigung des Belegs erhalten (R13).
+    const messageIdHash = parsed.messageId === null ? null : inboundMessageIdHash(parsed.messageId);
     const duplicateWhere =
-      parsed.messageId === null
+      messageIdHash === null
         ? eq(inboundMailReceipts.fingerprint, fingerprint)
-        : eq(inboundMailReceipts.messageId, parsed.messageId);
+        : eq(inboundMailReceipts.messageIdHash, messageIdHash);
     const duplicates = await db
       .select({ id: inboundMailReceipts.id })
       .from(inboundMailReceipts)
@@ -403,7 +406,7 @@ export class InboundMailProcessor {
           mailbox: envelope.mailbox,
           uidValidity,
           uid: envelope.uid,
-          messageId: parsed.messageId,
+          messageIdHash,
           fingerprint,
           fromAddress: parsed.fromEmail,
           subject: parsed.subject,
@@ -422,6 +425,26 @@ export class InboundMailProcessor {
         return { ...base, result: 'duplicate', matchReason: null, conversationMessageId: null };
       }
       throw error;
+    }
+
+    // Phase-12-Finalisierung §4.2: Zuordnung zu einem bereits TERMINALEN Vorgang
+    // (z. B. In-Reply-To auf eine Mail eines abgeschlossenen/stornierten Vorgangs)
+    // ⇒ Chatfotos sofort löschen; Fehler ⇒ Retention-Backstop (Zeile bleibt offen).
+    if (match.processId !== null && photos.length > 0) {
+      try {
+        const removed = await this.conversations.deletePhotosIfProcessTerminal(messageId);
+        if (removed.failed > 0) {
+          this.deps.logger?.warn(
+            { conversationMessageId: messageId, failed: removed.failed, code: removed.errorCode },
+            'mail.inbound_poll: Chatfotos (terminaler Vorgang) nicht löschbar – Backstop wiederholt',
+          );
+        }
+      } catch (error) {
+        this.deps.logger?.warn(
+          { conversationMessageId: messageId, code: errorCodeOf(error) },
+          'mail.inbound_poll: Chatfotos (terminaler Vorgang) nicht löschbar – Backstop wiederholt',
+        );
+      }
     }
 
     return {

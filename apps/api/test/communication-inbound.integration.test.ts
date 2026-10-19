@@ -19,6 +19,7 @@ import {
   inboundPollIdempotencyKey,
   nextInboundPollBucket,
 } from '../src/communication/inbound/poll-job.ts';
+import { inboundMessageIdHash } from '../src/communication/inbound/content.ts';
 import { InboundMailProcessor } from '../src/communication/inbound/processor.ts';
 import { DisabledInboundMailSource } from '../src/communication/inbound/sources.ts';
 import { MAIL_INBOUND_POLL_JOB_TYPE } from '../src/communication/types.ts';
@@ -116,7 +117,8 @@ describe('Zuordnung (71–74)', () => {
       mailbox: 'INBOX',
       uidValidity: '1',
       uid: 1,
-      messageId: 'reply-1@example.com',
+      // Phase-12-Finalisierung §4.3: Message-ID nur als SHA-256 der normalisierten ID.
+      messageIdHash: inboundMessageIdHash('reply-1@example.com'),
       status: 'matched',
       matchReason: 'in_reply_to',
       conversationMessageId: message!.id,
@@ -342,7 +344,7 @@ describe('Dedupe und Restart-Sicherheit (69, 70, 79–83)', () => {
     expect(result.outcomes.map((o) => o.result)).toEqual(['unmatched', 'duplicate']);
     const rows = await receipts();
     expect(rows).toHaveLength(1);
-    expect(rows[0]!.messageId).toBeNull();
+    expect(rows[0]!.messageIdHash).toBeNull();
     expect(rows[0]!.fingerprint).toMatch(/^[0-9a-f]{64}$/);
   });
 
