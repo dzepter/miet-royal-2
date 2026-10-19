@@ -492,7 +492,7 @@ describe('121.–122. Datenminimierung & notificationclick-URL', () => {
     ).toBe('MR-2026-0001 – in Miet-Royal prüfen');
     for (const kind of PUSH_KINDS) {
       const payload =
-        kind === 'appointment_1h'
+        kind === 'appointment_1h' || kind === 'assignment_reassigned'
           ? buildPushPayload({
               kind,
               processId,
@@ -648,6 +648,55 @@ describe('123.–128. 1h-Regel: Pickup/Delivery/Return, Vertretung, Reschedule, 
     expect(rows.filter((row) => row.userId === bernd.user.id)).toHaveLength(1);
     await scannerFor().scanDue(new Date(now.getTime() + 2 * MINUTES));
     expect(await deliveries('appointment_1h')).toHaveLength(2);
+
+    // Eigene Benachrichtigung „kurzfristig zugewiesen“ (Order §31, Phase-4-Feld
+    // assignmentNotifiedAt): genau einmal an Bernd, nie an Anna; danach markiert.
+    const reassigned = await deliveries('assignment_reassigned');
+    expect(reassigned).toHaveLength(1);
+    expect(reassigned[0]!.userId).toBe(bernd.user.id);
+    expect(reassigned[0]!.payload).toMatchObject({
+      kind: 'assignment_reassigned',
+      title: 'Kurzfristig zugewiesen',
+      url: `/vorgaenge/${world.processId}/termine`,
+    });
+    expect(JSON.stringify(reassigned[0]!.payload)).toMatch(/^.*Abholung MR-\d{4}-\d{4,}.*$/);
+    const afterNotify = await world.scheduling.byId(world.outboundId);
+    expect(afterNotify.assignmentNotifiedAt).not.toBeNull();
+
+    // Erneute Neuzuweisung am selben Tag ⇒ neue Benachrichtigung an die neue Person.
+    const carla = await makeEmployee(admin.id, 'Carla');
+    await world.scheduling.assign(
+      admin.id,
+      world.outboundId,
+      { userId: carla.user.id, expectedVersion: afterNotify.version },
+      await ctx.auth.effectivePermissions(admin.id),
+    );
+    await scannerFor().scanDue(new Date(now.getTime() + 3 * MINUTES));
+    await scannerFor().scanDue(new Date(now.getTime() + 4 * MINUTES));
+    const all = await deliveries('assignment_reassigned');
+    expect(all).toHaveLength(2);
+    expect(all.filter((row) => row.userId === carla.user.id)).toHaveLength(1);
+    expect(all.filter((row) => row.userId === anna.user.id)).toHaveLength(0);
+  });
+
+  it('128b. Erstzuweisung (kein Wechsel) und Neuzuweisung an einem anderen Tag lösen keine Kurzfrist-Benachrichtigung aus', async () => {
+    const { admin } = await adminSession();
+    const anna = await makeEmployee(admin.id, 'Anna');
+    const bernd = await makeEmployee(admin.id, 'Bernd');
+    const now = new Date();
+    const world = await bookingWithTimes(admin.id, anna.user.id, {
+      outbound: new Date(now.getTime() + 3 * DAYS),
+      inbound: null,
+    });
+    const current = await world.scheduling.byId(world.outboundId);
+    await world.scheduling.assign(
+      admin.id,
+      world.outboundId,
+      { userId: bernd.user.id, expectedVersion: current.version },
+      await ctx.auth.effectivePermissions(admin.id),
+    );
+    await scannerFor().scanDue(now);
+    expect(await deliveries('assignment_reassigned')).toHaveLength(0);
   });
 });
 

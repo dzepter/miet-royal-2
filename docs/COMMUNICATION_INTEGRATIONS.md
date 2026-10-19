@@ -155,6 +155,13 @@ Benachrichtigungen. Env: `PUSH_VAPID_PUBLIC_KEY`, `PUSH_VAPID_PRIVATE_KEY`,
 `pnpm --filter @mietroyal/api push:generate-vapid-keys`, je Umgebung ein
 eigenes Paar – Demo und Live teilen nie Keys).
 
+**Regeln (Order §31):** 1 h vor Abholung/Lieferung/Rückgabe an die effektive
+Zuständigkeit (inkl. Vertretung), kurzfristige Neuzuweisung am
+Durchführungstag an die neue Person, Vertretungsbeginn an die Vertretung,
+überfällige Rückgabe einmal je Incident, Maschinenrisiko initial plus genau
+eine Erinnerung nach 6 h, neues Gerät an Admins; kein Reinigungs- und kein
+Tour-Push.
+
 **Grenzen/Entscheidungen:** Push erst nach bewusstem Klick; Subscription je
 User × Gerätesession; 404/410 deaktivieren; Revoke/Logout/Deaktivierung ⇒
 kein Push; keine Kundendaten (nur Vorgangsnummer/Terminart, technisch durch

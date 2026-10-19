@@ -189,7 +189,9 @@ export type PushKind =
   | 'machine_risk_6h'
   | 'session_new_device_login'
   // Phase 12 (push): Vertretungsbeginn – kleiner Hinweis an die Vertretung (Order §31).
-  | 'substitution_started';
+  | 'substitution_started'
+  // Phase 12 (push): kurzfristige Neuzuweisung am Durchführungstag (Order §31, Phase-4-Feld assignmentNotifiedAt).
+  | 'assignment_reassigned';
 
 /** Datenminimierung: keine Kundennamen/Telefon/Adresse/Schäden/Beträge. */
 export interface PushPayload {

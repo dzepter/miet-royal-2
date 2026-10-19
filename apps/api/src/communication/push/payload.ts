@@ -33,7 +33,13 @@ export type PushPayloadInput =
   | { kind: 'machine_risk'; processId: string; processNumber: string }
   | { kind: 'machine_risk_6h'; processId: string; processNumber: string }
   | { kind: 'session_new_device_login' }
-  | { kind: 'substitution_started' };
+  | { kind: 'substitution_started' }
+  | {
+      kind: 'assignment_reassigned';
+      processId: string;
+      processNumber: string;
+      appointmentKind: PushAppointmentKind;
+    };
 
 function assertProcessNumber(value: string): string {
   // Nur das kanonische Format MR-YYYY-NNNN – kein freier Text.
@@ -111,6 +117,17 @@ export function buildPushPayload(input: PushPayloadInput): PushPayload {
         url: '/mitarbeiter',
         tag: 'session-new-device',
       };
+    case 'assignment_reassigned': {
+      const label = appointmentKindLabel(input.appointmentKind);
+      const number = assertProcessNumber(input.processNumber);
+      return {
+        kind: input.kind,
+        title: 'Kurzfristig zugewiesen',
+        body: `${label} ${number} – ${PUSH_CHECK_HINT}`,
+        url: processPath(input.processId, 'termine'),
+        tag: `assignment-reassigned:${input.processId}:${input.appointmentKind}`,
+      };
+    }
     case 'substitution_started':
       return {
         kind: input.kind,
@@ -130,4 +147,5 @@ export const PUSH_KINDS: readonly PushKind[] = [
   'machine_risk_6h',
   'session_new_device_login',
   'substitution_started',
+  'assignment_reassigned',
 ];

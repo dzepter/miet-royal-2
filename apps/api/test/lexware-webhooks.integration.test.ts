@@ -488,15 +488,19 @@ describe('Job lexware.event.process – Worker (§48–51, Tests 132–136)', ()
     expect(event!.status).toBe('processed');
 
     fake.revoked = true;
+    const secondEventDate = '2026-10-19T10:00:00.000+02:00';
     const second = fake.signWebhook({
       eventType: 'payment.changed',
       resourceId: invoice.id,
-      eventDate: '2026-10-19T10:00:00.000+02:00',
+      eventDate: secondEventDate,
     });
     await postWebhook(ctx, second.body, second.signature);
     expect(await ctx.jobs.runOnce()).toBe('processed'); // kein Throw ⇒ kein Retry
     const all = await events();
-    expect(all.find((e) => e.eventDate.toISOString().startsWith('2026-10-19'))).toMatchObject({
+    // Exakter Zeitpunkt statt Datumspräfix: das erste Ereignis trägt „jetzt“ als
+    // Datum und kann am selben Kalendertag liegen.
+    const secondIso = new Date(secondEventDate).toISOString();
+    expect(all.find((e) => e.eventDate.toISOString() === secondIso)).toMatchObject({
       status: 'failed',
       resultCode: 'LEXWARE_UNAUTHORIZED',
     });

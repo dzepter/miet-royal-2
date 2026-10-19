@@ -42,6 +42,11 @@ import {
  * (d) Maschinenrisiko: ein Push bei Entstehung, genau EINE Erinnerung ≥ 6 h
  *     danach, solange offen; nie mehr.
  * (e) Neues Gerät: Backstop zum Sofort-Hook der Anmeldung (gleicher Schlüssel).
+ * (g) Kurzfristige Neuzuweisung am Durchführungstag (Phase-4-Kriterium
+ *     „acknowledgementRequestedAt gesetzt UND assignmentNotifiedAt NULL“):
+ *     genau ein Push an die neu zuständige Person je Neuzuweisung; danach
+ *     assignmentNotifiedAt (nur, wenn die Zuweisung inzwischen nicht erneut
+ *     geändert wurde). Erst Zustellung einreihen, dann markieren.
  * (f) Reinigung > 24 h: bewusst KEIN Push. Touren existieren nicht
  *     (tour.delay_risk bleibt Grenze, kein PushKind).
  */
@@ -64,6 +69,7 @@ export interface PushScanSummary {
   machineRisk: number;
   machineRisk6h: number;
   newDevice: number;
+  reassignment: number;
 }
 
 export function appointmentPushFingerprint(
@@ -85,6 +91,8 @@ export const pushKeys = {
   machineRisk: (riskId: string, userId: string) => `push:machine_risk:${riskId}:${userId}`,
   machineRisk6h: (riskId: string, userId: string) => `push:machine_risk_6h:${riskId}:${userId}`,
   newDevice: (sessionId: string, userId: string) => `push:new_device:${sessionId}:${userId}`,
+  reassignment: (appointmentId: string, requestedAt: Date, userId: string) =>
+    `push:assignment_reassigned:${appointmentId}:${requestedAt.toISOString()}:${userId}`,
 };
 
 export class PushRuleScanner {
@@ -104,11 +112,13 @@ export class PushRuleScanner {
       machineRisk: 0,
       machineRisk6h: 0,
       newDevice: 0,
+      reassignment: 0,
     };
     const risk = await this.scanMachineRisks(now);
     summary.machineRisk = risk.initial;
     summary.machineRisk6h = risk.followUp;
     summary.newDevice = await this.scanNewDeviceLogins(now);
+    summary.reassignment = await this.scanSameDayReassignments(now);
     this.deps.logger?.info({ ...summary }, 'Push-Regeln geprüft');
     return summary;
   }
@@ -231,6 +241,67 @@ export class PushRuleScanner {
         payload: buildPushPayload({ kind: 'substitution_started' }),
       });
       if (!result.deduplicated) enqueued += 1;
+    }
+    return enqueued;
+  }
+
+  // (g) ─────────────────────────────────────────────────────────────────────
+  async scanSameDayReassignments(now: Date): Promise<number> {
+    const rows = await this.deps.db
+      .select({
+        appointmentId: appointments.id,
+        kind: appointments.kind,
+        requestedAt: appointments.acknowledgementRequestedAt,
+        requestedFor: appointments.acknowledgementRequestedFor,
+        processId: appointments.processId,
+        processNumber: processes.processNumber,
+        processStatus: processes.mainStatus,
+        userStatus: staffUsers.status,
+      })
+      .from(appointments)
+      .innerJoin(processes, eq(processes.id, appointments.processId))
+      .innerJoin(staffUsers, eq(staffUsers.id, appointments.acknowledgementRequestedFor))
+      .where(
+        and(
+          eq(appointments.status, 'scheduled'),
+          isNotNull(appointments.acknowledgementRequestedAt),
+          isNull(appointments.assignmentNotifiedAt),
+        ),
+      );
+    let enqueued = 0;
+    for (const row of rows) {
+      if (row.requestedAt === null || row.requestedFor === null) continue;
+      const deliver = row.userStatus === 'active' && row.processStatus !== 'cancelled';
+      if (deliver) {
+        const result = await this.deps.push.enqueue({
+          kind: 'assignment_reassigned',
+          userId: row.requestedFor,
+          idempotencyKey: pushKeys.reassignment(
+            row.appointmentId,
+            row.requestedAt,
+            row.requestedFor,
+          ),
+          payload: buildPushPayload({
+            kind: 'assignment_reassigned',
+            processId: row.processId,
+            processNumber: row.processNumber,
+            appointmentKind: row.kind as PushAppointmentKind,
+          }),
+        });
+        if (!result.deduplicated) enqueued += 1;
+      }
+      // Genau einmal je Neuzuweisung: nur markieren, wenn die Zuweisung seit dem
+      // Lesen nicht erneut geändert wurde (dann gilt der neue requestedAt-Wert).
+      await this.deps.db
+        .update(appointments)
+        .set({ assignmentNotifiedAt: now })
+        .where(
+          and(
+            eq(appointments.id, row.appointmentId),
+            eq(appointments.acknowledgementRequestedAt, row.requestedAt),
+            isNull(appointments.assignmentNotifiedAt),
+          ),
+        );
     }
     return enqueued;
   }

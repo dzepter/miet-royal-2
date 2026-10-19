@@ -2270,7 +2270,15 @@ Shell cwd was reset to /home/user/Sparkoffer.de
   Nutzer mit `employee.manage`; der Scan holt verpasste Ereignisse der letzten
   24 h mit demselben Schlüssel nach. (f) Reinigung > 24 h: bewusst kein Push;
   Touren existieren nicht (`tour.delay_risk` bleibt Grenzbegriff, kein
-  PushKind).
+  PushKind). (g) Kurzfristige Neuzuweisung (Order §31): Kriterium aus Phase 4
+  „`acknowledgement_requested_at` gesetzt UND `assignment_notified_at` NULL“
+  (gleicher Durchführungstag) ⇒ genau ein Push „Kurzfristig zugewiesen –
+  <Terminart> <Vorgangsnummer>“ an die neu zuständige Person
+  (`push:assignment_reassigned:<termin>:<requestedAt>:<user>`), danach
+  `assignment_notified_at` – nur wenn die Zuweisung seit dem Lesen nicht erneut
+  geändert wurde; eine weitere Neuzuweisung erzeugt eine neue Benachrichtigung.
+  Erstzuweisungen und Wechsel an anderen Tagen lösen keinen Kurzfrist-Push aus
+  (der 1-h-Push geht ohnehin an die aktuelle Zuständigkeit).
 - **ICS-Feed.** Token 32 Random-Bytes base64url (43 Zeichen), nur SHA-256 in
   `calendar_feed_tokens` (ein Token je User; Regenerate ersetzt den Hash ⇒
   alter Link sofort 404). Öffentliche Route `GET /public/calendar/<token>.ics`
