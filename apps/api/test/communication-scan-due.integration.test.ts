@@ -79,10 +79,13 @@ function scanDeps(scanners: DueScanner[], reenqueue = true) {
 
 describe('Self-Re-Enqueue mit Bucket-Schlüssel', () => {
   it('Boot-Enqueue dedupliziert je 2-min-Bucket; jeder Lauf reiht die Zielminute mit eigenem Schlüssel ein', async () => {
-    const now = new Date('2026-10-20T10:01:30.000Z');
+    // Testzeitpunkt liegt sicher NACH der Echtzeit (morgen, 90 s nach einem Bucket-Beginn) –
+    // datumsunabhängig statt eines festen Datums, das irgendwann in der Vergangenheit liegt.
+    const tomorrow = Date.now() + 24 * 60 * 60 * 1000;
+    const now = new Date(tomorrow - (tomorrow % SCAN_DUE_INTERVAL_MS) + 90_000);
     const bucket = scanDueBucketStart(now);
-    expect(bucket.toISOString()).toBe('2026-10-20T10:00:00.000Z');
-    expect(nextScanDueBucket(now).toISOString()).toBe('2026-10-20T10:02:00.000Z');
+    expect(bucket.getTime()).toBe(now.getTime() - 90_000);
+    expect(nextScanDueBucket(now).getTime()).toBe(bucket.getTime() + 120_000);
     expect(SCAN_DUE_INTERVAL_MS).toBe(120_000);
     await enqueueScanDue(ctx.queue, now);
     await enqueueScanDue(ctx.queue, new Date(now.getTime() + 20_000)); // gleicher Bucket ⇒ kein zweiter Job

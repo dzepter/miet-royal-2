@@ -6,6 +6,7 @@ import { AuthGuard } from '../../../components/auth-guard';
 import {
   fetchPushDevices,
   fetchPushStatus,
+  PUSH_REBOUND_EVENT,
   subscribeToPush,
   type PushDevice,
   type PushStatus,
@@ -40,6 +41,10 @@ function NotificationSettings() {
   }, []);
   useEffect(() => {
     void load();
+    // Phase 12 Finalisierung (Push-Rebind): nach stillem Wiederanbinden Status neu laden.
+    const reload = () => void load();
+    window.addEventListener(PUSH_REBOUND_EVENT, reload);
+    return () => window.removeEventListener(PUSH_REBOUND_EVENT, reload);
   }, [load]);
 
   async function enable() {

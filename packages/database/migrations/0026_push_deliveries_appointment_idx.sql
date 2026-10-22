@@ -1,0 +1,1 @@
+CREATE INDEX "push_deliveries_appointment_idx" ON "push_deliveries" USING btree ("appointment_id");

@@ -321,7 +321,8 @@ Gerät, last_seen, revoked.
 entscheidet nicht über „neues Gerät“.
 <!-- Phase 12 Finalisierung (Push-Session-Bindung, Migration 0025) -->
 `staff_sessions.device_token_hash` (text NULL): SHA-256 des Geräte-Cookies
-`mr_staff_device` der Anmeldung (alle Loginpfade; nie Klartext, nie API-Feld).
+der Anmeldung (`__Host-mr_staff_device`, in development `mr_staff_device`;
+alle Loginpfade; nie Klartext, nie API-Feld).
 NULL = Session vor dem Rollout. Index (`user_id`, `device_token_hash`) WHERE
 NOT NULL. Einziger Zweck: nach einem erneuten Login desselben Mitarbeiters auf
 demselben Gerät dessen aktive Push-Abos an die neue Session binden (nie an eine
@@ -330,12 +331,14 @@ andere Person).
 ### StaffKnownDevice (Phase 12 Finalisierung)
 Tabelle `staff_known_devices`: bekannte Geräte je Mitarbeiter – `id`,
 `user_id`, `device_token_hash` (NUR SHA-256 des serverseitig erzeugten
-HttpOnly-Cookies `mr_staff_device`, 32 Zufallsbytes base64url; nie Klartext),
+HttpOnly-Cookies `__Host-mr_staff_device` bzw. in development
+`mr_staff_device`, 32 Zufallsbytes base64url; nie Klartext),
 `display_label` (Anzeige aus dem User-Agent, wird beim Login aktualisiert),
 `first_seen_at`, `last_seen_at`. UNIQUE(`user_id`, `device_token_hash`):
 „neues Gerät“ ⇔ das Paar existiert noch nicht ⇒ atomar genau ein
 `session.new_device_login` (Admin-Push). Logout/Session-Widerruf lassen den
-Eintrag bestehen. `staff_login_challenges.device_token_hash` trägt denselben
+Eintrag bestehen; ebenso Passwort-/2FA-Reset und Recovery (Fachentscheidung
+2026-10-22, kein Codepfad löscht Zeilen). `staff_login_challenges.device_token_hash` trägt denselben
 Hash vom Passwortschritt bis zum Abschluss (TOTP/Recovery/Ersteinrichtung).
 
 ### Substitution

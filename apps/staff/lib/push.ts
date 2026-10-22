@@ -1,6 +1,7 @@
 'use client';
 
 import { apiFetch } from './api';
+import { createPushRebindScheduler, type PushRebindResult } from './push-rebind';
 import { PUSH_DENIED_TEXT, type PushStateInput } from './push-state';
 
 /**
@@ -157,4 +158,42 @@ export async function subscribeToPush(): Promise<SubscribeOutcome> {
   } catch {
     return { ok: false, reason: 'failed', message: 'Push konnte nicht aktiviert werden.' };
   }
+}
+
+// Phase 12 Finalisierung (Punkt 4): automatisches Wiederanbinden ohne Prompt.
+
+/** Ereignis nach erfolgreichem Wiederanbinden – die Einstellungsseite lädt den Status neu. */
+export const PUSH_REBOUND_EVENT = 'mietroyal:push-rebound';
+
+const pushRebind = createPushRebindScheduler();
+
+/**
+ * Einmal je App-Start mit gültiger Session (AuthGuard, Zustand „ready“):
+ * vorhandene Browser-Subscription bei erteilter Berechtigung still erneut
+ * registrieren (lib/push-rebind.ts). Kein Prompt, kein neues Abo, kein Log.
+ */
+export async function rebindPushOnAppStart(): Promise<PushRebindResult> {
+  const result = await pushRebind.run(() => ({
+    supported: isPushSupported(),
+    online: typeof navigator === 'undefined' || navigator.onLine !== false,
+    notification: { permission: isPushSupported() ? Notification.permission : 'default' },
+    serviceWorker: {
+      getRegistration: async () =>
+        isPushSupported() ? navigator.serviceWorker.getRegistration() : undefined,
+    },
+    register: async (body) => {
+      const response = await apiFetch('/staff/push/subscriptions', { method: 'POST', body });
+      return { ok: response.ok };
+    },
+    userAgentLabel: deviceLabel,
+  }));
+  if (result === 'rebound' && typeof window !== 'undefined') {
+    window.dispatchEvent(new Event(PUSH_REBOUND_EVENT));
+  }
+  return result;
+}
+
+/** Nach erfolgreichem Login im selben Tab: nächster App-Start-Aufruf bindet erneut an. */
+export function armPushRebindAfterLogin(): void {
+  pushRebind.armAfterLogin();
 }

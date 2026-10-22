@@ -493,7 +493,11 @@ export const pushDeliveries = pgTable(
     sentAt: timestamp('sent_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
-  (table) => [index('push_deliveries_user_idx').on(table.userId, table.createdAt)],
+  (table) => [
+    index('push_deliveries_user_idx').on(table.userId, table.createdAt),
+    // Phase 12 Finalisierung 2 (Review Runde 3): Zustellungen einer Kurzfrist-Version je Termin.
+    index('push_deliveries_appointment_idx').on(table.appointmentId),
+  ],
 );
 
 // ── Privater Kalender-Feed (Order §33) ──────────────────────────────────

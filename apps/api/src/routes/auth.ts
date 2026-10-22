@@ -2,11 +2,7 @@ import type { AppConfig } from '@mietroyal/config';
 import { parseOrThrow, z } from '@mietroyal/validation';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import QRCode from 'qrcode';
-import {
-  DEVICE_COOKIE_NAME,
-  deviceLabelFromUserAgent,
-  resolveDeviceToken,
-} from '../auth/device.ts';
+import { deviceCookieName, deviceLabelFromUserAgent, resolveDeviceToken } from '../auth/device.ts';
 import {
   clearSessionCookie,
   requireAuth,
@@ -109,7 +105,9 @@ export function registerAuthRoutes(app: FastifyInstance, options: AuthRouteOptio
     // (nie aus dem Body – loginSchema verwirft Zusatzfelder); fehlt es oder
     // ist es ungültig, entsteht serverseitig ein neuer Wert. Der Hash reist
     // über die Login-Challenge bis zur Session (TOTP/Recovery/Ersteinrichtung).
-    const device = resolveDeviceToken(request.cookies?.[DEVICE_COOKIE_NAME]);
+    // Phase 12: ausschließlich der Name der Umgebung (kein Fallback auf den
+    // alten Namen außerhalb development).
+    const device = resolveDeviceToken(request.cookies?.[deviceCookieName(config.appEnv)]);
     const result = await auth.login({ ...body, deviceLabel, deviceTokenHash: device.hash });
 
     if (result.kind === 'failed') {

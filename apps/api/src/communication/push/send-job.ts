@@ -5,7 +5,12 @@ import type { PushGateway, PushPayload } from '../types.ts';
 import { PUSH_ENDPOINT_NOT_ALLOWED } from './endpoint-policy.ts';
 import type { PushSendJobPayload } from './push-service.ts';
 import type { PushSubscriptionService } from './subscription-service.ts';
-import { isDeliveryStillCurrent, PUSH_SUPERSEDED_CODE } from './supersede.ts';
+import {
+  deliveryCurrency,
+  PUSH_SUPERSEDED_CODE,
+  PUSH_SUPERSEDED_RECIPIENT_CODE,
+  type DeliveryCurrency,
+} from './supersede.ts';
 
 /**
  * Job `push.send` (Order §29/§37): sendet eine Zustellung an alle aktiven
@@ -22,6 +27,10 @@ import { isDeliveryStillCurrent, PUSH_SUPERSEDED_CODE } from './supersede.ts';
  *   (supersede.ts). Überholt ⇒ `skipped`/`SUPERSEDED`, kein (weiterer) Aufruf,
  *   Job endet erfolgreich (kein Retry). Restfenster: eine Änderung während
  *   eines laufenden Gateway-Aufrufs (keine Sperre über den Versand).
+ * - Phase 12 Finalisierung 2 (Kurzfrist-Push, Regel F): `closed` ⇒
+ *   `SUPERSEDED`, Schlüssel bleibt belegt (Version geschlossen, keine
+ *   Wiederbelebung); `recipient_changed` (Vertretungswechsel) ⇒
+ *   `SUPERSEDED_RECIPIENT`, Schlüssel frei, wenn noch kein Gerät erreicht wurde.
  * Log: nur IDs, kind, Zähler, neutraler Code – nie Endpoint/Keys/Payload.
  */
 export interface PushSendJobDeps {
@@ -49,8 +58,12 @@ export function createPushSendHandler(deps: PushSendJobDeps): JobHandler {
     if (delivery.status !== 'pending') return; // bereits verarbeitet (Replay)
 
     // Phase 12 Finalisierung (B2): passt die Zustellung noch zum aktuellen Stand?
-    const stillCurrent = () => isDeliveryStillCurrent(deps.db, delivery, new Date());
-    const markSuperseded = async (targeted: number, succeeded: number) => {
+    const currency = () => deliveryCurrency(deps.db, delivery, new Date());
+    const markSuperseded = async (
+      outcome: Exclude<DeliveryCurrency, 'current'>,
+      targeted: number,
+      succeeded: number,
+    ) => {
       // Review Runde 2 (B1): Wurde noch kein Gerät erreicht, gibt die überholte
       // Zustellung ihren fachlichen Schlüssel frei (Suffix `:superseded:<id>`)
       // und löst die 1-h-Marke. Kehrt der Termin später zum selben Stand zurück
@@ -58,15 +71,23 @@ export function createPushSendHandler(deps: PushSendJobDeps): JobHandler {
       // eine NEUE Zustellung mit eigenem Job an – sonst ginge der Push verloren.
       // Wurde schon ein Gerät erreicht, bleibt der Schlüssel belegt (kein
       // zweiter Push für denselben Stand).
+      // Phase 12 Finalisierung 2 (Regel F/G): eine GESCHLOSSENE Kurzfrist-
+      // Version gibt ihren Schlüssel nie frei (heute → morgen → heute belebt
+      // sie nicht wieder); ein Vertretungswechsel (`recipient_changed`) schon.
+      const code =
+        outcome === 'recipient_changed' ? PUSH_SUPERSEDED_RECIPIENT_CODE : PUSH_SUPERSEDED_CODE;
       await deps.db.transaction(async (tx) => {
-        const released = succeeded === 0;
+        // Review Runde 3 (B1): auch Erfolge FRÜHERER Versuche zählen (Retry nach
+        // Teilerfolg) – sonst bekäme dieselbe Person später einen zweiten Push.
+        const reached = Math.max(succeeded, delivery.subscriptionsSucceeded);
+        const released = outcome !== 'closed' && reached === 0;
         const updated = await tx
           .update(pushDeliveries)
           .set({
             status: 'skipped',
             subscriptionsTargeted: targeted,
-            subscriptionsSucceeded: succeeded,
-            lastErrorCode: PUSH_SUPERSEDED_CODE,
+            subscriptionsSucceeded: reached,
+            lastErrorCode: code,
             ...(released
               ? {
                   idempotencyKey: sql`${pushDeliveries.idempotencyKey} || ':superseded:' || ${pushDeliveries.id}::text`,
@@ -82,12 +103,13 @@ export function createPushSendHandler(deps: PushSendJobDeps): JobHandler {
           .where(eq(appointmentReminders.pushDeliveryId, deliveryId));
       });
       deps.logger?.info(
-        { deliveryId, kind: delivery.kind, code: PUSH_SUPERSEDED_CODE, targeted, succeeded },
+        { deliveryId, kind: delivery.kind, code, targeted, succeeded },
         'push.send: Zustellung überholt – nicht gesendet',
       );
     };
-    if (!(await stillCurrent())) {
-      await markSuperseded(0, 0);
+    const initial = await currency();
+    if (initial !== 'current') {
+      await markSuperseded(initial, 0, 0);
       return;
     }
 
@@ -108,9 +130,10 @@ export function createPushSendHandler(deps: PushSendJobDeps): JobHandler {
     const succeededIds: string[] = [];
     for (const target of targets) {
       // B2: unmittelbar vor JEDEM Gateway-Aufruf erneut prüfen (enges Restfenster).
-      if (!(await stillCurrent())) {
+      const check = await currency();
+      if (check !== 'current') {
         await deps.subscriptions.markSuccess(succeededIds);
-        await markSuperseded(targets.length, succeeded);
+        await markSuperseded(check, targets.length, succeeded);
         return;
       }
       const outcome = await deps.gateway.send(

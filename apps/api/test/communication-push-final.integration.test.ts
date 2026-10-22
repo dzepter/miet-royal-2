@@ -14,6 +14,8 @@
  *  RA10–RA12 Versandzeit-Prüfung (B2): überholte 1h-/Kurzfrist-Zustellungen
  *          ⇒ skipped/SUPERSEDED, kein Gateway-Aufruf.
  *  RA13    Kurzfrist-Regel nur für Neuzuweisungen der letzten 24 h (B3).
+ *          Phase 12 Finalisierung 2: start_at wandert mit requestedAt (Regel C –
+ *          same-day), siehe communication-push-reassignment-effective (KR1–KR12).
  */
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -1791,14 +1793,19 @@ describe('RA10–RA13: Zustellung nur, solange sie zum aktuellen Terminstand pas
     expect(await scanner().scanAppointmentReminders(new Date())).toBe(0);
   });
 
-  it('RA13. (B3) Kurzfrist-Regel nur für Neuzuweisungen der letzten 24 h: 10 Tage / 24 h + 1 min alt ⇒ weder Push noch Claim; 23 h alt ⇒ genau ein Push', async () => {
+  it('RA13. (B3) Kurzfrist-Regel nur für Neuzuweisungen der letzten 24 h: 10 Tage / 24 h + 1 min alt ⇒ weder Push noch Claim; frische Neuzuweisung am heutigen Termin ⇒ genau ein Push', async () => {
     const w = await reassignmentWorld();
     await w.assignTo(w.bernd.user.id, 0);
     const now = new Date();
-    const setRequestedAt = (at: Date) =>
+    // Phase 12 Finalisierung 2 (Regel C): Push nur, wenn start_at am selben Berliner
+    // Kalendertag wie requestedAt liegt; deshalb wandert start_at mit (gleicher Zeitpunkt),
+    // geprüft wird hier die 24-h-Grenze. Review Runde 3 (B2): ein Claim NACH dem
+    // Durchführungstag entsteht nie – die Positivkontrolle nutzt daher eine frische
+    // Neuzuweisung am heutigen Termin (der Tagesfall steht in KR14).
+    const setRequestedAt = (at: Date, startAt = at) =>
       ctx.db
         .update(appointments)
-        .set({ acknowledgementRequestedAt: at })
+        .set({ acknowledgementRequestedAt: at, startAt })
         .where(eq(appointments.id, w.pickupId));
     for (const age of [10 * DAYS, DAYS + MINUTES]) {
       await setRequestedAt(new Date(now.getTime() - age));
@@ -1806,8 +1813,8 @@ describe('RA10–RA13: Zustellung nur, solange sie zum aktuellen Terminstand pas
       expect(await reassignedDeliveries()).toHaveLength(0);
       expect((await w.current()).assignmentNotifiedAt).toBeNull(); // nicht geclaimt
     }
-    const requestedAt = new Date(now.getTime() - 23 * HOURS);
-    await setRequestedAt(requestedAt);
+    const requestedAt = new Date(now.getTime() - 1000);
+    await setRequestedAt(requestedAt, now);
     expect(await scanner().scanSameDayReassignments(now)).toBe(1);
     const [row] = await reassignedDeliveries();
     expect(row!.idempotencyKey).toBe(

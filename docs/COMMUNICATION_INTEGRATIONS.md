@@ -192,6 +192,13 @@ Durchführungstag an die neue Person, Vertretungsbeginn an die Vertretung,
 überfällige Rückgabe einmal je Incident, Maschinenrisiko initial plus genau
 eine Erinnerung nach 6 h, neues Gerät an Admins; kein Reinigungs- und kein
 Tour-Push.
+Phase 12 Finalisierung 2: Der Kurzfrist-Push geht an die EFFEKTIVE
+Zuständigkeit der neu zugewiesenen Person (ist sie vertreten, an die
+Vertretung; die Übernahmebestätigung bleibt bei der direkt zugewiesenen
+Person) und nur, solange der Termin am selben Berliner Kalendertag wie die
+Neuzuweisung stattfindet; Vertretungswechsel vor dem Versand ⇒ die alte
+Zustellung wird `SUPERSEDED_RECIPIENT`, die nun zuständige Person bekommt genau
+einen Push (Details: TECH_DECISIONS.md, Regeln A–G).
 
 **Grenzen/Entscheidungen:** Push erst nach bewusstem Klick; Subscription je
 User × Gerätesession; 404/410 deaktivieren; Revoke/Logout/Deaktivierung ⇒
@@ -214,6 +221,23 @@ technisch: Logout/Session-Widerruf, Inaktivität (30 Tage), Mitarbeiter
 gesperrt/deaktiviert, 404/410 des Push-Dienstes (auch wenn der Browser die
 Subscription verloren hat – dann zeigt die Seite wieder „aktivieren“),
 unzulässiger Endpoint, Übernahme des Endpoints durch einen anderen User.
+
+**Automatisches Wiederanbinden (Phase 12 Finalisierung, Auftrag 2026-10-22):**
+Nach Login bzw. beim Start der Staff-App mit gültiger Online-Session
+(AuthGuard, einmal je App-Start) registriert `apps/staff/lib/push-rebind.ts`
+die VORHANDENE Browser-Subscription still erneut über
+`POST /staff/push/subscriptions` – nur bei `Notification.permission ===
+'granted'` und nur, wenn `pushManager.getSubscription()` des registrierten
+Service Workers eine Subscription liefert. Kein Prompt, kein Klick, kein
+`pushManager.subscribe()`, keine Endpoints aus LocalStorage/Query/Cookie, kein
+Logging; offline wird nichts versucht. Der Server bindet sie an User + aktuelle
+Session und reaktiviert sie (z. B. nach `session_expired`/Logout); Allowlist und
+Schlüsselprüfung gelten unverändert. `'default'` ⇒ Button „Push-
+Benachrichtigungen aktivieren“, `'denied'` ⇒ nur der Hinweis – jeweils ohne
+Anfrage. Eine vom Push-Dienst aufgegebene Subscription (404/410), die der
+Browser noch liefert, wird dadurch reaktiviert, beim nächsten Versand aber
+wieder deaktiviert. Fremder User auf demselben Browser: bestehende
+Übernahmeregel (vollständige Subscription ⇒ Zeile wechselt zum neuen User).
 
 **Endpoint-Allowlist (Härtung Review B, B10):** Der Push-Endpoint kommt frei
 vom Browser; der Server baut dorthin Verbindungen auf. Deshalb gilt

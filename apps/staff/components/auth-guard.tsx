@@ -26,6 +26,8 @@ import {
 } from '../lib/offline/device';
 import { OfflineProvider } from '../lib/offline/provider';
 import { cachedIdentity, offlineRuntime } from '../lib/offline/runtime';
+// Phase 12 Finalisierung (Push-Rebind)
+import { rebindPushOnAppStart } from '../lib/push';
 import { OfflineIndicator, UpdateBanner } from './offline-indicator';
 
 export { cachedIdentity };
@@ -427,6 +429,9 @@ export function AuthGuard({ children }: { children: ReactNode }) {
         }
       }
       setState('ready');
+      // Phase 12 Finalisierung (Push-Rebind): gültige Online-Session ⇒ vorhandene
+      // Browser-Subscription still wieder anbinden (einmal je App-Start/Login, ohne Prompt).
+      void rebindPushOnAppStart();
     }
   }, [router, startOffline]);
 

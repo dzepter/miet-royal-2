@@ -2268,7 +2268,8 @@ Shell cwd was reset to /home/user/Sparkoffer.de
   Follow-up genau einmal (`follow_up_sent_at`), nie mehr; Empfänger wie (c).
   (e) Neues Gerät: Sofort-Hook nach `session.new_device_login`
   (= erste Session eines Users mit bisher unbekanntem Geräte-Cookie
-  `mr_staff_device` – Phase-12-Finalisierung, siehe „Phase 12 Finalisierung:
+  `__Host-mr_staff_device` bzw. in development `mr_staff_device` –
+  Phase-12-Finalisierung, siehe „Phase 12 Finalisierung:
   Geräteidentität“; vorher fälschlich über `device_label`) an
   Nutzer mit `employee.manage`; der Scan holt verpasste Ereignisse der letzten
   24 h mit demselben Schlüssel nach. (f) Reinigung > 24 h: bewusst kein Push;
@@ -2282,7 +2283,11 @@ Shell cwd was reset to /home/user/Sparkoffer.de
   geändert wurde (Phase 12 Finalisierung: ersetzt durch atomaren Claim, siehe
   unten); eine weitere Neuzuweisung erzeugt eine neue Benachrichtigung.
   Erstzuweisungen und Wechsel an anderen Tagen lösen keinen Kurzfrist-Push aus
-  (der 1-h-Push geht ohnehin an die aktuelle Zuständigkeit).
+  (der 1-h-Push geht ohnehin an die aktuelle Zuständigkeit). Phase 12
+  Finalisierung 2: Empfänger ist die EFFEKTIVE Zuständigkeit (Vertretung),
+  Push nur bei Durchführung am selben Berliner Tag wie die Neuzuweisung –
+  Regeln A–G unter „Phase 12 Finalisierung: kein Push-Opt-out,
+  Reassignment-Claim“.
 - **ICS-Feed.** Token 32 Random-Bytes base64url (43 Zeichen), nur SHA-256 in
   `calendar_feed_tokens` (ein Token je User; Regenerate ersetzt den Hash ⇒
   alter Link sofort 404). Öffentliche Route `GET /public/calendar/<token>.ics`
@@ -2801,7 +2806,21 @@ Reproduzierte Funde aus Review B, behoben und als Regressionstests in
   bisher unbekanntem `device_label` (grob aus dem User-Agent). Zwei echte
   Geräte mit gleichem Browser/OS galten als eines (Admin-Hinweis blieb aus),
   ein anderer User-Agent auf demselben Gerät als neues.
-- **Identität = Cookie `mr_staff_device`:** 32 Zufallsbytes base64url
+- **Cookie-Name je Umgebung (finale Entscheidung 2026-10-22):** außerhalb
+  `development` (staging, demo, production) `__Host-mr_staff_device`, in
+  `development` (lokales http) `mr_staff_device`. Einzige Quelle ist
+  `deviceCookieName(appEnv)` in `apps/api/src/auth/device.ts`; Lesen
+  (`POST /auth/login`) und Schreiben (`setDeviceCookie`) nutzen
+  ausschließlich diese Funktion – je Umgebung gilt genau EIN Name, zwei
+  Cookies werden nie parallel akzeptiert (schickt ein Browser beide, zählt
+  nur der Name der Umgebung). `__Host-`-Regeln: Secure (außerhalb
+  development immer, `deviceCookieSecure`), Path=/, KEIN Domain-Attribut.
+  **Kein Übernehmen des alten Werts:** außerhalb development wird ein
+  mitgeschicktes `mr_staff_device` weder gelesen noch migriert ⇒ nach dem
+  Deploy erhält jeder Browser einmalig einen neuen Wert und meldet sich
+  einmalig als „neues Gerät“ (vor dem Produktivstart bewusst akzeptiert;
+  DEPLOYMENT_NOTES.md). Tests H1–H8.
+- **Identität = Geräte-Cookie (oben: Name je Umgebung):** 32 Zufallsbytes base64url
   (43 Zeichen, `generateToken`), ausschließlich serverseitig erzeugt.
   HttpOnly, SameSite=Strict (wie `mr_staff_session`; der Login ist ein
   same-origin-`fetch` über den Staff-Proxy `/api`, Strict ist verträglich),
@@ -2851,37 +2870,43 @@ Reproduzierte Funde aus Review B, behoben und als Regressionstests in
   einen eigenen Wert, der Browser behält den zuletzt gesetzten ⇒ höchstens
   einmal zusätzlich „neu“. Challenges ohne Hash (nur die ≤ 5 Minuten alten
   aus der Zeit vor dem Rollout) gelten als ungültig (neutrale 401).
-- **Lebenszyklus:** Logout löscht nur `mr_staff_session`, nie
-  `mr_staff_device`. Session-Widerruf, „alle Geräte abmelden“, Sperre,
+- **Lebenszyklus:** Logout löscht nur `mr_staff_session`, nie das
+  Geräte-Cookie. Session-Widerruf, „alle Geräte abmelden“, Sperre,
   Passwortwechsel/-reset und 2FA-Reset lassen `staff_known_devices`
   unverändert (Gerät bleibt bekannt; nur echte neue Cookies melden). Gelöschte
   Website-Daten/Privatmodus ⇒ neues Gerät.
 - **Rollout:** Altbestand hat kein Cookie ⇒ jedes Gerät ist beim ersten Login
   nach dem Deploy einmal „neu“ (konservativ korrekt, DEPLOYMENT_NOTES.md).
-- **Bewusst nicht gebaut (keine Fachregel):** keine UI-Liste „bekannte
-  Geräte“, kein Vergessen/Aufräumen bekannter Geräte.
+- **Bewusst nicht gebaut (Fachentscheidung):** keine UI-Liste „bekannte
+  Geräte“, KEINE Funktion „Geräte vergessen“, kein Aufräumen bekannter Geräte.
 - **Restrisiko Geräte-ID-Fixation (adversarialer Review, bewertet):** Der
-  Server übernimmt jeden formal gültigen Cookie-Wert. Wer per XSS auf dem
-  Staff-Origin oder per Cookie-Tossing von einer Schwester-Subdomain einen ihm
-  bekannten Wert in den Browser des Opfers setzt, kann nach einem späteren
-  Login mit gestohlenen Zugangsdaten (Passwort UND 2FA) die Meldung „neues
-  Gerät“ unterdrücken – keine Anmeldeumgehung. Ein HMAC-signierter
-  Cookie-Wert wurde geprüft und verworfen: der Angreifer kann sich mit einem
-  eigenen Konto jederzeit einen gültig signierten Wert holen und diesen
-  setzen, die Signatur verhindert die Fixation also nicht. Wirksam wäre nur
-  das Präfix `__Host-` (verhindert Cookie-Tossing von Subdomains); das
-  kollidiert mit dem vorgegebenen Namen `mr_staff_device` und braucht eine
-  Entscheidung. Voraussetzung bleibt ohnehin XSS oder eine kompromittierte
-  Subdomain.
-- **Offen (Entscheidung nötig):** Ein Gerät bleibt auch nach Sperre,
-  „alle Geräte abmelden“, Passwort- und 2FA-Reset bekannt (Vorgabe: Widerruf
-  hält das Gerät bekannt). Ob ein Admin-Passwort- oder 2FA-Reset die bekannten
-  Geräte des Mitarbeiters vergessen soll, ist eine Produktentscheidung.
+  Server übernimmt jeden formal gültigen Cookie-Wert. Cookie-Tossing von einer
+  Schwester-Subdomain ist außerhalb development durch das Präfix `__Host-`
+  verhindert (der Browser nimmt das Cookie nur ohne Domain-Attribut, mit
+  Secure und Path=/ an – eine Subdomain kann es weder setzen noch
+  überschreiben). Verbleibend nur XSS auf dem Staff-Origin selbst: wer dort
+  einen ihm bekannten Wert setzt, kann nach einem späteren Login mit
+  gestohlenen Zugangsdaten (Passwort UND 2FA) die Meldung „neues Gerät“
+  unterdrücken – keine Anmeldeumgehung. Ein HMAC-signierter Cookie-Wert wurde
+  geprüft und verworfen: der Angreifer kann sich mit einem eigenen Konto
+  jederzeit einen gültig signierten Wert holen und diesen setzen, die
+  Signatur verhindert die Fixation also nicht.
+- **Entschieden (2026-10-22): Reset/Recovery löschen bekannte Geräte NICHT.**
+  Passwort-Reset (Self-Service-Mail-Link und Admin-Reset-Link),
+  Passwortänderung, 2FA-Reset durch Admin, Recovery-Code-Login und erneute
+  2FA-Einrichtung lassen `staff_known_devices` unverändert; ebenso Sperre und
+  „alle Geräte abmelden“. Begründung: Die Geräte-ID ist kein Trust- oder
+  Auth-Faktor (sie überspringt weder Passwort noch 2FA und öffnet keine
+  Session), sondern nur die Grundlage der Meldung „neues Gerät“; Passwort-,
+  2FA- und Session-Sicherheit sind davon unabhängig (Reset beendet weiterhin
+  alle Sessions). Kein Codepfad löscht Zeilen aus `staff_known_devices`
+  (Tests H6/H7).
 - **Session-Bezug:** `staff_sessions.device_token_hash` (nur Hash, Migration
   0025) hält fest, mit welchem Gerät eine Session entstand – genutzt
   ausschließlich, um Push-Abos desselben Mitarbeiters auf demselben Gerät bei
   einem erneuten Login an die neue Session zu binden (siehe Push-Abschnitt).
-- Tests: `apps/api/test/auth-device-identity.integration.test.ts` (D1–D13).
+- Tests: `apps/api/test/auth-device-identity.integration.test.ts` (D1–D13,
+  H1–H8 Host-präfixiertes Cookie und Reset/Recovery).
 
 ## Phase 12 Finalisierung: kein Push-Opt-out, Reassignment-Claim
 
@@ -2998,6 +3023,45 @@ Reproduzierte Funde aus Review B, behoben und als Regressionstests in
   Deaktivierte Abos werden NIE automatisch reaktiviert (UI zeigt „aktivieren“;
   die erneute Registrierung ist die Reaktivierung). Kein Opt-out, keine
   UI-Änderung (Antwortform `{active}` unverändert).
+- **Automatisches Wiederanbinden nach Session-Ablauf (Auftrag 2026-10-22,
+  Punkt 4).** Problem: Inaktivität/Logout/Revoke deaktivieren das Abo
+  technisch, Browserberechtigung und Browser-Subscription bleiben aber
+  bestehen – nach dem nächsten Login musste die Person erneut auf „aktivieren“
+  klicken, sonst kam still kein Push mehr. Jetzt (nur Client, kein neues
+  Sicherheitsmodell, keine Migration): `apps/staff/lib/push-rebind.ts`
+  (`rebindExistingPushSubscription`, reine Funktion mit injizierten
+  Abhängigkeiten) registriert NUR wenn Push unterstützt, online,
+  `Notification.permission === 'granted'`, ein Service Worker registriert ist
+  und `pushManager.getSubscription()` eine Subscription liefert, GENAU diese
+  (endpoint + keys aus `toJSON()`) über den bestehenden Registrierpfad
+  `POST /staff/push/subscriptions` – ohne Prompt, ohne Klick. NIE
+  `requestPermission()`, NIE `pushManager.subscribe()`, keine Endpoints aus
+  LocalStorage/Query/Cookie, kein Logging; `'default'`/`'denied'` ⇒ nichts
+  (Einstellungsseite zeigt wie bisher Button bzw. Hinweis); Fehler still
+  (`'failed'`), die Einstellungsseite zeigt den echten Status. Aufruf: AuthGuard
+  nach erfolgreichem `/auth/me` im Online-Zustand `ready` (nicht offline, nicht
+  auf Login-/Passwortseiten), über einen Scheduler genau einmal je App-Start;
+  ein erfolgreicher Login im selben Tab gibt ihn erneut frei
+  (`armPushRebindAfterLogin`). Nach `'rebound'` lädt die Einstellungsseite den
+  Status über die Statusroute neu (Ereignis `mietroyal:push-rebound`).
+  Damit gilt der Satz oben („nie automatisch reaktiviert“) weiter für den
+  SERVER; reaktiviert wird nur durch die (jetzt automatische) Registrierung.
+  Server unverändert und belegt (PB1–PB10): angemeldeter User + aktuelle
+  Session (Bindung an die Session des Requests), Endpoint-Allowlist (B10),
+  Schlüssel-Validierung (base64url, Längen), Upsert per Endpoint reaktiviert
+  deaktivierte Abos desselben Users (`session_expired`, `session_revoked`,
+  `gone` …) und bindet an die aktuelle Session. Fremder User: die BESTEHENDE
+  Übernahmeregel – nur mit vollständiger, formal gültiger Subscription
+  (Endpoint + p256dh + auth); dann wechselt die Zeile zum neuen User/zur neuen
+  Session, Schlüssel werden überschrieben, `created_at`/`last_success_at`
+  zurückgesetzt, der alte User erreicht das Gerät nicht mehr. Die Schlüssel
+  werden dabei NICHT mit den gespeicherten verglichen – Schutz ist, dass der
+  Endpoint eine Capability-URL ist, die nur der Browser kennt (nie ausgegeben,
+  nie geloggt); die Statusroute übernimmt nie. Grenze: eine vom Push-Dienst
+  aufgegebene (`gone`) Subscription, die der Browser noch liefert, wird durch
+  das Wiederanbinden zwar reaktiviert, beim nächsten Versand aber erneut
+  `gone` deaktiviert (genau ein Gateway-Aufruf, kein Retry; je App-Start
+  höchstens einmal). Ein `pushsubscriptionchange`-Handler bleibt außen vor.
 - **Versandzeit-Prüfung terminbezogener Pushes (B2).** Der Claim garantiert
   nur den Stand beim Anlegen der Zustellung; zwischen Commit und `push.send`
   (Queue-Latenz, Retry-Backoff +30 s …) konnten Neuzuweisung, Verschiebung oder
@@ -3035,14 +3099,117 @@ Reproduzierte Funde aus Review B, behoben und als Regressionstests in
 - **24-h-Grenze der Kurzfrist-Regel (g) (B3).** Kandidaten nur mit
   `acknowledgement_requested_at > now − 24 h` (`LOOKBACK_MS`, wie die übrigen
   Regeln). Ältere Neuzuweisungen (Bestandsdaten, Scan-Ausfall) werden weder
-  gepusht noch geclaimt – sie fallen nur aus der Kandidatenmenge. Offen (keine
-  Fachregel): „am Durchführungstag zugewiesen, dann auf nächste Woche
-  verschoben“ löst innerhalb der 24 h weiterhin den Kurzfrist-Push aus.
+  gepusht noch geclaimt – sie fallen nur aus der Kandidatenmenge. (Vorher
+  offen: „am Durchführungstag zugewiesen, dann verschoben“ – seit Phase 12
+  Finalisierung 2 entschieden, Regel C unten.)
 - Tests (Fortsetzung): P11–P17 (Session-Bindung, Statusroute), RA10–RA12
   (SUPERSEDED inkl. Retry und Restfenster), RA13 (24 h), RA14/RA15 (Rücknahme
   nach SUPERSEDED); RA6b verschärft (Bernd
   erhält deterministisch keinen Push), RA7 sendet je Zuweisung, solange sie
   aktuell ist.
+
+### Phase 12 Finalisierung 2 (2026-10-22): Kurzfrist-Push effektiv und same-day
+
+Kleine Lösung ohne Notification-Engine und ohne Migration (Code:
+`communication/push/rules.ts` Regel (g), `supersede.ts`, `send-job.ts`,
+Schlüssel in `keys.ts`).
+
+- **A – Zuweisungs-Version** V = (Termin, `acknowledgement_requested_at`,
+  `acknowledgement_requested_for`); gültig nur, solange der Termin `scheduled`
+  ist, `assigned_user_id = acknowledgement_requested_for` und beide Werte
+  unverändert sind (requestedAt ms-genau). `acknowledgement_requested_for`
+  bleibt unverändert die Phase-4-Übernahmebestätigung: NUR diese Person
+  bestätigt (Service `acknowledge` und Route unverändert).
+- **B – Push-Empfänger** R = `effectiveAssigneeForAppointment(Termin,
+  loadSubstitutions(tx), now)` – dieselbe Funktion wie die 1-h-Regel
+  (zukünftige Termine zum Terminbeginn ausgewertet). Schlüssel K(R) =
+  `push:assignment_reassigned:<termin>:<requestedAt>:<R>` (stabiler
+  Recipient-Fingerprint, nur IDs/Zeitpunkt). Beispiel: Anna direkt
+  zugewiesen und durch Bernd vertreten ⇒ Bestätigung bei Anna, Push an Bernd;
+  Anna bekommt keinen Kurzfrist-Push.
+- **C – Same-day:** Push nur, wenn `start_at` gesetzt ist UND am selben
+  Europe/Berlin-Kalendertag liegt wie `acknowledgement_requested_at`. Sonst
+  kein Push; der Anspruch dieser Version ist erledigt (No-op), kein späteres
+  Nachholen. Die Phase-4-Info (requestedAt/-for, Bestätigung) bleibt.
+- **D – Claim je Kandidat in EINER Transaktion:** Termin sperren (`FOR NO KEY
+  UPDATE` wie `SchedulingService.lockAppointment` ⇒ serialisiert gegen
+  assign/reschedule/Storno und gegen parallele Scanner); V erneut prüfen
+  (geändert ⇒ nichts tun, die neue Version ist ein eigener Anspruch); Vorgang
+  nicht storniert; Same-day (C); Version nicht geschlossen (E); Vertretungen IN
+  der Transaktion laden, R bestimmen, R aktiv; existiert K(R) noch nicht ⇒
+  `createDelivery(K(R), R, appointmentId, tx)` und `assignment_notified_at =
+  now` (falls NULL); Commit; danach `enqueueSendJob`. No-op-Fälle (Vorgang
+  storniert, anderer Tag, Empfänger nicht aktiv) setzen ebenfalls
+  `assignment_notified_at` (falls NULL) ⇒ Version erledigt. UNIQUE auf dem
+  Schlüssel verhindert zusätzlich Doppelte.
+- **E – Kandidaten:** `scheduled`, requestedAt/-for gesetzt, requestedAt jünger
+  als 24 h, `assigned_user_id = requested_for` – AUCH mit gesetztem
+  `assignment_notified_at` (das alte Gate „notified IS NULL“ hätte einen
+  Vertretungswechsel nach dem ersten Push nie erreicht), aber ohne
+  geschlossene Versionen. Geschlossen ⇔ (`assignment_notified_at` gesetzt UND
+  keine Zustellung der Version – No-op beim Claim) ODER (eine Zustellung der
+  Version ist `skipped` mit `SUPERSEDED` – schließender Supersede).
+  Zustellungen der Version = kind `assignment_reassigned`, gleicher Termin,
+  Schlüssel beginnt mit `push:assignment_reassigned:<termin>:<requestedAt>:`
+  (freigegebene Schlüssel tragen nur ein Suffix). Ein Vorab-Filter außerhalb
+  der Transaktion (geschlossen / K(R) existiert) spart nur Transaktionen;
+  entschieden wird im Claim.
+- **F – Versandzeit (`push.send`, vor jedem Gateway-Aufruf):**
+  `closed` = Termin nicht geplant ODER Vorgang storniert ODER V geändert
+  (requestedAt/-for, assigned ≠ requested_for, Zustellung gehört nicht zur
+  aktuellen Version) ODER `start_at` fehlt/anderer Berliner Tag ⇒ `skipped`,
+  `SUPERSEDED`, Schlüssel bleibt BELEGT (schließt die Version).
+  `recipient_changed` = V gültig + same-day, aber die aktuelle effektive
+  Zuständigkeit ≠ Empfänger ⇒ `skipped`, `SUPERSEDED_RECIPIENT` (neue
+  Konstante `PUSH_SUPERSEDED_RECIPIENT_CODE`), Schlüssel frei nur, wenn noch
+  kein Gerät erreicht wurde; der nächste Scan erzeugt K(neuer Empfänger) genau
+  einmal. `current` ⇒ senden. Der 1-h-Push ist unverändert (`superseded` ⇒
+  `SUPERSEDED`, Freigabe bei 0 Erfolgen, RA14/RA15).
+- **G – Hin-und-her:** Bereits GESENDETE Zustellungen werden nie erneut
+  gesendet (Schlüssel bleibt belegt): Vertretung Anna → Bernd → Anna erzeugt
+  höchstens je einen Push pro Person; nur eine nie gesendete, wegen
+  Empfängerwechsel überholte Zustellung gibt ihren Schlüssel frei, damit eine
+  Rückkehr zu dieser Person sie benachrichtigen kann. Termin heute →
+  Neuzuweisung → morgen → heute: wurde die Version in der „morgen“-Phase
+  geclaimt (No-op) oder ihre Zustellung überholt ⇒ geschlossen ⇒ kein Push
+  (keine Wiederbelebung); lief in der Zwischenzeit kein Scan und keine
+  Zustellung, entscheidet der aktuelle Stand (wieder same-day) ⇒ Push.
+- **Restfenster:** (1) wie bisher eine Änderung während eines laufenden
+  Gateway-Aufrufs (keine Sperre über den Versand). (2) Vertretungen sperren
+  keine Termine: eine Vertretung, die parallel zur Claim-Transaktion angelegt
+  oder beendet wird, kann den Claim noch mit dem alten Empfänger committen –
+  die Versandzeit-Prüfung (`recipient_changed`) und der nächste Scan (alle
+  2 min) korrigieren das. (3) Ein Vertretungswechsel mehr als 24 h nach der
+  Neuzuweisung erreicht niemanden mehr (24-h-Kandidatenfenster; same-day ⇒
+  der Termin liegt ohnehin am Tag der Neuzuweisung). (4) Zwischen zwei Scans
+  hin- und hergeschaltete Vertretungen bleiben unbemerkt (Scan-Intervall).
+- **Angepasste Bestandstests:** `communication-push-final` RA13 – der 23 h alte
+  requestedAt läge nicht mehr am Durchführungstag (START_AT morgen) ⇒
+  `start_at` wird im Test mitgesetzt, geprüft bleibt nur die 24-h-Grenze.
+  Alle übrigen RA/P-Tests und `communication-push` 128/128b unverändert grün
+  (dort ist niemand vertreten, der Empfänger ist also requested_for; die
+  Neuzuweisungen liegen am Durchführungstag).
+- Tests: `apps/api/test/communication-push-reassignment-effective.integration.
+  test.ts` KR1–KR12 (= Auftrag R1–R12) + KR7b/KR7c (Hin-und-her), KR11b
+  (Storno nach dem Claim); Mutationsproben siehe
+  `docs/PHASE12_TEST_TRACEABILITY.md`.
+- **Adversarialer Review Runde 3 (2026-10-22), behoben:**
+  (B1) Ein Retry nach Teilerfolg gab bei einem Vertretungswechsel den Schlüssel
+  frei, obwohl ein Gerät der Person bereits erreicht war (`subscriptions_
+  succeeded` galt nur für den aktuellen Versuch) ⇒ nach Ende der Vertretung ein
+  zweiter Push an dieselbe Person. Jetzt zählen auch Erfolge früherer Versuche
+  (`max(gespeichert, aktuell)`), freigegeben wird nur, wenn noch NIE ein Gerät
+  erreicht wurde; gilt für Kurzfrist- und 1-h-Push (KR13). (B2) Ein neuer
+  Kurzfrist-Anspruch (Claim) entsteht nie NACH dem Durchführungstag
+  (`berlinDateOf(now) ≤ berlinDateOf(start_at)`, `isReassignmentClaimDay`) –
+  kein „Kurzfristig zugewiesen“ am Folgetag nach einem regulären
+  Vertretungsende, kein Nachholen nach Mitternacht; am Durchführungstag selbst
+  erreicht ein Vertretungswechsel die nun zuständige Person weiterhin (KR14).
+  Die Versandprüfung bleibt beim Vergleich Start/Neuzuweisung (der Job läuft
+  unmittelbar nach dem Claim). RA13 prüft die 24-h-Grenze daher mit einer
+  frischen Neuzuweisung am heutigen Termin. (B3) Index
+  `push_deliveries(appointment_id)` (Migration 0026) für die Suche nach den
+  Zustellungen einer Kurzfrist-Version.
 
 ## Phase 12 Finalisierung: Retention
 
@@ -3155,7 +3322,8 @@ Reproduzierte Funde aus Review B, behoben und als Regressionstests in
   (`normalizeMessageId`, unverändert) – identisch mit dem Backfill der
   Migration 0024. Die Konversationszeile behält die Message-ID bis zur
   Retention (In-Reply-To der Staff-Antwort).
-- **WhatsApp-Technik:** `whatsapp_contacts` ohne `customer_id`, deren letzte
+- **WhatsApp-Technik (vom Auftraggeber bestätigt 2026-10-22):**
+  `whatsapp_contacts` ohne `customer_id`, deren letzte
   Nachricht (`COALESCE(last_inbound_at, updated_at)`) ≥ 90 Tage zurückliegt,
   werden GELÖSCHT (wa_id = Telefonnummer; keine FK zeigt auf die Tabelle; das
   24-h-Fenster ist längst zu; eine neue Nachricht legt die Zeile neu an);

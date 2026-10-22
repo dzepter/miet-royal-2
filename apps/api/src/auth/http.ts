@@ -1,7 +1,7 @@
 import type { AppConfig } from '@mietroyal/config';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import type { PermissionKey } from '@mietroyal/permissions';
-import { DEVICE_COOKIE_MAX_AGE_SECONDS, DEVICE_COOKIE_NAME } from './device.ts';
+import { DEVICE_COOKIE_MAX_AGE_SECONDS, deviceCookieName, deviceCookieSecure } from './device.ts';
 import { AuthError, type AuthenticatedContext, type StaffAuthService } from './service.ts';
 
 export const SESSION_COOKIE_NAME = 'mr_staff_session';
@@ -75,11 +75,13 @@ export function clearSessionCookie(reply: FastifyReply, config: AppConfig): void
  * erneuert; Logout/Widerruf löschen es bewusst NICHT (daher kein clear…).
  */
 export function setDeviceCookie(reply: FastifyReply, config: AppConfig, token: string): void {
-  void reply.setCookie(DEVICE_COOKIE_NAME, token, {
+  // Phase 12 (finale Geräteidentität): Name je Umgebung (`__Host-` außerhalb
+  // development). `__Host-`-Regeln: Secure, Path=/ und bewusst KEIN `domain`.
+  void reply.setCookie(deviceCookieName(config.appEnv), token, {
     path: '/',
     httpOnly: true,
     sameSite: 'strict',
-    secure: config.appEnv !== 'development',
+    secure: deviceCookieSecure(config.appEnv),
     maxAge: DEVICE_COOKIE_MAX_AGE_SECONDS,
   });
 }

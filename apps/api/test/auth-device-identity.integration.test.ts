@@ -20,7 +20,7 @@ import {
 import fastifyCookie from '@fastify/cookie';
 import { and, asc, eq } from 'drizzle-orm';
 import Fastify from 'fastify';
-import type { LightMyRequestResponse } from 'fastify';
+import type { FastifyInstance, LightMyRequestResponse } from 'fastify';
 import * as OTPAuth from 'otpauth';
 import webpush from 'web-push';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
@@ -28,7 +28,9 @@ import { buildApp } from '../src/app.ts';
 import { sha256Hex } from '../src/auth/crypto.ts';
 import {
   DEVICE_COOKIE_MAX_AGE_SECONDS,
-  DEVICE_COOKIE_NAME,
+  DEVICE_COOKIE_NAME_DEVELOPMENT,
+  DEVICE_COOKIE_NAME_HOST_PREFIXED,
+  deviceCookieName,
   resolveDeviceToken,
 } from '../src/auth/device.ts';
 import { setDeviceCookie } from '../src/auth/http.ts';
@@ -76,6 +78,11 @@ const LABEL_IPHONE = 'iPhone · Safari';
 const EMPLOYEE_EMAIL = 'max@test.example';
 const EMPLOYEE_PASSWORD = 'max-mitarbeiter-passwort-1';
 const PUSH_KEYS = { p256dh: 'BPk'.padEnd(87, 'A'), auth: 'auth-secret-16by' };
+/**
+ * Phase 12 (finale Geräteidentität): die D-Tests laufen gegen die
+ * development-App des Testkontexts ⇒ Name über die zentrale Funktion.
+ */
+const DEVICE_COOKIE_NAME = deviceCookieName('development');
 
 // ── Hilfen ──────────────────────────────────────────────────────────────────
 
@@ -94,8 +101,8 @@ function tokenOf(deviceCookie: string): string {
   return deviceCookie.slice(DEVICE_COOKIE_NAME.length + 1);
 }
 
-function deviceSetCookie(response: LightMyRequestResponse) {
-  return response.cookies.find((cookie) => cookie.name === DEVICE_COOKIE_NAME);
+function deviceSetCookie(response: LightMyRequestResponse, name = DEVICE_COOKIE_NAME) {
+  return response.cookies.find((cookie) => cookie.name === name);
 }
 
 async function knownDevices(userId: string) {
@@ -258,7 +265,8 @@ describe('D1. Erstes Gerät', () => {
       });
       const response = await app.inject({ method: 'GET', url: '/probe' });
       await app.close();
-      return deviceSetCookie(response)!;
+      // Phase 12: Name je Umgebung (`__Host-` außerhalb development).
+      return deviceSetCookie(response, deviceCookieName(appEnv))!;
     };
     expect((await issue('development')).secure).toBeFalsy();
     for (const appEnv of ['production', 'staging', 'demo'] as const) {
@@ -296,7 +304,7 @@ describe('D1. Erstes Gerät', () => {
         headers: { 'user-agent': UA_WINDOWS },
       });
       expect(response.statusCode).toBe(200);
-      const device = deviceSetCookie(response)!;
+      const device = deviceSetCookie(response, deviceCookieName('production'))!;
       const session = response.cookies.find((c) => c.name === 'mr_staff_session')!;
       expect(device.secure).toBe(true);
       expect(session.secure).toBe(true);
@@ -1062,5 +1070,465 @@ describe('D13. Admin-Push exakt einmal', () => {
       expect(serialized).not.toContain('Windows');
       expect(serialized).not.toContain('Max');
     }
+  });
+});
+
+// ── H1–H8: Host-präfixiertes Geräte-Cookie (Phase 12, finale Geräteidentität) ─
+
+const HOST_ENVS = ['production', 'staging', 'demo'] as const;
+type HostEnv = (typeof HOST_ENVS)[number];
+
+/** Production-Pattern wie in D1: echte loadConfig je Umgebung + buildApp. */
+async function withEnvApp<T>(appEnv: HostEnv, run: (app: FastifyInstance) => Promise<T>) {
+  const keys = webpush.generateVAPIDKeys();
+  const envConfig = loadConfig({
+    APP_ENV: appEnv,
+    DATABASE_URL: ctx.config.databaseUrl,
+    AUTH_SECRET_KEY: '1'.repeat(64),
+    COMMUNICATION_PAYLOAD_KEY: 'c1'.repeat(32),
+    STORAGE_DRIVER: 'fs',
+    STORAGE_FS_ROOT: ctx.config.storage.driver === 'fs' ? ctx.config.storage.fsRoot : '/tmp/x',
+    LOG_LEVEL: 'error',
+    PUSH_VAPID_PUBLIC_KEY: keys.publicKey,
+    PUSH_VAPID_PRIVATE_KEY: keys.privateKey,
+    PUSH_VAPID_SUBJECT: 'mailto:it@miet-royal.example',
+  });
+  expect(envConfig.appEnv).toBe(appEnv);
+  const app = buildApp({
+    config: { ...envConfig, auth: ctx.config.auth },
+    pool: ctx.pool,
+    mailAdapter: ctx.mail,
+    rateLimitEnabled: false,
+    storage: ctx.storage,
+    jobQueue: ctx.queue,
+  });
+  await app.ready();
+  try {
+    return await run(app);
+  } finally {
+    await app.close();
+  }
+}
+
+async function loginOn(
+  app: FastifyInstance,
+  cookie: string | undefined,
+  email = EMPLOYEE_EMAIL,
+  password = EMPLOYEE_PASSWORD,
+) {
+  return app.inject({
+    method: 'POST',
+    url: '/auth/login',
+    payload: { email, password },
+    headers: { 'user-agent': UA_WINDOWS, ...(cookie === undefined ? {} : { cookie }) },
+  });
+}
+
+/** Rohe Set-Cookie-Header (ohne Interpretation durch light-my-request). */
+function rawSetCookies(response: LightMyRequestResponse): string[] {
+  const header = response.headers['set-cookie'];
+  if (header === undefined) return [];
+  return Array.isArray(header) ? header : [String(header)];
+}
+
+/** Genau ein Set-Cookie-Header für `name`; Attribute klein geschrieben, getrimmt. */
+function rawDeviceHeader(response: LightMyRequestResponse, name: string) {
+  const headers = rawSetCookies(response).filter((header) => header.startsWith(`${name}=`));
+  expect(headers, name).toHaveLength(1);
+  const [pair, ...attributes] = headers[0]!.split(';');
+  return {
+    value: pair!.slice(name.length + 1),
+    attributes: attributes.map((attribute) => attribute.trim().toLowerCase()),
+  };
+}
+
+const setCookieNames = (response: LightMyRequestResponse) =>
+  response.cookies.map((cookie) => cookie.name);
+
+/** Vollständiger Bestand bekannter Geräte (alle Mitarbeiter) für Vorher/Nachher. */
+async function knownDeviceSnapshot() {
+  const rows = await ctx.db.select().from(staffKnownDevices).orderBy(asc(staffKnownDevices.id));
+  return rows.map((row) => ({
+    id: row.id,
+    userId: row.userId,
+    deviceTokenHash: row.deviceTokenHash,
+    firstSeenAt: row.firstSeenAt.toISOString(),
+  }));
+}
+
+describe('H1. __Host--Name außerhalb development', () => {
+  it('H1. production, staging und demo setzen beim Login ausschließlich `__Host-mr_staff_device` (zentrale Funktion deviceCookieName); der Folgelogin mit diesem Cookie ist dasselbe Gerät', async () => {
+    for (const appEnv of HOST_ENVS) {
+      expect(deviceCookieName(appEnv), appEnv).toBe('__Host-mr_staff_device');
+    }
+    expect(DEVICE_COOKIE_NAME_HOST_PREFIXED).toBe('__Host-mr_staff_device');
+
+    const admin = await bootstrapAdmin(ctx);
+    const max = await employee(admin.id);
+    for (const appEnv of HOST_ENVS) {
+      await withEnvApp(appEnv, async (app) => {
+        const first = await loginOn(app, undefined);
+        expect(first.statusCode, appEnv).toBe(200);
+        expect(setCookieNames(first), appEnv).toContain(DEVICE_COOKIE_NAME_HOST_PREFIXED);
+        expect(setCookieNames(first), appEnv).not.toContain(DEVICE_COOKIE_NAME_DEVELOPMENT);
+        const value = rawDeviceHeader(first, DEVICE_COOKIE_NAME_HOST_PREFIXED).value;
+        expect(value).toMatch(/^[A-Za-z0-9_-]{43}$/);
+
+        const eventsBefore = (await newDeviceEvents(max.id)).length;
+        const again = await loginOn(app, `${DEVICE_COOKIE_NAME_HOST_PREFIXED}=${value}`);
+        expect(again.statusCode, appEnv).toBe(200);
+        expect(rawDeviceHeader(again, DEVICE_COOKIE_NAME_HOST_PREFIXED).value).toBe(value);
+        expect(await newDeviceEvents(max.id), appEnv).toHaveLength(eventsBefore);
+      });
+    }
+    // Je Umgebung genau ein neues Gerät (drei Browser), keins doppelt.
+    expect(await knownDevices(max.id)).toHaveLength(3);
+    expect(await newDeviceEvents(max.id)).toHaveLength(3);
+  });
+});
+
+describe('H2. development behält den bisherigen Namen', () => {
+  it('H2. development setzt und liest `mr_staff_device` (ohne Präfix, lokales http) – kein `__Host-`-Cookie', async () => {
+    expect(deviceCookieName('development')).toBe('mr_staff_device');
+    expect(DEVICE_COOKIE_NAME_DEVELOPMENT).toBe('mr_staff_device');
+    expect(ctx.config.appEnv).toBe('development');
+
+    const admin = await bootstrapAdmin(ctx);
+    const max = await employee(admin.id);
+    const first = await loginOn(ctx.app, undefined);
+    expect(first.statusCode).toBe(200);
+    expect(setCookieNames(first)).toContain(DEVICE_COOKIE_NAME_DEVELOPMENT);
+    expect(setCookieNames(first)).not.toContain(DEVICE_COOKIE_NAME_HOST_PREFIXED);
+    const value = rawDeviceHeader(first, DEVICE_COOKIE_NAME_DEVELOPMENT).value;
+
+    const again = await loginOn(ctx.app, `${DEVICE_COOKIE_NAME_DEVELOPMENT}=${value}`);
+    expect(rawDeviceHeader(again, DEVICE_COOKIE_NAME_DEVELOPMENT).value).toBe(value);
+    expect(await newDeviceEvents(max.id)).toHaveLength(1);
+    expect(await knownDevices(max.id)).toHaveLength(1);
+  });
+});
+
+describe('H3. __Host--Regeln im Set-Cookie-Header', () => {
+  it('H3. außerhalb development: Secure, Path=/ und KEIN Domain-Attribut (roher Header, Login und setDeviceCookie); development ohne Secure', async () => {
+    const admin = await bootstrapAdmin(ctx);
+    await employee(admin.id);
+    for (const appEnv of HOST_ENVS) {
+      await withEnvApp(appEnv, async (app) => {
+        const response = await loginOn(app, undefined);
+        expect(response.statusCode, appEnv).toBe(200);
+        const { attributes } = rawDeviceHeader(response, DEVICE_COOKIE_NAME_HOST_PREFIXED);
+        expect(attributes, appEnv).toContain('secure');
+        expect(
+          attributes.filter((a) => a.startsWith('path=')),
+          appEnv,
+        ).toEqual(['path=/']);
+        expect(
+          attributes.some((a) => a.startsWith('domain')),
+          appEnv,
+        ).toBe(false);
+      });
+    }
+
+    // Direkt über setDeviceCookie (nur appEnv bestimmt Name und Secure).
+    const issue = async (appEnv: AppConfig['appEnv']) => {
+      const app = Fastify();
+      await app.register(fastifyCookie);
+      app.get('/probe', async (_request, reply) => {
+        setDeviceCookie(reply, { appEnv } as AppConfig, resolveDeviceToken(undefined).token);
+        return { ok: true };
+      });
+      const response = await app.inject({ method: 'GET', url: '/probe' });
+      await app.close();
+      return response;
+    };
+    for (const appEnv of HOST_ENVS) {
+      const response = await issue(appEnv);
+      expect(rawSetCookies(response), appEnv).toHaveLength(1);
+      const { attributes } = rawDeviceHeader(response, DEVICE_COOKIE_NAME_HOST_PREFIXED);
+      expect(attributes, appEnv).toContain('secure');
+      expect(attributes, appEnv).toContain('path=/');
+      expect(
+        attributes.some((a) => a.startsWith('domain')),
+        appEnv,
+      ).toBe(false);
+    }
+    const development = rawDeviceHeader(await issue('development'), DEVICE_COOKIE_NAME_DEVELOPMENT);
+    expect(development.attributes).not.toContain('secure');
+    expect(development.attributes).toContain('path=/');
+    expect(development.attributes.some((a) => a.startsWith('domain'))).toBe(false);
+  });
+});
+
+describe('H4. HttpOnly, SameSite=Strict, 400 Tage', () => {
+  it('H4. in allen Umgebungen weiterhin HttpOnly, SameSite=Strict und Max-Age 400 Tage', async () => {
+    const admin = await bootstrapAdmin(ctx);
+    await employee(admin.id);
+    const expectAttributes = (attributes: string[], label: string) => {
+      expect(attributes, label).toContain('httponly');
+      expect(attributes, label).toContain('samesite=strict');
+      expect(attributes, label).toContain(`max-age=${400 * 24 * 60 * 60}`);
+    };
+    for (const appEnv of HOST_ENVS) {
+      await withEnvApp(appEnv, async (app) => {
+        const response = await loginOn(app, undefined);
+        expectAttributes(
+          rawDeviceHeader(response, DEVICE_COOKIE_NAME_HOST_PREFIXED).attributes,
+          appEnv,
+        );
+        const parsed = response.cookies.find((c) => c.name === DEVICE_COOKIE_NAME_HOST_PREFIXED)!;
+        expect(parsed.httpOnly).toBe(true);
+        expect(parsed.sameSite).toBe('Strict');
+        expect(parsed.maxAge).toBe(DEVICE_COOKIE_MAX_AGE_SECONDS);
+      });
+    }
+    const development = await loginOn(ctx.app, undefined);
+    expectAttributes(
+      rawDeviceHeader(development, DEVICE_COOKIE_NAME_DEVELOPMENT).attributes,
+      'development',
+    );
+  });
+});
+
+describe('H5. Alter Name außerhalb development wird nicht übernommen', () => {
+  it('H5. production ignoriert ein gültiges `mr_staff_device` (neuer __Host-Wert, neues Gerät, Ereignis); bei beiden Namen gilt ausschließlich der __Host-Wert; development liest nur den alten Namen', async () => {
+    const admin = await bootstrapAdmin(ctx);
+    const max = await employee(admin.id);
+
+    // Vor dem Deploy: Gerät mit altem Cookie-Namen bekannt (development-Pfad).
+    const old = resolveDeviceToken(undefined).token;
+    const oldCookie = `${DEVICE_COOKIE_NAME_DEVELOPMENT}=${old}`;
+    expect((await loginOn(ctx.app, oldCookie)).statusCode).toBe(200);
+    expect((await knownDevices(max.id)).map((d) => d.deviceTokenHash)).toEqual([sha256Hex(old)]);
+    expect(await newDeviceEvents(max.id)).toHaveLength(1);
+
+    await withEnvApp('production', async (app) => {
+      // Nur alter Name ⇒ verworfen: neuer Wert im __Host-Cookie, neues Gerät.
+      const migrated = await loginOn(app, oldCookie);
+      expect(migrated.statusCode).toBe(200);
+      expect(setCookieNames(migrated)).not.toContain(DEVICE_COOKIE_NAME_DEVELOPMENT);
+      const hostValue = rawDeviceHeader(migrated, DEVICE_COOKIE_NAME_HOST_PREFIXED).value;
+      expect(hostValue).toMatch(/^[A-Za-z0-9_-]{43}$/);
+      expect(hostValue).not.toBe(old);
+      expect((await knownDevices(max.id)).map((d) => d.deviceTokenHash)).toEqual([
+        sha256Hex(old),
+        sha256Hex(hostValue),
+      ]);
+      expect(await newDeviceEvents(max.id)).toHaveLength(2);
+
+      // Beide Namen (beide Reihenfolgen), __Host-Wert bekannt ⇒ nur er zählt.
+      for (const cookie of [
+        `${oldCookie}; ${DEVICE_COOKIE_NAME_HOST_PREFIXED}=${hostValue}`,
+        `${DEVICE_COOKIE_NAME_HOST_PREFIXED}=${hostValue}; ${oldCookie}`,
+      ]) {
+        const both = await loginOn(app, cookie);
+        expect(both.statusCode).toBe(200);
+        expect(rawDeviceHeader(both, DEVICE_COOKIE_NAME_HOST_PREFIXED).value).toBe(hostValue);
+        expect(setCookieNames(both)).not.toContain(DEVICE_COOKIE_NAME_DEVELOPMENT);
+      }
+      expect(await newDeviceEvents(max.id)).toHaveLength(2);
+
+      // Beide Namen, alter Wert bekannt, __Host-Wert neu ⇒ neues Gerät (der
+      // bekannte alte Wert rettet nichts).
+      const fresh = resolveDeviceToken(undefined).token;
+      const mixed = await loginOn(
+        app,
+        `${oldCookie}; ${DEVICE_COOKIE_NAME_HOST_PREFIXED}=${fresh}`,
+      );
+      expect(rawDeviceHeader(mixed, DEVICE_COOKIE_NAME_HOST_PREFIXED).value).toBe(fresh);
+      expect(await newDeviceEvents(max.id)).toHaveLength(3);
+      expect(await knownDevices(max.id)).toHaveLength(3);
+    });
+
+    // development: genau ein Name – ein mitgeschicktes __Host-Cookie zählt nicht.
+    const hostOnly = resolveDeviceToken(undefined).token;
+    const devBoth = await loginOn(
+      ctx.app,
+      `${DEVICE_COOKIE_NAME_HOST_PREFIXED}=${hostOnly}; ${oldCookie}`,
+    );
+    expect(rawDeviceHeader(devBoth, DEVICE_COOKIE_NAME_DEVELOPMENT).value).toBe(old);
+    expect(setCookieNames(devBoth)).not.toContain(DEVICE_COOKIE_NAME_HOST_PREFIXED);
+    expect(await newDeviceEvents(max.id)).toHaveLength(3);
+    expect((await knownDevices(max.id)).map((d) => d.deviceTokenHash)).not.toContain(
+      sha256Hex(hostOnly),
+    );
+  });
+});
+
+describe('H6. Passwort-Reset löscht bekannte Geräte nicht', () => {
+  it('H6. Self-Service-Reset (Mail-Link), Admin-Reset-Link und Passwortänderung lassen staff_known_devices unverändert; derselbe Browser ist danach bekannt (kein neues Ereignis)', async () => {
+    const admin = await bootstrapAdmin(ctx);
+    const max = await employee(admin.id);
+    const adminSession = await login(ctx.app, ADMIN_EMAIL, ADMIN_PASSWORD, UA_WINDOWS);
+    expect(adminSession.statusCode).toBe(200);
+    const device = await login(ctx.app, EMPLOYEE_EMAIL, EMPLOYEE_PASSWORD, UA_WINDOWS);
+    expect(device.statusCode).toBe(200);
+    const before = await knownDeviceSnapshot();
+    expect(before).toHaveLength(2); // Admin + Max
+    expect(await newDeviceEvents(max.id)).toHaveLength(1);
+
+    const expectStillKnown = async (password: string, label: string) => {
+      expect(await knownDeviceSnapshot(), label).toEqual(before);
+      const again = await login(ctx.app, EMPLOYEE_EMAIL, password, UA_WINDOWS, {
+        deviceCookie: device.deviceCookie,
+      });
+      expect(again.statusCode, label).toBe(200);
+      expect(again.deviceCookie, label).toBe(device.deviceCookie);
+      expect(await newDeviceEvents(max.id), label).toHaveLength(1);
+      expect(await knownDeviceSnapshot(), label).toEqual(before);
+      return again;
+    };
+
+    // Weg 1: Self-Service „Passwort vergessen“ ⇒ Mail-Link ⇒ Reset.
+    const forgot = await postJson('/auth/password/forgot', { email: EMPLOYEE_EMAIL });
+    expect(forgot.statusCode).toBe(200);
+    const mailToken = ctx.mail.sent.at(-1)?.resetToken;
+    expect(mailToken).toBeDefined();
+    const selfReset = await postJson('/auth/password/reset', {
+      token: mailToken!,
+      newPassword: 'self-reset-passwort-1',
+    });
+    expect(selfReset.statusCode).toBe(200);
+    await expectStillKnown('self-reset-passwort-1', 'self-service');
+
+    // Weg 2: Admin-Reset-Link (employee.manage) ⇒ Reset.
+    const link = await ctx.app.inject({
+      method: 'POST',
+      url: `/staff/users/${max.id}/reset-link`,
+      headers: { cookie: adminSession.cookie },
+      payload: {},
+    });
+    expect(link.statusCode).toBe(200);
+    const adminReset = await postJson('/auth/password/reset', {
+      token: (link.json() as { resetToken: string }).resetToken,
+      newPassword: 'admin-reset-passwort-2',
+    });
+    expect(adminReset.statusCode).toBe(200);
+    const afterAdmin = await expectStillKnown('admin-reset-passwort-2', 'admin-link');
+
+    // Weg 3: Passwortänderung im eingeloggten Zustand.
+    const change = await ctx.app.inject({
+      method: 'POST',
+      url: '/auth/password/change',
+      headers: { cookie: afterAdmin.cookie },
+      payload: { currentPassword: 'admin-reset-passwort-2', newPassword: 'geaendert-passwort-3' },
+    });
+    expect(change.statusCode).toBe(200);
+    await expectStillKnown('geaendert-passwort-3', 'password-change');
+  });
+});
+
+describe('H7. 2FA-Reset und Recovery löschen bekannte Geräte nicht', () => {
+  it('H7. Admin-2FA-Reset, Recovery-Code-Login und erneute 2FA-Einrichtung (neue Recovery-Codes) lassen staff_known_devices unverändert; danach kein neues Ereignis', async () => {
+    const admin = await bootstrapAdmin(ctx);
+    const max = await employee(admin.id);
+    const adminSession = await login(ctx.app, ADMIN_EMAIL, ADMIN_PASSWORD, UA_WINDOWS);
+    const { secret, recoveryCodes } = await enableTotp(max.id);
+
+    // Gerät über TOTP-Login bekannt machen.
+    const step1 = await login(ctx.app, EMPLOYEE_EMAIL, EMPLOYEE_PASSWORD, UA_WINDOWS);
+    const step2 = await postJson(
+      '/auth/login/totp',
+      {
+        challengeToken: step1.body.challengeToken as string,
+        code: await freshTotpCode(max.id, secret),
+      },
+      step1.deviceCookie,
+    );
+    expect(step2.statusCode).toBe(200);
+    const before = await knownDeviceSnapshot();
+    expect(before).toHaveLength(2);
+    expect(await newDeviceEvents(max.id)).toHaveLength(1);
+
+    // Recovery-Login vom bekannten Gerät.
+    const rec1 = await login(ctx.app, EMPLOYEE_EMAIL, EMPLOYEE_PASSWORD, UA_WINDOWS, {
+      deviceCookie: step1.deviceCookie,
+    });
+    const rec2 = await postJson(
+      '/auth/login/recovery',
+      { challengeToken: rec1.body.challengeToken as string, recoveryCode: recoveryCodes[0]! },
+      step1.deviceCookie,
+    );
+    expect(rec2.statusCode).toBe(200);
+    expect(await knownDeviceSnapshot()).toEqual(before);
+    expect(await newDeviceEvents(max.id)).toHaveLength(1);
+
+    // Admin setzt 2FA zurück.
+    const reset = await ctx.app.inject({
+      method: 'POST',
+      url: `/staff/users/${max.id}/totp-reset`,
+      headers: { cookie: adminSession.cookie },
+      payload: {},
+    });
+    expect(reset.statusCode).toBe(200);
+    expect(await securityEvents(max.id, 'twofa.reset')).toHaveLength(1);
+    expect(await knownDeviceSnapshot()).toEqual(before);
+    const afterReset = await login(ctx.app, EMPLOYEE_EMAIL, EMPLOYEE_PASSWORD, UA_WINDOWS, {
+      deviceCookie: step1.deviceCookie,
+    });
+    expect(afterReset.body.next).toBe('authenticated');
+    expect(await newDeviceEvents(max.id)).toHaveLength(1);
+    expect(await knownDeviceSnapshot()).toEqual(before);
+
+    // Erneute Einrichtung (alte Recovery-Codes ersetzt) + Recovery-Login.
+    const renewed = await enableTotp(max.id);
+    expect(await knownDeviceSnapshot()).toEqual(before);
+    const again1 = await login(ctx.app, EMPLOYEE_EMAIL, EMPLOYEE_PASSWORD, UA_WINDOWS, {
+      deviceCookie: step1.deviceCookie,
+    });
+    const again2 = await postJson(
+      '/auth/login/recovery',
+      {
+        challengeToken: again1.body.challengeToken as string,
+        recoveryCode: renewed.recoveryCodes[0]!,
+      },
+      step1.deviceCookie,
+    );
+    expect(again2.statusCode).toBe(200);
+    expect(await newDeviceEvents(max.id)).toHaveLength(1);
+    expect(await knownDeviceSnapshot()).toEqual(before);
+  });
+});
+
+describe('H8. D-Regression unter __Host-', () => {
+  it('H8. TOTP- und Recovery-Login in production tragen die Identität aus dem __Host-Cookie über die Challenge (D6/D7-Pfad); bekanntes Gerät ⇒ kein zweites Ereignis (D1–D13 laufen unverändert über deviceCookieName)', async () => {
+    expect(DEVICE_COOKIE_NAME).toBe(deviceCookieName(ctx.config.appEnv));
+    const admin = await bootstrapAdmin(ctx);
+    const max = await employee(admin.id);
+    const { secret, recoveryCodes } = await enableTotp(max.id);
+
+    await withEnvApp('production', async (app) => {
+      const post = (url: string, payload: Record<string, unknown>, cookie?: string) =>
+        app.inject({
+          method: 'POST',
+          url,
+          payload,
+          headers: { 'user-agent': UA_WINDOWS, ...(cookie === undefined ? {} : { cookie }) },
+        });
+      const step1 = await loginOn(app, undefined);
+      expect(step1.json().next).toBe('totp_required');
+      const hostValue = rawDeviceHeader(step1, DEVICE_COOKIE_NAME_HOST_PREFIXED).value;
+      const hostCookie = `${DEVICE_COOKIE_NAME_HOST_PREFIXED}=${hostValue}`;
+      expect((await challengeRow(step1.json().challengeToken)).deviceTokenHash).toBe(
+        sha256Hex(hostValue),
+      );
+      const step2 = await post('/auth/login/totp', {
+        challengeToken: step1.json().challengeToken,
+        code: await freshTotpCode(max.id, secret),
+      });
+      expect(step2.statusCode).toBe(200);
+      expect(await newDeviceEvents(max.id)).toHaveLength(1);
+
+      const rec1 = await loginOn(app, hostCookie);
+      const rec2 = await post(
+        '/auth/login/recovery',
+        { challengeToken: rec1.json().challengeToken, recoveryCode: recoveryCodes[0] },
+        hostCookie,
+      );
+      expect(rec2.statusCode).toBe(200);
+      expect(await newDeviceEvents(max.id)).toHaveLength(1);
+      expect((await knownDevices(max.id)).map((d) => d.deviceTokenHash)).toEqual([
+        sha256Hex(hostValue),
+      ]);
+    });
   });
 });

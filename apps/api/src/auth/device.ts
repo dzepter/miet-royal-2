@@ -1,3 +1,4 @@
+import type { AppEnvironment } from '@mietroyal/config';
 import { generateToken, sha256Hex } from './crypto.ts';
 
 /**
@@ -32,7 +33,8 @@ export function deviceLabelFromUserAgent(userAgent: string | undefined): string 
 // ── Phase-12-Finalisierung: stabile Geräteidentität ──────────────────────────
 //
 // Ein Gerät (genauer: ein Browserprofil) wird über einen serverseitig
-// erzeugten Zufallswert im HttpOnly-Cookie `mr_staff_device` wiedererkannt.
+// erzeugten Zufallswert im HttpOnly-Geräte-Cookie wiedererkannt (Name je
+// Umgebung, siehe deviceCookieName()).
 // - 32 Zufallsbytes, base64url (43 Zeichen) – kein Fingerprinting, kein
 //   Auth-Token (ersetzt nie Passwort/2FA, öffnet keine Session).
 // - In der DB liegt ausschließlich der SHA-256 (`staff_known_devices`,
@@ -42,8 +44,38 @@ export function deviceLabelFromUserAgent(userAgent: string | undefined): string 
 //   beim Login einen neuen Wert (⇒ „neues Gerät“).
 // - Logout und Session-Widerruf löschen das Cookie NICHT – das Gerät bleibt
 //   bekannt.
+// - Phase 12 (finale Geräteidentität): Kein Trust-/Auth-Faktor ⇒ Passwort-
+//   Reset, 2FA-Reset und Recovery löschen bekannte Geräte bewusst NICHT; es
+//   gibt keine Funktion „Geräte vergessen“.
 
-export const DEVICE_COOKIE_NAME = 'mr_staff_device';
+/** Lokale Entwicklung (http://localhost, ohne TLS): ohne Präfix. */
+export const DEVICE_COOKIE_NAME_DEVELOPMENT = 'mr_staff_device';
+/**
+ * Phase 12 (finale Geräteidentität): außerhalb `development` (staging, demo,
+ * production) mit `__Host-`-Präfix. Der Browser akzeptiert es nur mit
+ * Secure, Path=/ und OHNE Domain-Attribut ⇒ eine Subdomain/ein Nachbar-Host
+ * kann den Wert nicht unterschieben (Cookie-Tossing, Geräte-ID-Fixation).
+ */
+export const DEVICE_COOKIE_NAME_HOST_PREFIXED = '__Host-mr_staff_device';
+
+/**
+ * EINZIGE Quelle für den Namen des Geräte-Cookies – Lesen (POST /auth/login)
+ * und Schreiben (setDeviceCookie) nutzen ausschließlich diese Funktion.
+ * Außerhalb `development` wird der alte Name `mr_staff_device` bewusst weder
+ * gelesen noch übernommen (kein Fallback, keine Wertmigration): nach dem
+ * Deploy entsteht je Browser einmalig ein neuer Wert („neues Gerät“). Es gilt
+ * immer genau EIN Name – zwei Cookies werden nie parallel akzeptiert.
+ */
+export function deviceCookieName(appEnv: AppEnvironment): string {
+  return appEnv === 'development'
+    ? DEVICE_COOKIE_NAME_DEVELOPMENT
+    : DEVICE_COOKIE_NAME_HOST_PREFIXED;
+}
+
+/** `__Host-` verlangt Secure – außerhalb `development` daher immer true. */
+export function deviceCookieSecure(appEnv: AppEnvironment): boolean {
+  return appEnv !== 'development';
+}
 
 /** 400 Tage – die Obergrenze, die aktuelle Browser für Cookie-Laufzeiten akzeptieren. */
 export const DEVICE_COOKIE_MAX_AGE_SECONDS = 400 * 24 * 60 * 60;

@@ -10,6 +10,10 @@ import { MockAccountingGateway, type AccountingGateway } from '../src/accounting
 import type { AccountingTransferService } from '../src/accounting/transfer-service.ts';
 import { buildApp } from '../src/app.ts';
 import { StaffAdminService } from '../src/auth/admin-service.ts';
+import {
+  DEVICE_COOKIE_NAME_DEVELOPMENT,
+  DEVICE_COOKIE_NAME_HOST_PREFIXED,
+} from '../src/auth/device.ts';
 import { InMemoryMailAdapter } from '../src/auth/mail.ts';
 import { StaffAuthService } from '../src/auth/service.ts';
 import {
@@ -359,7 +363,8 @@ export async function bootstrapAdmin(context: TestContext) {
 export interface LoginResult {
   cookie: string;
   /**
-   * Phase-12-Finalisierung (Geräteidentität): `mr_staff_device=<wert>` wie
+   * Phase-12-Finalisierung (Geräteidentität): `mr_staff_device=<wert>` (bzw.
+   * `__Host-mr_staff_device=<wert>` außerhalb development) wie
    * ihn der Browser danach hält – vom Server gesetzt oder (ohne Set-Cookie)
    * der mitgeschickte Wert; '' = kein Geräte-Cookie. Für „gleiches Gerät“ an
    * den nächsten `login(…, { deviceCookie })` weiterreichen.
@@ -387,10 +392,14 @@ export async function login(
     headers: { 'user-agent': userAgent, ...(deviceCookie === '' ? {} : { cookie: deviceCookie }) },
   });
   const setCookie = response.cookies.find((c) => c.name === 'mr_staff_session');
-  const setDevice = response.cookies.find((c) => c.name === 'mr_staff_device');
+  // Phase 12 (finale Geräteidentität): Name je Umgebung der App (development
+  // ohne, sonst mit `__Host-`-Präfix) – der Helfer übernimmt, was gesetzt wurde.
+  const setDevice = response.cookies.find(
+    (c) => c.name === DEVICE_COOKIE_NAME_DEVELOPMENT || c.name === DEVICE_COOKIE_NAME_HOST_PREFIXED,
+  );
   return {
     cookie: setCookie === undefined ? '' : `mr_staff_session=${setCookie.value}`,
-    deviceCookie: setDevice === undefined ? deviceCookie : `mr_staff_device=${setDevice.value}`,
+    deviceCookie: setDevice === undefined ? deviceCookie : `${setDevice.name}=${setDevice.value}`,
     body: response.json(),
     statusCode: response.statusCode,
   };

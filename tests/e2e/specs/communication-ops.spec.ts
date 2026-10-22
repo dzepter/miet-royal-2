@@ -27,7 +27,7 @@
  * Variablen der Spec und werden ausschließlich boolesch verglichen.
  */
 import { existsSync } from 'node:fs';
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Browser, type Page } from '@playwright/test';
 import { WHATSAPP_GRAPH_API_VERSION, WHATSAPP_PHONE_NUMBER_ID } from '../fakes/constants.ts';
 import { acceptedBooking } from '../helpers/booking.ts';
 import {
@@ -68,6 +68,7 @@ import {
 import {
   clearPushRequests,
   createPushSubscriptionKeys,
+  pushRequests,
   registerPushSubscription,
   verifyVapid,
   type PushSubscriptionKeys,
@@ -1270,4 +1271,182 @@ test('S. Retention: Chatfoto (eingehende Mail mit JPEG) wird beim Vorgangsabschl
     ).some((row) => row.body.includes(I_TEXT)),
   ).toBe(true);
   await expectBusinessFilesIntact();
+});
+
+// ── U: Push nach Session-Ablauf automatisch wieder anbinden (Finalisierung, Auftrag P1–P10) ──
+
+interface PushStubOptions {
+  permission: 'granted' | 'default' | 'denied';
+  sub: { endpoint: string; p256dh: string; auth: string };
+}
+
+/**
+ * Init-Script (läuft vor jedem Dokument): Headless-Chromium hat keinen echten
+ * Push-Dienst. Der Stub liefert über `PushManager.getSubscription()` eine
+ * BESTEHENDE Browser-Subscription (Endpoint beim Push-Fake + Testschlüssel),
+ * setzt `Notification.permission` und zählt verbotene Aufrufe
+ * (`Notification.requestPermission`, `PushManager.subscribe`). Alles Übrige –
+ * Login, App-Start, Service Worker, Staff-Proxy, API – ist echt.
+ */
+function installPushStub({ permission, sub }: PushStubOptions): void {
+  const calls = { requestPermission: 0, subscribe: 0 };
+  (window as unknown as { __pushStub: typeof calls }).__pushStub = calls;
+  if (typeof Notification === 'undefined' || typeof PushManager === 'undefined') return;
+  Object.defineProperty(Notification, 'permission', { configurable: true, get: () => permission });
+  Notification.requestPermission = async () => {
+    calls.requestPermission += 1;
+    return permission;
+  };
+  const existing = {
+    endpoint: sub.endpoint,
+    expirationTime: null,
+    options: {},
+    getKey: () => null,
+    unsubscribe: async () => true,
+    toJSON: () => ({
+      endpoint: sub.endpoint,
+      expirationTime: null,
+      keys: { p256dh: sub.p256dh, auth: sub.auth },
+    }),
+  };
+  PushManager.prototype.getSubscription = async function getSubscription() {
+    return existing as unknown as PushSubscription;
+  };
+  PushManager.prototype.subscribe = async function subscribe() {
+    calls.subscribe += 1;
+    throw new Error('subscribe() darf beim automatischen Wiederanbinden nie aufgerufen werden');
+  };
+}
+
+const isPushRegisterRequest = (request: { url(): string; method(): string }) =>
+  request.method() === 'POST' &&
+  new URL(request.url()).pathname === '/api/staff/push/subscriptions';
+
+function pushStubCalls(page: Page) {
+  return page.evaluate(
+    () =>
+      (window as unknown as { __pushStub: { requestPermission: number; subscribe: number } })
+        .__pushStub,
+  );
+}
+
+function subscriptionRow(endpoint: string) {
+  return queryTestDb<{
+    session_id: string | null;
+    disabled_at: string | null;
+    disabled_reason: string | null;
+  }>(
+    `SELECT session_id, disabled_at::text, disabled_reason FROM push_subscriptions WHERE endpoint = $1`,
+    [endpoint],
+  )[0];
+}
+
+/** Frischer Browser ohne Geräte-Cookie meldet sich als Admin an ⇒ Admin-Push „Neue Anmeldung“. */
+async function loginFromNewDevice(browser: Browser): Promise<void> {
+  const context = await browser.newContext();
+  await login(await context.newPage(), ADMIN_EMAIL, ADMIN_PASSWORD, 'Erika');
+  await context.close();
+}
+
+test('U. Push nach Session-Ablauf: App-Start mit erteilter Browserberechtigung und vorhandener Browser-Subscription bindet sie automatisch wieder an (ohne Klick, ohne Prompt); default/denied ⇒ nichts', async ({
+  browser,
+}) => {
+  test.setTimeout(300_000);
+  // Eigene Admin-Seite für fällige Jobs (Test läuft auch isoliert); ihr Login ist ein neues
+  // Gerät, liegt aber VOR der Registrierung von keysU.
+  const ops = await browser.newContext();
+  const opsPage = await ops.newPage();
+  await login(opsPage, ADMIN_EMAIL, ADMIN_PASSWORD, 'Erika');
+  const pollWithJobs = <T>(read: () => T | Promise<T>) =>
+    expect.poll(
+      async () => {
+        await runDueJobsViaApi(opsPage);
+        return read();
+      },
+      { timeout: 30_000 },
+    );
+  const keysU = createPushSubscriptionKeys();
+  const sub = { endpoint: keysU.endpoint, p256dh: keysU.p256dh, auth: keysU.auth };
+  const context = await browser.newContext();
+  await context.addInitScript(installPushStub, { permission: 'granted' as const, sub });
+  const page = await context.newPage();
+  await login(page, ADMIN_EMAIL, ADMIN_PASSWORD, 'Erika');
+  // Ein Browser mit Push-Abo hat seinen Service Worker längst registriert.
+  await page.evaluate(() => navigator.serviceWorker.ready.then(() => undefined));
+  const firstBind = page.waitForRequest(isPushRegisterRequest);
+  await page.reload();
+  expect((await (await firstBind).response())?.status()).toBe(200);
+  const before = subscriptionRow(keysU.endpoint);
+  expect(before).toMatchObject({ disabled_at: null });
+  expect(await pushStubCalls(page)).toEqual({ requestPermission: 0, subscribe: 0 });
+
+  // P1: Session läuft per Inaktivität ab ⇒ das Gerät gilt sofort als inaktiv (kein Push mehr;
+  // ohne aktives Gerät legt die API keine Zustellung an) und die Statusprüfung deaktiviert die
+  // Subscription technisch (`session_expired`).
+  queryTestDb(
+    `UPDATE staff_sessions SET last_activity_at = now() - interval '31 days' WHERE id = $1`,
+    [before!.session_id],
+  );
+  await clearPushRequests();
+  await loginFromNewDevice(browser);
+  await runDueJobsViaApi(opsPage);
+  expect(await pushRequests(keysU)).toHaveLength(0);
+  const status = await opsPage.request.post('/api/staff/push/subscriptions/status', {
+    data: { endpoint: keysU.endpoint },
+  });
+  expect(await status.json()).toEqual({ active: false });
+  expect(subscriptionRow(keysU.endpoint)?.disabled_reason).toBe('session_expired');
+
+  // P2/P4: erneuter Login im selben Browser ⇒ automatisches Wiederanbinden, kein Prompt, kein subscribe().
+  const rebind = page.waitForRequest(isPushRegisterRequest);
+  await login(page, ADMIN_EMAIL, ADMIN_PASSWORD, 'Erika');
+  expect((await (await rebind).response())?.status()).toBe(200);
+  const after = subscriptionRow(keysU.endpoint);
+  expect(after).toMatchObject({ disabled_at: null, disabled_reason: null });
+  expect(after!.session_id).not.toBe(before!.session_id);
+  expect(await pushStubCalls(page)).toEqual({ requestPermission: 0, subscribe: 0 });
+  await page.goto('/einstellungen/benachrichtigungen');
+  await expect(page.getByTestId('push-status')).toHaveText('Push ist auf diesem Gerät aktiv.');
+  await expect(page.getByTestId('push-enable')).toHaveCount(0);
+
+  // P3: Push kommt wieder an – ohne Klick in den Einstellungen.
+  await clearPushRequests();
+  await loginFromNewDevice(browser);
+  await pollWithJobs(async () => (await pushRequests(keysU)).length).toBe(1);
+  await expectPushCount(keysU, 'Neue Anmeldung', 1);
+  await context.close();
+
+  // P5/P6: Berechtigung default bzw. denied ⇒ kein automatischer Prompt, keine Registrierung.
+  for (const permission of ['default', 'denied'] as const) {
+    const keys = createPushSubscriptionKeys();
+    const other = await browser.newContext();
+    await other.addInitScript(installPushStub, {
+      permission,
+      sub: { endpoint: keys.endpoint, p256dh: keys.p256dh, auth: keys.auth },
+    });
+    const otherPage = await other.newPage();
+    const registerCalls: string[] = [];
+    otherPage.on('request', (request) => {
+      if (isPushRegisterRequest(request)) registerCalls.push(request.url());
+    });
+    await login(otherPage, ADMIN_EMAIL, ADMIN_PASSWORD, 'Erika');
+    await otherPage.evaluate(() => navigator.serviceWorker.ready.then(() => undefined));
+    await otherPage.reload();
+    await expect(otherPage.getByRole('heading', { name: 'Heute' })).toBeVisible();
+    await otherPage.goto('/einstellungen/benachrichtigungen');
+    if (permission === 'denied') {
+      await expect(otherPage.getByTestId('push-denied')).toHaveText(
+        'Push ist auf diesem Gerät im Browser nicht aktiviert.',
+      );
+    } else {
+      await expect(otherPage.getByTestId('push-enable')).toHaveText(
+        'Push-Benachrichtigungen aktivieren',
+      );
+    }
+    expect(registerCalls, `keine automatische Registrierung bei ${permission}`).toEqual([]);
+    expect(await pushStubCalls(otherPage)).toEqual({ requestPermission: 0, subscribe: 0 });
+    expect(subscriptionRow(keys.endpoint)).toBeUndefined();
+    await other.close();
+  }
+  await ops.close();
 });

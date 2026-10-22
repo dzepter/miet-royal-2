@@ -5,6 +5,8 @@ import { useRouter } from 'next/navigation';
 import { useState } from 'react';
 import { apiFetch } from '../../lib/api';
 import { primeOfflineWorkspace } from '../../lib/offline/prime';
+// Phase 12 Finalisierung (Push-Rebind)
+import { armPushRebindAfterLogin } from '../../lib/push';
 
 type Phase =
   | { step: 'credentials' }
@@ -45,6 +47,7 @@ export default function LoginPage() {
     if (data.next === 'authenticated') {
       // Phase 8: Passwort liegt nur hier vor – Schlüssel-Wrap, Offline-Lease, erstes Paket.
       await primeOfflineWorkspace(password);
+      armPushRebindAfterLogin();
       router.replace('/');
       return;
     }
@@ -86,6 +89,7 @@ export default function LoginPage() {
       return;
     }
     await primeOfflineWorkspace(password);
+    armPushRebindAfterLogin();
     router.replace('/');
   }
 
@@ -243,7 +247,10 @@ export default function LoginPage() {
               disabled={busy}
               onClick={() => {
                 setBusy(true);
-                void primeOfflineWorkspace(password).then(() => router.replace('/'));
+                void primeOfflineWorkspace(password).then(() => {
+                  armPushRebindAfterLogin();
+                  router.replace('/');
+                });
               }}
             >
               Weiter zur App

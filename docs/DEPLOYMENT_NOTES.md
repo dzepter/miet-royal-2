@@ -197,9 +197,30 @@ Claude Code deployt niemals eigenmächtig auf Produktion.
   `WHATSAPP_MEDIA_DOWNLOAD_HOSTS` in `apps/api/src/communication/whatsapp/gateways.ts`).
 
 
-## Staff-Geräteidentität `mr_staff_device` (Phase 12 Finalisierung)
+## Staff-Geräteidentität (Phase 12 Finalisierung)
 
-- Neues HttpOnly-Cookie `mr_staff_device` (32 Zufallsbytes base64url,
+- **Cookie-Name je Umgebung:** `APP_ENV=production`, `staging` und `demo` ⇒
+  `__Host-mr_staff_device`; nur `APP_ENV=development` (lokales http) ⇒
+  `mr_staff_device`. Der Server liest und setzt je Umgebung ausschließlich
+  diesen einen Namen (`deviceCookieName` in `apps/api/src/auth/device.ts`).
+- **HTTPS zwingend** außerhalb development: ein `__Host-`-Cookie wird vom
+  Browser nur mit `Secure` angenommen – über http (oder hinter einem Proxy,
+  der dem Browser http ausliefert) entsteht kein Geräte-Cookie und jeder Login
+  wäre „neues Gerät“.
+- **Reverse Proxy/CDN dürfen `__Host-`-Cookies nicht umschreiben:** kein
+  `Domain`-Attribut ergänzen (z. B. kein `proxy_cookie_domain`/Cookie-Rewrite
+  auf die Hauptdomain), `Path=/` und `Secure` nicht entfernen, Namen nicht
+  ändern – sonst verwirft der Browser das Cookie.
+- **Einmalig „neues Gerät“ nach diesem Deploy:** ein vorhandenes
+  `mr_staff_device` aus früheren Test-/Staging-Ständen wird außerhalb
+  development NICHT übernommen (keine Migration des Werts) ⇒ jeder Browser
+  erhält beim ersten Login einen neuen `__Host-`-Wert und meldet sich einmal
+  als neues Gerät (vor dem Produktivstart akzeptiert). Das alte Cookie bleibt
+  wirkungslos im Browser liegen, bis es abläuft.
+- **Passwort-/2FA-Reset und Recovery löschen bekannte Geräte nicht**
+  (Fachentscheidung, TECH_DECISIONS.md); eine Funktion „Geräte vergessen“
+  gibt es nicht.
+- HttpOnly-Geräte-Cookie (32 Zufallsbytes base64url,
   SameSite=Strict, Path=/, Max-Age 400 Tage, Secure außer
   `APP_ENV=development` – gleiche Regel wie `mr_staff_session`). Es wird vom
   API-Server beim Login nach bestandener Passwortprüfung gesetzt und erkennt
@@ -222,7 +243,7 @@ Claude Code deployt niemals eigenmächtig auf Produktion.
 - Löscht ein Browser seine Website-Daten (oder Privat-Modus), ist das Gerät
   beim nächsten Login wieder „neu“ (erwartetes Verhalten).
 
-## Migrationen der Phase-12-Finalisierung (0023–0025)
+## Migrationen der Phase-12-Finalisierung (0023–0026)
 
 - **0023** `staff_known_devices`, Geräte-Hash an der Login-Challenge,
   Retention-Anker/PII-Scrub-Spalten, `mail_deliveries.recipient_email`/
@@ -236,6 +257,8 @@ Claude Code deployt niemals eigenmächtig auf Produktion.
   terminbezogener Pushes) und Teilindizes für den Retention-Backstop.
   Sessions vor dem Deploy haben keinen Hash ⇒ kein Umbinden, bis die Person
   sich einmal neu anmeldet.
+- **0026** Index `push_deliveries(appointment_id)` (Zustellungen einer
+  Kurzfrist-Neuzuweisung je Termin); rein additiv.
 - Nach dem Deploy erhalten Vorgänge, die bereits abgeschlossen/storniert sind,
   ihren Retention-Anker beim ersten 2-min-Backstop (Anker = vorhandener
   Abschluss-/Stornozeitpunkt); ältere Daten können dadurch beim ersten

@@ -35,8 +35,21 @@ Umgesetzt: read-only ICS-Abo je Mitarbeiter (kein CalDAV, keine Apple-ID).
 Vor Live noch offen: manueller Abo-Test auf iPhone/Mac mit echter HTTPS-Domain
 (Staff-Basis-URL in den Einstellungen).
 
+## Go-live-Smokes Kommunikation/Buchhaltung (vor Produktivbetrieb, KEIN Phase-13-Blocker)
+Bestätigt 2026-10-22: technisch abgeschlossen; vor dem echten Produktivbetrieb
+mit echten Konten durchzuführen (im Quality Gate bewusst nicht ausgeführt):
+- echter SMTP-/IMAP-Smoke (`pnpm mail:smoke`)
+- echter WhatsApp-Testaccount inklusive Bildempfang und Verifikation des
+  tatsächlichen Media-Downloadhosts (`pnpm whatsapp:smoke`)
+- manuelles Apple-Kalender-Abo auf iPhone/Mac mit echter HTTPS-Domain
+- Lexware-Smoke gegen einen Testaccount (`LEXWARE_SMOKE=1 pnpm lexware:smoke`)
+- Steuer-/Buchhaltungsentscheidungen (siehe „GO-LIVE-BLOCKER Buchhaltung“)
+
 ## Kommunikation – offene Fachfragen (Phase 12)
-- Abholadresse in Erinnerungen nur, wenn `pickup_exact_address` gesetzt ist.
+- Abholadresse in Erinnerungen nur, wenn `pickup_exact_address` gesetzt ist –
+  bleibt Geschäftsdaten-/Go-live-Punkt (exakte Abholadresse, siehe
+  „Geschäftsdaten“); keine Adresse erfinden, die bestehende Logik (Adresse nur,
+  wenn bestätigt gesetzt) bleibt unverändert.
 
 Mit der Phase-12-Finalisierung entschieden (nicht mehr offen, siehe
 TECH_DECISIONS.md „Phase 12 Finalisierung: Retention“):
@@ -49,6 +62,9 @@ TECH_DECISIONS.md „Phase 12 Finalisierung: Retention“):
   Secret-Payload): prozessgebunden 12 Berliner Kalendermonate nach
   Abschluss/Storno, sonst 90 Tage nach Endzustand; danach kein Resend.
 - Dokument-Link zum Rückgabeprotokoll: 90 Tage gültig (bestätigt).
+- WhatsApp nach 90 Tagen (bestätigt 2026-10-22): nicht zugeordnete WhatsApp-PII
+  minimieren, Kontakte ohne Kundenbindung löschen, wamid und Job-Schlüssel nur
+  noch gehasht, soweit für den technischen Dedupe-Nachweis nötig.
 
 Bestätigte Produktentscheidungen (nicht mehr offen, siehe TECH_DECISIONS.md
 „Phase 12 Finalisierung: Bestätigte Produktentscheidungen“):

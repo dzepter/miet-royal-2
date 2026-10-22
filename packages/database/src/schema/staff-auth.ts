@@ -75,8 +75,9 @@ export const staffSessions = pgTable(
     /** Grober Gerätename/Browser zur Wiedererkennung – kein Fingerprinting. */
     deviceLabel: text('device_label').notNull(),
     /**
-     * Phase-12-Finalisierung: SHA-256 des Geräte-Cookies `mr_staff_device`
-     * der Anmeldung (nie Klartext, nie API-Feld). NULL = Session vor dem
+     * Phase-12-Finalisierung: SHA-256 des Geräte-Cookies der Anmeldung
+     * (`__Host-mr_staff_device`, development `mr_staff_device`; nie Klartext,
+     * nie API-Feld). NULL = Session vor dem
      * Rollout. Dient nur dazu, Push-Abos desselben Mitarbeiters auf demselben
      * Gerät beim erneuten Login an die neue Session zu binden.
      */
@@ -115,7 +116,8 @@ export const staffLoginChallenges = pgTable(
     deviceLabel: text('device_label').notNull(),
     /**
      * Phase-12-Finalisierung: SHA-256 des serverseitig gesetzten
-     * Geräte-Cookies (`mr_staff_device`) aus dem ersten Loginschritt – die
+     * Geräte-Cookies (`__Host-mr_staff_device` bzw. development
+     * `mr_staff_device`) aus dem ersten Loginschritt – die
      * Geräteidentität bleibt über TOTP/Recovery/TOTP-Einrichtung erhalten.
      * Nie Klartext, nie vom Client im Body wählbar.
      */
@@ -129,8 +131,8 @@ export const staffLoginChallenges = pgTable(
 
 /**
  * Phase-12-Finalisierung: bekannte Geräte je Mitarbeiter. Geräteidentität ist
- * ein serverseitig erzeugter Zufallswert im HttpOnly-Cookie `mr_staff_device`
- * (≥ 32 Byte); gespeichert wird ausschließlich dessen SHA-256. Der User-Agent
+ * ein serverseitig erzeugter Zufallswert im HttpOnly-Cookie
+ * `__Host-mr_staff_device` (development `mr_staff_device`, ≥ 32 Byte); gespeichert wird ausschließlich dessen SHA-256. Der User-Agent
  * (`displayLabel`) dient nur der Anzeige und entscheidet nie über „neues Gerät“.
  * UNIQUE(user_id, device_token_hash) macht den Erst-Login atomar: genau ein
  * `session.new_device_login` je Gerät und Mitarbeiter.

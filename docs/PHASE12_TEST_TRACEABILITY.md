@@ -318,7 +318,7 @@ Neue Pflichttests der Finalisierung. Die Testnamen tragen die Kennung als Präfi
 
 | Nr. | Thema | Test(s) |
 |---|---|---|
-| D1 | Server setzt `mr_staff_device` (32 Byte base64url, HttpOnly, SameSite=Strict, Path=/, 400 Tage), Secure-Regel | „D1. Login ohne Geräte-Cookie …“; „D1. Secure-Regel exakt wie beim Session-Cookie …“ |
+| D1 | Server setzt das Geräte-Cookie (development `mr_staff_device`, sonst `__Host-`, siehe H) (32 Byte base64url, HttpOnly, SameSite=Strict, Path=/, 400 Tage), Secure-Regel | „D1. Login ohne Geräte-Cookie …“; „D1. Secure-Regel exakt wie beim Session-Cookie …“ |
 | D2 | gleiches Cookie ⇒ kein Ereignis, nur `last_seen_at` | „D2. gleiches Geräte-Cookie …“ |
 | D3 | zwei Cookies + gleicher User-Agent ⇒ zwei Geräte; Geräte je Mitarbeiter | „D3. zwei Browser ohne Cookie …“; „D3. Geräte sind je Mitarbeiter …“ |
 | D4 | gleiches Cookie + anderer User-Agent ⇒ bekannt | „D4. gleiches Cookie mit anderem User-Agent …“ |
@@ -333,6 +333,23 @@ Neue Pflichttests der Finalisierung. Die Testnamen tragen die Kennung als Präfi
 | D13 | je neuem Gerät genau ein Admin-Push | „D13. je neuem Gerät genau ein Admin-Security-Push …“ |
 
 E2E-Zusatzbeleg: `communication-ops.spec.ts` „P. Neues Gerät = neuer serverseitiger Geräte-Cookie …“.
+
+### H – Host-präfixiertes Geräte-Cookie (`auth-device-identity.integration.test.ts`, 2026-10-22)
+
+Außerhalb `development` heißt das Geräte-Cookie `__Host-mr_staff_device`, in `development` `mr_staff_device` (zentral `deviceCookieName(appEnv)`). Production/Staging/Demo über echtes `loadConfig` + `buildApp`.
+
+| Nr. | Thema | Test(s) |
+|---|---|---|
+| H1 | production/staging/demo setzen ausschließlich `__Host-mr_staff_device`; Folgelogin = dasselbe Gerät | „H1. production, staging und demo setzen …“ |
+| H2 | development setzt/liest `mr_staff_device` (kein `__Host-`) | „H2. development setzt und liest `mr_staff_device` …“ |
+| H3 | `__Host-`: Secure, Path=/, KEIN Domain (roher Set-Cookie-Header, Login + `setDeviceCookie`) | „H3. außerhalb development: Secure, Path=/ und KEIN Domain-Attribut …“ |
+| H4 | weiterhin HttpOnly, SameSite=Strict, Max-Age 400 Tage | „H4. in allen Umgebungen weiterhin HttpOnly …“ |
+| H5 | alter Name außerhalb development nicht übernommen (neuer Wert, neues Gerät); bei beiden Namen gilt nur der `__Host-`-Wert; development liest nur den alten Namen | „H5. production ignoriert ein gültiges `mr_staff_device` …“ |
+| H6 | Self-Service-Reset, Admin-Reset-Link, Passwortänderung löschen `staff_known_devices` nicht; danach kein neues Ereignis | „H6. Self-Service-Reset (Mail-Link), Admin-Reset-Link und Passwortänderung …“ |
+| H7 | Admin-2FA-Reset, Recovery-Login, erneute 2FA-Einrichtung löschen nicht | „H7. Admin-2FA-Reset, Recovery-Code-Login …“ |
+| H8 | D1–D13 grün (Name über `deviceCookieName`); TOTP-/Recovery-Pfad unter production mit `__Host-`-Cookie | „H8. TOTP- und Recovery-Login in production …“ + D1–D13 |
+
+Mutationsproben (2026-10-22, danach byte-identisch wiederhergestellt): Fallback auf `mr_staff_device` außerhalb development ⇒ H5 rot; `Secure=false` in production ⇒ H3 rot; `domain` im Device-Cookie ⇒ H3 rot.
 
 ### P – kein Push-Opt-out (`communication-push-final.integration.test.ts`)
 
@@ -359,6 +376,27 @@ E2E-Zusatzbeleg: `communication-ops.spec.ts` „P. Neues Gerät = neuer serverse
 Bestandstest angepasst: `communication-push.integration.test.ts` „135. …“ prüft jetzt, dass die
 DELETE-Route für fremde UND eigene Subscription 404 liefert und die Subscription aktiv bleibt.
 
+### PB – Automatisches Wiederanbinden (Auftrag P1–P10)
+
+Auftrag 2026-10-22, Punkt 4 (dort P1–P10; hier „PB“ zur Unterscheidung von P1–P17 oben). Server: `communication-push-rebind.integration.test.ts` (echtes Client-Modul `apps/staff/lib/push-rebind.ts` mit Fake-Browser gegen die echte Route `POST /staff/push/subscriptions`); Client: `staff-push-rebind.test.ts` (Unit, Spies auf `requestPermission`/`subscribe`).
+
+| Nr. | Thema | Test(s) |
+|---|---|---|
+| PB1 | Session läuft per Inaktivität ab ⇒ Abo `session_expired`, kein Push; Rebind mit abgelaufenem/ohne Cookie ⇒ 401, nichts geändert | „PB1. …“ (Integration) |
+| PB2 | Re-Login allein reaktiviert nicht; automatisches Re-Register derselben echten Subscription ⇒ dieselbe Zeile reaktiviert, an neue Session gebunden, Status aktiv; Endpoint/Schlüssel nicht in Antworten/Log | „PB2. …“ (Integration); Client: „PB2/PB3. …“, „PB2b. …“ (genau einmal je App-Start, Freigabe nach Login), „PB2c. …“ (Einbindung AuthGuard/Login) |
+| PB3 | danach Push ohne weiteren Schritt aktiv (Fake-Push-Dienst erhält ihn); Logout der neuen Session deaktiviert | „PB3. …“ (Integration); Client: „PB2/PB3. …“ |
+| PB4 | `requestPermission()`/`pushManager.subscribe()` nie aufgerufen (alle Szenarien), kein LocalStorage/Query/Cookie, kein Logging | „PB4. …“ (Client) |
+| PB5 | permission `default` ⇒ kein Prompt, kein POST; UI-Button unverändert | „PB5. …“ (Client) |
+| PB6 | permission `denied` ⇒ kein Prompt, kein POST; Hinweistext unverändert; ohne Subscription/Service Worker/Schlüssel, offline ⇒ kein POST; Fehler ⇒ `failed` ohne Exception | „PB6. …“, „PB6b. …“, „PB6c. …“ (Client) |
+| PB7 | fremder User (production-App): gefälschter Endpoint ⇒ 400 `PUSH_ENDPOINT_NOT_ALLOWED`; unvollständige/ungültige Schlüssel ⇒ 400; Statusroute übernimmt nie; vollständige gültige Subscription ⇒ bestehende Übernahmeregel (Zeile wechselt zum neuen User/zur neuen Session, Historie zurückgesetzt, alter User erreicht das Gerät nicht mehr) | „PB7. …“ (Integration) |
+| PB8 | Logout deaktiviert weiterhin (`session_revoked`, kein Push); Rebind mit abgemeldetem Cookie ⇒ 401; nächster Login + Rebind ⇒ wieder aktiv | „PB8. …“ (Integration) |
+| PB9 | 404/410 ⇒ weiterhin `gone`; Rebind der aufgegebenen Subscription reaktiviert, nächster Versand deaktiviert erneut (genau ein Gateway-Aufruf) | „PB9. …“ (Integration, 404 und 410 parametrisiert) |
+| PB10 | kein Opt-out: keine DELETE/PUT/PATCH-Route unter `/staff/push` (Routentabelle), kein Abmelde-/Rebind-Pfad; Aufrufe ⇒ 404, Abo bleibt aktiv | „PB10. …“ (Integration) |
+
+E2E (echte Staff-App, Chromium; nur die Browser-Push-API ist gestubbt, da Headless-Chromium keinen Push-Dienst hat): `communication-ops.spec.ts` „U. Push nach Session-Ablauf …“ – App-Start bindet die vorhandene Browser-Subscription ohne Klick an; Session-Ablauf ⇒ Statusprüfung `session_expired`, kein Push; erneuter Login ⇒ automatische Registrierung an der neuen Session, `requestPermission`/`subscribe` 0×, Einstellungsseite „Push ist auf diesem Gerät aktiv.“, Push kommt beim Push-Fake an; `default`/`denied` ⇒ kein POST, kein Prompt, UI-Text unverändert (deckt P1–P6 zusätzlich im Browser ab). Gegenprobe: Aufruf im AuthGuard entfernt ⇒ U rot.
+
+Mutationsproben (2026-10-22, danach byte-identisch wiederhergestellt): `requestPermission()` im Rebind aufrufen ⇒ PB4/PB5/PB6 rot; Berechtigungsprüfung entfernen ⇒ PB5/PB6 rot; `pushManager.subscribe()` als Rückfall bei fehlender Subscription ⇒ PB4/PB6b rot.
+
 ### RA – Reassignment-Race (`communication-push-final.integration.test.ts`)
 
 | Nr. | Thema | Test(s) |
@@ -381,6 +419,37 @@ DELETE-Route für fremde UND eigene Subscription 404 liefert und die Subscriptio
 
 RA6b verschärft (B2): Bernd erhält deterministisch keinen Push (eine evtl. Zustellung ist `SUPERSEDED`).
 RA7 angepasst: `push.send` läuft je Zuweisung, solange sie aktuell ist.
+RA13 angepasst (Finalisierung 2, Regel C same-day): `start_at` wird mit dem 23 h alten requestedAt mitgesetzt,
+geprüft bleibt nur die 24-h-Grenze.
+
+### KR – Kurzfrist-Push effektiv/same-day (Auftrag R1–R12)
+
+Finalisierung 2 (2026-10-22), `communication-push-reassignment-effective.integration.test.ts`; „KR“ statt „R“,
+um Verwechslung mit den Retention-Tests R1–R31 zu vermeiden. Regeln A–G: TECH_DECISIONS.md „Phase 12
+Finalisierung: kein Push-Opt-out, Reassignment-Claim“.
+
+| Nr. | Auftrag | Thema | Test(s) |
+|---|---|---|---|
+| KR1 | R1 | heutige Neuzuweisung ohne Vertretung ⇒ direkt Zugewiesener genau ein Push | „KR1. …“ |
+| KR2 | R2 | mit aktiver Vertretung ⇒ Vertreter bekommt den Push (K(Vertreter)) | „KR2. …“ |
+| KR3 | R3 | direkt Zugewiesener in KR2 kein Kurzfrist-Push (auch nach weiteren Scans) | „KR3. …“ |
+| KR4 | R4 | Acknowledge bleibt beim direkt Zugewiesenen (Service FORBIDDEN, Route 403 für den Vertreter) | „KR4. …“ |
+| KR5 | R5 | Vertretung wechselt zwischen Lesen und Claim ⇒ nur der neue effektive Empfänger | „KR5. …“ |
+| KR6 | R6 | Vertretung wechselt nach Claim vor `push.send` ⇒ alte Zustellung `skipped`/`SUPERSEDED_RECIPIENT`, Schlüssel frei | „KR6. …“ |
+| KR7 | R7 | neuer effektiver Empfänger genau einmal, auch nach weiteren Scans; Hin-und-her ohne erneutes Senden | „KR7. …“; „KR7b. …“; „KR7c. …“ |
+| KR8 | R8 | vor dem Claim auf den nächsten Tag verschoben ⇒ kein Push, Version erledigt; zurück auf heute ⇒ kein Push | „KR8. …“ |
+| KR9 | R9 | nach dem Claim auf den nächsten Tag ⇒ `SUPERSEDED` (Schlüssel belegt); zurück ⇒ keine Wiederbelebung | „KR9. …“ |
+| KR10 | R10 | parallele Scanner (Promise.all) ⇒ genau eine Zustellung/ein Push, auch nach Vertretungswechsel | „KR10. …“ |
+| KR11 | R11 | Storno vor und nach dem Claim ⇒ kein Push; Vorgang storniert ⇒ Claim ohne Push | „KR11. …“; „KR11b. …“ |
+| KR12 | R12 | Datenminimierung: Nutzlast `{kind,title,body,url,tag}`, Schlüssel nur IDs/Zeitpunkt, neutrale Fehlercodes | „KR12. …“ |
+| KR13 | – (Review 3, B1) | Retry nach Teilerfolg + Vertretungswechsel: erreichter Empfänger behält den Schlüssel, kein zweiter Push nach Vertretungsende | „KR13. …“ |
+| KR14 | – (Review 3, B2) | Kein Kurzfrist-Anspruch nach dem Durchführungstag (Folgetag nach Vertretungsende); am Tag selbst erreicht der Wechsel die Originalperson | „KR14. …“ |
+
+Mutationsproben (je Probe nur diese Datei, danach byte-identisch wiederhergestellt, `cmp` geprüft):
+Same-day im Claim aus ⇒ KR8 rot; Same-day in der Versandzeit-Prüfung aus ⇒ KR9 rot; Empfänger wieder
+`requested_for` ⇒ KR2–KR7c, KR10, KR12 rot; Kandidaten-Gate wieder `assignment_notified_at IS NULL` ⇒ KR7, KR7b,
+KR7c, KR10, KR12 rot; Schlüsselfreigabe auch bei `closed` ⇒ KR9, KR11b rot. Review Runde 3: frühere Erfolge ignoriert (`reached = succeeded`) ⇒ KR13 rot;
+Durchführungstag-Grenze im Claim entfernt ⇒ KR14 rot.
 
 ### W – Meta Graph API (Default v26.0)
 
