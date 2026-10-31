@@ -32,6 +32,22 @@ export const demoDatasetState = pgTable(
     lastResetBy: uuid('last_reset_by').references(() => staffUsers.id, { onDelete: 'set null' }),
     resetInProgress: boolean('reset_in_progress').notNull().default(false),
     resetStartedAt: timestamp('reset_started_at', { withTimezone: true }),
+    /**
+     * Phase 14 (Order §91/§92): Generation des Demo-Datensatzes. Jeder Reset
+     * erzeugt eine neue zufällige Epoch; Offline-Leases, -Pakete und
+     * -Mutationen der Demo sind an die Epoch gebunden und werden nach einem
+     * Reset mit DEMO_DATASET_CHANGED abgewiesen (nie auf den neuen Seed angewendet).
+     */
+    datasetEpoch: uuid('dataset_epoch')
+      .notNull()
+      .default(sql`gen_random_uuid()`),
+    /**
+     * Startzeitpunkt des letzten Resets (bleibt nach Abschluss stehen, anders
+     * als `reset_started_at`): Demo-Jobs, die vor diesem Zeitpunkt eingereiht
+     * wurden, gehören zum alten Datensatz und werden vom Worker nicht mehr
+     * ausgeführt (Order §21 – UUID-Kollision ist keine Sicherheitsannahme).
+     */
+    lastResetStartedAt: timestamp('last_reset_started_at', { withTimezone: true }),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   () => [

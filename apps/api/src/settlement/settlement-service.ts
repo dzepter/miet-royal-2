@@ -131,6 +131,13 @@ export const SETTLEMENT_STATUS_LABELS: Record<SettlementStatus, string> = {
   transfer_failed: 'Übertragung an Buchhaltung fehlgeschlagen – wird erneut versucht',
 };
 
+/**
+ * Phase 14 (accounting), Order W1/§30: Text der Demo-Abrechnung nach „Bereit zur
+ * Buchhaltung“ – exakt dieser Wortlaut in API, Abrechnung, Storno und Staff-UI.
+ */
+export const DEMO_ACCOUNTING_UNAVAILABLE_HINT =
+  'Buchhaltungsübertragung ist in der Demo nicht verfügbar.';
+
 /** Fehlgeschlagener Transfer OHNE anstehenden Queue-Retry (z. B. manuell vorbereitet). */
 export const TRANSFER_FAILED_MANUAL_LABEL =
   'Übertragung an Buchhaltung fehlgeschlagen – bitte manuell erneut übertragen.';
@@ -330,6 +337,7 @@ export type DominantActionKey =
   | 'retry_transfer'
   | 'auto_planned'
   | 'not_configured'
+  | 'demo_unavailable'
   | 'locked';
 
 export interface SettlementPermissions {
@@ -384,7 +392,12 @@ export interface SettlementView {
     paymentStatus: SettlementRow['paymentStatus'];
     paymentStatusLabel: string | null;
     lastTransferErrorCode: string | null;
-    accountingBlocker: 'not_configured' | null;
+    /**
+     * `not_configured`: keine Buchhaltungsanbindung (production ohne Lexware).
+     * `demo_unavailable` (Phase 14, Order W1/§30): in der Demo ist die externe
+     * Übertragung bewusst nicht verfügbar – kein Fehlerzustand.
+     */
+    accountingBlocker: 'not_configured' | 'demo_unavailable' | null;
     /** Phase 10 (Vertrag §6): Provider, Blocker, Rechnungsdaten, Retry-Freigabe. */
     accounting: AccountingBlockView;
     /** Phase 10: Rechnungsversand – 'pending' bis Phase 12 versendet; nie automatisch 'sent'. */
@@ -3077,7 +3090,8 @@ export class SettlementService {
             ? null
             : PAYMENT_STATUS_LABELS[settlement.paymentStatus],
         lastTransferErrorCode: effectiveErrorCode,
-        accountingBlocker: !configured && settlement.lockedAt === null ? 'not_configured' : null,
+        accountingBlocker:
+          !configured && settlement.lockedAt === null ? this.unconfiguredBlocker() : null,
         accounting,
         invoiceDeliveryStatus: settlement.invoiceDeliveryStatus,
         autoTransferPlannedAt: autoPlanned ? pendingJob.runAt.toISOString() : null,
@@ -3142,7 +3156,8 @@ export class SettlementService {
         isMock: this.transfers.provider === 'mock',
         // Phase 10: „fällige Jobs ausführen“ wird auch mit Lexware-Fake außerhalb von
         // production gebraucht (E2E ohne Worker); Zahlungs-/Fehlersimulation nur bei isMock.
-        controlsAvailable: this.appEnv !== 'production' && configured,
+        // Phase 14 (accounting): in der Demo nie (Order W1 – keine Mock-Buchhaltung).
+        controlsAvailable: this.appEnv !== 'production' && this.appEnv !== 'demo' && configured,
       },
     };
   }
@@ -3195,6 +3210,11 @@ export class SettlementService {
           : this.transfers.invoiceDeeplink(mapping.lexwareInvoiceId),
       now,
     });
+  }
+
+  /** Blocker ohne Buchhaltungsanbindung: in der Demo bewusst „nicht verfügbar“ (Phase 14, Order W1). */
+  private unconfiguredBlocker(): 'not_configured' | 'demo_unavailable' {
+    return this.appEnv === 'demo' ? 'demo_unavailable' : 'not_configured';
   }
 
   private dominantAction(
@@ -3250,6 +3270,15 @@ export class SettlementService {
       case 'preparing':
       default:
         if (!configured) {
+          // Phase 14 (accounting), Order W1/§30: Demo endet fachlich bei „Bereit zur
+          // Buchhaltung“ – ein Hinweis, kein Fehlerzustand, keine Übertragung.
+          if (this.appEnv === 'demo') {
+            return {
+              key: 'demo_unavailable',
+              label: SETTLEMENT_STATUS_LABELS.ready_for_accounting,
+              hint: DEMO_ACCOUNTING_UNAVAILABLE_HINT,
+            };
+          }
           return {
             key: 'not_configured',
             label: 'Buchhaltungsintegration noch nicht eingerichtet',

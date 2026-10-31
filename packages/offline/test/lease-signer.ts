@@ -86,6 +86,7 @@ export async function createTestSigner(): Promise<TestSigner> {
         deviceId: base.deviceId,
         issuedAt: base.issuedAt,
         expiresAt: base.expiresAt,
+        datasetEpoch: null, // Phase 14 (offline epoch): außerhalb der Demo immer null
         leaseSecret: toBase64Url(randomBytes(32)),
         permissions: ['return.perform', 'handover.perform'],
         firstName: 'Erika',

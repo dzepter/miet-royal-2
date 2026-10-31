@@ -170,6 +170,61 @@ Keine Pflichtbegründung.
 Admin kann definieren, dass bestimmte Live-Funktionen zusätzlich
 eine bestandene Demo-Übung erfordern.
 Admin kann Gate manuell übersteuern.
+UI (Phase 14): „Training“ in der Hauptnavigation ist kein Recht (alle
+Angemeldeten); Einstellungen → „Training“ erscheint nur mit `training.manage`
+und zeigt in der Demo Fortschritt/Zuweisungen, außerhalb der Demo Live-Sperren,
+Freigaben und Overrides. Die Mitarbeiterauswahl dort nutzt die
+Mitarbeiterverwaltung (`employee.manage`) oder die vorhandenen
+Staff-Auswahllisten; ohne diese Rechte sind nur Personen mit vorhandenen
+Trainingsdaten wählbar.
+
+Serverseitige Umsetzung (Phase 14, W2, Order §55–§66, §97–§100):
+- Feature-Katalog (Code, `apps/api/src/training/features.ts`, kein
+  Admin-Scripting): `offer.send` (Angebot senden), `handover.finalize`
+  (Übergabe abschließen), `return.finalize` (Rückgabe abschließen),
+  `settlement.release` (Abrechnung freigeben: approve-and-send,
+  customer-response, release, end-wait), `tour.start` (Tour starten),
+  `tour.takeover` (Tour übernehmen), `machine.clean_complete` (Reinigung
+  abschließen), `inventory.stocktake_approve` (Lagerzählung freigeben). Je
+  Feature höchstens eine Übung (`training_feature_requirements`, global).
+- Reihenfolge in jeder gegateten Route: Auth → normale Permission(s) →
+  Sichtbarkeit → `requireTrainingGate` → Fachaufruf. Das Gate ist eine
+  ZUSÄTZLICHE Bedingung; Rechte bleiben vollständig maßgeblich, Training
+  erweitert keine Rechte (§55).
+- Erzwungen wird ausschließlich in `APP_ENV=production` (§63); demo, staging
+  und development erzwingen nie (staging/development zeigen die Konfiguration
+  mit `enforced: false`).
+- Kein Systemadmin-Bypass (§59): Systemadmins besitzen alle Permission-Keys,
+  aber keine automatische Freigabe – sie geben sich bewusst einen Override
+  über denselben auditierten Weg.
+- Freigaben (`staff_training_clearances`): `verified_demo` (Admin bestätigt
+  bewusst ein in der Demo bestandenes Training je Mitarbeiter + Übungs-Key)
+  oder `override` (Begründung Pflicht, `validUntil` optional). Gültig = nicht
+  widerrufen, begonnen, nicht abgelaufen; jede Anfrage prüft frisch gegen die
+  Datenbank (kein Cache, nichts im Session-Cookie), Widerruf wirkt sofort (§65).
+- Antwort bei Sperre: 403 `TRAINING_REQUIRED` („Für diese Funktion ist zuerst
+  das Training ‚<Titel>‘ erforderlich.“, `details.featureKey`,
+  `details.requiredTrainingKey`, `details.title`); inkonsistente Sperre (aktiv,
+  Übung fehlt/inaktiv): 403 `TRAINING_CONFIGURATION_INVALID` (fail-closed,
+  §97) – der Admin deaktiviert die Sperre; aktivieren lässt sie sich nur auf
+  eine aktive Übung.
+- Admin-Recovery (§98): `/staff/training/admin/*` (`training.manage`),
+  Mitarbeiter-/Rollen-/Rechteverwaltung, `demo.manage`-Routen und alle
+  Lese-Routen (§99) werden NIE gegated; `requireTrainingGate` existiert nur an
+  den acht Zielaktionen (statischer Test T113).
+- Offline-Sync: `handover.finalize`, `return.finalize` und
+  `machine.clean_complete` werden nach der Rechteprüfung ebenfalls gegated –
+  Ablehnung `rejected` mit Code `TRAINING_REQUIRED` bzw.
+  `TRAINING_CONFIGURATION_INVALID` (dauerhaft, kein Retry, Text wie online).
+- Verwaltung (`training.manage`, nur außerhalb demo registriert – in demo
+  404, §68): `GET /staff/training/admin/gates`,
+  `PUT /staff/training/admin/gates/:featureKey`,
+  `GET/POST /staff/training/admin/clearances`,
+  `POST /staff/training/admin/clearances/:id/revoke`. Security-Audit:
+  `training.gate_enabled` / `training.gate_disabled` (nur bei
+  Zustandswechsel), `training.demo_verified`, `training.override_granted`,
+  `training.override_revoked`, `training.demo_verification_revoked` – Details
+  nur Keys/IDs/Zeitstempel, nie der Begründungstext.
 
 ## Offline (Phase 8)
 
@@ -354,6 +409,25 @@ Admin kann Gate manuell übersteuern.
 - Jede Reset-Anforderung wird als Security-Event `demo.reset_requested`
   (Actor, Session) protokolliert; der Abschluss wird vom Reset-Service
   auditiert.
-- `training.manage` bleibt reserviert (Trainingsdetails folgen mit den
-  fehlenden Auftragsabschnitten).
+- `training.manage` (Kategorie „Demo / Training“): außerhalb der Demo die
+  Verwaltung der Live-Sperren, Freigaben und Overrides (Abschnitt „Training
+  Gate“); in der Demo die Trainingsverwaltung (Zuweisungen, Fortschritt,
+  Training-Reset). `demo.manage` bleibt auf Status, Seed-Registry und Reset in
+  der Demo beschränkt; geprüft wird jeweils in der Umgebung, in der die Route
+  existiert (L11).
+- Reichweite von `training.manage` in der Demo (Phase 14, W2, Order §53/§68/§85):
+  `GET /staff/training/admin/overview` (alle aktiven Mitarbeiter mit
+  Zuweisungen, Fortschritt, letztem Versuch, Fehlversuchen, unterbrochenen
+  Versuchen), `GET …/admin/users/:userId` (Zuweisungen + alle Versuche mit
+  Ereignissen – nur Meta: Zeitpunkt, Übung, Schritt, neutraler Code),
+  `GET …/admin/paths` (Katalog), `POST …/admin/assignments` (Pfad zuweisen,
+  Audit `training.assignment_created`), `POST …/admin/reset` (Mitarbeiter /
+  Pfad / einzelne Übung; Historie bleibt, neue Runde; Audit
+  `training.assignment_reset`); mit `training.manage` sind fremde Versuche
+  über `GET /staff/training/attempts/:id` lesbar. Ohne das Recht gilt der
+  IDOR-Schutz: nur eigene Zuweisungen/Versuche, fremde IDs ⇒ neutrales 404.
+  Es gibt keinen „Cheat Pass“ – kein Endpunkt setzt einen Versuch direkt auf
+  bestanden (§73); Training erweitert keine Fachrechte: der Start einer Übung
+  verlangt die Fachrechte der beteiligten Aktionen (`TRAINING_PERMISSION_MISSING`),
+  die Fachrouten prüfen ihre Rechte unverändert (§55).
 

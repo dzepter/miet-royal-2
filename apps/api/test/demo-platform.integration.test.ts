@@ -40,10 +40,18 @@ const LIVE_URL = 'https://app.miet-royal.example';
 const DEMO_URL = 'http://localhost:3012'; // development erlaubt http
 
 class FakeResetRunner implements DemoResetRunner {
-  calls: Array<{ actorId: string | null; now?: Date }> = [];
+  calls: Array<{
+    actorId: string | null;
+    sessionId?: string | null | undefined;
+    now?: Date | undefined;
+  }> = [];
   nextError: Error | null = null;
 
-  async reset(input: { actorId: string | null; now?: Date }) {
+  async reset(input: {
+    actorId: string | null;
+    sessionId?: string | null | undefined;
+    now?: Date | undefined;
+  }) {
     this.calls.push(input);
     if (this.nextError !== null) {
       const error = this.nextError;
@@ -231,7 +239,7 @@ describe('Phase 14 – Plattform (Demo-Umgebung)', () => {
     expect(anonymous.statusCode).toBe(401);
   });
 
-  it('D-P4. Reset: Bestätigung „DEMO ZURÜCKSETZEN“ ist Pflicht (400), Erfolg 200 mit Ergebnis + Security-Event, DemoError ⇒ Status + details.demoCode', async () => {
+  it('D-P4. Reset: Bestätigung „DEMO ZURÜCKSETZEN“ ist Pflicht (400), Erfolg 200 mit Ergebnis, Route schreibt KEIN Audit (Phase 14 reset: das tut der Service) und reicht die Session durch, DemoError ⇒ Status + details.demoCode', async () => {
     const { cookie, adminId } = await adminCookie(demo);
     const wrong = await demo.app.inject({
       method: 'POST',
@@ -249,12 +257,12 @@ describe('Phase 14 – Plattform (Demo-Umgebung)', () => {
     });
     expect(missing.statusCode).toBe(400);
     expect(resetRunner.calls).toEqual([]);
-    const resetEvents = () =>
-      demo.db
-        .select()
-        .from(staffSecurityEvents)
-        .where(eq(staffSecurityEvents.type, 'demo.reset_requested'));
-    expect(await resetEvents()).toEqual([]);
+    // Phase 14 (reset, Order §31): die Route zeichnet selbst nichts auf – Audit ausschließlich im Service.
+    const demoEvents = async () =>
+      (await demo.db.select().from(staffSecurityEvents)).filter((event) =>
+        event.type.startsWith('demo.'),
+      );
+    expect(await demoEvents()).toEqual([]);
 
     const ok = await demo.app.inject({
       method: 'POST',
@@ -274,10 +282,8 @@ describe('Phase 14 – Plattform (Demo-Umgebung)', () => {
     expect(resetRunner.calls).toHaveLength(1);
     expect(resetRunner.calls[0]!.actorId).toBe(adminId);
     expect(resetRunner.calls[0]!.now).toBeInstanceOf(Date);
-    const events = await resetEvents();
-    expect(events).toHaveLength(1);
-    expect(events[0]!.actorUserId).toBe(adminId);
-    expect(events[0]!.details).toEqual({ environment: 'demo' });
+    expect(resetRunner.calls[0]!.sessionId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(await demoEvents()).toEqual([]);
 
     resetRunner.nextError = new DemoError(
       'CONFLICT',
@@ -492,6 +498,7 @@ describe('Phase 14 – Plattform (Demo-Umgebung)', () => {
       resetStale: false,
       counts: { customers: 0, processes: 0, tours: 0 },
       seedEntities: 0,
+      storageCleanup: { pendingJobs: 0, deadJobs: 0 }, // Phase 14 (reset)
     });
 
     // Business-Daten ohne registrierten Seed-Stand: Herkunft unbekannt ⇒ veraltet.

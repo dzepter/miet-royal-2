@@ -16,6 +16,7 @@
  * ihnen referenzierte Medien nach der Aufräumfrist; pending/conflict nie.
  */
 import { toBase64 } from './crypto.ts';
+import { META_DATASET_EPOCH } from './dataset-epoch.ts';
 import type {
   ConflictDetails,
   OfflineMutationType,
@@ -25,8 +26,13 @@ import type {
 import type { MutationRecord } from './records.ts';
 import type { DecryptedMutation, OfflineStore } from './store.ts';
 
-/** Ein Request je Mutation (POST /staff/offline/sync). */
-export type SyncMutationEnvelope = SyncMutationInput;
+/**
+ * Ein Request je Mutation (POST /staff/offline/sync). Phase 14 (offline
+ * epoch): `datasetEpoch` ist die Epoch der Mutation (Einreihungszeitpunkt),
+ * ersatzweise die des lokalen Pakets (Meta) – der Transport sendet sie auf
+ * Request-Ebene; null/undefined außerhalb der Demo.
+ */
+export type SyncMutationEnvelope = SyncMutationInput & { datasetEpoch?: string | null };
 
 export type SyncOutcome =
   | { status: 'applied'; resultRef: Record<string, string> | null; processedAt: string }
@@ -71,6 +77,21 @@ export class SessionInvalidError extends Error {
   }
 }
 
+/**
+ * Phase 14 (offline epoch, Order §92): 409 DEMO_DATASET_CHANGED – die Demo wurde
+ * zurückgesetzt, der lokale Stand gehört zur alten Generation. Kein Konflikt
+ * einer einzelnen Mutation: der Lauf endet, alles bleibt pending, bis der
+ * Mitarbeiter den alten Stand bewusst verwirft und ein neues Paket lädt.
+ */
+export class DatasetChangedError extends Error {
+  constructor(
+    message = 'Die Demo-Daten wurden zurückgesetzt. Offline erfasste Änderungen gehören zum alten Datenstand und können nicht mehr übernommen werden.',
+  ) {
+    super(message);
+    this.name = 'DatasetChangedError';
+  }
+}
+
 export interface SyncRunResult {
   attempted: number;
   applied: number;
@@ -78,6 +99,8 @@ export interface SyncRunResult {
   rejected: number;
   transientFailures: number;
   sessionInvalid: boolean;
+  /** Phase 14 (offline epoch): Lauf wegen Datensatzwechsel abgebrochen (Demo-Reset). */
+  datasetChanged: boolean;
 }
 
 export interface SyncEngineOptions {
@@ -156,6 +179,14 @@ export class SyncEngine {
   }
 
   private async envelopeFor(mutation: DecryptedMutation): Promise<SyncMutationEnvelope> {
+    // Phase 14 (offline epoch): Epoch der Mutation, sonst die des lokalen Pakets (Meta).
+    const metaEpoch = await this.store.getMeta(META_DATASET_EPOCH);
+    const datasetEpoch =
+      typeof mutation.datasetEpoch === 'string'
+        ? mutation.datasetEpoch
+        : typeof metaEpoch === 'string'
+          ? metaEpoch
+          : null;
     const media: SyncMediaInput[] = [];
     for (const mediaId of mutation.mediaIds) {
       const entry = await this.store.getMediaBytes(mediaId);
@@ -177,6 +208,7 @@ export class SyncEngine {
       baseVersion: mutation.baseVersion,
       payload: mutation.payload,
       media,
+      datasetEpoch,
     };
   }
 
@@ -202,6 +234,7 @@ export class SyncEngine {
       rejected: 0,
       transientFailures: 0,
       sessionInvalid: false,
+      datasetChanged: false,
     };
     if (this.running) return result;
     this.running = true;
@@ -307,14 +340,17 @@ export class SyncEngine {
             result.rejected += 1;
           }
         } catch (error) {
-          if (error instanceof SessionInvalidError) {
+          if (error instanceof SessionInvalidError || error instanceof DatasetChangedError) {
+            // Lauf beenden, Mutation bleibt pending (§39 bzw. Phase 14 offline epoch, Order §92:
+            // nichts wird verworfen, bis der Mitarbeiter den alten Stand bewusst verwirft).
             record.status = 'pending';
             await this.store.updateMutation(
               record.clientMutationId,
               { status: 'pending' },
               this.now().toISOString(),
             );
-            result.sessionInvalid = true;
+            if (error instanceof SessionInvalidError) result.sessionInvalid = true;
+            else result.datasetChanged = true;
             break;
           }
           const code = error instanceof TransientSyncError ? error.code : 'NETWORK_ERROR';

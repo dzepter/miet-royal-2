@@ -2,12 +2,23 @@
 
 import Link from 'next/link';
 import { useCallback, useEffect, useState } from 'react';
-import { CONFLICT_LABELS, type ConflictCode, type ConflictDetails } from '@mietroyal/offline';
+import {
+  CONFLICT_LABELS,
+  datasetChangedMessage,
+  type ConflictCode,
+  type ConflictDetails,
+} from '@mietroyal/offline';
 import { AuthGuard } from '../../components/auth-guard';
 import { formatBerlin } from '../../lib/handover';
 import { offlineStatusLabel, useOffline } from '../../lib/offline/provider';
 import type { OfflineRuntime } from '../../lib/offline/runtime';
 import { KIND_LABELS } from '../../lib/scheduling';
+// Phase 14 (training): Live-Sperren-Ablehnungen (Servertext nennt die erforderliche Übung).
+import {
+  isTrainingGateErrorCode,
+  TRAINING_CONFIGURATION_INVALID_TEXT,
+  TRAINING_REQUIRED_FALLBACK_TEXT,
+} from '../../lib/training';
 
 type Row = Awaited<ReturnType<OfflineRuntime['listMutations']>>[number] & {
   conflict: { code: string; message: string; details: ConflictDetails | null } | null;
@@ -57,6 +68,9 @@ const REJECTION_LABELS: Record<string, string> = {
   FORBIDDEN: 'Diese Änderung gehört zu einem anderen Benutzer.',
   MEDIA_HASH_MISMATCH: 'Ein Foto oder eine Unterschrift ist beschädigt.',
   PAYLOAD_TOO_LARGE: 'Die Übertragung ist zu groß (Fotos verkleinern).',
+  // Phase 14 (training): Fallbacks – der Servertext hat Vorrang (siehe conflictText).
+  TRAINING_REQUIRED: TRAINING_REQUIRED_FALLBACK_TEXT,
+  TRAINING_CONFIGURATION_INVALID: TRAINING_CONFIGURATION_INVALID_TEXT,
 };
 
 /** Serverseitige Offline-Zeile enthält bereits „Offline erfasst:/Offline gewählt:/Offline-Grundlage:“ – kein Doppelpräfix. */
@@ -79,6 +93,8 @@ function conflictText(code: string, fallback: string): string {
   if ((Object.keys(CONFLICT_LABELS) as string[]).includes(code)) {
     return CONFLICT_LABELS[code as ConflictCode];
   }
+  // Phase 14 (training): Servertext bevorzugen – er nennt das erforderliche Training (§66).
+  if (isTrainingGateErrorCode(code) && fallback !== '') return fallback;
   return (
     REJECTION_LABELS[code] ?? (fallback !== '' ? fallback : CONFLICT_LABELS.SERVER_STATE_CHANGED)
   );
@@ -99,6 +115,8 @@ function SyncView() {
   const [rows, setRows] = useState<Row[]>([]);
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // Phase 14 (offline epoch): „Später“ schließt nur den Dialog – der Zustand bleibt (Banner, kein Sync).
+  const [datasetDialogDismissed, setDatasetDialogDismissed] = useState(false);
 
   const load = useCallback(async () => {
     if (offline === null) return;
@@ -201,9 +219,71 @@ function SyncView() {
   const title = (row: Row) =>
     `${row.summary.processNumber !== null ? `Vorgang ${row.summary.processNumber} · ` : ''}${row.summary.actionLabel}${row.summary.detail !== null ? ` (${row.summary.detail})` : ''}`;
 
+  const datasetChangedText = datasetChangedMessage(open.length);
+  const discardOldDataset = () =>
+    void act(async () =>
+      (await offline.discardDataset())
+        ? 'Alter Demo-Datenstand verworfen – neues Arbeitspaket geladen.'
+        : 'Alter Demo-Datenstand verworfen – das Arbeitspaket konnte noch nicht geladen werden (bitte „Arbeitspaket aktualisieren“).',
+    );
+
   return (
     <main className="page">
       <h1>Synchronisierung prüfen</h1>
+      {state.datasetChangedPending && !datasetDialogDismissed && (
+        // Phase 14 (offline epoch, Order §92): bestehendes Dialogmuster (Overlay + Karte);
+        // Hauptaktion verwirft den alten Stand bewusst, „Später“ lässt alles stehen.
+        <div
+          className="lock-overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Demo-Daten zurückgesetzt"
+          data-testid="dataset-changed-dialog"
+        >
+          <div className="card" style={{ maxWidth: '30rem' }}>
+            <h2 style={{ marginTop: 0 }}>Demo-Daten zurückgesetzt</h2>
+            <p>{datasetChangedText}</p>
+            {state.connectivity !== 'online' && (
+              <p className="muted">
+                Ohne Verbindung kann kein neues Arbeitspaket geladen werden – bitte später mit
+                Verbindung bestätigen.
+              </p>
+            )}
+            <p>
+              <button
+                type="button"
+                className="danger"
+                data-testid="dataset-changed-confirm"
+                disabled={busy || state.connectivity !== 'online' || !state.unlocked}
+                onClick={discardOldDataset}
+              >
+                Alten Stand verwerfen und neues Arbeitspaket laden
+              </button>{' '}
+              <button
+                type="button"
+                data-testid="dataset-changed-later"
+                disabled={busy}
+                onClick={() => setDatasetDialogDismissed(true)}
+              >
+                Später
+              </button>
+            </p>
+          </div>
+        </div>
+      )}
+      {state.datasetChangedPending && datasetDialogDismissed && (
+        <p className="conflict-box" data-testid="dataset-changed-notice">
+          {datasetChangedText} Bis zur Bestätigung wird nicht synchronisiert.{' '}
+          <button
+            type="button"
+            data-testid="dataset-changed-reopen"
+            disabled={busy}
+            onClick={() => setDatasetDialogDismissed(false)}
+          >
+            Alten Stand prüfen
+          </button>
+        </p>
+      )}
       <p>
         <span className="badge" data-testid="sync-status">
           {offlineStatusLabel(state)}
@@ -222,7 +302,7 @@ function SyncView() {
         <button
           className="primary"
           data-testid="sync-now"
-          disabled={busy || state.syncing || !state.unlocked}
+          disabled={busy || state.syncing || !state.unlocked || state.datasetChangedPending}
           onClick={() =>
             void act(async () => {
               await offline.syncNow();

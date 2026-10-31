@@ -15,6 +15,7 @@ interface JobRow {
   idempotency_key: string;
   attempts: number;
   max_attempts: number;
+  created_at: Date;
 }
 
 /** Lease-Dauer: solange darf ein Versuch laufen, bevor er als verwaist gilt. */
@@ -114,7 +115,7 @@ export class PostgresJobQueue implements JobQueue {
          LIMIT 1
          FOR UPDATE SKIP LOCKED
        )
-       RETURNING id, type, payload, idempotency_key, attempts, max_attempts`,
+       RETURNING id, type, payload, idempotency_key, attempts, max_attempts, created_at`,
       [workerId, this.leaseMs],
     );
 
@@ -128,6 +129,7 @@ export class PostgresJobQueue implements JobQueue {
       attempts: row.attempts,
       maxAttempts: row.max_attempts,
       claimedBy: workerId,
+      createdAt: new Date(row.created_at), // Phase 14 (reset)
     };
   }
 
@@ -181,6 +183,20 @@ export class PostgresJobQueue implements JobQueue {
            run_at = $2, updated_at = now()
        WHERE id = $1 AND status = 'processing' AND locked_by = $3`,
       [job.id, runAt, job.claimedBy],
+    );
+  }
+
+  /**
+   * Phase 14 (reset): Job ohne Ausführung endgültig beenden (`dead`, `last_error`
+   * = Grund). Nur mit gültigem Claim (locked_by-Guard wie markSucceeded/markFailed).
+   */
+  async markDead(job: ClaimedJob, reason: string): Promise<void> {
+    await this.pool.query(
+      `UPDATE integration_jobs
+       SET status = 'dead', locked_at = NULL, locked_by = NULL,
+           lease_expires_at = NULL, last_error = $2, updated_at = now()
+       WHERE id = $1 AND status = 'processing' AND locked_by = $3`,
+      [job.id, reason, job.claimedBy],
     );
   }
 

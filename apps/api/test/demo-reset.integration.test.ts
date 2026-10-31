@@ -142,9 +142,14 @@ describe('Phase 14 – Demo-Reset', () => {
       );
       expect(reused).toHaveLength(0);
       // Tabellen, die der Seed nicht befüllt, sind nach dem Reset leer.
-      for (const table of ['tour_live_locations', 'vouchers', 'cancellations']) {
+      for (const table of ['tour_live_locations', 'cancellations', 'accounting_transfers']) {
         expect(await count(table)).toBe(0);
       }
+      // Phase 14 (accounting), W1.1: `vouchers` trägt nach dem Reset genau den neuen
+      // Fixture-Gutschein (voucher.situation) – der alte ist weg.
+      expect(await count('vouchers')).toBe(1);
+      const newVoucherId = await resolveId(DEMO_SEED_KEYS.voucherSituation);
+      expect(oldIds.has(newVoucherId)).toBe(false);
       const state = await demo.dataset.state(now);
       expect(state.resetInProgress).toBe(false);
       expect(state.lastResetAt?.toISOString()).toBe(now.toISOString());
@@ -201,8 +206,8 @@ describe('Phase 14 – Demo-Reset', () => {
       await demo.reset.reset({ actorId: adminId, now });
 
       for (const table of preserved) expect(await count(table)).toBe(before.get(table));
-      // Genau ein Audit-Eintrag mehr (demo.reset_completed); nichts gelöscht.
-      expect(await count('staff_security_events')).toBe(eventsBefore + 1);
+      // Genau zwei Audit-Einträge mehr (demo.reset_started + demo.reset_completed, Phase 14 reset); nichts gelöscht.
+      expect(await count('staff_security_events')).toBe(eventsBefore + 2);
       const machineIdsAfter = (await ctx.db.select({ id: machines.id }).from(machines))
         .map((row) => row.id)
         .sort();
@@ -280,7 +285,7 @@ describe('Phase 14 – Demo-Reset', () => {
     RESET_TIMEOUT_MS,
   );
 
-  it('D-R6. Audit-Event demo.reset_completed mit Actor, Dauer und Zählern (keine Inhalte)', async () => {
+  it('D-R6. Audit-Event demo.reset_completed mit Actor, resetRunId, Version und Status (Phase 14 reset: keine Zähler, keine Inhalte)', async () => {
     const events = await ctx.db
       .select()
       .from(staffSecurityEvents)
@@ -289,10 +294,10 @@ describe('Phase 14 – Demo-Reset', () => {
     const last = events[events.length - 1]!;
     expect(last.actorUserId).toBe(adminId);
     const details = last.details as Record<string, unknown>;
-    expect(details.durationMs).toEqual(expect.any(Number));
+    expect(Object.keys(details).sort()).toEqual(['datasetVersion', 'resetRunId', 'status']);
+    expect(details.resetRunId).toMatch(/^[0-9a-f-]{36}$/);
     expect(details.datasetVersion).toBe(DEMO_DATASET_VERSION);
-    expect(details.deletedRows).toEqual(expect.any(Number));
-    expect(details.seededProcesses).toBeGreaterThan(0);
+    expect(details.status).toBe('completed');
     for (const value of Object.values(details)) {
       expect(['number', 'string', 'boolean']).toContain(typeof value);
     }
@@ -311,8 +316,11 @@ describe('Phase 14 – Demo-Reset', () => {
         {},
         { idempotencyKey: `communication.scan_due:demo-reset-test:${Date.now()}` },
       );
+      // Phase 14 (accounting), W1: der Seed stellt keine Transferjobs mehr ein (Gateway in
+      // demo `disabled`); Business-Jobs des Datensatzes sind u. a. `voucher.delivery`
+      // (Fixture `voucher.situation`, normaler Versandweg) und Retention-Jobs.
       const businessBefore = await ctx.pool.query(
-        `SELECT id FROM integration_jobs WHERE type IN ('settlement.accounting_transfer', 'voucher.eligibility_check')`,
+        `SELECT id FROM integration_jobs WHERE type IN ('voucher.delivery', 'voucher.eligibility_check', 'settlement.accounting_transfer')`,
       );
       expect(businessBefore.rows.length).toBeGreaterThan(0);
       const oldBusinessIds = businessBefore.rows.map((row: { id: string }) => row.id);
@@ -333,11 +341,16 @@ describe('Phase 14 – Demo-Reset', () => {
         'communication.scan_due',
         'system.heartbeat',
       ]);
-      // Der neue Seed stellt eigene Business-Jobs ein (Auto-Transfer der blockerfreien Abrechnungen).
+      // Der neue Seed stellt eigene Business-Jobs ein (Gutschein-Versand der Fixture);
+      // Transferjobs entstehen in der Demo nie (W1).
       const businessAfter = await ctx.pool.query(
-        `SELECT count(*)::int AS n FROM integration_jobs WHERE type = 'settlement.accounting_transfer'`,
+        `SELECT count(*)::int AS n FROM integration_jobs WHERE type = 'voucher.delivery'`,
       );
       expect(businessAfter.rows[0].n).toBeGreaterThan(0);
+      const transferJobs = await ctx.pool.query(
+        `SELECT count(*)::int AS n FROM integration_jobs WHERE type = 'settlement.accounting_transfer'`,
+      );
+      expect(transferJobs.rows[0].n).toBe(0);
     },
     RESET_TIMEOUT_MS,
   );
@@ -663,7 +676,12 @@ describe('Phase 14 – Demo-Reset', () => {
         error: () => {},
       },
     });
-    expect(outcome).toEqual({ removed: 22, failed: 3 });
+    // Phase 14 (reset, Order §22): fehlgeschlagene Schlüssel werden für die Nachbereinigung geliefert.
+    expect(outcome).toEqual({
+      removed: 22,
+      failed: 3,
+      failedKeys: ['obj-0-fail', 'obj-12-fail', 'obj-24-fail'],
+    });
     expect(maxInFlight).toBe(DEMO_RESET_STORAGE_DELETE_CONCURRENCY);
     expect(maxInFlight).toBeLessThanOrEqual(10);
     expect(deleted).toHaveLength(22);
@@ -673,6 +691,7 @@ describe('Phase 14 – Demo-Reset', () => {
     expect(await deleteStorageObjectsInBatches(storage, [], { concurrency: 1 })).toEqual({
       removed: 0,
       failed: 0,
+      failedKeys: [],
     });
   });
 

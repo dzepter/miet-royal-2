@@ -31,13 +31,15 @@ Miet-Royal verfolgt nicht zusätzlich, ob Lexware-Rechnungsmail zugestellt wurde
 ### Umsetzung Phase 9: AccountingGateway (Vorstufe zu Lexware)
 Es gibt genau eine Grenze zwischen Abrechnung/Storno und Buchhaltung:
 `AccountingGateway` (`apps/api/src/accounting/gateway.ts`).
-- `MockAccountingGateway` in development/staging/demo: deterministische
-  Referenz `MOCK-RE-<Vorgangsnummer>-<lfd>` bzw. `MOCK-STORNO-…`, in der
-  Oberfläche immer als „MOCK“ gekennzeichnet; keine Rechnung, kein PDF, kein
-  Versand. Fehler nur über explizite Simulation (`fail-next`), nie zufällig.
-- `DisabledAccountingGateway` in production bis Phase 10: jede Übertragung
-  wird mit „Buchhaltungsintegration nicht konfiguriert“ abgewiesen; nichts
-  wird als übertragen markiert, keine Endlos-Retries (kein Job eingestellt).
+- `MockAccountingGateway` in development/staging (seit Phase 14 NICHT mehr in
+  demo): deterministische Referenz `MOCK-RE-<Vorgangsnummer>-<lfd>` bzw.
+  `MOCK-STORNO-…`, in der Oberfläche immer als „MOCK“ gekennzeichnet; keine
+  Rechnung, kein PDF, kein Versand. Fehler nur über explizite Simulation
+  (`fail-next`), nie zufällig.
+- `DisabledAccountingGateway` in production ohne Lexware-Anbindung UND in demo
+  (Phase 14, W1): jede Übertragung wird mit „Buchhaltungsintegration nicht
+  konfiguriert“ abgewiesen; nichts wird als übertragen markiert, keine
+  Endlos-Retries (kein Job eingestellt).
 - Übertragung läuft ausschließlich über `AccountingTransferService`
   (`accounting_transfers`): eingefrorener Payload-Snapshot VOR dem ersten
   Versuch (Hash dokumentiert), stabiler Idempotenzschlüssel
@@ -55,6 +57,26 @@ Es gibt genau eine Grenze zwischen Abrechnung/Storno und Buchhaltung:
   Rückfluss); Phase 9 erlaubt ihn nur über die Mock-Steuerung außerhalb von
   production (system.settings). Miet-Royal ist nicht Source of Truth, kein
   Mahnwesen.
+
+### Phase 14 (W1, MASTER_SPEC §29): Demo – Lexware und Buchhaltung immer disabled
+In `APP_ENV=demo` liefert `createAccountingGateway` IMMER
+`DisabledAccountingGateway`: kein `LexwareClient` (ein `LEXWARE_API_KEY` ist
+dort ein Konfigurationsfehler), kein Lexware-API-Aufruf, kein Mock-Erfolg,
+keine Fake-Rechnung, keine Fake-Rechnungsnummer, keine externe Referenz, kein
+Webhook (`POST /webhooks/lexware` ⇒ 404), keine Zahlungsbestätigung.
+`buildApp`, der Worker und der Demo-Seed prüfen zusätzlich fail-closed, dass
+in demo/production nie ein Mock-Gateway aktiv ist
+(`assertAccountingGatewayAllowed`). Folgen: der Settlement-Hook stellt in der
+Demo keinen Auto-Transfer-Job ein, `transferNow`/Storno-Transfer antworten 409
+`ACCOUNTING_NOT_CONFIGURED`, `GET /staff/accounting/status` meldet
+`{ provider: 'disabled', configured: false, mock: false, mockControlsAvailable:
+false, environment: 'demo' }`, die Mock-Steuerung antwortet 409 (nur
+`run-due-jobs` bleibt als reiner Job-Trigger erreichbar). Die Abrechnung ist
+in der Demo bis „Bereit zur Buchhaltung“ trainierbar; die Sicht trägt den
+Blocker `demo_unavailable` (kein Fehlerzustand) mit dem Text
+„Buchhaltungsübertragung ist in der Demo nicht verfügbar.“. Der
+Wiedermieter-Gutschein der Demo entsteht als Seed-Fixture (W1.1, siehe
+TECH_DECISIONS), nie über einen simulierten Transfer.
 
 ### Umsetzung Phase 10: Provider „lexware“
 Siehe `docs/LEXWARE_API_NOTES.md` (verifizierte Endpunkte, Berechtigungen,

@@ -14,6 +14,10 @@ export const DEMO_BADGE_SHORT = 'DEMO';
 export const DEMO_TITLE_PREFIX = 'DEMO · ';
 export const DEMO_RESET_CONFIRMATION = 'DEMO ZURÜCKSETZEN';
 export const DEMO_OUTDATED_TEXT = 'Demo-Datenstand ist veraltet – Zurücksetzen empfohlen.';
+/** Phase 14 (reset, Order §22): Nachbereinigung alter Demo-Dateien (Job demo.storage_cleanup). */
+export const DEMO_STORAGE_CLEANUP_PENDING_TEXT = 'Bereinigung alter Demo-Dateien ausstehend';
+export const DEMO_STORAGE_CLEANUP_FAILED_TEXT =
+  'Bereinigung alter Demo-Dateien fehlgeschlagen – technischer Fehler, Logs prüfen';
 
 export type AppEnvironmentName = 'development' | 'staging' | 'demo' | 'production';
 
@@ -43,6 +47,8 @@ export interface DemoStatus {
   resetStale: boolean;
   counts: { customers: number; processes: number; tours: number };
   seedEntities: number;
+  /** Phase 14 (reset): ausstehende/dauerhaft gescheiterte Jobs `demo.storage_cleanup`. */
+  storageCleanup?: { pendingJobs: number; deadJobs: number };
 }
 
 export interface DemoSeedEntity {

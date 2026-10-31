@@ -261,15 +261,18 @@ export const DEMO_SEED_KEYS = {
   settlementReview: 'settlement.review',
   settlementDamage: 'settlement.damage',
   settlementMissingPart: 'settlement.missing_part',
+  // Gutschein-Situation (Phase 14, Order W1.1): synthetischer Fixture-Gutschein des
+  // Wiedermieters – ausschließlich über die Demo-Seed-Fixture-Schicht (fixtures/voucher-fixture.ts).
+  voucherSituation: 'voucher.situation',
 } as const;
 
 export type DemoSeedKeyName = (typeof DEMO_SEED_KEYS)[keyof typeof DEMO_SEED_KEYS];
 
 /**
  * Pflicht-Szenarien (Order §10) – jeder dieser Schlüssel muss nach dem Seed in
- * der Registry stehen. „voucher.situation“ (Gutschein-Situation) WARTET auf
- * die Entscheidung W1 (Zahlungsstatus „bezahlt“ nur über den Mock-Transfer)
- * und ist bewusst NICHT enthalten.
+ * der Registry stehen. „voucher.situation“ (Gutschein-Situation) entsteht seit
+ * W1.1 als synthetischer Fixture-Gutschein (kein Mock-Transfer, kein
+ * Zahlungsstatus „bezahlt“ – in der Demo gibt es keine Buchhaltungsübertragung).
  */
 export const REQUIRED_DEMO_SEED_KEYS: readonly string[] = [
   DEMO_SEED_KEYS.customerPrivateBasic,
@@ -306,6 +309,7 @@ export const REQUIRED_DEMO_SEED_KEYS: readonly string[] = [
   DEMO_SEED_KEYS.machineRented,
   DEMO_SEED_KEYS.machineCleaning,
   DEMO_SEED_KEYS.machineBlocked,
+  DEMO_SEED_KEYS.voucherSituation,
 ];
 
 /**

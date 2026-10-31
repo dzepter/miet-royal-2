@@ -1,4 +1,5 @@
 import type { DemoScenario } from './context.ts';
+import { voucherSituationFixture } from './fixtures/voucher-fixture.ts';
 import {
   bookingAcceptedDeliveryScenario,
   bookingAcceptedPickupScenario,
@@ -33,10 +34,11 @@ import { toursScenario } from './scenarios/tours.ts';
  * und Lagerbestand vor Übergaben, Vorgänge vor Kommunikation/Touren) und
  * bestimmt zugleich die Vorgangsnummern (MR-<Jahr>-0001 = neue Anfrage usw.).
  *
- * WARTET (bewusst nicht enthalten – keine Fachregeln erfinden):
- * - „Gutschein-Situation“ (`voucher.situation`): ein Gutschein entsteht nur nach
- *   Mock-Transfer + Zahlungsstatus „bezahlt“ (Entscheidung W1 offen).
- * - Trainingsbezug (Übungen/Pfade/Zuweisungen): Auftrag ab §21 fehlt.
+ * Fixture-Schicht (Order W1.1): `voucher.situation` ist KEIN Fachpfad-Szenario,
+ * sondern ein minimaler synthetischer Fixture-Zustand (fixtures/voucher-fixture.ts)
+ * – der normale Gutscheinweg setzt eine erfolgreiche externe Buchhaltungs-
+ * übertragung + Zahlungseingang voraus, die es in der Demo nie gibt (W1).
+ * Trainingsbezug (Übungen/Pfade/Zuweisungen) liegt beim Trainingsmodul.
  */
 export const CANONICAL_DEMO_SCENARIOS: readonly DemoScenario[] = [
   foundationScenario,
@@ -58,6 +60,7 @@ export const CANONICAL_DEMO_SCENARIOS: readonly DemoScenario[] = [
   cleaningPendingScenario,
   completedScenario,
   repeatSecondScenario,
+  voucherSituationFixture,
   communicationScenario,
   toursScenario,
   machinesScenario,

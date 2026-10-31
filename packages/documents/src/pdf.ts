@@ -84,12 +84,34 @@ export function formatEuro(cents: number): string {
 
 const MARGIN = 50;
 
-function renderDocument(build: (doc: PDFKit.PDFDocument) => void, title: string): Promise<Buffer> {
+/**
+ * Phase 14 (reset, Order §89): Umgebungskennzeichnung der Dokumente. Ist
+ * `environmentLabel` gesetzt (nur APP_ENV=demo: „DEMO – keine echten
+ * Kundendaten“), erhält das PDF unter dem Kopf eine fette, umrahmte Zeile mit
+ * dem Text, der Dokumenttitel (`info.Title`) den Präfix „DEMO · “, und jede
+ * weitere Seite wiederholt die Zeile oben im Seitenrand. Ohne Label (alle
+ * anderen Umgebungen) ändert sich nichts am Dokument.
+ */
+export interface PdfRenderOptions {
+  environmentLabel?: string | undefined;
+}
+
+export const PDF_TITLE_PREFIX_DEMO = 'DEMO · ';
+
+function renderDocument(
+  build: (doc: PDFKit.PDFDocument) => void,
+  title: string,
+  options: PdfRenderOptions = {},
+): Promise<Buffer> {
   return new Promise((resolve, reject) => {
+    const environmentLabel = options.environmentLabel?.trim() || null;
     const doc = new PDFDocument({
       size: 'A4',
       margin: MARGIN,
-      info: { Title: title, Author: 'Miet-Royal' },
+      info: {
+        Title: environmentLabel === null ? title : `${PDF_TITLE_PREFIX_DEMO}${title}`,
+        Author: 'Miet-Royal',
+      },
       // Unkomprimiert: Integritäts-/Inhaltsprüfungen (SHA-256, Tests) können
       // Metadaten und Text direkt im Bytestrom verifizieren.
       compress: false,
@@ -98,15 +120,63 @@ function renderDocument(build: (doc: PDFKit.PDFDocument) => void, title: string)
     doc.on('data', (chunk: Buffer) => chunks.push(chunk));
     doc.on('end', () => resolve(Buffer.concat(chunks)));
     doc.on('error', reject);
+    if (environmentLabel !== null) {
+      // Jede weitere Seite: Zeile oben im Seitenrand, ohne den Textfluss zu verschieben.
+      doc.on('pageAdded', () => drawEnvironmentBand(doc, environmentLabel));
+    }
     build(doc);
     doc.end();
   });
 }
 
-function header(doc: PDFKit.PDFDocument, heading: string, processNumber: string): void {
+/** Kennzeichnung im oberen Seitenrand (Folgeseiten) – Position/Schrift werden danach wiederhergestellt. */
+function drawEnvironmentBand(doc: PDFKit.PDFDocument, label: string): void {
+  const x = doc.x;
+  const y = doc.y;
+  const top = 16;
+  const width = doc.page.width - 2 * MARGIN;
+  doc.save();
+  doc.rect(MARGIN, top, width, 18).lineWidth(1).strokeColor('#000000').stroke();
+  doc
+    .font('Helvetica-Bold')
+    .fontSize(9)
+    .fillColor('#000000')
+    .text(label, MARGIN + 6, top + 5, { width: width - 12, lineBreak: false });
+  doc.restore();
+  doc.x = x;
+  doc.y = y;
+}
+
+/** Kennzeichnung unter dem Kopf (erste Seite): fett, umrahmt, im Textfluss. */
+function environmentLine(doc: PDFKit.PDFDocument, label: string): void {
+  const width = doc.page.width - 2 * MARGIN;
+  const top = doc.y;
+  doc.rect(MARGIN, top, width, 20).lineWidth(1).strokeColor('#000000').stroke();
+  doc
+    .font('Helvetica-Bold')
+    .fontSize(10)
+    .fillColor('#000000')
+    .text(label, MARGIN + 6, top + 5, { width: width - 12, lineBreak: false });
+  doc.x = MARGIN;
+  doc.y = top + 26;
+}
+
+function header(
+  doc: PDFKit.PDFDocument,
+  heading: string,
+  processNumber: string,
+  options: PdfRenderOptions = {},
+): void {
   doc.fontSize(20).font('Helvetica-Bold').text('Miet-Royal', { continued: false });
   doc.fontSize(9).font('Helvetica').fillColor('#555555').text('Slush-Maschinen-Vermietung');
-  doc.moveDown(1.2);
+  const environmentLabel = options.environmentLabel?.trim() || null;
+  if (environmentLabel !== null) {
+    doc.moveDown(0.6);
+    environmentLine(doc, environmentLabel);
+    doc.moveDown(0.4);
+  } else {
+    doc.moveDown(1.2);
+  }
   doc.fillColor('#000000').fontSize(16).font('Helvetica-Bold').text(heading);
   doc.fontSize(10).font('Helvetica').text(`Vorgang ${processNumber}`);
   doc.moveDown(0.8);
@@ -231,78 +301,89 @@ function totals(
   doc.moveDown(0.5);
 }
 
-export function renderOfferPdf(data: OfferPdfData): Promise<Buffer> {
-  return renderDocument((doc) => {
-    header(doc, `Angebot – Version ${data.versionNumber}`, data.processNumber);
-    doc.font('Helvetica-Bold').fontSize(10).text(data.customerName);
-    doc.font('Helvetica').fontSize(10);
-    for (const line of data.customerAddressLines) doc.text(line);
-    doc.moveDown(0.6);
-    doc.text(`Eventdatum: ${data.eventDateLabel}`);
-    if (data.eventTimeLabel !== null) doc.text(`Zeitraum: ${data.eventTimeLabel}`);
-    doc.text(`Abwicklung: ${data.fulfillmentLabel}`);
-    doc.text(`Erstellt am: ${data.createdAtLabel}`);
-    doc.moveDown(1);
+export function renderOfferPdf(data: OfferPdfData, options?: PdfRenderOptions): Promise<Buffer> {
+  return renderDocument(
+    (doc) => {
+      header(doc, `Angebot – Version ${data.versionNumber}`, data.processNumber, options);
+      doc.font('Helvetica-Bold').fontSize(10).text(data.customerName);
+      doc.font('Helvetica').fontSize(10);
+      for (const line of data.customerAddressLines) doc.text(line);
+      doc.moveDown(0.6);
+      doc.text(`Eventdatum: ${data.eventDateLabel}`);
+      if (data.eventTimeLabel !== null) doc.text(`Zeitraum: ${data.eventTimeLabel}`);
+      doc.text(`Abwicklung: ${data.fulfillmentLabel}`);
+      doc.text(`Erstellt am: ${data.createdAtLabel}`);
+      doc.moveDown(1);
 
-    itemsTable(doc, data.lineItems);
-    totals(doc, data);
+      itemsTable(doc, data.lineItems);
+      totals(doc, data);
 
-    if (data.validUntilLabel !== null) {
-      doc
-        .font('Helvetica-Bold')
-        .fontSize(10)
-        .text(`Dieses Angebot ist gültig bis ${data.validUntilLabel}.`);
-    }
-    doc.moveDown(0.8);
-    if (data.termsContent !== null) {
-      doc
-        .font('Helvetica-Bold')
-        .fontSize(9)
-        .text(`Mietbedingungen${data.termsLabel ? ` (${data.termsLabel})` : ''}`);
-      doc.font('Helvetica').fontSize(8).fillColor('#555555').text(data.termsContent);
-      doc.fillColor('#000000');
-    }
-  }, `Angebot ${data.processNumber} V${data.versionNumber}`);
+      if (data.validUntilLabel !== null) {
+        doc
+          .font('Helvetica-Bold')
+          .fontSize(10)
+          .text(`Dieses Angebot ist gültig bis ${data.validUntilLabel}.`);
+      }
+      doc.moveDown(0.8);
+      if (data.termsContent !== null) {
+        doc
+          .font('Helvetica-Bold')
+          .fontSize(9)
+          .text(`Mietbedingungen${data.termsLabel ? ` (${data.termsLabel})` : ''}`);
+        doc.font('Helvetica').fontSize(8).fillColor('#555555').text(data.termsContent);
+        doc.fillColor('#000000');
+      }
+    },
+    `Angebot ${data.processNumber} V${data.versionNumber}`,
+    options,
+  );
 }
 
-export function renderOrderConfirmationPdf(data: OrderConfirmationPdfData): Promise<Buffer> {
-  return renderDocument((doc) => {
-    header(doc, 'Auftragsbestätigung', data.processNumber);
-    doc.font('Helvetica-Bold').fontSize(10).text(data.customerName);
-    doc.font('Helvetica').fontSize(10);
-    for (const line of data.customerAddressLines) doc.text(line);
-    doc.moveDown(0.6);
-    doc.text(`Eventdatum: ${data.eventDateLabel}`);
-    if (data.eventTimeLabel !== null) doc.text(`Zeitraum: ${data.eventTimeLabel}`);
-    doc.text(`Abwicklung: ${data.fulfillmentLabel}`);
-    for (const line of data.deliveryAddressLines) doc.text(line);
-    for (const line of data.scheduleLines) doc.text(line);
-    doc.text(`Angebot verbindlich angenommen am: ${data.acceptedAtLabel}`);
-    doc.text(`Erstellt am: ${data.createdAtLabel}`);
-    doc.moveDown(1);
+export function renderOrderConfirmationPdf(
+  data: OrderConfirmationPdfData,
+  options?: PdfRenderOptions,
+): Promise<Buffer> {
+  return renderDocument(
+    (doc) => {
+      header(doc, 'Auftragsbestätigung', data.processNumber, options);
+      doc.font('Helvetica-Bold').fontSize(10).text(data.customerName);
+      doc.font('Helvetica').fontSize(10);
+      for (const line of data.customerAddressLines) doc.text(line);
+      doc.moveDown(0.6);
+      doc.text(`Eventdatum: ${data.eventDateLabel}`);
+      if (data.eventTimeLabel !== null) doc.text(`Zeitraum: ${data.eventTimeLabel}`);
+      doc.text(`Abwicklung: ${data.fulfillmentLabel}`);
+      for (const line of data.deliveryAddressLines) doc.text(line);
+      for (const line of data.scheduleLines) doc.text(line);
+      doc.text(`Angebot verbindlich angenommen am: ${data.acceptedAtLabel}`);
+      doc.text(`Erstellt am: ${data.createdAtLabel}`);
+      doc.moveDown(1);
 
-    itemsTable(doc, data.lineItems);
-    totals(doc, {
-      machineSubtotalCents: data.machineSubtotalCents,
-      discountCents: data.discountCents,
-      discountLabel: data.discountLabel,
-      voucher: data.voucher ?? null,
-      fixedTotalCents: data.fixedTotalCents,
-      commissionMaxCents: data.commissionMaxCents,
-    });
+      itemsTable(doc, data.lineItems);
+      totals(doc, {
+        machineSubtotalCents: data.machineSubtotalCents,
+        discountCents: data.discountCents,
+        discountLabel: data.discountLabel,
+        voucher: data.voucher ?? null,
+        fixedTotalCents: data.fixedTotalCents,
+        commissionMaxCents: data.commissionMaxCents,
+      });
 
-    if (data.pickupAddress !== null) {
-      doc.moveDown(0.5);
-      doc.font('Helvetica-Bold').fontSize(10).text('Abholadresse');
-      doc.font('Helvetica').fontSize(10).text(data.pickupAddress);
-    }
-    if (data.transportNotes.length > 0) {
-      doc.moveDown(0.5);
-      doc.font('Helvetica-Bold').fontSize(10).text('Transporthinweise');
-      doc.font('Helvetica').fontSize(9);
-      for (const note of data.transportNotes) doc.text(`• ${note}`);
-    }
-  }, `Auftragsbestätigung ${data.processNumber}`);
+      if (data.pickupAddress !== null) {
+        doc.moveDown(0.5);
+        doc.font('Helvetica-Bold').fontSize(10).text('Abholadresse');
+        doc.font('Helvetica').fontSize(10).text(data.pickupAddress);
+      }
+      if (data.transportNotes.length > 0) {
+        doc.moveDown(0.5);
+        doc.font('Helvetica-Bold').fontSize(10).text('Transporthinweise');
+        doc.font('Helvetica').fontSize(9);
+        for (const note of data.transportNotes) doc.text(`• ${note}`);
+      }
+    },
+    `Auftragsbestätigung ${data.processNumber}`,
+    options,
+  );
 }
 
 // ── Phase 6: Lieferschein & Übergabeprotokoll (Order §§18/37/38) ──────────
@@ -438,52 +519,68 @@ function simpleTable(
   doc.x = MARGIN;
 }
 
-export function renderDeliveryNotePdf(data: DeliveryNotePdfData): Promise<Buffer> {
-  return renderDocument((doc) => {
-    header(doc, data.isFinal ? 'Lieferschein' : 'Lieferschein (Entwurf)', data.processNumber);
-    doc.font('Helvetica-Bold').fontSize(10).text(data.customerName);
-    doc.font('Helvetica').fontSize(10);
-    for (const line of data.customerAddressLines) doc.text(line);
-    doc.moveDown(0.6);
-    doc.text(`Eventdatum: ${data.eventDateLabel}`);
-    if (data.eventTimeLabel !== null) doc.text(`Zeitraum: ${data.eventTimeLabel}`);
-    doc.text(`Abwicklung: ${data.fulfillmentLabel}`);
-    for (const line of data.deliveryAddressLines) doc.text(line);
-    if (data.scheduleLabel !== null) doc.text(data.scheduleLabel);
-    doc.text(`Erstellt am: ${data.createdAtLabel}`);
-    doc.moveDown(1);
+export function renderDeliveryNotePdf(
+  data: DeliveryNotePdfData,
+  options?: PdfRenderOptions,
+): Promise<Buffer> {
+  return renderDocument(
+    (doc) => {
+      header(
+        doc,
+        data.isFinal ? 'Lieferschein' : 'Lieferschein (Entwurf)',
+        data.processNumber,
+        options,
+      );
+      doc.font('Helvetica-Bold').fontSize(10).text(data.customerName);
+      doc.font('Helvetica').fontSize(10);
+      for (const line of data.customerAddressLines) doc.text(line);
+      doc.moveDown(0.6);
+      doc.text(`Eventdatum: ${data.eventDateLabel}`);
+      if (data.eventTimeLabel !== null) doc.text(`Zeitraum: ${data.eventTimeLabel}`);
+      doc.text(`Abwicklung: ${data.fulfillmentLabel}`);
+      for (const line of data.deliveryAddressLines) doc.text(line);
+      if (data.scheduleLabel !== null) doc.text(data.scheduleLabel);
+      doc.text(`Erstellt am: ${data.createdAtLabel}`);
+      doc.moveDown(1);
 
-    doc.font('Helvetica-Bold').fontSize(11).text('Maschinen');
-    doc.moveDown(0.3);
-    simpleTable(
-      doc,
-      [
-        { title: 'Maschinen-ID', width: 160 },
-        { title: 'Typ', width: 335 },
-      ],
-      data.machines.map((machine) => [machine.machineCode, machine.typeName]),
-    );
+      doc.font('Helvetica-Bold').fontSize(11).text('Maschinen');
+      doc.moveDown(0.3);
+      simpleTable(
+        doc,
+        [
+          { title: 'Maschinen-ID', width: 160 },
+          { title: 'Typ', width: 335 },
+        ],
+        data.machines.map((machine) => [machine.machineCode, machine.typeName]),
+      );
 
-    doc.font('Helvetica-Bold').fontSize(11).text('Artikel');
-    doc.moveDown(0.3);
-    simpleTable(
-      doc,
-      [
-        { title: 'Position', width: 275 },
-        { title: 'Menge', width: 110, align: 'right' },
-        { title: 'Art', width: 110, align: 'right' },
-      ],
-      data.items.map((item) => [item.description, `${item.quantity} ${item.unit}`, item.kindLabel]),
-    );
-    doc
-      .font('Helvetica')
-      .fontSize(8)
-      .fillColor('#555555')
-      .text(
-        'Kommissionsartikel werden nach tatsächlichem Verbrauch abgerechnet (nur ungeöffnet zurückgabefähig). Kaufartikel verbleiben beim Kunden. Preise laut Auftragsbestätigung.',
-      )
-      .fillColor('#000000');
-  }, `Lieferschein ${data.processNumber}`);
+      doc.font('Helvetica-Bold').fontSize(11).text('Artikel');
+      doc.moveDown(0.3);
+      simpleTable(
+        doc,
+        [
+          { title: 'Position', width: 275 },
+          { title: 'Menge', width: 110, align: 'right' },
+          { title: 'Art', width: 110, align: 'right' },
+        ],
+        data.items.map((item) => [
+          item.description,
+          `${item.quantity} ${item.unit}`,
+          item.kindLabel,
+        ]),
+      );
+      doc
+        .font('Helvetica')
+        .fontSize(8)
+        .fillColor('#555555')
+        .text(
+          'Kommissionsartikel werden nach tatsächlichem Verbrauch abgerechnet (nur ungeöffnet zurückgabefähig). Kaufartikel verbleiben beim Kunden. Preise laut Auftragsbestätigung.',
+        )
+        .fillColor('#000000');
+    },
+    `Lieferschein ${data.processNumber}`,
+    options,
+  );
 }
 
 /** Eine Unterschrift, die pdfkit nicht einbetten kann, ist keine Unterschrift. */
@@ -648,98 +745,105 @@ function photoRow(doc: PDFKit.PDFDocument, photos: Uint8Array[], context: string
  * (ausgegeben / ungeöffnet zurück / verbraucht bzw. abrechenbar) – KEINE
  * Rechnung –, Zusammenfassung, beide Unterschriften, Integritätshinweis.
  */
-export function renderReturnProtocolPdf(data: ReturnProtocolPdfData): Promise<Buffer> {
-  return renderDocument((doc) => {
-    header(doc, 'Rückgabeprotokoll', data.processNumber);
-    doc.font('Helvetica').fontSize(10);
-    doc.text(`Kunde: ${data.customerName}`);
-    doc.text(`Rückgabe durch: ${data.returnerLabel}`);
-    doc.text(`Tatsächliche Rückgabezeit: ${data.actualReturnAtLabel}`);
-    doc.text(`Rückgabe abgeschlossen am: ${data.finalizedAtLabel}`);
-    doc.moveDown(1);
+export function renderReturnProtocolPdf(
+  data: ReturnProtocolPdfData,
+  options?: PdfRenderOptions,
+): Promise<Buffer> {
+  return renderDocument(
+    (doc) => {
+      header(doc, 'Rückgabeprotokoll', data.processNumber, options);
+      doc.font('Helvetica').fontSize(10);
+      doc.text(`Kunde: ${data.customerName}`);
+      doc.text(`Rückgabe durch: ${data.returnerLabel}`);
+      doc.text(`Tatsächliche Rückgabezeit: ${data.actualReturnAtLabel}`);
+      doc.text(`Rückgabe abgeschlossen am: ${data.finalizedAtLabel}`);
+      doc.moveDown(1);
 
-    for (const machine of data.machines) {
-      if (doc.y > doc.page.height - MARGIN - 140) doc.addPage();
-      doc
-        .font('Helvetica-Bold')
-        .fontSize(11)
-        .text(`Maschine ${machine.machineCode} – ${machine.typeName}`);
-      doc.font('Helvetica').fontSize(9);
-      doc.text(`Zubehörkontrolle: ${machine.accessoryLabel}`);
-      doc.text('Rückgabevorbereitung:');
-      for (const line of machine.cleanlinessLines) doc.text(`  • ${line}`);
-      if (machine.cleanupFactLabel !== null) {
-        doc.font('Helvetica-Bold').text(machine.cleanupFactLabel);
-        doc.font('Helvetica');
-        photoRow(doc, machine.cleanupPhotos, `Reinigung ${machine.machineCode}`);
-      }
-      doc.text(
-        machine.missingLines.length === 0
-          ? 'Fehlteile: keine'
-          : `Fehlteile: ${machine.missingLines.join('; ')}`,
-      );
-      if (machine.damages.length === 0) {
-        doc.text('Neue Schäden: keine');
-      } else {
-        doc.text(`Neue Schäden: ${machine.damages.length}`);
-        for (const damage of machine.damages) {
-          damageSketchBlock(doc, damage);
-          photoRow(doc, damage.photos, `Schaden ${machine.machineCode}`);
+      for (const machine of data.machines) {
+        if (doc.y > doc.page.height - MARGIN - 140) doc.addPage();
+        doc
+          .font('Helvetica-Bold')
+          .fontSize(11)
+          .text(`Maschine ${machine.machineCode} – ${machine.typeName}`);
+        doc.font('Helvetica').fontSize(9);
+        doc.text(`Zubehörkontrolle: ${machine.accessoryLabel}`);
+        doc.text('Rückgabevorbereitung:');
+        for (const line of machine.cleanlinessLines) doc.text(`  • ${line}`);
+        if (machine.cleanupFactLabel !== null) {
+          doc.font('Helvetica-Bold').text(machine.cleanupFactLabel);
+          doc.font('Helvetica');
+          photoRow(doc, machine.cleanupPhotos, `Reinigung ${machine.machineCode}`);
         }
+        doc.text(
+          machine.missingLines.length === 0
+            ? 'Fehlteile: keine'
+            : `Fehlteile: ${machine.missingLines.join('; ')}`,
+        );
+        if (machine.damages.length === 0) {
+          doc.text('Neue Schäden: keine');
+        } else {
+          doc.text(`Neue Schäden: ${machine.damages.length}`);
+          for (const damage of machine.damages) {
+            damageSketchBlock(doc, damage);
+            photoRow(doc, damage.photos, `Schaden ${machine.machineCode}`);
+          }
+        }
+        doc.moveDown(0.6);
       }
-      doc.moveDown(0.6);
-    }
 
-    doc.font('Helvetica-Bold').fontSize(11).text('Kommissions- und Inklusivartikel');
-    doc.font('Helvetica').fontSize(9);
-    if (data.commissionLines.length === 0) doc.text('Keine rückgabefähigen Artikel ausgegeben.');
-    for (const line of data.commissionLines) {
-      doc.text(
-        `  • ${line.description} (${line.kindLabel}): ausgegeben ${line.issued} ${line.unit}, ungeöffnet zurück ${line.returnedUnopened}, ` +
-          (line.kindLabel === 'Kommission'
-            ? `verbraucht/abrechenbar ${line.chargeable}`
-            : 'inklusive – keine Berechnung'),
-      );
-    }
-    doc.moveDown(0.8);
+      doc.font('Helvetica-Bold').fontSize(11).text('Kommissions- und Inklusivartikel');
+      doc.font('Helvetica').fontSize(9);
+      if (data.commissionLines.length === 0) doc.text('Keine rückgabefähigen Artikel ausgegeben.');
+      for (const line of data.commissionLines) {
+        doc.text(
+          `  • ${line.description} (${line.kindLabel}): ausgegeben ${line.issued} ${line.unit}, ungeöffnet zurück ${line.returnedUnopened}, ` +
+            (line.kindLabel === 'Kommission'
+              ? `verbraucht/abrechenbar ${line.chargeable}`
+              : 'inklusive – keine Berechnung'),
+        );
+      }
+      doc.moveDown(0.8);
 
-    doc.font('Helvetica-Bold').fontSize(11).text('Zusammenfassung');
-    doc.font('Helvetica').fontSize(9);
-    if (data.withoutComplaint) {
-      doc.text('Rückgabe ohne Beanstandung.');
-    } else {
-      for (const line of data.summaryLines) doc.text(`  • ${line}`);
-    }
-    doc.moveDown(0.4);
-    doc
-      .fontSize(8)
-      .fillColor('#555555')
-      .text(
-        'Dieses Protokoll dokumentiert Tatsachen der Rückgabe. Es ist keine Rechnung; eine finanzielle Bewertung erfolgt gesondert.',
-      )
-      .fillColor('#000000');
-    doc.moveDown(1);
+      doc.font('Helvetica-Bold').fontSize(11).text('Zusammenfassung');
+      doc.font('Helvetica').fontSize(9);
+      if (data.withoutComplaint) {
+        doc.text('Rückgabe ohne Beanstandung.');
+      } else {
+        for (const line of data.summaryLines) doc.text(`  • ${line}`);
+      }
+      doc.moveDown(0.4);
+      doc
+        .fontSize(8)
+        .fillColor('#555555')
+        .text(
+          'Dieses Protokoll dokumentiert Tatsachen der Rückgabe. Es ist keine Rechnung; eine finanzielle Bewertung erfolgt gesondert.',
+        )
+        .fillColor('#000000');
+      doc.moveDown(1);
 
-    if (doc.y > doc.page.height - MARGIN - 200) doc.addPage();
-    const top = doc.y;
-    doc.x = MARGIN;
-    signatureBlock(doc, 'Unterschrift Kunde / Vertreter', data.customerSignature);
-    const afterCustomer = doc.y;
-    doc.x = MARGIN + 260;
-    doc.y = top;
-    signatureBlock(doc, 'Unterschrift Mitarbeiter', data.staffSignature);
-    doc.y = Math.max(doc.y, afterCustomer) + 12;
-    doc.x = MARGIN;
+      if (doc.y > doc.page.height - MARGIN - 200) doc.addPage();
+      const top = doc.y;
+      doc.x = MARGIN;
+      signatureBlock(doc, 'Unterschrift Kunde / Vertreter', data.customerSignature);
+      const afterCustomer = doc.y;
+      doc.x = MARGIN + 260;
+      doc.y = top;
+      signatureBlock(doc, 'Unterschrift Mitarbeiter', data.staffSignature);
+      doc.y = Math.max(doc.y, afterCustomer) + 12;
+      doc.x = MARGIN;
 
-    doc
-      .font('Helvetica')
-      .fontSize(8)
-      .fillColor('#555555')
-      .text(
-        `Dokumentkennung ${data.documentReference}. Dieses Dokument ist nach Unterzeichnung unveränderlich; die Integrität wird über einen serverseitig gespeicherten SHA-256-Hash gesichert.`,
-      )
-      .fillColor('#000000');
-  }, `Rückgabeprotokoll ${data.processNumber}`);
+      doc
+        .font('Helvetica')
+        .fontSize(8)
+        .fillColor('#555555')
+        .text(
+          `Dokumentkennung ${data.documentReference}. Dieses Dokument ist nach Unterzeichnung unveränderlich; die Integrität wird über einen serverseitig gespeicherten SHA-256-Hash gesichert.`,
+        )
+        .fillColor('#000000');
+    },
+    `Rückgabeprotokoll ${data.processNumber}`,
+    options,
+  );
 }
 
 function signatureBlock(
@@ -769,57 +873,64 @@ function signatureBlock(
   doc.font('Helvetica').fontSize(9).text(`${block.name} · ${block.signedAtLabel}`, x);
 }
 
-export function renderHandoverProtocolPdf(data: HandoverProtocolPdfData): Promise<Buffer> {
-  return renderDocument((doc) => {
-    header(doc, 'Übergabeprotokoll', data.processNumber);
-    doc.font('Helvetica').fontSize(10);
-    doc.text(`Kunde: ${data.customerName}`);
-    doc.text(`Übergabe an: ${data.recipientLabel}`);
-    doc.text(`Eventdatum: ${data.eventDateLabel}`);
-    doc.text(`Ausgabeart: ${data.fulfillmentLabel}`);
-    doc.text(`Übergabe abgeschlossen am: ${data.finalizedAtLabel}`);
-    doc.moveDown(1);
+export function renderHandoverProtocolPdf(
+  data: HandoverProtocolPdfData,
+  options?: PdfRenderOptions,
+): Promise<Buffer> {
+  return renderDocument(
+    (doc) => {
+      header(doc, 'Übergabeprotokoll', data.processNumber, options);
+      doc.font('Helvetica').fontSize(10);
+      doc.text(`Kunde: ${data.customerName}`);
+      doc.text(`Übergabe an: ${data.recipientLabel}`);
+      doc.text(`Eventdatum: ${data.eventDateLabel}`);
+      doc.text(`Ausgabeart: ${data.fulfillmentLabel}`);
+      doc.text(`Übergabe abgeschlossen am: ${data.finalizedAtLabel}`);
+      doc.moveDown(1);
 
-    for (const machine of data.machines) {
-      if (doc.y > doc.page.height - MARGIN - 140) doc.addPage();
-      doc
-        .font('Helvetica-Bold')
-        .fontSize(11)
-        .text(`Maschine ${machine.machineCode} – ${machine.typeName}`);
+      for (const machine of data.machines) {
+        if (doc.y > doc.page.height - MARGIN - 140) doc.addPage();
+        doc
+          .font('Helvetica-Bold')
+          .fontSize(11)
+          .text(`Maschine ${machine.machineCode} – ${machine.typeName}`);
+        doc.font('Helvetica').fontSize(9);
+        doc.text(`Übergabeprüfung: ${machine.checkedLabel}`);
+        doc.text('Bestehende Schäden:');
+        for (const line of machine.existingDamagesLines) doc.text(`  • ${line}`);
+        // Eingefrorener Schaden-Snapshot: Schema + Text, KEINE alten Fotos (Order §35).
+        for (const damage of machine.existingDamages ?? []) damageSketchBlock(doc, damage);
+        for (const note of machine.notes) doc.text(`  ${note}`);
+        doc.moveDown(0.6);
+      }
+
+      doc.font('Helvetica-Bold').fontSize(11).text('Ausgegebene Artikel');
       doc.font('Helvetica').fontSize(9);
-      doc.text(`Übergabeprüfung: ${machine.checkedLabel}`);
-      doc.text('Bestehende Schäden:');
-      for (const line of machine.existingDamagesLines) doc.text(`  • ${line}`);
-      // Eingefrorener Schaden-Snapshot: Schema + Text, KEINE alten Fotos (Order §35).
-      for (const damage of machine.existingDamages ?? []) damageSketchBlock(doc, damage);
-      for (const note of machine.notes) doc.text(`  ${note}`);
-      doc.moveDown(0.6);
-    }
+      if (data.itemLines.length === 0) doc.text('Keine Artikel.');
+      for (const line of data.itemLines) doc.text(`  • ${line}`);
+      doc.moveDown(1);
 
-    doc.font('Helvetica-Bold').fontSize(11).text('Ausgegebene Artikel');
-    doc.font('Helvetica').fontSize(9);
-    if (data.itemLines.length === 0) doc.text('Keine Artikel.');
-    for (const line of data.itemLines) doc.text(`  • ${line}`);
-    doc.moveDown(1);
+      if (doc.y > doc.page.height - MARGIN - 200) doc.addPage();
+      const top = doc.y;
+      doc.x = MARGIN;
+      signatureBlock(doc, 'Unterschrift Kunde / Vertreter', data.customerSignature);
+      const afterCustomer = doc.y;
+      doc.x = MARGIN + 260;
+      doc.y = top;
+      signatureBlock(doc, 'Unterschrift Mitarbeiter', data.staffSignature);
+      doc.y = Math.max(doc.y, afterCustomer) + 12;
+      doc.x = MARGIN;
 
-    if (doc.y > doc.page.height - MARGIN - 200) doc.addPage();
-    const top = doc.y;
-    doc.x = MARGIN;
-    signatureBlock(doc, 'Unterschrift Kunde / Vertreter', data.customerSignature);
-    const afterCustomer = doc.y;
-    doc.x = MARGIN + 260;
-    doc.y = top;
-    signatureBlock(doc, 'Unterschrift Mitarbeiter', data.staffSignature);
-    doc.y = Math.max(doc.y, afterCustomer) + 12;
-    doc.x = MARGIN;
-
-    doc
-      .font('Helvetica')
-      .fontSize(8)
-      .fillColor('#555555')
-      .text(
-        `Dokumentkennung ${data.documentReference}. Dieses Dokument ist nach Unterzeichnung unveränderlich; die Integrität wird über einen serverseitig gespeicherten SHA-256-Hash gesichert.`,
-      )
-      .fillColor('#000000');
-  }, `Übergabeprotokoll ${data.processNumber}`);
+      doc
+        .font('Helvetica')
+        .fontSize(8)
+        .fillColor('#555555')
+        .text(
+          `Dokumentkennung ${data.documentReference}. Dieses Dokument ist nach Unterzeichnung unveränderlich; die Integrität wird über einen serverseitig gespeicherten SHA-256-Hash gesichert.`,
+        )
+        .fillColor('#000000');
+    },
+    `Übergabeprotokoll ${data.processNumber}`,
+    options,
+  );
 }

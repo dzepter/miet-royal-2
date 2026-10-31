@@ -11,7 +11,8 @@
     "./jobs/communication-scan": "./src/jobs/communication-scan.ts",
     "./jobs/communication-transactional": "./src/jobs/communication-transactional.ts",
     "./jobs/tours": "./src/jobs/tours.ts",
-    "./jobs/demo": "./src/jobs/demo.ts"
+    "./jobs/demo": "./src/jobs/demo.ts",
+    "./jobs/training": "./src/jobs/training.ts"
   },
   "scripts": {
     "dev": "APP_ENV=development tsx watch src/server.ts",

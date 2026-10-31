@@ -1,5 +1,6 @@
 import { hostname } from 'node:os';
 import {
+  assertAccountingGatewayAllowed,
   createAccountingGatewayFor,
   createAccountingTransferService,
   createLexwareContext,
@@ -36,7 +37,18 @@ import {
 } from '@mietroyal/api/jobs/communication-transactional';
 // Phase 13 (tours-live): Scanner tour_delay (Verspätungsrisiko aktiver Touren) im scan_due.
 // Phase 14 (demo): Reset-Guard – Business-Jobs während eines Demo-Resets zurücklegen.
-import { createDemoWorkerGuard } from '@mietroyal/api/jobs/demo';
+import {
+  createDemoStorageCleanupHandler,
+  createDemoWorkerGuard,
+  DEMO_STORAGE_CLEANUP_JOB_TYPE,
+} from '@mietroyal/api/jobs/demo';
+// Phase 14 (training): in demo zeichnet der Worker bestätigte Staff-Antworten (Mail/WhatsApp)
+// als Trainingsereignis auf; sonst Noop (Order §41–§43).
+import {
+  DemoTrainingEventRecorder,
+  createNoopTrainingRecorder,
+  createTrainingMailSentListener,
+} from '@mietroyal/api/jobs/training';
 import {
   createRoutingGateway,
   createTourLiveModule,
@@ -108,12 +120,24 @@ const lexware = createLexwareContext(config, db, logger);
 // Phase 11: Zahlungsstatus „bezahlt“ (Webhook/Reconcile im Worker) ⇒ Gutschein-Prüfjob.
 const voucherTriggers = createVoucherTriggers({ db, queue, logger });
 const storage = createStorageProvider(config.storage);
+// Phase 14 (reset, Order §22): Nachbereinigung alter Demo-Dateien nach einem Reset –
+// nur in demo registriert (der Worker trägt ausschließlich die Demo-Konfiguration).
+if (config.appEnv === 'demo') {
+  runner.register(
+    DEMO_STORAGE_CLEANUP_JOB_TYPE,
+    createDemoStorageCleanupHandler(storage, { logger }),
+  );
+}
+// Phase 14 (accounting): ein Gateway je Prozess; demo ⇒ Disabled (Order W1/§29),
+// und der Worker startet in demo/production nie mit dem Mock (fail-closed, §96).
+const accountingGateway = createAccountingGatewayFor(config, lexware);
+assertAccountingGatewayAllowed(config.appEnv, accountingGateway);
 registerFinanceJobHandlers(runner, {
   db,
   config,
   queue,
   storage,
-  accountingGateway: createAccountingGatewayFor(config, lexware),
+  accountingGateway,
   lexware,
   logger,
   paymentStatusListeners: [voucherTriggers.paymentStatusListener],
@@ -125,7 +149,6 @@ registerCommunicationJobHandlers(runner, { communication });
 // Phase 12 (transactional): Sent-/Failed-Listener der Fachmodule (AB, Pakete,
 // Kundeninformation, Storno, Gutschein, Rechnung), transienter Rechnungsabruf
 // sowie die Jobs voucher.delivery / invoice.delivery.
-const accountingGateway = createAccountingGatewayFor(config, lexware);
 createTransactionalMailModule({
   communication,
   db,
@@ -160,6 +183,11 @@ registerPushJobHandlers(runner, {
 // 2 min), WhatsApp-Versand/Medien; Zustellstatus in die Konversation spiegeln.
 const inboundMailSource = createInboundMailSource(config);
 const whatsappGateway = createWhatsAppGateway(config);
+// Phase 14 (training)
+const trainingRecorder =
+  config.appEnv === 'demo'
+    ? new DemoTrainingEventRecorder(db, { logger })
+    : createNoopTrainingRecorder();
 registerInboundJobHandlers(runner, {
   db,
   config,
@@ -168,9 +196,11 @@ registerInboundJobHandlers(runner, {
   inboundMailSource,
   whatsappGateway,
   logger,
+  trainingRecorder, // Phase 14 (training)
 });
 const conversationListeners = createConversationDeliveryListeners(db, storage);
 communication.addMailSentListener(conversationListeners.sent);
+communication.addMailSentListener(createTrainingMailSentListener(trainingRecorder)); // Phase 14 (training)
 communication.addMailFailedListener(conversationListeners.failed);
 await enqueueInboundPoll(queue, inboundMailSource);
 // Phase 13 (tours-live): eigene Routing-Gateway-Instanz je Prozess (Fabrik nach

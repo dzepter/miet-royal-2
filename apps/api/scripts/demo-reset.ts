@@ -22,6 +22,11 @@ import { createDb, createPool } from '@mietroyal/database';
 import { createStorageProvider, PostgresJobQueue } from '@mietroyal/integrations';
 import { DemoResetService } from '../src/demo/reset-service.ts';
 import { DEMO_MESSAGES, DemoError } from '../src/demo/types.ts';
+// Phase 14 (training, Order §94): laufende Trainingsversuche werden beim Reset unterbrochen, nie gelöscht.
+import {
+  DEMO_RESET_INTERRUPTION_CODE,
+  interruptInProgressAttempts,
+} from '../src/training/training-service.ts';
 import {
   assertDemoCli,
   cliLogger,
@@ -75,6 +80,15 @@ try {
     storage: createStorageProvider(config.storage),
     queue: new PostgresJobQueue(pool),
     logger: cliLogger(),
+    // Phase 14 (training): derselbe Hook wie in app.ts (bestandene Versuche bleiben bestanden).
+    hooks: {
+      beforeBusinessWipe: async (tx) => {
+        await interruptInProgressAttempts(tx, {
+          code: DEMO_RESET_INTERRUPTION_CODE,
+          now: new Date(),
+        });
+      },
+    },
   });
   const now = new Date();
   if (force) {

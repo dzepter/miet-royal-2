@@ -9,6 +9,8 @@ import { hasPermission } from '../../../lib/api';
 import {
   DEMO_OUTDATED_TEXT,
   DEMO_RESET_CONFIRMATION,
+  DEMO_STORAGE_CLEANUP_FAILED_TEXT,
+  DEMO_STORAGE_CLEANUP_PENDING_TEXT,
   fetchDemoSeedEntities,
   fetchDemoStatus,
   resetDemo,
@@ -152,6 +154,19 @@ function DemoSettings() {
               Letzter Reset unterbrochen – erneut zurücksetzen.
             </p>
           )}
+          {status.storageCleanup !== undefined &&
+            (status.storageCleanup.deadJobs > 0 || status.storageCleanup.pendingJobs > 0) && (
+              // Phase 14 (reset, Order §22): neutraler Hinweis – der neue Datensatz ist konsistent,
+              // nur alte Dateien werden noch (bzw. nicht mehr automatisch) entfernt.
+              <p
+                className={status.storageCleanup.deadJobs > 0 ? 'error' : 'muted'}
+                data-testid="demo-storage-cleanup"
+              >
+                {status.storageCleanup.deadJobs > 0
+                  ? DEMO_STORAGE_CLEANUP_FAILED_TEXT
+                  : `${DEMO_STORAGE_CLEANUP_PENDING_TEXT} (${status.storageCleanup.pendingJobs})`}
+              </p>
+            )}
           <p>
             Version{' '}
             <strong data-testid="demo-dataset-version">{status.datasetVersion ?? '–'}</strong>{' '}

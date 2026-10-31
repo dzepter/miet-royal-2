@@ -3,6 +3,12 @@ import type { Database } from '@mietroyal/database';
 import { parseOrThrow, z } from '@mietroyal/validation';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { requireAuth, requirePermission, sendAuthError, sendError } from '../auth/http.ts';
+// Phase 14 (training gate): Live-Trainingssperre (Order §56–§66) – nach Rechten, vor der Fachaktion.
+import { requireTrainingGate } from '../training/gate-http.ts';
+import { createNoopTrainingGate, type TrainingGate } from '../training/gate-service.ts';
+// Phase 14 (training): Trainingsereignisse NACH erfolgreichem Fachcommit (Order §41/§42).
+import { createNoopTrainingRecorder, type TrainingEventRecorder } from '../training/recorder.ts';
+import type { TrainingEventKey } from '../training/event-keys.ts';
 import type { AuthenticatedContext, StaffAuthService } from '../auth/service.ts';
 import { ProcessService } from '../crm/process-service.ts';
 import { buildVisibilityContext } from '../crm/visibility.ts';
@@ -131,10 +137,16 @@ interface CommerceRouteOptions {
   offerGateway: OfferDeliveryGateway;
   /** Phase 12: Outbox-Einsicht (GET /staff/outbox) – nie Secrets/Bodies. */
   mailOutbox: MailOutboxService;
+  /** Phase 14 (training gate): Live-Trainingssperre `offer.send` (Default: Noop). */
+  trainingGate?: TrainingGate;
+  /** Phase 14 (training): Recorder für Angebots-Ereignisse (demo), Default Noop. */
+  trainingRecorder?: TrainingEventRecorder;
 }
 
 export function registerCommerceRoutes(app: FastifyInstance, options: CommerceRouteOptions): void {
   const { db, auth, config, storage, mailOutbox } = options;
+  const trainingGate = options.trainingGate ?? createNoopTrainingGate(); // Phase 14 (training gate)
+  const trainingRecorder = options.trainingRecorder ?? createNoopTrainingRecorder(); // Phase 14 (training)
   const productService = new ProductService(db);
   const inquiryService = new InquiryService(db);
   const documentService = new DocumentService(db, storage);
@@ -143,6 +155,28 @@ export function registerCommerceRoutes(app: FastifyInstance, options: CommerceRo
   const confirmationService = new OrderConfirmationService(db, config, documentService, gateway);
   const termsService = new TermsService(db, config);
   const processService = new ProcessService(db);
+
+  /**
+   * Phase 14 (training): Entwurfs-/Versandereignis mit dem Angebot als Fachobjekt
+   * melden – nur nach erfolgreichem Fachaufruf; Fehler erreichen nie die Antwort.
+   */
+  const recordOfferEvent = async (
+    request: FastifyRequest,
+    actorId: string,
+    eventKey: TrainingEventKey,
+    ref: { offerId: string } | { versionId: string },
+  ): Promise<void> => {
+    try {
+      const offerId =
+        'offerId' in ref ? ref.offerId : (await offerService.getVersion(ref.versionId)).offerId;
+      await trainingRecorder.record({ actorUserId: actorId, eventKey, subjectRef: offerId });
+    } catch (error) {
+      request.log.warn(
+        { eventKey, errorName: error instanceof Error ? error.name : 'Error' },
+        'Training: Angebotsereignis nicht aufgezeichnet',
+      );
+    }
+  };
 
   /**
    * Zentrale Vorgangs-Sichtbarkeit (Phase-2-Regel, §45 IDOR) auch für alle
@@ -400,7 +434,10 @@ export function registerCommerceRoutes(app: FastifyInstance, options: CommerceRo
     const params = parseOrThrow(idParams, request.params, 'params');
     if (!(await requireVisibleProcess(request, reply, context, params.id))) return;
     try {
-      return await offerService.createOffer(context.user.id, params.id);
+      const created = await offerService.createOffer(context.user.id, params.id);
+      // Phase 14 (training)
+      await recordOfferEvent(request, context.user.id, 'offer.draft_created', created);
+      return created;
     } catch (error) {
       if (sendAuthError(request, reply, error)) return;
       throw error;
@@ -421,6 +458,10 @@ export function registerCommerceRoutes(app: FastifyInstance, options: CommerceRo
     if (!(await requireVisibleVersion(request, reply, context, params.id))) return;
     try {
       await offerService.updateDraft(context.user.id, params.id, body);
+      // Phase 14 (training)
+      await recordOfferEvent(request, context.user.id, 'offer.draft_updated', {
+        versionId: params.id,
+      });
       return { updated: true };
     } catch (error) {
       if (sendAuthError(request, reply, error)) return;
@@ -438,6 +479,10 @@ export function registerCommerceRoutes(app: FastifyInstance, options: CommerceRo
     try {
       const effective = await auth.effectivePermissions(context.user.id);
       await offerService.setDiscount(context.user.id, params.id, effective, body.discount);
+      // Phase 14 (training)
+      await recordOfferEvent(request, context.user.id, 'offer.draft_updated', {
+        versionId: params.id,
+      });
       return { updated: true };
     } catch (error) {
       if (sendAuthError(request, reply, error)) return;
@@ -477,6 +522,10 @@ export function registerCommerceRoutes(app: FastifyInstance, options: CommerceRo
     try {
       const effective = await auth.effectivePermissions(context.user.id);
       await offerService.setSpecialPrice(context.user.id, params.id, effective, body);
+      // Phase 14 (training)
+      await recordOfferEvent(request, context.user.id, 'offer.draft_updated', {
+        versionId: params.id,
+      });
       return { updated: true };
     } catch (error) {
       if (sendAuthError(request, reply, error)) return;
@@ -497,6 +546,10 @@ export function registerCommerceRoutes(app: FastifyInstance, options: CommerceRo
     if (!(await requireVisibleVersion(request, reply, context, params.id))) return;
     try {
       await offerService.applyVoucher(context.user.id, params.id, body.code);
+      // Phase 14 (training)
+      await recordOfferEvent(request, context.user.id, 'offer.draft_updated', {
+        versionId: params.id,
+      });
       return { applied: true };
     } catch (error) {
       if (sendAuthError(request, reply, error)) return;
@@ -512,6 +565,10 @@ export function registerCommerceRoutes(app: FastifyInstance, options: CommerceRo
     if (!(await requireVisibleVersion(request, reply, context, params.id))) return;
     try {
       await offerService.removeVoucher(context.user.id, params.id);
+      // Phase 14 (training)
+      await recordOfferEvent(request, context.user.id, 'offer.draft_updated', {
+        versionId: params.id,
+      });
       return { removed: true };
     } catch (error) {
       if (sendAuthError(request, reply, error)) return;
@@ -525,9 +582,14 @@ export function registerCommerceRoutes(app: FastifyInstance, options: CommerceRo
     if (!(await requirePermission(request, reply, auth, context, 'offer.send'))) return;
     const params = parseOrThrow(idParams, request.params, 'params');
     if (!(await requireVisibleVersion(request, reply, context, params.id))) return;
+    // Phase 14 (training gate)
+    if (!(await requireTrainingGate(request, reply, trainingGate, context.user.id, 'offer.send')))
+      return;
     try {
       const effective = await auth.effectivePermissions(context.user.id);
       const result = await offerService.send(context.user.id, params.id, effective);
+      // Phase 14 (training): erst nach erfolgreichem Versand (Status „versendet“ committet).
+      await recordOfferEvent(request, context.user.id, 'offer.sent', { versionId: params.id });
       return { sent: true, publicPath: `/angebot/${result.token}` };
     } catch (error) {
       if (sendAuthError(request, reply, error)) return;
@@ -554,11 +616,16 @@ export function registerCommerceRoutes(app: FastifyInstance, options: CommerceRo
       throw error;
     }
     try {
-      return await offerService.createNewVersion(
+      const created = await offerService.createNewVersion(
         context.user.id,
         params.id,
         body.changeNote ?? null,
       );
+      // Phase 14 (training): neue Entwurfsversion zählt als Entwurf des Angebots.
+      await recordOfferEvent(request, context.user.id, 'offer.draft_created', {
+        offerId: params.id,
+      });
+      return created;
     } catch (error) {
       if (sendAuthError(request, reply, error)) return;
       throw error;
@@ -589,6 +656,10 @@ export function registerCommerceRoutes(app: FastifyInstance, options: CommerceRo
     if (!(await requireVisibleVersion(request, reply, context, params.id))) return;
     try {
       await offerService.syncDraftFromInquiry(context.user.id, params.id);
+      // Phase 14 (training)
+      await recordOfferEvent(request, context.user.id, 'offer.draft_updated', {
+        versionId: params.id,
+      });
       return { updated: true };
     } catch (error) {
       if (sendAuthError(request, reply, error)) return;

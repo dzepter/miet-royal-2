@@ -11,6 +11,7 @@ import {
 import { randomBytes } from 'node:crypto';
 import type { AppConfig } from '@mietroyal/config';
 import { renderOrderConfirmationPdf, type PdfLineItem } from '@mietroyal/documents';
+import { pdfRenderOptions } from '../documents/environment-label.ts'; // Phase 14 (reset)
 import { eq } from 'drizzle-orm';
 import { AuthError } from '../auth/service.ts';
 import { getPickupExactAddress } from '../crm/settings-service.ts';
@@ -207,55 +208,58 @@ export class OrderConfirmationService {
       if (cityLine !== '') deliveryAddressLines.push(cityLine);
     }
 
-    return renderOrderConfirmationPdf({
-      processNumber: process.processNumber,
-      customerName: String(customer.displayName ?? ''),
-      customerAddressLines: [
-        String(customer.billingStreet ?? '') || null,
-        [customer.billingPostalCode, customer.billingCity].filter(Boolean).join(' ') || null,
-      ].filter((line): line is string => line !== null),
-      eventDateLabel: String(event.eventDate ?? '–'),
-      eventTimeLabel,
-      fulfillmentLabel: booking.fulfillment === 'pickup' ? 'Selbstabholung' : 'Lieferung',
-      deliveryAddressLines,
-      scheduleLines,
-      pickupAddress:
-        booking.fulfillment === 'pickup'
-          ? (pickupAddress ?? 'NICHT KONFIGURIERT (pickup_exact_address fehlt)')
-          : null,
-      transportNotes:
-        booking.fulfillment === 'pickup'
-          ? transportNotes((machineItem?.productSnapshot ?? {}) as Record<string, unknown>)
-          : [],
-      lineItems: pdfItems,
-      machineSubtotalCents: Number(totals.machineSubtotalCents ?? 0),
-      // Interner Rabattgrund bleibt intern – Kundendokument nur mit Betrag.
-      discountCents: Number(totals.discountCents ?? 0),
-      discountLabel: null,
-      // Phase 11 (§26/§37): Gutschein aus dem unveränderlichen Buchungs-Snapshot.
-      voucher:
-        booking.voucherId === null || Number(totals.voucherDiscountCents ?? 0) <= 0
-          ? null
-          : {
-              discountPercent: Number(
-                ((booking.voucherSnapshot ?? {}) as Record<string, unknown>)
-                  .voucherDiscountPercent ?? 20,
-              ),
-              machineSubtotalBeforeVoucherCents: Number(totals.machineSubtotalCents ?? 0),
-              voucherDiscountCents: Number(totals.voucherDiscountCents ?? 0),
-              machineSubtotalAfterVoucherCents: Number(
-                totals.machineSubtotalAfterVoucherCents ??
-                  Number(totals.machineSubtotalCents ?? 0) -
-                    Number(totals.voucherDiscountCents ?? 0),
-              ),
-            },
-      fixedTotalCents: Number(totals.fixedTotalCents ?? 0),
-      commissionMaxCents: items
-        .filter((item) => item.billingMode === 'commission')
-        .reduce((sum, item) => sum + item.totalCents, 0),
-      acceptedAtLabel: booking.acceptedAt.toLocaleString('de-DE', { timeZone: 'Europe/Berlin' }),
-      createdAtLabel: now.toLocaleDateString('de-DE', { timeZone: 'Europe/Berlin' }),
-    });
+    return renderOrderConfirmationPdf(
+      {
+        processNumber: process.processNumber,
+        customerName: String(customer.displayName ?? ''),
+        customerAddressLines: [
+          String(customer.billingStreet ?? '') || null,
+          [customer.billingPostalCode, customer.billingCity].filter(Boolean).join(' ') || null,
+        ].filter((line): line is string => line !== null),
+        eventDateLabel: String(event.eventDate ?? '–'),
+        eventTimeLabel,
+        fulfillmentLabel: booking.fulfillment === 'pickup' ? 'Selbstabholung' : 'Lieferung',
+        deliveryAddressLines,
+        scheduleLines,
+        pickupAddress:
+          booking.fulfillment === 'pickup'
+            ? (pickupAddress ?? 'NICHT KONFIGURIERT (pickup_exact_address fehlt)')
+            : null,
+        transportNotes:
+          booking.fulfillment === 'pickup'
+            ? transportNotes((machineItem?.productSnapshot ?? {}) as Record<string, unknown>)
+            : [],
+        lineItems: pdfItems,
+        machineSubtotalCents: Number(totals.machineSubtotalCents ?? 0),
+        // Interner Rabattgrund bleibt intern – Kundendokument nur mit Betrag.
+        discountCents: Number(totals.discountCents ?? 0),
+        discountLabel: null,
+        // Phase 11 (§26/§37): Gutschein aus dem unveränderlichen Buchungs-Snapshot.
+        voucher:
+          booking.voucherId === null || Number(totals.voucherDiscountCents ?? 0) <= 0
+            ? null
+            : {
+                discountPercent: Number(
+                  ((booking.voucherSnapshot ?? {}) as Record<string, unknown>)
+                    .voucherDiscountPercent ?? 20,
+                ),
+                machineSubtotalBeforeVoucherCents: Number(totals.machineSubtotalCents ?? 0),
+                voucherDiscountCents: Number(totals.voucherDiscountCents ?? 0),
+                machineSubtotalAfterVoucherCents: Number(
+                  totals.machineSubtotalAfterVoucherCents ??
+                    Number(totals.machineSubtotalCents ?? 0) -
+                      Number(totals.voucherDiscountCents ?? 0),
+                ),
+              },
+        fixedTotalCents: Number(totals.fixedTotalCents ?? 0),
+        commissionMaxCents: items
+          .filter((item) => item.billingMode === 'commission')
+          .reduce((sum, item) => sum + item.totalCents, 0),
+        acceptedAtLabel: booking.acceptedAt.toLocaleString('de-DE', { timeZone: 'Europe/Berlin' }),
+        createdAtLabel: now.toLocaleDateString('de-DE', { timeZone: 'Europe/Berlin' }),
+      },
+      pdfRenderOptions(this.config),
+    ); // Phase 14 (reset): Demo-Kennzeichnung
   }
 
   /**

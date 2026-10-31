@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { demoDatasetState, type Database, type DatabaseExecutor } from '@mietroyal/database';
 import { eq, sql } from 'drizzle-orm';
 
@@ -28,6 +29,13 @@ export interface DemoDatasetStateView {
   resetStartedAt: Date | null;
   /** true, wenn ein Reset begonnen, aber nicht abgeschlossen wurde (Flag älter als DEMO_RESET_STALE_MS). */
   resetStale: boolean;
+  /**
+   * Phase 14 (reset, Order §21): Beginn des LETZTEN Resets (DB-Uhr; bleibt nach
+   * Abschluss stehen). Jobs mit `created_at` davor gehören zum alten Datensatz.
+   */
+  lastResetStartedAt: Date | null;
+  /** Phase 14 (offline epoch, Order §91): Generation des Datensatzes – jeder Reset erzeugt eine neue. */
+  datasetEpoch: string | null;
 }
 
 /**
@@ -55,6 +63,8 @@ export class DemoDatasetService {
         resetInProgress: false,
         resetStartedAt: null,
         resetStale: false,
+        lastResetStartedAt: null,
+        datasetEpoch: null,
       };
     }
     const resetStale =
@@ -72,7 +82,33 @@ export class DemoDatasetService {
       resetInProgress: row.resetInProgress,
       resetStartedAt: row.resetStartedAt,
       resetStale,
+      lastResetStartedAt: row.lastResetStartedAt,
+      datasetEpoch: row.datasetEpoch,
     };
+  }
+
+  /**
+   * Phase 14 (offline epoch): aktuelle Generation des Demo-Datensatzes; null,
+   * solange keine Zustandszeile existiert (vor dem ersten Seed). Außerhalb der
+   * Demo gibt es kein Demo-Modul – dort ist die Epoch immer null.
+   */
+  async datasetEpoch(): Promise<string | null> {
+    const [row] = await this.db
+      .select({ datasetEpoch: demoDatasetState.datasetEpoch })
+      .from(demoDatasetState)
+      .where(eq(demoDatasetState.id, 1))
+      .limit(1);
+    return row?.datasetEpoch ?? null;
+  }
+
+  /** Phase 14 (reset): Beginn des letzten Resets (für den Worker-Guard, siehe `state()`). */
+  async lastResetStartedAt(): Promise<Date | null> {
+    const [row] = await this.db
+      .select({ lastResetStartedAt: demoDatasetState.lastResetStartedAt })
+      .from(demoDatasetState)
+      .where(eq(demoDatasetState.id, 1))
+      .limit(1);
+    return row?.lastResetStartedAt ?? null;
   }
 
   /** Schneller Blick fürs Reset-Gate (nur das Flag, ohne Berechnungen). */
@@ -127,6 +163,11 @@ export class DemoDatasetService {
         resetInProgress: true,
         resetStartedAt: input.now,
         lastResetBy: input.actorId,
+        // Phase 14 (reset, Order §21): bewusst die DB-Uhr (`now()`) – dieselbe
+        // Uhr wie `integration_jobs.created_at`, gegen die der Worker-Guard
+        // vergleicht; ein injiziertes `now` (Tests, Zeitverschiebung) würde den
+        // Vergleich sonst verfälschen. Bleibt nach Abschluss stehen.
+        lastResetStartedAt: sql`now()`,
         updatedAt: input.now,
       })
       .where(eq(demoDatasetState.id, 1));
@@ -146,6 +187,9 @@ export class DemoDatasetService {
         datasetVersion: input.datasetVersion,
         seededAt: input.now,
         seededBy: input.actorId,
+        // Phase 14 (offline epoch, Order §91/§92): neue Generation – alte
+        // Offline-Pakete/-Mutationen gelten ab jetzt nicht mehr.
+        datasetEpoch: randomUUID(),
         updatedAt: sql`now()`,
       })
       .where(eq(demoDatasetState.id, 1));

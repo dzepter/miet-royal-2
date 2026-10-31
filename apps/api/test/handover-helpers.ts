@@ -5,6 +5,7 @@ import { DocumentService } from '../src/commerce/document-service.ts';
 import { ProductService } from '../src/commerce/product-service.ts';
 import { AssignmentService } from '../src/handover/assignment-service.ts';
 import { HandoverService } from '../src/handover/handover-service.ts';
+import { pdfEnvironmentLabel } from '../src/documents/environment-label.ts'; // Phase 14 (reset)
 import { createRiskRefreshListener } from '../src/handover/risk-refresh-listener.ts';
 import { DamageService } from '../src/returns/damage-service.ts';
 import { ReturnService } from '../src/returns/return-service.ts';
@@ -61,6 +62,7 @@ export function handoverServicesFor(ctx: TestContext): HandoverServices {
     scheduling,
     damages,
     ctx.transactional.packetMailer, // Phase 12: Protokollmail wie in der App
+    pdfEnvironmentLabel(ctx.config), // Phase 14 (reset): Demo-Kennzeichnung der PDFs wie die Routen
   );
   const returns = new ReturnService(
     ctx.db,
@@ -73,6 +75,7 @@ export function handoverServicesFor(ctx: TestContext): HandoverServices {
     assignments,
     [],
     ctx.transactional.packetMailer,
+    pdfEnvironmentLabel(ctx.config), // Phase 14 (reset)
   );
   return {
     machineService,

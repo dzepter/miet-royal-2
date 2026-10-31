@@ -1,11 +1,13 @@
 'use client';
 
 import {
+  DatasetChangedError,
+  DEMO_DATASET_CHANGED_CODE,
   SessionInvalidError,
   TransientSyncError,
   type ConflictDetails,
   type OfflineEnvironment,
-  type SyncMutationInput,
+  type SyncMutationEnvelope,
   type SyncOutcome,
   type SyncOutcomeResponse,
   type SyncTransport,
@@ -18,6 +20,9 @@ import {
  * Fachantworten (applied/conflict/rejected) kommen 1:1 aus dem Orchestrator.
  * 409 = harte Serverablehnung (Umgebung/Lease) – als Konflikt mit Code, nie
  * als Erfolg; 413/400 = endgültig abgelehnt (keine Wiederholung).
+ * Phase 14 (offline epoch): 409 DEMO_DATASET_CHANGED ⇒ `DatasetChangedError`
+ * (Lauf endet, nichts gilt als Konflikt der Mutation); `datasetEpoch` der
+ * Mutation/des Pakets wird je Anfrage mitgesendet (nur wenn vorhanden).
  */
 const SYNC_TIMEOUT_MS = 90_000;
 
@@ -26,9 +31,10 @@ export function createSyncTransport(options: {
   environment: OfflineEnvironment;
 }): SyncTransport {
   return {
-    async send(envelope: SyncMutationInput): Promise<SyncOutcome> {
+    async send(envelope: SyncMutationEnvelope): Promise<SyncOutcome> {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), SYNC_TIMEOUT_MS);
+      const { datasetEpoch, ...mutation } = envelope;
       let response: Response;
       try {
         response = await fetch('/api/staff/offline/sync', {
@@ -40,7 +46,9 @@ export function createSyncTransport(options: {
             deviceId: options.deviceId,
             environment: options.environment,
             clientTime: new Date().toISOString(),
-            mutation: envelope,
+            // Phase 14 (offline epoch): nur in der Demo vorhanden; außerhalb unverändertes Format.
+            ...(typeof datasetEpoch === 'string' ? { datasetEpoch } : {}),
+            mutation,
           }),
           signal: controller.signal,
         });
@@ -58,6 +66,10 @@ export function createSyncTransport(options: {
       }
       const processedAt = new Date().toISOString();
       const errorBody = payload as { error?: { code?: string; message?: string } } | null;
+      if (response.status === 409 && errorBody?.error?.code === DEMO_DATASET_CHANGED_CODE) {
+        // Phase 14 (offline epoch): Datensatzwechsel – kein Mutationskonflikt, Lauf endet.
+        throw new DatasetChangedError(errorBody.error?.message);
+      }
       if (response.status === 409) {
         return {
           status: 'conflict',

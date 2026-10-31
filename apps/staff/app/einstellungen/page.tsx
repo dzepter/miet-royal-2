@@ -81,6 +81,22 @@ function SettingsView() {
           </p>
         </div>
       )}
+      {/* Phase 14 (training): Admin-Bereich in allen Umgebungen mit training.manage (Order §§67/68). */}
+      {hasPermission(me, 'training.manage') && (
+        <div className="card" data-testid="settings-training-card">
+          <h2>Training</h2>
+          <p className="muted">
+            {me?.environment === 'demo'
+              ? 'Mitarbeitertraining: Zuweisungen, Fortschritt, Katalog und Training-Reset.'
+              : 'Live-Sperren, bestätigte Demo-Trainings und Overrides.'}
+          </p>
+          <p>
+            <Link href="/einstellungen/training" data-testid="settings-link-training">
+              <strong>Training öffnen</strong>
+            </Link>
+          </p>
+        </div>
+      )}
       <div className="card">
         <h2>Sichtbarkeit abgeschlossener Vorgänge</h2>
         <p className="muted">

@@ -35,10 +35,24 @@ export const SECURITY_EVENT_TYPES = [
   'offline.lease_renewed',
   'offline.lease_revoked',
   'offline.environment_mismatch',
-  // Phase 14 (demo): Anforderung des Demo-Resets (Actor); Abschluss auditiert der Reset-Service.
-  'demo.reset_requested',
-  // Phase 14 (demo, SEED): Abschluss eines Demo-Resets (Actor, Dauer, Zähler – nie Inhalte).
+  // Phase 14 (reset, Order §31): Demo-Reset – Start nach Phase A, Abschluss nach Phase D,
+  // Abbruch mit technischer Fehlerklasse. Details ausschließlich
+  // { resetRunId, datasetVersion, status, errorClass? } – nie Seed-Inhalte, nie Meldungen.
+  'demo.reset_started',
   'demo.reset_completed',
+  'demo.reset_failed',
+  // Phase 14 (training gate): Live-Sperren und Freigaben (Order §84) – Details nur
+  // Feature-/Übungs-Keys, Freigabe-IDs und Zeitstempel, nie Begründungstexte.
+  'training.gate_enabled',
+  'training.gate_disabled',
+  'training.demo_verified',
+  'training.override_granted',
+  'training.override_revoked',
+  'training.demo_verification_revoked',
+  // Phase 14 (training): Zuweisung und bewusster Training-Reset (Order §84) – Details nur
+  // IDs, Pfad-/Übungs-Keys und Zähler; nie Businessdaten.
+  'training.assignment_created',
+  'training.assignment_reset',
 ] as const;
 
 export type SecurityEventType = (typeof SECURITY_EVENT_TYPES)[number];

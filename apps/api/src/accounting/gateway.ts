@@ -5,12 +5,19 @@ import { AuthError } from '../auth/service.ts';
  * Buchhaltungs-Gateway (Phase-9-Vorgabe §36–§40). Eine einzige Grenze
  * zwischen Abrechnung/Storno und der (späteren) echten Buchhaltung:
  *
- * - development/test/demo/staging: MockAccountingGateway – erzeugt eine
+ * - development/test/staging: MockAccountingGateway – erzeugt eine
  *   deterministische MOCK-Referenz, löst keinerlei echte Rechnung aus und
  *   wird in der Oberfläche IMMER als „MOCK“ ausgewiesen.
  * - production: DisabledAccountingGateway – jede Übertragung wird hart mit
  *   „Buchhaltungsintegration nicht konfiguriert“ blockiert. Es wird niemals
  *   so getan, als sei etwas übertragen worden.
+ * - demo (Phase 14, Order W1/§29, MASTER_SPEC §29 „Keine Lexware-Simulation/
+ *   echte Übertragung“): ebenfalls DisabledAccountingGateway – kein Mock-
+ *   Erfolg, keine Fake-Referenz, keine Fake-Rechnungsnummer. Die Abrechnung
+ *   bleibt fachlich bis „Bereit zur Buchhaltung“ trainierbar; die Oberfläche
+ *   zeigt „Buchhaltungsübertragung ist in der Demo nicht verfügbar.“ (kein
+ *   Fehlerzustand). `assertAccountingGatewayAllowed` sichert das fail-closed
+ *   auch gegen injizierte Gateways (API, Worker, Seed).
  *
  * Der Payload ist ein eingefrorener Snapshot (§37): Er wird VOR der
  * Übertragung in accounting_transfers gespeichert und danach nie geändert.
@@ -147,7 +154,7 @@ export interface MockAccountingCall {
 }
 
 /**
- * Mock für development/test/demo/staging. Deterministisch: dieselbe
+ * Mock für development/test/staging (nie demo/production). Deterministisch: dieselbe
  * idempotencyKey ⇒ dieselbe Referenz (kein zweiter „Beleg“ bei Retry).
  * Fehlersimulation ausschließlich über failNext(); nie zufällig.
  */
@@ -206,9 +213,11 @@ export class MockAccountingGateway implements AccountingGateway {
 }
 
 /**
- * Providerwahl (Phase 10, Order §4): production ⇒ lexware nur bei aktivem
- * Lexware-Kontext, sonst Disabled (nie Mock); demo ⇒ immer Mock;
- * development/staging ⇒ lexware nur per explizitem Opt-in, sonst Mock.
+ * Providerwahl (Phase 10, Order §4; Phase 14, Order W1/§29): production ⇒
+ * lexware nur bei aktivem Lexware-Kontext, sonst Disabled (nie Mock);
+ * demo ⇒ IMMER Disabled (kein Mock-Erfolg, kein Lexware – ein Lexware-Key ist
+ * dort bereits ein Konfigurationsfehler, packages/config); development/
+ * staging ⇒ lexware nur per explizitem Opt-in, sonst Mock.
  * Der Lexware-Provider selbst wird von `lexwareGatewayFactory` geliefert
  * (apps/api/src/lexware/lexware-gateway.ts), damit dieses Modul frei von
  * Lexware-Abhängigkeiten bleibt.
@@ -221,8 +230,27 @@ export function createAccountingGateway(
   if (config.appEnv === 'production') {
     return lexwareActive ? lexware.gateway() : new DisabledAccountingGateway();
   }
-  if (config.appEnv === 'demo') return new MockAccountingGateway();
+  // Phase 14 (accounting), Order W1/§29: keine simulierte erfolgreiche Übertragung in der Demo.
+  if (config.appEnv === 'demo') return new DisabledAccountingGateway();
   return lexwareActive ? lexware.gateway() : new MockAccountingGateway();
+}
+
+export const MOCK_ACCOUNTING_NOT_ALLOWED_MESSAGE =
+  'Mock-Buchhaltungs-Gateway ist in demo und production nicht zulässig (Order W1/§29/§96).';
+
+/**
+ * Phase 14 (accounting), Order W1/§29/§96 – fail-closed beim Start: in demo und
+ * production darf das aktive Gateway (auch ein injiziertes) niemals der Mock
+ * sein, der erfolgreiche Übertragungen simuliert. Eine Stelle für API
+ * (`buildApp`), Worker und Demo-Seed.
+ */
+export function assertAccountingGatewayAllowed(
+  appEnv: string,
+  gateway: Pick<AccountingGateway, 'provider'>,
+): void {
+  if ((appEnv === 'demo' || appEnv === 'production') && gateway.provider === 'mock') {
+    throw new Error(MOCK_ACCOUNTING_NOT_ALLOWED_MESSAGE);
+  }
 }
 
 /** Job-Typen auf der bestehenden PostgreSQL-Queue (§44). */

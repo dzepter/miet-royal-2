@@ -652,6 +652,10 @@ export function AuthGuard({ children }: { children: ReactNode }) {
                 {hasPermission(me, 'system.settings') && (
                   <Link href="/einstellungen">Einstellungen</Link>
                 )}
+                {/* Phase 14 (training): für alle Angemeldeten, online und offline (Order §88; Seite zeigt offline nur einen Hinweis). */}
+                <Link href="/training" data-testid="nav-training">
+                  Training
+                </Link>
                 <Link href="/konto">Mein Konto</Link>
                 <Link href="/tablet">Lager-Tablet</Link>
                 <Link href="/suche" aria-label="Suche">

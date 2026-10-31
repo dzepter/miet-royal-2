@@ -5,6 +5,11 @@ import { parseOrThrow, z } from '@mietroyal/validation';
 import { eq } from 'drizzle-orm';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { requireAuth, requirePermission, sendAuthError, sendError } from '../auth/http.ts';
+// Phase 14 (training gate): Live-Trainingssperre (Order §56–§66) – nach Rechten, vor der Fachaktion.
+import { requireTrainingGate } from '../training/gate-http.ts';
+import { createNoopTrainingGate, type TrainingGate } from '../training/gate-service.ts';
+// Phase 14 (training): Trainingsereignisse NACH erfolgreichem Fachcommit (Order §41/§42).
+import { createNoopTrainingRecorder, type TrainingEventRecorder } from '../training/recorder.ts';
 import { AuthError, type AuthenticatedContext, type StaffAuthService } from '../auth/service.ts';
 import { DocumentService } from '../commerce/document-service.ts';
 import { ProcessService } from '../crm/process-service.ts';
@@ -13,6 +18,7 @@ import { buildVisibilityContext } from '../crm/visibility.ts';
 import { AssignmentService } from '../handover/assignment-service.ts';
 import { DamageService } from '../returns/damage-service.ts';
 import { ReturnService, type ReturnFinalizedListener } from '../returns/return-service.ts';
+import { pdfEnvironmentLabel } from '../documents/environment-label.ts'; // Phase 14 (reset)
 import type { DeliveryPacketMailer } from '../communication/transactional/mailers.ts';
 import type { CleaningEndedListener } from '../voucher/voucher-jobs.ts';
 import { SchedulingService } from '../scheduling/scheduling-service.ts';
@@ -94,6 +100,10 @@ interface ReturnRouteOptions {
   cleaningEndedListener?: CleaningEndedListener;
   /** Phase 12 (Order §11): Protokollmails nach Finalisierung über die Mail-Outbox. */
   packetMailer?: DeliveryPacketMailer;
+  /** Phase 14 (training gate): Live-Trainingssperre `return.finalize` / `machine.clean_complete` (Default: Noop). */
+  trainingGate?: TrainingGate;
+  /** Phase 14 (training): Recorder für `return.finalized` / `machine.cleaning_completed` (demo), Default Noop. */
+  trainingRecorder?: TrainingEventRecorder;
 }
 
 function decodeBase64(value: string, maxBytes: number): Uint8Array | null {
@@ -109,6 +119,8 @@ function decodeBase64(value: string, maxBytes: number): Uint8Array | null {
 
 export function registerReturnRoutes(app: FastifyInstance, options: ReturnRouteOptions): void {
   const { db, auth, config, storage, finalizedListeners, cleaningEndedListener } = options;
+  const trainingGate = options.trainingGate ?? createNoopTrainingGate(); // Phase 14 (training gate)
+  const trainingRecorder = options.trainingRecorder ?? createNoopTrainingRecorder(); // Phase 14 (training)
   const machineService = new MachineService(db, storage, cleaningEndedListener);
   const assignments = new AssignmentService(db, machineService, storage);
   const inventory = new InventoryService(db);
@@ -126,6 +138,7 @@ export function registerReturnRoutes(app: FastifyInstance, options: ReturnRouteO
     assignments,
     finalizedListeners ?? [],
     options.packetMailer ?? null,
+    pdfEnvironmentLabel(config), // Phase 14 (reset): Demo-Kennzeichnung der PDFs
   );
   const processService = new ProcessService(db);
 
@@ -703,8 +716,25 @@ export function registerReturnRoutes(app: FastifyInstance, options: ReturnRouteO
     if (context === null) return;
     if (!(await requirePermission(request, reply, auth, context, 'machine.clean_complete'))) return;
     const params = parseOrThrow(idParams, request.params, 'params');
+    // Phase 14 (training gate)
+    if (
+      !(await requireTrainingGate(
+        request,
+        reply,
+        trainingGate,
+        context.user.id,
+        'machine.clean_complete',
+      ))
+    )
+      return;
     try {
       const machine = await returns.completeCleaning(context.user.id, params.id);
+      // Phase 14 (training): Reinigungsabschluss nur aus „Reinigung“ heraus möglich ⇒ dieser Aufruf hat ihn vollbracht.
+      await trainingRecorder.record({
+        actorUserId: context.user.id,
+        eventKey: 'machine.cleaning_completed',
+        subjectRef: machine.id,
+      });
       return { machine: { id: machine.id, status: machine.status } };
     } catch (error) {
       if (sendAuthError(request, reply, error)) return;
@@ -850,8 +880,21 @@ export function registerReturnRoutes(app: FastifyInstance, options: ReturnRouteO
     const params = parseOrThrow(bookingParams, request.params, 'params');
     const booking = await visibleBooking(request, reply, context, params.bookingId);
     if (booking === null) return;
+    // Phase 14 (training gate)
+    if (
+      !(await requireTrainingGate(request, reply, trainingGate, context.user.id, 'return.finalize'))
+    )
+      return;
     try {
       const detail = await returns.finalize(context.user.id, booking.id);
+      // Phase 14 (training): nur wenn DIESER Aufruf finalisiert hat (nach Commit).
+      if (detail.finalized) {
+        await trainingRecorder.record({
+          actorUserId: context.user.id,
+          eventKey: 'return.finalized',
+          subjectRef: booking.id,
+        });
+      }
       return { detail, documents: await returns.documentsFor(booking.id) };
     } catch (error) {
       if (sendAuthError(request, reply, error)) return;

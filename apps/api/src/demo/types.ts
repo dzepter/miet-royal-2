@@ -53,5 +53,10 @@ export interface DemoResetResult {
  * `DemoError('CONFLICT','DEMO_RESET_RUNNING', …)`, wenn bereits ein Reset läuft.
  */
 export interface DemoResetRunner {
-  reset(input: { actorId: string | null; now?: Date }): Promise<DemoResetResult>;
+  /** Phase 14 (reset, Order §31): `sessionId` nur für das Security-Audit (optional, Route). */
+  reset(input: {
+    actorId: string | null;
+    sessionId?: string | null | undefined;
+    now?: Date | undefined;
+  }): Promise<DemoResetResult>;
 }

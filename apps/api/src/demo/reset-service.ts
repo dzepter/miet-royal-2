@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { setTimeout as sleep } from 'node:timers/promises';
 import type { AppConfig } from '@mietroyal/config';
 import {
@@ -14,8 +15,10 @@ import { eq, inArray, sql } from 'drizzle-orm';
 import { recordSecurityEvent } from '../auth/audit.ts';
 import { COMMUNICATION_CLEANUP_RETENTION_JOB_TYPE } from '../communication/types.ts';
 import type { OutboundMailGateway } from '../communication/types.ts';
+import { enqueueDemoStorageCleanup } from '../jobs/demo.ts';
 import type { RoutingGateway } from '../routing/types.ts';
 import { DEMO_DATASET_VERSION, DEMO_RESET_STALE_MS, DemoDatasetService } from './dataset.ts';
+import { DEMO_BUSINESS_JOB_TYPES } from './job-types.ts';
 import { DemoSeedRegistry } from './registry.ts';
 import { DEMO_RESET_GATE_CACHE_TTL_MS } from './reset-gate.ts';
 import { DemoSeedService } from './seed/seed-service.ts';
@@ -43,7 +46,17 @@ import { DEMO_MESSAGES, DemoError, type DemoResetResult, type DemoResetRunner } 
  *   Danach (außerhalb der Tx) Storage-Objekte in parallelen Batches entfernen
  *   (Review F7) – Fehler werden nur protokolliert.
  * - Phase C: kanonischer Seed (`DemoSeedService.seedCanonical`).
- * - Phase D (kurze Tx): Flag zurück, Version/Zeitpunkte setzen; Audit-Eintrag.
+ * - Phase D (kurze Tx): Flag zurück, Version/Zeitpunkte setzen, neue
+ *   Dataset-Epoch (Phase 14 offline epoch, Order §91).
+ * - Security-Audit (Phase 14 reset, Order §31): `demo.reset_started` nach
+ *   Phase A, `demo.reset_completed` nach Phase D, `demo.reset_failed` beim
+ *   Abbruch – Details ausschließlich `{ resetRunId, datasetVersion, status,
+ *   errorClass? }` (nie Zähler-Inhalte, nie Fehlermeldungen).
+ * - Storage (Phase 14 reset, Order §22): Schlüssel, die beim Löschen
+ *   scheitern, landen als Job `demo.storage_cleanup` (Payload
+ *   `{ resetRunId, keys }`) in der Queue und werden vom Worker erneut
+ *   gelöscht; der neue Datensatz bleibt konsistent (keine Zeile referenziert
+ *   sie mehr), dauerhaftes Scheitern wird als `dead` sichtbar.
  *
  * Fehler in B/C/D lassen `reset_in_progress` gesetzt (Gate bleibt fail-closed),
  * markieren den Lauf aber sofort als abgelaufen (`resetStale`), damit ein
@@ -167,19 +180,8 @@ export const DEMO_BUSINESS_TABLES_DELETE_ORDER: readonly string[] = [
   'offline_mutation_receipts',
 ];
 
-/** Jobtypen mit Geschäfts-Payload (Code-Map B §3.6) – Infrastruktur-Jobs bleiben. */
-export const DEMO_BUSINESS_JOB_TYPES: readonly string[] = [
-  'mail.send',
-  'push.send',
-  'settlement.accounting_transfer',
-  'cancellation.accounting_transfer',
-  'voucher.eligibility_check',
-  'voucher.delivery',
-  'invoice.delivery',
-  'whatsapp.send',
-  'whatsapp.media_fetch',
-  'lexware.event.process',
-];
+/** Jobtypen mit Geschäfts-Payload (Code-Map B §3.6) – Infrastruktur-Jobs bleiben (Definition: `job-types.ts`). */
+export { DEMO_BUSINESS_JOB_TYPES };
 
 /** Spalten mit Storage-Keys gelöschter Objekte (Code-Map B §3.7). */
 const DEMO_STORAGE_KEY_SOURCES: readonly { table: string; column: string }[] = [
@@ -271,30 +273,43 @@ export async function deleteStorageObjectsInBatches(
   storage: Pick<StorageProvider, 'delete'>,
   keys: readonly string[],
   options: { concurrency?: number | undefined; logger?: JobRunnerLogger | undefined } = {},
-): Promise<{ removed: number; failed: number }> {
+): Promise<{ removed: number; failed: number; failedKeys: string[] }> {
   const size = Math.max(
     1,
     Math.floor(options.concurrency ?? DEMO_RESET_STORAGE_DELETE_CONCURRENCY),
   );
   let removed = 0;
   let failed = 0;
+  const failedKeys: string[] = [];
   for (let offset = 0; offset < keys.length; offset += size) {
-    const outcomes = await Promise.allSettled(
-      keys.slice(offset, offset + size).map((key) => storage.delete(key)),
-    );
-    for (const outcome of outcomes) {
+    const batch = keys.slice(offset, offset + size);
+    const outcomes = await Promise.allSettled(batch.map((key) => storage.delete(key)));
+    outcomes.forEach((outcome, index) => {
       if (outcome.status === 'fulfilled') {
         removed += 1;
-        continue;
+        return;
       }
       failed += 1;
+      failedKeys.push(batch[index]!);
       options.logger?.warn(
         { errorName: outcome.reason instanceof Error ? outcome.reason.name : 'Error' },
         'Demo-Reset: Storage-Objekt konnte nicht entfernt werden',
       );
-    }
+    });
   }
-  return { removed, failed };
+  return { removed, failed, failedKeys };
+}
+
+/** Phase 14 (reset, Order §31): technische Fehlerklasse fürs Audit – Name bzw. SQLSTATE, nie die Meldung. */
+export function errorClassOf(error: unknown): string {
+  const code = (error as { code?: unknown } | null | undefined)?.code;
+  const causeCode = (error as { cause?: { code?: unknown } } | null | undefined)?.cause?.code;
+  for (const candidate of [code, causeCode]) {
+    if (typeof candidate === 'string' && /^[0-9A-Z]{5}$/.test(candidate))
+      return `SQLSTATE_${candidate}`;
+  }
+  if (error instanceof Error && error.name !== '') return error.name;
+  return typeof error;
 }
 
 async function tryAdvisoryLock(tx: DatabaseExecutor): Promise<boolean> {
@@ -333,7 +348,11 @@ export class DemoResetService implements DemoResetRunner {
     this.fkRetryDelayMs = Math.max(0, deps.fkRetryDelayMs ?? DEMO_RESET_FK_RETRY_DELAY_MS);
   }
 
-  async reset(input: { actorId: string | null; now?: Date }): Promise<DemoResetResult> {
+  async reset(input: {
+    actorId: string | null;
+    sessionId?: string | null | undefined;
+    now?: Date | undefined;
+  }): Promise<DemoResetResult> {
     if (this.deps.config.appEnv !== 'demo') {
       throw new DemoError('FORBIDDEN', 'DEMO_ONLY', DEMO_MESSAGES.DEMO_ONLY);
     }
@@ -342,11 +361,29 @@ export class DemoResetService implements DemoResetRunner {
     // Der Fachaktor des Seeds muss existieren, BEVOR gelöscht wird (sonst bliebe
     // die Demo leer und gesperrt).
     const seedActor = await this.seed.resolveActor(input.actorId);
+    // Phase 14 (reset, Order §31): ein Lauf = eine resetRunId (Audit + Storage-Nachbereinigung).
+    const resetRunId = randomUUID();
+    const audit = (
+      status: 'started' | 'completed' | 'failed',
+      errorClass?: string,
+    ): Promise<void> =>
+      recordSecurityEvent(this.deps.db, {
+        type: `demo.reset_${status}`,
+        actorUserId: input.actorId,
+        sessionId: input.sessionId ?? null,
+        details: {
+          resetRunId,
+          datasetVersion: DEMO_DATASET_VERSION,
+          status,
+          ...(errorClass === undefined ? {} : { errorClass }),
+        },
+      });
 
     await this.begin(input.actorId, now); // Phase A
     let deleted: Record<string, number>;
     let seeded: Record<string, number>;
     try {
+      await audit('started');
       // Review F4: Schutzfenster – Gate-/Worker-Caches (TTL 1 s) laufen ab und
       // bereits angenommene Anfragen committen, bevor Phase B löscht.
       if (this.settleDelayMs > 0) await sleep(this.settleDelayMs);
@@ -355,7 +392,7 @@ export class DemoResetService implements DemoResetRunner {
         logger: this.logger,
       }); // Phase B
       deleted = wiped.deleted;
-      await this.deleteStorageObjects(wiped.storageKeys);
+      await this.deleteStorageObjects(wiped.storageKeys, resetRunId);
       const result = await this.seed.seedCanonical({
         actorId: seedActor.seedActorId,
         requestedBy: input.actorId,
@@ -371,30 +408,24 @@ export class DemoResetService implements DemoResetRunner {
       ); // Phase D
     } catch (error) {
       await this.markInterrupted();
+      // Order §31: nur die technische Fehlerklasse, nie die Meldung (könnte Werte zitieren).
+      await audit('failed', errorClassOf(error)).catch((auditError: unknown) => {
+        this.logger?.error(
+          { errorName: auditError instanceof Error ? auditError.name : 'Error' },
+          'Demo-Reset: Audit demo.reset_failed konnte nicht geschrieben werden',
+        );
+      });
       this.logger?.error(
-        { errorName: error instanceof Error ? error.name : 'Error' },
+        { resetRunId, errorName: error instanceof Error ? error.name : 'Error' },
         'Demo-Reset unterbrochen – Flag bleibt gesetzt, erneuter Reset möglich',
       );
       throw error;
     }
     const durationMs = Date.now() - startedAt;
     const deletedRows = Object.values(deleted).reduce((sum, value) => sum + value, 0);
-    await recordSecurityEvent(this.deps.db, {
-      type: 'demo.reset_completed',
-      actorUserId: input.actorId,
-      details: {
-        durationMs,
-        datasetVersion: DEMO_DATASET_VERSION,
-        deletedRows,
-        seededCustomers: seeded.customers ?? 0,
-        seededProcesses: seeded.processes ?? 0,
-        seededBookings: seeded.bookings ?? 0,
-        seededTours: seeded.tours ?? 0,
-        seedEntities: seeded.seedEntities ?? 0,
-      },
-    });
+    await audit('completed');
     this.logger?.info(
-      { durationMs, deletedRows, ...prefixKeys('seeded', seeded) },
+      { resetRunId, durationMs, deletedRows, ...prefixKeys('seeded', seeded) },
       'Demo-Reset abgeschlossen',
     );
     return {
@@ -542,14 +573,37 @@ export class DemoResetService implements DemoResetRunner {
     return [...keys];
   }
 
-  /** Storage-Objekte der gelöschten Zeilen entfernen – parallel in Batches, Fehler nur loggen (Design §6, Review F7). */
-  private async deleteStorageObjects(keys: readonly string[]): Promise<void> {
+  /**
+   * Storage-Objekte der gelöschten Zeilen entfernen – parallel in Batches,
+   * Fehler nur loggen (Design §6, Review F7). Phase 14 (reset, Order §22):
+   * fehlgeschlagene Schlüssel als Job `demo.storage_cleanup` nachreihen; die
+   * Datenbank referenziert sie bereits nicht mehr (zweiphasig, nie atomar).
+   */
+  private async deleteStorageObjects(keys: readonly string[], resetRunId: string): Promise<void> {
     if (keys.length === 0) return;
-    const { removed, failed } = await deleteStorageObjectsInBatches(this.deps.storage, keys, {
-      concurrency: this.deps.storageDeleteConcurrency,
-      logger: this.logger,
-    });
+    const { removed, failed, failedKeys } = await deleteStorageObjectsInBatches(
+      this.deps.storage,
+      keys,
+      { concurrency: this.deps.storageDeleteConcurrency, logger: this.logger },
+    );
     this.logger?.info({ removed, failed }, 'Demo-Reset: Storage-Objekte entfernt');
+    if (failedKeys.length === 0) return;
+    try {
+      const jobIds = await enqueueDemoStorageCleanup(this.deps.queue, {
+        resetRunId,
+        keys: failedKeys,
+      });
+      this.logger?.warn(
+        { resetRunId, failed: failedKeys.length, jobs: jobIds.length },
+        'Demo-Reset: Storage-Nachbereinigung als Job eingereiht',
+      );
+    } catch (error) {
+      // Der Reset bleibt erfolgreich (neuer Datensatz konsistent); nur sichtbar machen.
+      this.logger?.error(
+        { resetRunId, errorName: error instanceof Error ? error.name : 'Error' },
+        'Demo-Reset: Storage-Nachbereinigung konnte nicht eingereiht werden',
+      );
+    }
   }
 
   /**

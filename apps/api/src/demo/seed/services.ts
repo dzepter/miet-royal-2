@@ -27,11 +27,13 @@ import {
   type TransactionalMailModule,
 } from '../../jobs/communication-transactional.ts';
 import {
+  assertAccountingGatewayAllowed,
   createAccountingGatewayFor,
   createAccountingTransferService,
   createLexwareContext,
   createVoucherTriggers,
 } from '../../jobs/finance.ts';
+import { pdfEnvironmentLabel } from '../../documents/environment-label.ts'; // Phase 14 (reset)
 import { DamageService } from '../../returns/damage-service.ts';
 import { ReturnService } from '../../returns/return-service.ts';
 import { getDepotAddress, resolveOperativeAddress } from '../../routing/address-resolver.ts';
@@ -101,9 +103,12 @@ export function createDemoSeedServices(deps: DemoSeedServiceDeps): DemoSeedServi
   const { db, config, storage, queue } = deps;
   const logger = deps.logger;
   const auth = new StaffAuthService(db, config, deps.staffMail ?? createMailAdapter(config));
-  // Buchhaltung/Lexware wie app.ts (demo ⇒ MockAccountingGateway, Lexware verboten).
+  // Buchhaltung/Lexware wie app.ts – Phase 14 (accounting), Order W1/§24/§29: die
+  // Fabrik liefert in demo DisabledAccountingGateway (kein Mock-Erfolg, kein Lexware);
+  // der Seed stellt deshalb nie Transferjobs ein. Fail-closed auch hier.
   const lexware = createLexwareContext(config, db, logger ?? noopLogger);
   const accounting = createAccountingGatewayFor(config, lexware);
+  assertAccountingGatewayAllowed(config.appEnv, accounting);
   const communication = createCommunicationContext(config, db, queue, {
     gateway: deps.mailGateway,
     storage,
@@ -155,6 +160,7 @@ export function createDemoSeedServices(deps: DemoSeedServiceDeps): DemoSeedServi
     plainScheduling,
     damages,
     transactional.packetMailer,
+    pdfEnvironmentLabel(config), // Phase 14 (reset): Demo-Kennzeichnung der PDFs
   );
   const settlements = new SettlementService({
     db,
@@ -176,6 +182,7 @@ export function createDemoSeedServices(deps: DemoSeedServiceDeps): DemoSeedServi
     assignments,
     [createSettlementEnsureListener(settlements, logger ?? noopLogger)],
     transactional.packetMailer,
+    pdfEnvironmentLabel(config), // Phase 14 (reset): Demo-Kennzeichnung der PDFs
   );
   const routing = deps.routingGateway ?? createRoutingGateway(config, logger, { db });
   const geocoding = new GeocodingService(db, routing, logger);

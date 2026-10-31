@@ -5,6 +5,11 @@ import { parseOrThrow, z } from '@mietroyal/validation';
 import { eq } from 'drizzle-orm';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { requireAuth, requirePermission, sendAuthError, sendError } from '../auth/http.ts';
+// Phase 14 (training gate): Live-Trainingssperre (Order §56–§66) – nach Rechten, vor der Fachaktion.
+import { requireTrainingGate } from '../training/gate-http.ts';
+import { createNoopTrainingGate, type TrainingGate } from '../training/gate-service.ts';
+// Phase 14 (training): Trainingsereignis NACH erfolgreichem Fachcommit (Order §41/§42).
+import { createNoopTrainingRecorder, type TrainingEventRecorder } from '../training/recorder.ts';
 import type { AuthenticatedContext, StaffAuthService } from '../auth/service.ts';
 import { DocumentService } from '../commerce/document-service.ts';
 import { ProductService } from '../commerce/product-service.ts';
@@ -13,6 +18,7 @@ import { getCompletedVisibilityDays } from '../crm/settings-service.ts';
 import { buildVisibilityContext } from '../crm/visibility.ts';
 import { AssignmentService } from '../handover/assignment-service.ts';
 import { HandoverService } from '../handover/handover-service.ts';
+import { pdfEnvironmentLabel } from '../documents/environment-label.ts'; // Phase 14 (reset)
 import { DamageService } from '../returns/damage-service.ts';
 import { SchedulingService } from '../scheduling/scheduling-service.ts';
 import { InventoryService } from '../warehouse/inventory-service.ts';
@@ -77,6 +83,10 @@ interface HandoverRouteOptions {
   cleaningEndedListener?: CleaningEndedListener;
   /** Phase 12 (Order §11): Protokollmails nach Finalisierung über die Mail-Outbox. */
   packetMailer?: DeliveryPacketMailer;
+  /** Phase 14 (training gate): Live-Trainingssperre `handover.finalize` (Default: Noop). */
+  trainingGate?: TrainingGate;
+  /** Phase 14 (training): Recorder für `handover.finalized` (demo), Default Noop. */
+  trainingRecorder?: TrainingEventRecorder;
 }
 
 function decodeBase64(value: string, maxBytes: number): Uint8Array | null {
@@ -92,6 +102,8 @@ function decodeBase64(value: string, maxBytes: number): Uint8Array | null {
 
 export function registerHandoverRoutes(app: FastifyInstance, options: HandoverRouteOptions): void {
   const { db, auth, config, storage, cleaningEndedListener } = options;
+  const trainingGate = options.trainingGate ?? createNoopTrainingGate(); // Phase 14 (training gate)
+  const trainingRecorder = options.trainingRecorder ?? createNoopTrainingRecorder(); // Phase 14 (training)
   const machineService = new MachineService(db, storage, cleaningEndedListener);
   const assignments = new AssignmentService(db, machineService, storage);
   const inventory = new InventoryService(db);
@@ -110,6 +122,7 @@ export function registerHandoverRoutes(app: FastifyInstance, options: HandoverRo
     // Phase 7 (Order §35): aktuelle Maschinenschäden als eingefrorener Snapshot.
     new DamageService(db, storage),
     options.packetMailer ?? null,
+    pdfEnvironmentLabel(config), // Phase 14 (reset): Demo-Kennzeichnung der PDFs
   );
   const processService = new ProcessService(db);
 
@@ -608,6 +621,17 @@ export function registerHandoverRoutes(app: FastifyInstance, options: HandoverRo
       !(await requirePermission(request, reply, auth, context, 'handover.correct_actual_time'))
     )
       return;
+    // Phase 14 (training gate)
+    if (
+      !(await requireTrainingGate(
+        request,
+        reply,
+        trainingGate,
+        context.user.id,
+        'handover.finalize',
+      ))
+    )
+      return;
     try {
       const detail = await handover.finalize(context.user.id, booking.id, {
         actualIssueAt:
@@ -615,6 +639,14 @@ export function registerHandoverRoutes(app: FastifyInstance, options: HandoverRo
             ? null
             : new Date(body.actualIssueAt),
       });
+      // Phase 14 (training): nur wenn DIESER Aufruf finalisiert hat (nach Commit).
+      if (detail.finalized) {
+        await trainingRecorder.record({
+          actorUserId: context.user.id,
+          eventKey: 'handover.finalized',
+          subjectRef: booking.id,
+        });
+      }
       return { detail, documents: await handover.documentsFor(booking.id) };
     } catch (error) {
       if (sendAuthError(request, reply, error)) return;

@@ -4,6 +4,11 @@ import { berlinDateOf, berlinStartOfDay } from '@mietroyal/domain';
 import { parseOrThrow, z } from '@mietroyal/validation';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { requireAuth, requirePermission, sendAuthError, sendError } from '../auth/http.ts';
+// Phase 14 (training gate): Live-Trainingssperre (Order §56–§66) – nach Rechten, vor der Fachaktion.
+import { requireTrainingGate } from '../training/gate-http.ts';
+import { createNoopTrainingGate, type TrainingGate } from '../training/gate-service.ts';
+// Phase 14 (training): Tour-Ereignisse NACH erfolgreichem Fachcommit (Order §41/§42, §77).
+import { createNoopTrainingRecorder, type TrainingEventRecorder } from '../training/recorder.ts';
 import type { AuthenticatedContext, StaffAuthService } from '../auth/service.ts';
 import { RoutingError, type RoutingGateway } from '../routing/types.ts';
 import type { AppointmentChangeListener } from '../scheduling/hooks.ts';
@@ -84,6 +89,10 @@ export interface TourRouteOptions {
   addresses: OperativeAddressResolver;
   /** Phase 13 (tours-live): Bewertungsstand der Verspätungsprognose für die View (optional). */
   delay?: TourDelaySource | undefined;
+  /** Phase 14 (training gate): Live-Trainingssperre `tour.start` / `tour.takeover` (Default: Noop). */
+  trainingGate?: TrainingGate;
+  /** Phase 14 (training): Recorder für `tour.planned|ready|started|completed` (demo), Default Noop. */
+  trainingRecorder?: TrainingEventRecorder;
 }
 
 /** Tour-Fehler mit stabilem Code (409/400/403/404), Routing-Fehler 503/409 – nie Provider-Details. */
@@ -116,6 +125,8 @@ export function sendTourError(
 
 export function registerTourRoutes(app: FastifyInstance, options: TourRouteOptions): void {
   const { db, auth, config, tours } = options;
+  const trainingGate = options.trainingGate ?? createNoopTrainingGate(); // Phase 14 (training gate)
+  const trainingRecorder = options.trainingRecorder ?? createNoopTrainingRecorder(); // Phase 14 (training)
   const planning = new PlanningService(
     db,
     tours,
@@ -409,6 +420,14 @@ export function registerTourRoutes(app: FastifyInstance, options: TourRouteOptio
         order: body.order,
         departureAt: body.departureAt === undefined ? undefined : new Date(body.departureAt),
       });
+      // Phase 14 (training): nur eine umsetzbare Planung zählt.
+      if (result.tour.tour.planningStatus === 'planned') {
+        await trainingRecorder.record({
+          actorUserId: context.user.id,
+          eventKey: 'tour.planned',
+          subjectRef: params.id,
+        });
+      }
       return {
         tour: await buildTourView(viewDeps, result.tour, await viewerOf(context)),
         plan: result.plan,
@@ -432,6 +451,14 @@ export function registerTourRoutes(app: FastifyInstance, options: TourRouteOptio
         expectedVersion: body.expectedVersion,
         departureAt: body.departureAt === undefined ? undefined : new Date(body.departureAt),
       });
+      // Phase 14 (training): nur eine umsetzbare Planung zählt.
+      if (result.tour.tour.planningStatus === 'planned') {
+        await trainingRecorder.record({
+          actorUserId: context.user.id,
+          eventKey: 'tour.planned',
+          subjectRef: params.id,
+        });
+      }
       return {
         tour: await buildTourView(viewDeps, result.tour, await viewerOf(context)),
         plan: result.plan,
@@ -527,7 +554,15 @@ export function registerTourRoutes(app: FastifyInstance, options: TourRouteOptio
     const loaded = await loadVisible(request, reply, context, params.id);
     if (loaded === null) return;
     try {
-      await tours.markReady(context.user.id, params.id, body);
+      const ready = await tours.markReady(context.user.id, params.id, body);
+      // Phase 14 (training): nur der Übergang draft → ready (Status vorher gelesen).
+      if (loaded.tour.status === 'draft' && ready.status === 'ready') {
+        await trainingRecorder.record({
+          actorUserId: context.user.id,
+          eventKey: 'tour.ready',
+          subjectRef: params.id,
+        });
+      }
       return await respondTour(context, params.id);
     } catch (error) {
       if (sendTourError(request, reply, error)) return;
@@ -544,8 +579,19 @@ export function registerTourRoutes(app: FastifyInstance, options: TourRouteOptio
     const loaded = await loadVisible(request, reply, context, params.id);
     if (loaded === null) return;
     if (!(await requireManageOrDriver(request, reply, context, loaded))) return;
+    // Phase 14 (training gate)
+    if (!(await requireTrainingGate(request, reply, trainingGate, context.user.id, 'tour.start')))
+      return;
     try {
       const result = await tours.start(context.user.id, params.id, body);
+      // Phase 14 (training): idempotenter Wiederholungsaufruf (`started: false`) zählt nicht.
+      if (result.started) {
+        await trainingRecorder.record({
+          actorUserId: context.user.id,
+          eventKey: 'tour.started',
+          subjectRef: params.id,
+        });
+      }
       return { started: result.started, ...(await respondTour(context, params.id)) };
     } catch (error) {
       if (sendTourError(request, reply, error)) return;
@@ -569,6 +615,14 @@ export function registerTourRoutes(app: FastifyInstance, options: TourRouteOptio
         reason: body.reason ?? null,
         canForce: effective.has('calendar.manage'),
       });
+      // Phase 14 (training): nur ein tatsächliches Ende (`ended: true`) zählt.
+      if (result.ended) {
+        await trainingRecorder.record({
+          actorUserId: context.user.id,
+          eventKey: 'tour.completed',
+          subjectRef: params.id,
+        });
+      }
       return { ended: result.ended, ...(await respondTour(context, params.id)) };
     } catch (error) {
       if (sendTourError(request, reply, error)) return;
@@ -601,6 +655,11 @@ export function registerTourRoutes(app: FastifyInstance, options: TourRouteOptio
     const loaded = await loadVisible(request, reply, context, params.id);
     if (loaded === null) return;
     if (!(await requirePermission(request, reply, auth, context, 'appointment.assign'))) return;
+    // Phase 14 (training gate)
+    if (
+      !(await requireTrainingGate(request, reply, trainingGate, context.user.id, 'tour.takeover'))
+    )
+      return;
     try {
       const effective = await auth.effectivePermissions(context.user.id);
       await tours.takeover(context.user.id, params.id, body, effective);

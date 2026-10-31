@@ -1,9 +1,15 @@
 import type { AppConfig } from '@mietroyal/config';
-import { customers, processes, staffUsers, tours, type Database } from '@mietroyal/database';
+import {
+  customers,
+  integrationJobs,
+  processes,
+  staffUsers,
+  tours,
+  type Database,
+} from '@mietroyal/database';
 import { parseOrThrow, z } from '@mietroyal/validation';
-import { count, inArray } from 'drizzle-orm';
+import { and, count, eq, inArray } from 'drizzle-orm';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
-import { recordSecurityEvent } from '../auth/audit.ts';
 import {
   authErrorStatus,
   requireAuth,
@@ -12,6 +18,7 @@ import {
   sendError,
 } from '../auth/http.ts';
 import type { AuthenticatedContext, StaffAuthService } from '../auth/service.ts';
+import { DEMO_STORAGE_CLEANUP_JOB_TYPE } from '../demo/job-types.ts';
 import type { DemoModule } from '../demo/module.ts';
 import { DEMO_MESSAGES, DemoError } from '../demo/types.ts';
 
@@ -55,6 +62,34 @@ export interface DemoStatusResponse {
   resetStale: boolean;
   counts: { customers: number; processes: number; tours: number };
   seedEntities: number;
+  /**
+   * Phase 14 (reset, Order §22): Nachbereinigung alter Demo-Dateien – Jobs
+   * `demo.storage_cleanup`, die noch ausstehen (pending/processing) bzw.
+   * dauerhaft gescheitert sind (dead; technischer Fehler, Logs prüfen).
+   */
+  storageCleanup: { pendingJobs: number; deadJobs: number };
+}
+
+async function storageCleanupCounts(db: Database): Promise<DemoStatusResponse['storageCleanup']> {
+  const [pending] = await db
+    .select({ value: count() })
+    .from(integrationJobs)
+    .where(
+      and(
+        eq(integrationJobs.type, DEMO_STORAGE_CLEANUP_JOB_TYPE),
+        inArray(integrationJobs.status, ['pending', 'processing']),
+      ),
+    );
+  const [dead] = await db
+    .select({ value: count() })
+    .from(integrationJobs)
+    .where(
+      and(
+        eq(integrationJobs.type, DEMO_STORAGE_CLEANUP_JOB_TYPE),
+        eq(integrationJobs.status, 'dead'),
+      ),
+    );
+  return { pendingJobs: pending?.value ?? 0, deadJobs: dead?.value ?? 0 };
 }
 
 async function businessCounts(db: Database): Promise<DemoStatusResponse['counts']> {
@@ -118,6 +153,7 @@ export function registerDemoRoutes(app: FastifyInstance, deps: DemoRouteDeps): v
       resetStale: state.resetStale,
       counts,
       seedEntities,
+      storageCleanup: await storageCleanupCounts(db), // Phase 14 (reset)
     };
     return response;
   });
@@ -154,17 +190,16 @@ export function registerDemoRoutes(app: FastifyInstance, deps: DemoRouteDeps): v
       return;
     }
     const now = new Date();
-    // Security-Audit (bestehendes Muster): die Anforderung mit Actor; den
-    // erfolgreichen Abschluss auditiert der Reset-Service selbst.
-    await recordSecurityEvent(db, {
-      type: 'demo.reset_requested',
-      actorUserId: context.user.id,
-      sessionId: context.session.id,
-      details: { environment: config.appEnv },
-    });
+    // Phase 14 (reset, Order §31): das Security-Audit (demo.reset_started/
+    // _completed/_failed) schreibt ausschließlich der Reset-Service; die Route
+    // reicht nur Actor und Session durch.
     request.log.info({ actorId: context.user.id }, 'Demo-Reset angefordert');
     try {
-      const result = await demo.reset.reset({ actorId: context.user.id, now });
+      const result = await demo.reset.reset({
+        actorId: context.user.id,
+        sessionId: context.session.id,
+        now,
+      });
       demo.gate.invalidate();
       return result;
     } catch (error) {

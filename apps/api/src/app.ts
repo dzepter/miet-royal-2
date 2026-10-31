@@ -25,7 +25,7 @@ import { registerWarehouseRoutes } from './routes/warehouse.ts';
 import { registerHandoverRoutes } from './routes/handover.ts';
 import { registerReturnRoutes } from './routes/returns.ts';
 import { registerOfflineRoutes } from './routes/offline.ts';
-import type { AccountingGateway } from './accounting/gateway.ts';
+import { assertAccountingGatewayAllowed, type AccountingGateway } from './accounting/gateway.ts';
 import {
   createAccountingGatewayFor,
   createAccountingTransferService,
@@ -108,6 +108,18 @@ import { createDemoModule } from './demo/module.ts';
 import { DemoResetService } from './demo/reset-service.ts';
 import type { DemoResetRunner } from './demo/types.ts';
 import { registerDemoRoutes } from './routes/demo.ts';
+// Phase 14 (training): Katalog-Sync beim Start (alle Umgebungen), Recorder nur in demo, Trainings-Routen.
+import { registerTrainingRoutes } from './routes/training.ts';
+import { TrainingCatalogService } from './training/catalog-sync.ts';
+import { createTrainingMailSentListener } from './training/listeners.ts';
+import { DemoTrainingEventRecorder, createNoopTrainingRecorder } from './training/recorder.ts';
+import { DEMO_RESET_INTERRUPTION_CODE, TrainingService } from './training/training-service.ts';
+// Phase 14 (reset): Nachbereinigung alter Demo-Dateien (Job demo.storage_cleanup, Order §22).
+import { createDemoStorageCleanupHandler, DEMO_STORAGE_CLEANUP_JOB_TYPE } from './jobs/demo.ts';
+// Phase 14 (training gate): Live-Trainingssperren (Order §56–§66) – erzwungen nur in production,
+// konfigurierbar außerhalb demo; Admin-Routen in demo nicht registriert (§68).
+import { TrainingGateService } from './training/gate-service.ts';
+import { registerTrainingGateRoutes } from './routes/training-gates.ts';
 
 export const API_VERSION = '0.1.0';
 
@@ -155,7 +167,7 @@ export interface AppOptions {
    * Finalisierung §2). Default: stdout wie bisher.
    */
   logDestination?: NodeJS.WritableStream;
-  /** Phase 9: Test-Injection der Buchhaltungsgrenze (Default: Mock außerhalb von production, sonst Disabled). */
+  /** Phase 9: Test-Injection der Buchhaltungsgrenze (Default: Mock in development/staging, Disabled in demo/production ohne Lexware; Mock in demo/production verboten – Phase 14). */
   accountingGateway?: AccountingGateway;
   /** Phase 9: Test-Injection der Job-Queue (Default: PostgresJobQueue auf dem Pool). */
   jobQueue?: JobQueue;
@@ -241,6 +253,12 @@ export function buildApp({
   // Phase 12 (push): dito für den Push-Fake (Pflichttest 120).
   if (config.appEnv === 'production' && pushGateway?.kind === 'fake') {
     throw new Error('FakePushGateway ist in production nicht zulässig.');
+  }
+  // Phase 14 (accounting): demo und production starten nie mit dem Mock-Buchhaltungs-
+  // Gateway (Order W1/§29/§96) – auch nicht per Test-Injection; die Fabrik liefert
+  // dort Disabled (demo) bzw. Lexware/Disabled (production).
+  if (accountingGateway !== undefined) {
+    assertAccountingGatewayAllowed(config.appEnv, accountingGateway);
   }
   const app = Fastify({
     logger: {
@@ -460,6 +478,40 @@ export function buildApp({
         rateLimitEnabled,
       });
       registerStaffAdminRoutes(instance, { auth: authService, admin: adminService, config });
+      // Phase 14 (training gate): eine Gate-Instanz für Online-Routen und Offline-Sync – prüft
+      // jede Anfrage frisch gegen die Datenbank (kein Cache, kein Systemadmin-Bypass, §59/§65).
+      const trainingGate = new TrainingGateService(db, config);
+      // Phase 14 (training): Recorder nur in demo (sonst Noop, Order §43); Service und
+      // Katalog-Sync in ALLEN Umgebungen (stabile Keys, §69/§70) – der Sync läuft beim Start
+      // (`onReady`); ein Fehler bricht den Start ab (Log nur Fehlerklasse).
+      const trainingRecorder =
+        config.appEnv === 'demo'
+          ? new DemoTrainingEventRecorder(db, { logger: app.log })
+          : createNoopTrainingRecorder();
+      const trainingService = new TrainingService({
+        db,
+        environment: config.appEnv,
+        seedEntities: demo === null ? undefined : (seedKey) => demo.registry.resolve(seedKey),
+      });
+      const trainingCatalog = new TrainingCatalogService(db, { logger: app.log });
+      instance.addHook('onReady', async () => {
+        try {
+          await trainingCatalog.sync();
+        } catch (error) {
+          app.log.error(
+            { errorName: error instanceof Error ? error.name : 'Error' },
+            'Trainingskatalog konnte nicht synchronisiert werden',
+          );
+          throw error;
+        }
+      });
+      registerTrainingRoutes(instance, {
+        db,
+        auth: authService,
+        config,
+        training: trainingService,
+        gateStatus: (userId) => trainingGate.statusForUser(userId),
+      });
       const storageProvider = storage ?? createStorageProvider(config.storage);
       // Phase 9: Abrechnung/Storno/Buchhaltung – eine Gateway-Grenze, eine
       // Transfer-Boundary, Jobs auf der bestehenden PostgreSQL-Queue.
@@ -534,6 +586,8 @@ export function buildApp({
         // Phase 12 (transactional): Angebot/AB über die Mail-Outbox.
         offerGateway: transactional.offerGateway,
         mailOutbox: communication.outbox,
+        trainingGate, // Phase 14 (training gate)
+        trainingRecorder, // Phase 14 (training)
       });
       // Phase 12 (transactional): öffentlicher Dokument-Link (Order §13).
       registerPublicDocumentRoutes(instance, {
@@ -576,6 +630,8 @@ export function buildApp({
         geocoding: tourGeocoding,
         addresses: tourAddresses,
         delay: tourDelayState,
+        trainingGate, // Phase 14 (training gate)
+        trainingRecorder, // Phase 14 (training)
       });
       registerWarehouseRoutes(instance, {
         db,
@@ -583,6 +639,8 @@ export function buildApp({
         config,
         storage: storageProvider,
         cleaningEndedListener: voucherTriggers.cleaningEndedListener,
+        trainingGate, // Phase 14 (training gate)
+        trainingRecorder, // Phase 14 (training)
       });
       registerHandoverRoutes(instance, {
         db,
@@ -591,6 +649,8 @@ export function buildApp({
         storage: storageProvider,
         cleaningEndedListener: voucherTriggers.cleaningEndedListener,
         packetMailer: transactional.packetMailer, // Phase 12 (transactional)
+        trainingGate, // Phase 14 (training gate)
+        trainingRecorder, // Phase 14 (training)
       });
       // Phase 9: nach erfolgreicher Finalisierung (online wie offline-sync)
       // entsteht die Abrechnung – idempotent, außerhalb der Finalisierungs-Transaktion.
@@ -614,6 +674,8 @@ export function buildApp({
         finalizedListeners: [settlementListener],
         cleaningEndedListener: voucherTriggers.cleaningEndedListener,
         packetMailer: transactional.packetMailer, // Phase 12 (transactional)
+        trainingGate, // Phase 14 (training gate)
+        trainingRecorder, // Phase 14 (training)
       });
       registerOfflineRoutes(instance, {
         db,
@@ -630,6 +692,10 @@ export function buildApp({
           addresses: tourAddresses,
           geocoding: tourGeocoding,
         }),
+        trainingGate, // Phase 14 (training gate)
+        trainingRecorder, // Phase 14 (training)
+        // Phase 14 (offline epoch, Order §91/§92): Dataset-Epoch nur in demo (sonst null).
+        datasetEpochProvider: demo === null ? undefined : () => demo.dataset.datasetEpoch(),
       });
       // Nicht gestarteter Runner: verarbeitet Finanz-Jobs nur auf Anforderung
       // der Mock-Steuerung (nicht in production); den Dauerbetrieb übernimmt
@@ -667,9 +733,12 @@ export function buildApp({
         inboundMailSource: inboundSource,
         whatsappGateway: whatsapp,
         logger: app.log,
+        trainingRecorder, // Phase 14 (training): WhatsApp-Antwort zählt erst mit `sent`
       });
       const conversationListeners = createConversationDeliveryListeners(db, storageProvider);
       communication.addMailSentListener(conversationListeners.sent);
+      // Phase 14 (training): Mail-Antwort (manual_customer_reply) zählt erst mit bestätigtem Versand.
+      communication.addMailSentListener(createTrainingMailSentListener(trainingRecorder));
       communication.addMailFailedListener(conversationListeners.failed);
       registerConversationRoutes(instance, {
         db,
@@ -788,6 +857,8 @@ export function buildApp({
         accountingGateway: accounting,
         transfers,
         notices: transactional.noticeMailer, // Phase 12 (transactional)
+        trainingGate, // Phase 14 (training gate)
+        trainingRecorder, // Phase 14 (training)
       });
       registerCancellationRoutes(instance, {
         db,
@@ -837,9 +908,28 @@ export function buildApp({
             logger: app.log,
             routingGateway: routing,
             ...(mailGateway === undefined ? {} : { mailGateway }),
+            // Phase 14 (training, Order §94): laufende Versuche vor dem Löschen unterbrechen (nie löschen).
+            hooks: {
+              beforeBusinessWipe: async (tx) => {
+                await trainingService.interruptAllInProgress(tx, {
+                  code: DEMO_RESET_INTERRUPTION_CODE,
+                  now: new Date(),
+                });
+              },
+            },
           });
         }
+        // Phase 14 (reset, Order §22): Storage-Nachbereinigung auch im API-Runner (Mock-Steuerung/Tests).
+        financeRunner.register(
+          DEMO_STORAGE_CLEANUP_JOB_TYPE,
+          createDemoStorageCleanupHandler(storageProvider, { logger: app.log }),
+        );
         registerDemoRoutes(instance, { db, auth: authService, config, demo });
+      }
+      // Phase 14 (training gate): Verwaltung der Live-Sperren/Freigaben (training.manage) –
+      // nur außerhalb demo (§67/§68); diese Routen werden nie gegated (§98).
+      if (config.appEnv !== 'demo') {
+        registerTrainingGateRoutes(instance, { db, auth: authService, config });
       }
     });
   }

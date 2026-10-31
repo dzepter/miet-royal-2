@@ -143,6 +143,7 @@ export type DominantActionKey =
   | 'retry_transfer'
   | 'auto_planned'
   | 'not_configured'
+  | 'demo_unavailable'
   | 'locked';
 
 export interface SettlementLineView {
@@ -299,7 +300,8 @@ export interface SettlementView {
     paymentStatus: PaymentStatus | null;
     paymentStatusLabel: string | null;
     lastTransferErrorCode: string | null;
-    accountingBlocker: 'not_configured' | null;
+    /** `demo_unavailable` (Phase 14, W1): Demo – keine Buchhaltungsübertragung, kein Fehlerzustand. */
+    accountingBlocker: 'not_configured' | 'demo_unavailable' | null;
     /** Phase 10 (Vertrag §6): Buchhaltungsblock – optional, bis die API ihn liefert. */
     accounting?: AccountingBlock | null;
     /** Phase 10: Versandstatus der Rechnung – nie „sent“ (Order §40). */
@@ -417,6 +419,8 @@ export interface CancellationPreview {
   blockers: string[];
   externalRefundReviewRequired: boolean;
   accountingConfigured: boolean;
+  /** Phase 14 (W1): `demo_unavailable` ⇒ Demo-Hinweis statt „nicht eingerichtet“ (optional, bis die API ihn liefert). */
+  accountingBlocker?: 'not_configured' | 'demo_unavailable' | null;
 }
 
 export interface CancellationView {
@@ -441,7 +445,8 @@ export interface CancellationView {
   paymentStatusLabel: string | null;
   transferredAt: string | null;
   lastTransferErrorCode: string | null;
-  accountingBlocker: 'not_configured' | null;
+  /** `demo_unavailable` (Phase 14, W1): Demo – keine Buchhaltungsübertragung, kein Fehlerzustand. */
+  accountingBlocker: 'not_configured' | 'demo_unavailable' | null;
   /** Phase 10 (Vertrag §6): Buchhaltungsblock – optional, bis die API ihn liefert. */
   accounting?: AccountingBlock | null;
   /** Phase 10: Versandstatus der Stornorechnung – nie „sent“ (Order §40). */
@@ -480,6 +485,9 @@ export interface ProcessCancellationSummary {
 
 export const EXTERNAL_REFUND_HINT = 'Externe Rückzahlung/Verrechnung prüfen';
 export const ACCOUNTING_NOT_CONFIGURED_HINT = 'Buchhaltungsintegration noch nicht eingerichtet';
+/** Phase 14 (W1, Order §30): Demo-Abrechnung endet bei „Bereit zur Buchhaltung“ – Hinweis, kein Fehler. */
+export const ACCOUNTING_DEMO_UNAVAILABLE_HINT =
+  'Buchhaltungsübertragung ist in der Demo nicht verfügbar.';
 export const VERSION_CONFLICT_HINT = 'Daten wurden zwischenzeitlich geändert – neu geladen';
 
 // ── API: Abrechnung ──────────────────────────────────────────────────────

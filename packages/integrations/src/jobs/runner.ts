@@ -8,8 +8,14 @@ export type JobHandler = (job: ClaimedJob) => Promise<void>;
  * Attempt-Verbrauch um `delayMs` zurück (Queue.defer), z. B. solange ein
  * Demo-Reset läuft. Wirft der Hook, läuft der Job normal (fail-open – der
  * Handler scheitert dann ggf. selbst mit Retry).
+ *
+ * Phase 14 (reset): `{ skip: { reason } }` beendet den Job OHNE Ausführung
+ * dauerhaft als `dead` mit `last_error` = Grund (Queue.markDead; ohne diese
+ * Methode Fallback auf markFailed) – für Jobs eines alten Demo-Datensatzes,
+ * die nach einem Reset nie auf den neuen Seed wirken dürfen (Order §21).
  */
-export type JobBeforeRunDecision = 'run' | { defer: { delayMs: number; reason?: string } };
+export type JobBeforeRunDecision =
+  'run' | { defer: { delayMs: number; reason?: string } } | { skip: { reason: string } };
 export type JobBeforeRunHook = (job: ClaimedJob) => Promise<JobBeforeRunDecision>;
 
 /** Minimales Logger-Interface, damit dieses Paket keinen Logger erzwingt. */
@@ -114,7 +120,7 @@ export class JobRunner {
   }
 
   /** Verarbeitet höchstens einen fälligen Job. */
-  async runOnce(): Promise<'processed' | 'failed' | 'idle' | 'deferred'> {
+  async runOnce(): Promise<'processed' | 'failed' | 'idle' | 'deferred' | 'skipped'> {
     const job = await this.queue.claimNext(this.workerId);
     if (job === null) return 'idle';
 
@@ -135,6 +141,17 @@ export class JobRunner {
           { jobId: job.id, jobType: job.type, error: summarizeJobError(error) },
           'beforeRun-Hook fehlgeschlagen – Job läuft normal',
         );
+      }
+      if (decision !== 'run' && 'skip' in decision) {
+        // Phase 14 (reset): ohne Ausführung endgültig beenden – nie auf den neuen Seed wirken.
+        const reason = decision.skip.reason;
+        if (typeof this.queue.markDead === 'function') await this.queue.markDead(job, reason);
+        else await this.queue.markFailed(job, reason);
+        this.logger.warn(
+          { jobId: job.id, jobType: job.type, reason },
+          'Job übersprungen und beendet (Datensatz gewechselt)',
+        );
+        return 'skipped';
       }
       if (decision !== 'run') {
         const delayMs = Math.max(0, Math.floor(decision.defer.delayMs));

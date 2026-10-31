@@ -216,18 +216,14 @@ export const settlementReviewScenario: DemoScenario = {
 
 /**
  * Reinigung: beanstandungsfreie Rückgabe vor 90 Minuten, Maschine in Reinigung
- * (noch keine 24-h-Warnung). Die Abrechnung ist ohne Blocker; in der Demo
- * würde der Worker sie über den MockAccountingGateway „übertragen“ (W1 offen).
- *
- * Review F2 (WARTET W1, Verhalten bewusst NICHT geändert): der Seed stellt
- * für diese Abrechnung einen Auto-Transfer-Job (`settlement.accounting_transfer`,
- * `run_at = now`) ein. Der Demo-Worker führt ihn beim ERSTEN Poll nach
- * Seed/Reset (Sekunden) über den Mock aus: Settlement ⇒ `transferred`,
- * Vorgang ⇒ `completed` (`completeProcessAfterTransfer`). Der Registry-Key
- * `process.cleaning.pending` zeigt danach auf einen abgeschlossenen Vorgang;
- * nur `machine.cleaning` bleibt ein stabiler Trainingszustand. Trainings-/
- * E2E-Szenarien dürfen „offener Vorgang mit Abrechnung ohne Blocker“ hier
- * nicht voraussetzen, bis W1 entschieden ist (docs/TECH_DECISIONS.md, Phase 14).
+ * (noch keine 24-h-Warnung). Die Abrechnung ist ohne Blocker und bleibt in der
+ * Demo STABIL bei `ready_for_accounting` („Bereit zur Buchhaltung“): seit W1
+ * (Phase 14, Order §29/§30) ist das Buchhaltungs-Gateway in demo `disabled`,
+ * der Settlement-Hook stellt keinen Auto-Transfer-Job ein, der Demo-Worker
+ * überträgt nichts und schließt den Vorgang nicht ab (Review F2 damit
+ * gegenstandslos). Trainings-/E2E-Szenarien dürfen hier einen OFFENEN Vorgang
+ * mit blockerfreier Abrechnung voraussetzen; die Oberfläche zeigt
+ * „Buchhaltungsübertragung ist in der Demo nicht verfügbar.“ (kein Fehler).
  */
 export const cleaningPendingScenario: DemoScenario = {
   name: 'process.cleaning.pending',
@@ -260,10 +256,15 @@ export const cleaningPendingScenario: DemoScenario = {
 
 /**
  * Abgeschlossener Vorgang (erster Vorgang des Wiedermieters): Rückgabe vor
- * zwölf Tagen, Maschine „gereinigt & einsatzbereit“, manueller Abschluss über
- * ProcessService.complete – OHNE Buchhaltungs-Transfer (W1: in der Demo gibt
- * es keine entschiedene Lexware-Simulation; `completed_at` ist dort nicht
- * injizierbar und trägt den echten Zeitpunkt des Seeds).
+ * zwölf Tagen, Maschine „gereinigt & einsatzbereit“, Abschluss über den
+ * normalen Fachpfad `ProcessService.complete` (prüft keine Buchhaltung) – OHNE
+ * Buchhaltungs-Transfer, denn in der Demo gibt es keine externe Übertragung
+ * (W1, Order §29): die Abrechnung bleibt `ready_for_accounting`, es entsteht
+ * kein `accounting_transfer`, keine Providerreferenz, keine Rechnungsnummer.
+ * Kein Fixture nötig. `completed_at` ist nicht injizierbar und trägt den
+ * echten Zeitpunkt des Seeds. Der Gutschein des Wiedermieters zu diesem
+ * Vorgang entsteht anschließend in der Fixture-Schicht (`voucher.situation`,
+ * fixtures/voucher-fixture.ts, Order W1.1).
  */
 export const completedScenario: DemoScenario = {
   name: 'process.completed',

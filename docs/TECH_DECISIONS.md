@@ -3847,8 +3847,10 @@ Vom Auftraggeber bestätigt (2026-10-31, Phase 13 Final §6) – nicht mehr offe
   der gelöschten Zeilen (Dokumente, Fotos, Unterschriften, Chatfotos,
   Referenzfotos) über den `StorageProvider` in parallelen Batches zu 10
   entfernen (Review F7; Fehler je Objekt nur protokolliert, nie abgebrochen),
-  Phase C (kanonischer Seed), Phase D (Flag zurück, Version/Zeitpunkte) und
-  Security-Audit `demo.reset_completed` (Actor, Dauer, Zähler). Unangetastet: alle `staff_*`, `push_subscriptions`,
+  Phase C (kanonischer Seed), Phase D (Flag zurück, Version/Zeitpunkte, neue
+  Dataset-Epoch) und Security-Audit (`demo.reset_started/_completed/_failed`,
+  siehe Abschnitt „Reset-Jobs, Storage-Nachbereinigung, Audit, Offline-Epoch,
+  PDF-Kennzeichnung“ unten). Unangetastet: alle `staff_*`, `push_subscriptions`,
   `calendar_feed_tokens`, `offline_access_leases`, `system_settings`,
   `accounting_tax_config`, `lexware_integration_state`, `terms_versions`,
   `integration_rate_limits`, `inbound_mail_state`, `products`,
@@ -3878,22 +3880,333 @@ Vom Auftraggeber bestätigt (2026-10-31, Phase 13 Final §6) – nicht mehr offe
   C/D halten den Lock nicht, der Schalter ist deshalb ein bewusster Admin-
   Eingriff für den Fall „kein Reset-Prozess läuft mehr“. Kein Override über
   die Route oder die UI.
-- **W1 (offen, nicht gebaut)**: In der Demo liefert `MockAccountingGateway`
-  weiterhin erfolgreiche Transfers; blockerfreie Abrechnungen des Seeds
-  (`process.cleaning.pending`, `process.completed`) stellen wie bisher einen
-  Auto-Transfer-Job ein, den der Demo-Worker über den Mock „überträgt“.
-  Konkrete Auswirkung (Review F2, reproduziert; Verhalten bewusst NICHT
-  geändert, Entscheidung W1 offen): der Demo-Worker führt den Job beim
-  ERSTEN Poll nach Seed/Reset aus – binnen Sekunden, also bevor ein Trainee
-  die Oberfläche öffnet. Für `process.cleaning.pending` wird das Settlement
-  `transferred` und der Vorgang über `completeProcessAfterTransfer`
-  `completed`; der Registry-Key zeigt danach auf einen abgeschlossenen
-  Vorgang (nur `machine.cleaning` bleibt ein stabiler Trainingszustand). Der
-  zweite Job (`process.completed`) ist unkritisch (Vorgang bereits
-  abgeschlossen). Trainings-/E2E-Szenarien dürfen „offener Vorgang mit
-  Abrechnung ohne Blocker“ nicht über diesen Seed-Key voraussetzen; der
-  Status-Endpunkt bleibt unverändert. Die
-  „Gutschein-Situation“ (`voucher.situation`) braucht Transfer + Zahlungsstatus
-  „bezahlt“ und WARTET deshalb auf die Entscheidung W1; der Seed enthält sie
-  bewusst nicht. Trainingsbezug (Übungen/Pfade/Versuche) WARTET auf den
-  Auftrag ab §21.
+- **W1 – entschieden und gebaut (Auftrag Teil 2, W1/§29/§30; MASTER_SPEC
+  §29 „Keine Lexware-Simulation/echte Übertragung“)**: siehe Abschnitt
+  „Phase 14: W1 Lexware/Accounting in der Demo“ unten. Der frühere
+  Review-F2-Befund (Demo-Worker „überträgt“ blockerfreie Seed-Abrechnungen
+  über den Mock und schließt `process.cleaning.pending` binnen Sekunden ab)
+  ist damit gegenstandslos: das Gateway ist in demo `disabled`, der Seed
+  stellt keine Transferjobs ein, `process.cleaning.pending` bleibt ein
+  stabiler offener Vorgang mit Abrechnung „Bereit zur Buchhaltung“;
+  `voucher.situation` entsteht als Seed-Fixture (W1.1).
+
+## Phase 14: Reset-Jobs, Storage-Nachbereinigung, Audit, Offline-Epoch, PDF-Kennzeichnung (2026-10-31, RESET)
+
+- **Alte Jobs wirken nie auf den neuen Seed (Order §21)**: `demo_dataset_state.
+  last_reset_started_at` wird in Phase A mit der DB-Uhr (`now()`) gesetzt –
+  dieselbe Uhr wie `integration_jobs.created_at`, gegen die der Worker-Guard
+  vergleicht (ein injiziertes `now` würde den Vergleich verfälschen) – und
+  bleibt nach Abschluss stehen (anders als `reset_started_at`). Phase B löscht
+  Business-Jobs (`DEMO_BUSINESS_JOB_TYPES`, `apps/api/src/demo/job-types.ts`,
+  plus Retention-Jobs `scope: 'photos'`) in pending/dead/succeeded; ein beim
+  Reset laufender Job (`processing`) überlebt die Löschung und wird beim nächsten
+  Claim vom Guard (`createDemoJobGuard`, Worker und API-Runner in demo) ohne
+  Ausführung als `dead` mit `last_error = DEMO_DATASET_CHANGED` beendet, wenn
+  `created_at < last_reset_started_at` (Runner-Entscheidung `{ skip }`,
+  `JobQueue.markDead`; `runOnce()` ⇒ `'skipped'`). Eine UUID-Kollision ist keine
+  Sicherheitsannahme – der Zeitstempel entscheidet. Nicht datensatzgebunden
+  (nie übersprungen): `system.heartbeat`, `communication.scan_due`,
+  `mail.inbound_poll`, Retention-Backstop, `demo.storage_cleanup`. Während des
+  Resets werden weiterhin alle Jobs außer Heartbeat um 15 s zurückgelegt.
+  Outbox-Tabellen (`mail_deliveries`, `push_deliveries`, `whatsapp_events`,
+  `appointment_reminders`) stehen in der Löschliste; ein überlebender
+  `mail.send`-Job findet keine Zustellung mehr und endet ohne Versand (belegt
+  in `demo-reset-jobs.integration.test.ts` T54).
+- **Storage zweiphasig (Order §22)**: DB und Storage sind nie atomar. Nach dem
+  Commit von Phase B werden die gesammelten Schlüssel in Batches gelöscht;
+  fehlgeschlagene Schlüssel werden als Job `demo.storage_cleanup` (Payload
+  `{ resetRunId, keys }`, ≤ 100 Schlüssel je Job, Idempotency-Key
+  `demo-storage-cleanup:<resetRunId>:<n>`) eingereiht. Handler
+  `createDemoStorageCleanupHandler(storage)` (Worker, API-Runner und Test-Runner
+  nur in demo) löscht erneut – ausschließlich im eigenen Demo-Storage (der
+  Prozess trägt nur die Demo-Konfiguration; nie ein Production-Key, kein
+  Bucket-weites Löschen); fehlende Objekte gelten als erledigt (idempotent),
+  dauerhaft unlöschbare lassen den Job `dead` werden. Der neue Datensatz ist in
+  jedem Fall konsistent (keine Zeile referenziert alte Schlüssel). Sichtbar
+  über `GET /staff/demo/status` → `storageCleanup: { pendingJobs, deadJobs }`
+  und Einstellungen → Demo („Bereinigung alter Demo-Dateien ausstehend (n)“ /
+  „… fehlgeschlagen – technischer Fehler, Logs prüfen“, `data-testid="demo-
+  storage-cleanup"`). Infrastruktur-Jobtyp: nie in der Reset-Löschliste, nie
+  vom Zeitstempel-Skip betroffen.
+- **Audit (Order §31)**: `demo.reset_started` nach Phase A, `demo.reset_
+  completed` nach Phase D, `demo.reset_failed` beim Abbruch (in `markInterrupted`)
+  – geschrieben ausschließlich vom Reset-Service (die Route reicht nur
+  `actorId`/`sessionId` durch; `demo.reset_requested` entfernt). Details
+  ausschließlich `{ resetRunId, datasetVersion, status, errorClass? }`;
+  `errorClass` ist `error.name` bzw. `SQLSTATE_<code>`, nie eine Meldung
+  (Fehlermeldungen können Werte zitieren). Keine Zähler, keine Seed-Inhalte.
+- **Offline-Epoch (Order §91/§92)**: `demo_dataset_state.dataset_epoch` (UUID)
+  ist die Generation des Demo-Datensatzes; `endReset` erzeugt eine neue. Keine
+  Lease-Spalte: die Bindung läuft über die Antworten (`LeaseGrant.datasetEpoch`,
+  `OfflinePackage.datasetEpoch`, `OfflineStatusResponse.datasetEpoch`, alle nur
+  in demo gesetzt, sonst `null`) und den Sync (`syncRequestSchema.datasetEpoch`,
+  optional). Quelle ist ein `datasetEpochProvider` am `OfflineLeaseService`
+  (`app.ts` setzt ihn nur in demo aus `demo.dataset.datasetEpoch()`); Paket-
+  und Sync-Service lesen über den Lease-Service (`currentDatasetEpoch`,
+  `assertDatasetEpoch`). `SyncService.process` prüft direkt nach
+  `assertEnvironment`: in demo fehlende oder abweichende Epoch ⇒
+  `OfflineDatasetChangedError` ⇒ `409 DEMO_DATASET_CHANGED` („Die Demo-Daten
+  wurden zurückgesetzt. Offline erfasste Änderungen gehören zum alten
+  Datenstand und können nicht mehr übernommen werden.“) – vor jeder Quittung,
+  nichts wird geschrieben. Vor dem ersten Seed (keine Zustandszeile) gibt es
+  keine Generation; die Prüfung greift erst, sobald eine Epoch existiert.
+  Außerhalb der Demo ist das Feld ohne Wirkung (Production unverändert, T68).
+  Client (`packages/offline`, `apps/staff/lib/offline`): Paket-Epoch als Meta
+  `datasetEpoch`; jede Mutation speichert die Epoch beim Einreihen
+  (`MutationRecord.datasetEpoch`), der Transport sendet sie je Anfrage (Wert
+  der Mutation, sonst Meta; nur wenn vorhanden – Wire-Format außerhalb der Demo
+  unverändert). 409 DEMO_DATASET_CHANGED ⇒ `DatasetChangedError`: die Queue
+  bricht ab wie bei ungültiger Sitzung, alles bleibt pending, Meta
+  `datasetChangedPending` + Ereignis `mr-dataset-changed`; der
+  Konnektivitätscheck vergleicht die Status-Epoch mit der Meta-Epoch (nur wenn
+  beide bekannt) und startet dann keinen Auto-Sync; `refreshPackage` übernimmt
+  ein Paket einer neuen Generation nur, wenn nichts offen ist (sonst Flag und
+  Dialog) – dann wird der alte Stand verworfen (`OfflineStore.discardDataset`:
+  Pakete, Vorgänge, Maschinen, Dokumente, Mutationen, Medien, Konflikte,
+  Quittungen, Epoch-Metadaten; Workspace/Uhr bleiben) und das neue Paket
+  übernommen. Mit offenen Erfassungen entscheidet der Mitarbeiter auf `/sync`
+  („Alten Stand verwerfen und neues Arbeitspaket laden“ / „Später“); bis dahin
+  Banner in allen Offline-Bereichen und kein Sync. Kein automatisches
+  Verwerfen, nie ohne Bestätigung.
+- **PDF-Kennzeichnung (Order §89, schließt L9)**: `renderDocument(build, title,
+  options)` in `@mietroyal/documents` zeichnet bei gesetztem
+  `environmentLabel` unter dem Kopf eine fette, umrahmte Zeile und wiederholt
+  sie per `pageAdded` im oberen Seitenrand jeder Folgeseite (ohne den Textfluss
+  zu verschieben); `info.Title` erhält den Präfix „DEMO · “. Alle fünf Renderer
+  reichen `options` durch. Quelle: `apps/api/src/documents/environment-label.ts`
+  (`pdfEnvironmentLabel(config)` ⇒ „DEMO – keine echten Kundendaten“ nur in
+  demo); Offer-/Confirmation-Service lesen `config.appEnv`, Handover-/Return-
+  Service erhalten den Wert als optionalen letzten Konstruktorparameter
+  (Routen handover/returns/offline, Demo-Seed-Services). Außerhalb der Demo
+  bleibt jedes Dokument byteidentisch zum bisherigen Verhalten.
+
+## Phase 14: W1 Lexware/Accounting in der Demo (2026-10-31)
+
+- **Entscheidung W1 (Order W1/§29/§30/§96, MASTER_SPEC §29)**: In
+  `APP_ENV=demo` liefert `createAccountingGateway` (`apps/api/src/accounting/
+  gateway.ts`) IMMER `DisabledAccountingGateway` – kein `MockAccountingGateway`
+  (der einen erfolgreichen externen Transfer simuliert), kein `LexwareClient`
+  (ein `LEXWARE_API_KEY` in demo ist bereits ein Konfigurationsfehler), keine
+  Fake-Referenz/-Rechnungsnummer, kein Webhook, keine Zahlungsbestätigung.
+  Keine neue Provider-Enum: Provider `disabled` wird wiederverwendet. Der Mock
+  bleibt development/staging vorbehalten (Bestandstests unverändert).
+- **Fail-closed-Guard**: `assertAccountingGatewayAllowed(appEnv, gateway)`
+  wirft in demo und production, wenn das aktive Gateway `mock` ist – in
+  `buildApp` (auch gegen Test-Injection, Block `// Phase 14 (accounting)`),
+  in `apps/worker/src/main.ts`, in der Fabrik `createAccountingGatewayFor`
+  und in der Seed-Komposition `demo/seed/services.ts`. Der Test-Helfer
+  `createTestContext({ appEnv: 'demo' })` injiziert keinen Mock mehr (die
+  Fabrik liefert Disabled); development-Tests behalten den Mock.
+- **Kein Fehlerzustand**: Der bestehende „nicht konfiguriert“-Pfad des
+  Settlement-Services (kein Auto-Job, `runAutoTransfer` ⇒ skipped,
+  `transferNow` ⇒ 409 `ACCOUNTING_NOT_CONFIGURED`) bleibt; nur die Sicht
+  unterscheidet die Demo: `accountingBlocker: 'demo_unavailable'` (neuer
+  Union-Wert neben `not_configured`), dominante Aktion `{ key:
+  'demo_unavailable', label: 'Bereit zur Buchhaltung', hint:
+  'Buchhaltungsübertragung ist in der Demo nicht verfügbar.' }`, `mock.isMock
+  = false`, `mock.controlsAvailable = false`. Storno-Sicht und -Vorschau
+  tragen denselben Blocker (`CancellationService` kennt `appEnv`); die beim
+  Storno eingefrorene Transferzeile (Phase 9, Provider `disabled`, Status
+  `pending`, keine Referenz) ist kein simulierter Erfolg – identisch zu
+  production ohne Lexware. `GET /staff/accounting/status` meldet in demo
+  `{ provider: 'disabled', configured: false, mock: false,
+  mockControlsAvailable: false, mockPaymentControlsAvailable: false,
+  environment: 'demo' }`; die Mock-Steuerrouten antworten 409 wie bisher ohne
+  Mock-Instanz; `run-due-jobs` bleibt (reiner Job-Trigger für E2E ohne
+  Worker). Staff-UI: neutraler Hinweis (`data-testid=
+  "settlement-demo-unavailable"` / `cancellation-demo-unavailable`), kein
+  Transfer-Button, keine Mock-Karte, Badge „Nicht verfügbar (Demo)“.
+- **Seed (W1.1)**: `process.cleaning.pending` bleibt stabil `ready_for_
+  accounting` ohne Job (Review F2 gegenstandslos); `process.completed`
+  schließt über den normalen Fachpfad `ProcessService.complete` ab (prüft
+  keine Buchhaltung) – seine Abrechnung bleibt ohne Transfer „Bereit zur
+  Buchhaltung“; kein Fixture nötig.
+- **W1.1 Seed-Fixture Gutschein (`voucher.situation`)**: Der
+  Wiedermieter-Gutschein entsteht im Betrieb nur über
+  `VoucherService.ensureVoucherForSettlement` nach übertragenem (Transfer
+  `succeeded`) und bezahltem Ursprungs-Settlement – in der Demo also nie.
+  Deshalb erzeugt AUSSCHLIESSLICH die Seed-Fixture-Schicht
+  `apps/api/src/demo/seed/fixtures/voucher-fixture.ts` (Teil der kanonischen
+  Szenarioliste, also nur innerhalb `demo:seed`/`demo:reset`; keine
+  öffentliche oder Staff-API) für den Wiedermieter (`customer.private.repeat`,
+  Ursprung = dessen abgeschlossener Vorgang `process.completed` mit Buchung/
+  finalisierter Rückgabe/Settlement) genau EINEN synthetischen Gutschein per
+  direktem Insert in `vouchers` (wie der Test-Helfer `issueTestVoucher`, aber
+  mit PayloadCrypto v2, Purpose `voucher-delivery`, wie der VoucherService):
+  `status = 'active'`, `delivery_status = 'pending'`, Aktivierung relativ zu
+  `now` (Tag nach dem Reinigungsende, 09:00 Berlin), Ablauf per Domain-Regel.
+  KEIN `accounting_transfer`, kein Status „success“, KEINE Providerreferenz,
+  KEINE Rechnungsnummer, kein Lexware-Mapping, kein Webhook; das
+  Ursprungs-Settlement bleibt unangetastet (fail-closed: trägt es eine
+  Übertragung, bricht die Fixture ab). Nur `APP_ENV=demo` (sonst `DemoError
+  DEMO_ONLY`), idempotent (vorhandener Gutschein wird nur registriert); die
+  Registry trägt nur `entity_id` (nie Code, Hash oder Suffix). Danach läuft
+  der NORMALE Versandweg (`voucher.delivery`-Job ⇒ Outbox mit Demo-Whitelist
+  und `[DEMO]`-Betreff ⇒ ohne Whitelist ehrlich `blocked` bzw. ohne
+  Mailkonfiguration `mail_not_configured`). Verifiziert: `validateForOffer`/
+  `reserveForOffer`/`redeem` prüfen Kunde, Status, Ablauf und Reservierung,
+  nicht das Ursprungs-Settlement – die Voucher-Fachlogik ist unverändert;
+  außerhalb des Demo-Seeds gibt es weiterhin keinen manuellen „Gutschein
+  erzeugen“-Sonderweg, kein Codepfad für production. `DEMO_SEED_KEYS.
+  voucherSituation` ist Pflicht-Seed-Key.
+- **Tests**: `apps/api/test/demo-accounting.integration.test.ts` (T14, T14b
+  Guard, W1.1 Fixture, T15, T15b Storno); Seed D-S1/D-S10 und Reset D-R1/D-R7
+  angepasst (keine Transferjobs in der Demo; `vouchers` ist nach dem Seed
+  durch die Fixture belegt und wird vom Reset mitgelöscht). T96
+  (Settlement-Training ohne Lexware-Erfolg) liegt im Trainingsmodul.
+
+## Phase 14: Training Gates & Freigaben (W2) (2026-10-31)
+
+- **Architektur W2 (keine Demo↔Live-Kopplung):** Production kennt
+  ausschließlich den Katalog (Code, stabile Keys), `training_feature_requirements`
+  (Live-Sperren), `staff_training_clearances` (`verified_demo` | `override`)
+  und das Security-Audit. Es gibt keinen Cross-DB-Zugriff, keinen gemeinsamen
+  Store, keinen Token, keinen Webhook und keine automatische Übernahme eines
+  bestandenen Demo-Versuchs: Ein Admin mit `training.manage` bestätigt im
+  Live-System bewusst „Demo-Training bestätigt“ (user_id + definition_key).
+  Der Request-Body ist `strictObject` – Zusatzfelder (Demo-IDs,
+  Vorgangsnummern, Kontakte) werden mit 400 abgelehnt (T125).
+- **Gate-Boundary (`apps/api/src/training/gate-service.ts`):**
+  `TrainingGateService.assert({ userId, featureKey, now })` – außerhalb
+  `production` sofort `return` ohne Datenbankzugriff (§63); sonst Requirement
+  laden (fehlt/disabled ⇒ offen, §99), Übung laden (fehlt/inaktiv ⇒
+  `TRAINING_CONFIGURATION_INVALID`, fail-closed §97), gültige Freigabe
+  (revoked_at null, valid_from ≤ now, valid_until null oder > now) ⇒ offen,
+  sonst `TRAINING_REQUIRED`. Kein Cache, keine Permission-Logik, kein
+  Systemadmin-Bypass. `statusForUser` liefert den Status aller aktiven Sperren
+  für `GET /staff/training/me` (`gates`; nur außerhalb demo, in
+  staging/development mit `enforced: false`). Ohne Verdrahtung (Seeds,
+  Skripte, Alt-Tests) gilt `createNoopTrainingGate()`.
+- **Integration an genau acht Mutationen** (Order §60/§100): Angebot senden,
+  Übergabe finalisieren, Rückgabe finalisieren, Settlement (die vier
+  `releaseRoute`-Routen unter einer Sperre `settlement.release`), Tour
+  starten, Tour übernehmen, Reinigung abschließen, Lagerzählung freigeben.
+  Position: nach Auth, allen Permission- und Sichtbarkeitsprüfungen,
+  unmittelbar vor dem Fachaufruf (`// Phase 14 (training gate)`). Offline-
+  Sync: dieselben drei Fachaktionen (`OFFLINE_MUTATION_FEATURES`) direkt nach
+  der Rechteprüfung – `SyncRejected('TRAINING_REQUIRED' |
+  'TRAINING_CONFIGURATION_INVALID')` mit Details `offline/server/action`;
+  Rejection-Codes `TRAINING_REJECTION_CODES` in
+  `packages/offline/src/mutations.ts`.
+- **HTTP-Antwort** (`gate-http.ts`, Muster `sendTourError`): 403
+  `{ error: { code, message, correlationId, details: { featureKey,
+  requiredTrainingKey, title } } }`, Text „Für diese Funktion ist zuerst das
+  Training ‚<Titel>‘ erforderlich.“ – ohne Technikcodes (§66); die Fachseiten
+  zeigen die Servermeldung.
+- **Verwaltung (`gate-admin-service.ts`, `routes/training-gates.ts`):** nur
+  außerhalb demo registriert (§68, in demo 404). `PUT …/gates/:featureKey` ist
+  ein Upsert; Aktivieren verlangt eine aktive Übung (409
+  `TRAINING_DEFINITION_INACTIVE`, §71), Deaktivieren ist auch bei inzwischen
+  inaktiver Übung möglich (Admin-Recovery, §98). Audit nur bei Wechsel des
+  wirksamen Zustands (aktiv + Übungs-Key): `gate_enabled` (auch beim Wechsel
+  der Übung bei aktiver Sperre, mit `previousDefinitionKey`), `gate_disabled`.
+  Freigaben: `override` ohne Begründung ⇒ 400 `VALIDATION` (zusätzlich
+  CHECK-Constraint in der Datenbank), `validUntil` muss in der Zukunft liegen;
+  eine bereits gültige Freigabe gleicher Quelle für Mitarbeiter + Übung wird
+  zurückgegeben (200, `created: false`) statt dupliziert – sonst könnte der
+  Widerruf einer von zwei gleichen Zeilen die Sperre unbemerkt offen lassen.
+  Widerruf ist idempotent (`revoked: false` beim zweiten Mal, kein zweites
+  Audit) und wirkt sofort. Zeilen werden nie gelöscht.
+- **Audit** (`staff_security_events`): `training.gate_enabled`,
+  `training.gate_disabled`, `training.demo_verified`,
+  `training.override_granted`, `training.override_revoked`,
+  `training.demo_verification_revoked` (Zusatztyp für den Widerruf einer
+  Demo-Bestätigung). Details ausschließlich Feature-/Übungs-Keys,
+  Freigabe-IDs, Zeitstempel – der Begründungstext liegt nur in der
+  Freigabezeile.
+- **Tests** (`training-gates`, `training-admin-live`): je Umgebung eine eigene
+  App auf demselben Pool (`apps/api/test/env-app-helpers.ts`:
+  `createEnvApp`/`withEnvApp`, Auth-Secret vom Testkontext ⇒ Session-Cookies
+  austauschbar); T117 prüft alle acht Routen und den Offline-Sync, T113
+  statisch, dass `requireTrainingGate` nur an den acht Zielen vorkommt.
+- **Bewusst nicht gebaut:** keine Gates auf Lese-Routen, Login, Kalender-,
+  Dokument- oder Trainingsansicht (§99); keine Sperrkonfiguration in der Demo;
+  kein Caching von Freigaben; keine neuen Rechte (§86).
+
+## Phase 14: Training (W2) – Katalog, Übungen, Recorder, Evaluatoren (2026-10-31)
+
+- **Katalog ist Code, Sync beim Start** (`apps/api/src/training/catalog.ts`,
+  `catalog-sync.ts`, Order §33/§35/§50/§51/§69–§71): acht Übungen
+  (`offer_send`, `handover_complete`, `return_complete`, `tour_complete`,
+  `communication_reply`, `settlement_review`, `machine_clean_complete`,
+  `inventory_stocktake_approve`) und fünf Pfade (`rental_basics`,
+  `delivery_tour`, `communication`, `settlement`, `machines_warehouse`) werden
+  in JEDER Umgebung über einen `onReady`-Hook der API idempotent in die eigene
+  Datenbank gespiegelt (eine Transaktion unter
+  `pg_advisory_xact_lock(hashtext('training-catalog-sync'))`; Upsert nach `key`;
+  Pfad-Elemente mit Zwei-Schritt-Resequenzierung – ein positiver Offset statt
+  negativer Werte, weil der CHECK `sequence >= 1` verlangt; nie löschen; ein
+  Sync-Fehler bricht den Start ab und loggt nur die Fehlerklasse). Demo und Live
+  referenzieren sich ausschließlich über die stabilen Keys; `requiredPermissions`
+  (anyOf/allOf) sind keine neuen Rechte, sondern die Vorbedingung beim Start
+  (§55). `TRAINING_FEATURES` liegt in `features.ts` (Gates) und wird über
+  `catalog.ts` re-exportiert.
+- **Recorder nach dem Commit** (`recorder.ts`, Order §41–§43, §81): die
+  Boundary `TrainingEventRecorder` ist außerhalb der Demo ein Noop. In der Demo
+  rufen die Fachrouten/Jobs den Recorder IMMER erst nach dem erfolgreichen
+  Fachcommit (Kommentar `// Phase 14 (training)`): Angebotsentwurf/-versand,
+  `HandoverService.finalize`/`ReturnService.finalize` (additiv `finalized:
+  boolean` – true nur, wenn dieser Aufruf finalisiert hat; damit zählt weder
+  die idempotente Wiederholung noch die parallele Finalisierung), Tour (planen
+  nur bei `planningStatus = planned`, `ready` nur beim Übergang draft→ready,
+  `start`/`end` nur bei `started`/`ended = true`), Settlement (nur wenn die
+  resultierende View `ready_for_accounting` ist – die Übung endet VOR der
+  externen Übertragung, §79), Reinigungsabschluss, Inventur (Zählung nur mit
+  Differenz, Freigabe), Offline-Sync (Akteur = Sync-User) sowie Mail-/WhatsApp-
+  Antworten erst mit bestätigtem Versand (`MailSentListener` für
+  `manual_customer_reply`, `whatsapp.send` nach dem Zustandswechsel `queued →
+  sent`; „queued ist nicht sent“, §42). Der Recorder schreibt in einer eigenen
+  kurzen Transaktion (laufende Versuche des Akteurs `FOR UPDATE`), fängt jeden
+  Fehler und loggt nur Code/Klasse – er erreicht nie den Fachaufrufer. Der
+  `subjectRef` wird serverseitig ermittelt (Angebot, Buchung, Tour, Settlement,
+  Maschine, Inventur, Konversationszeile) und ist nur eine UUID für
+  „derselbe Vorgang“-Regeln; er wird nie nach außen gegeben. Die Seed-
+  Komposition (`demo/seed/services.ts`) erhält keinen Recorder.
+- **Evaluatoren** (`evaluators.ts`, Order §34, §45, §74–§79): fester Katalog
+  reiner Funktionen – Schritt k wird akzeptiert, wenn alle vorherigen
+  Pflichtschritte (bei `sameSubject` für dasselbe Fachobjekt) erfüllt sind,
+  sonst `rejected`/PREREQUISITE_MISSING (kein Fehlversuch, §80); erfüllter
+  Schritt ⇒ `duplicate` (kein Doppelabschluss); das letzte Pflicht-Ereignis setzt
+  den Versuch automatisch `passed`. `offer_send` (edit → send, dasselbe
+  Angebot), `tour_complete` (plan|ready → start → end, dieselbe Tour),
+  `inventory_stocktake_approve` (count → approve, derselbe Inventurlauf) sind
+  Mehrschritt-Übungen; die übrigen sind Einschritt-Übungen. Folge für H/Tour:
+  der Trainee muss die Tour selbst planen/bereit markieren (`calendar.manage`
+  oder eigene neue Tour) – ein vorab geplantes Seed-Szenario erfüllt den
+  Planungsschritt nicht (Order §77: „durch denselben User/Attempt“).
+- **Idempotenz und IDOR** (`training-service.ts`, Order §39, §44, §85):
+  Start = Vorabprüfung + `ON CONFLICT (user_id, definition_id) WHERE status =
+  'in_progress' DO NOTHING` als Backstop des partiellen Unique-Index
+  (Doppelklick/parallele Anfragen ⇒ 200 mit derselben ID). „Übung prüfen“ ist die
+  einzige Quelle von `failed_check_count` (Ereignis `check_failed` mit offenem
+  Schritt und STEP_NOT_COMPLETED). Fremde Versuche ⇒ 404; `training.manage`
+  liest alle. Kein Cheat-Pass-Endpunkt (§73). `TrainingError` (Muster
+  `TourError`) ⇒ Status nach `authErrorStatus`, Body `{ error: { code:
+  <trainingCode>, message, details } }`.
+- **Fortschritt** (`progress.ts`): eine Übung gilt als bestanden, wenn der
+  Mitarbeiter einen nicht supersedierten `passed`-Versuch besitzt – unabhängig
+  davon, ob der Versuch über eine Zuweisung oder frei gestartet wurde
+  (bestanden bleibt bestanden, §46); `completed` = alle Pflichtübungen des Pfads
+  bestanden. Zuweisungen werden nach Start/Abschluss/Reset neu berechnet.
+- **Stabilität bestandener Übungen** (Order §46–§49, §94): Katalog-Sync ändert
+  Versuche nie (`definition_version` bleibt informativ); der Demo-Reset ruft
+  `beforeBusinessWipe` (app.ts und CLI `demo-reset.ts`) ⇒ laufende Versuche
+  `interrupted`/`DEMO_DATA_RESET` + Ereignis `interrupted`, bestandene Versuche
+  und Zuweisungen bleiben; der bewusste Training-Reset (`training.manage`;
+  Mitarbeiter/Pfad/einzelne Übung) löscht nichts: laufende ⇒
+  `interrupted`/`TRAINING_RESET`, bestandene ⇒ `superseded_at/_by`,
+  Zuweisungen Runde +1 (bei Teil-Reset bleiben übrige bestandene Übungen
+  sichtbar). Echtes Retraining = neuer Definition-Key.
+- **Payloads** (`routes/training.ts`, Design §4.4, mit UI abgestimmt): `/me`
+  liefert `definitions[]` zusätzlich mit `state`/`passedAt`/`attempt` (freie
+  Katalogübungen bleiben nach Reload „erledigt“), `assignments[].items[].attempt`
+  = laufender, sonst jüngster nicht supersedierter Versuch (auch `interrupted`),
+  `gates` außerhalb demo über `TrainingGate.statusForUser`, in demo `[]`;
+  Admin-Übersicht enthält alle nicht deaktivierten Mitarbeiter (Status
+  `active`/`locked`) – auch ohne Zuweisung.
+- **Audit**: `training.assignment_created` (assignmentId, pathKey, dueAt) und
+  `training.assignment_reset` (scope, pathKey, definitionKey, Zähler) – nur IDs,
+  Keys und Zähler.
+- **Bewusst nicht gebaut**: keine Noten, keine Rangliste, kein Tracking von
+  Maus/Seiten/Verweildauer, keine Demo↔Live-Synchronisierung, keine
+  Löschfristen (§83), keine Rule Engine (§34).

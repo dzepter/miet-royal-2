@@ -26,4 +26,7 @@ export {
   type OrderConfirmationPdfData,
   type PdfLineItem,
   type PdfVoucherBlock,
+  // Phase 14 (reset, Order §89): Umgebungskennzeichnung („DEMO – keine echten Kundendaten“).
+  PDF_TITLE_PREFIX_DEMO,
+  type PdfRenderOptions,
 } from './pdf.ts';

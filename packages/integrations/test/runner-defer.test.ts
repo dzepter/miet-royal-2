@@ -13,6 +13,8 @@ class RecordingQueue implements JobQueue {
   deferred: Array<{ job: ClaimedJob; runAt: Date }> = [];
   succeeded: string[] = [];
   failed: string[] = [];
+  /** Phase 14 (reset): ohne Ausführung beendete Jobs (Grund = last_error). */
+  dead: Array<{ job: ClaimedJob; reason: string }> = [];
 
   constructor(jobs: ClaimedJob[]) {
     this.pending = [...jobs];
@@ -30,12 +32,16 @@ class RecordingQueue implements JobQueue {
     this.succeeded.push(job.id);
   }
 
-  async markFailed(job: ClaimedJob): Promise<void> {
-    this.failed.push(job.id);
+  async markFailed(job: ClaimedJob, errorMessage: string): Promise<void> {
+    this.failed.push(`${job.id}:${errorMessage}`);
   }
 
   async defer(job: ClaimedJob, runAt: Date): Promise<void> {
     this.deferred.push({ job, runAt });
+  }
+
+  async markDead(job: ClaimedJob, reason: string): Promise<void> {
+    this.dead.push({ job, reason });
   }
 
   async reclaimExpired(): Promise<ReclaimResult> {
@@ -46,6 +52,11 @@ class RecordingQueue implements JobQueue {
 /** Queue ohne defer – wie die bisherigen Fakes. */
 class LegacyQueue extends RecordingQueue {
   override defer = undefined as unknown as RecordingQueue['defer'];
+}
+
+/** Queue mit defer, aber ohne markDead (Phase 14 reset: Fallback auf markFailed). */
+class DeferOnlyQueue extends RecordingQueue {
+  override markDead = undefined as unknown as RecordingQueue['markDead'];
 }
 
 function job(id: string, type: string): ClaimedJob {
@@ -113,5 +124,44 @@ describe('JobRunner beforeRun/defer (Phase 14, demo)', () => {
   it('D-R4. setBeforeRun verlangt eine Queue mit defer() (Programmierfehler beim Verdrahten)', () => {
     const runner = new JobRunner(new LegacyQueue([]), 'w');
     expect(() => runner.setBeforeRun(async () => 'run')).toThrow('unterstützt kein defer');
+  });
+
+  it('D-R5. (Phase 14 reset) beforeRun ⇒ skip: Job wird ohne Ausführung als dead mit dem Grund beendet (markDead), kein Retry, Ergebnis „skipped“', async () => {
+    const old = { ...job('alt', 'mail.send'), createdAt: new Date('2026-10-01T08:00:00.000Z') };
+    const fresh = { ...job('neu', 'mail.send'), createdAt: new Date('2026-10-31T08:00:00.000Z') };
+    const queue = new RecordingQueue([old, fresh]);
+    const runner = new JobRunner(queue, 'w');
+    const handled: string[] = [];
+    runner.register('mail.send', async (j) => {
+      handled.push(j.id);
+    });
+    const resetStartedAt = new Date('2026-10-15T00:00:00.000Z');
+    runner.setBeforeRun(async (j) =>
+      j.createdAt !== undefined && j.createdAt < resetStartedAt
+        ? { skip: { reason: 'DEMO_DATASET_CHANGED' } }
+        : 'run',
+    );
+    expect(await runner.runOnce()).toBe('skipped');
+    expect(await runner.runOnce()).toBe('processed');
+    expect(await runner.runOnce()).toBe('idle');
+    expect(handled).toEqual(['neu']);
+    expect(queue.dead).toEqual([{ job: old, reason: 'DEMO_DATASET_CHANGED' }]);
+    expect(queue.failed).toEqual([]);
+    expect(queue.deferred).toEqual([]);
+    expect(queue.succeeded).toEqual(['neu']);
+  });
+
+  it('D-R6. (Phase 14 reset) skip ohne markDead in der Queue ⇒ Fallback markFailed mit dem Grund; Handler läuft nicht', async () => {
+    const queue = new DeferOnlyQueue([job('x', 'push.send')]);
+    const runner = new JobRunner(queue, 'w');
+    let handled = 0;
+    runner.register('push.send', async () => {
+      handled += 1;
+    });
+    runner.setBeforeRun(async () => ({ skip: { reason: 'DEMO_DATASET_CHANGED' } }));
+    expect(await runner.runOnce()).toBe('skipped');
+    expect(handled).toBe(0);
+    expect(queue.failed).toEqual(['x:DEMO_DATASET_CHANGED']);
+    expect(queue.dead).toEqual([]);
   });
 });

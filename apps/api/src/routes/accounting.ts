@@ -47,6 +47,10 @@ export function registerAccountingRoutes(
 ): void {
   const { db, auth, config, accountingGateway, transfers, jobRunner } = options;
   const mockAllowed = config.appEnv !== 'production';
+  // Phase 14 (accounting), Order W1/§29/§30: in der Demo gibt es keine Mock-Buchhaltung
+  // und keine Mock-Steuerung (Status meldet `disabled`, Zahlungs-/Fehlersimulation 409);
+  // nur „fällige Jobs ausführen“ bleibt als reiner Job-Trigger erreichbar (E2E ohne Worker).
+  const mockControlsAvailable = mockAllowed && config.appEnv !== 'demo';
 
   app.get('/staff/accounting/status', async (request, reply) => {
     const context = await requireAuth(request, reply, auth, config);
@@ -58,9 +62,9 @@ export function registerAccountingRoutes(
       mock: accountingGateway.provider === 'mock',
       // Phase 10: „fällige Jobs ausführen“ steht außerhalb von production auch mit
       // Lexware-Fake/Testaccount zur Verfügung; Zahlungs-/Fehlersimulation nur mit Mock.
-      mockControlsAvailable: mockAllowed,
+      mockControlsAvailable,
       mockPaymentControlsAvailable:
-        mockAllowed && accountingGateway instanceof MockAccountingGateway,
+        mockControlsAvailable && accountingGateway instanceof MockAccountingGateway,
       environment: config.appEnv,
     };
   });

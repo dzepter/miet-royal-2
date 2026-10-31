@@ -127,12 +127,15 @@ export function AccountingBlockCard({
   data,
   customerId,
   title = 'Buchhaltung',
+  demoUnavailable = false,
   children,
 }: {
   ids: AccountingBlockTestIds;
   data: AccountingBlockData;
   customerId: string | null;
   title?: string;
+  /** Phase 14 (W1): Serverblocker `demo_unavailable` ⇒ Badge „Nicht verfügbar (Demo)“. */
+  demoUnavailable?: boolean;
   children?: ReactNode;
 }) {
   const isLexware = data.provider === 'lexware';
@@ -154,7 +157,7 @@ export function AccountingBlockCard({
           data-testid={ids.provider}
           aria-label="Buchhaltungssystem"
         >
-          {accountingProviderLabel(data.provider)}
+          {accountingProviderLabel(data.provider, { demoUnavailable })}
         </span>
         {data.invoiceCreated && (
           <>

@@ -208,3 +208,27 @@ Business-Jobs (alle außer `system.heartbeat`) in dieser Zeit um 15 s zurück,
 ohne einen Versuch zu verbrauchen. In allen anderen Umgebungen existieren
 weder Gate noch Demo-Routen (`/staff/demo/*` ⇒ 404).
 
+### Reset-Folgen für Jobs, Storage und Offline (Phase 14, RESET)
+
+- **Jobs:** Business-Jobs, die vor dem Beginn des letzten Resets eingereiht
+  wurden (`demo_dataset_state.last_reset_started_at`, DB-Uhr), führt der
+  Demo-Worker nie aus – er beendet sie als `dead` mit `last_error =
+  DEMO_DATASET_CHANGED`. Infrastruktur-Jobs (Heartbeat, Scanner, IMAP-Poll,
+  Retention-Backstop, `demo.storage_cleanup`) sind davon ausgenommen.
+- **Storage:** Objekte des alten Datensatzes, die beim Reset nicht gelöscht
+  werden konnten, räumt der Job `demo.storage_cleanup` nach (nur im Demo-
+  Storage – der Demo-Worker kennt keine andere Konfiguration). Offene oder
+  dauerhaft gescheiterte Nachbereinigungen zeigt `GET /staff/demo/status`
+  (`storageCleanup`) bzw. Einstellungen → Demo.
+- **Offline-Epoch:** Nur in `APP_ENV=demo` liefern Lease (`POST
+  /staff/offline/lease`), Arbeitspaket (`POST /staff/offline/package`) und
+  Status (`GET /staff/offline/status`) ein Feld `datasetEpoch` (UUID der
+  Datensatz-Generation); jeder Reset erzeugt eine neue. Der Sync (`POST
+  /staff/offline/sync`) verlangt in demo die aktuelle Epoch (`datasetEpoch`) und
+  antwortet sonst `409 DEMO_DATASET_CHANGED`, ohne etwas zu schreiben. In
+  development/staging/production ist `datasetEpoch` immer `null`, und das Feld
+  der Sync-Anfrage wird ignoriert – kein Verhaltensunterschied.
+- **PDFs:** In demo tragen Angebot, Auftragsbestätigung, Lieferschein und die
+  Protokolle die Zeile „DEMO – keine echten Kundendaten“ (jede Seite) und den
+  Titelpräfix „DEMO · “; keine Staff-/Web-Variable nötig (Quelle `APP_ENV`).
+

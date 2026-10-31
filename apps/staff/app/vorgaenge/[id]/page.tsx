@@ -24,6 +24,7 @@ import {
   type VoucherSummary,
 } from '../../../lib/crm';
 import {
+  ACCOUNTING_DEMO_UNAVAILABLE_HINT,
   ACCOUNTING_NOT_CONFIGURED_HINT,
   ADVANCE_STATUS_LABELS,
   applyDeposit,
@@ -1162,6 +1163,11 @@ function ProcessView() {
               {settlement.settlement.accountingBlocker === 'not_configured' && (
                 <p className="muted">{ACCOUNTING_NOT_CONFIGURED_HINT}</p>
               )}
+              {settlement.settlement.accountingBlocker === 'demo_unavailable' && (
+                <p className="muted" data-testid="settlement-demo-unavailable">
+                  {ACCOUNTING_DEMO_UNAVAILABLE_HINT}
+                </p>
+              )}
               <p>
                 <Link href={`/vorgaenge/${params.id}/abrechnung`} data-testid="settlement-open">
                   <strong>Abrechnung öffnen</strong>
@@ -1489,12 +1495,18 @@ function ProcessView() {
           {cancellation.accountingBlocker === 'not_configured' && (
             <p className="muted">{ACCOUNTING_NOT_CONFIGURED_HINT}</p>
           )}
+          {cancellation.accountingBlocker === 'demo_unavailable' && (
+            <p className="muted" data-testid="cancellation-demo-unavailable">
+              {ACCOUNTING_DEMO_UNAVAILABLE_HINT}
+            </p>
+          )}
           {cancellation.financeStatus !== 'no_invoice' && (
             <AccountingBlockCard
               ids={CANCELLATION_ACCOUNTING_IDS}
               data={cancellationAccounting}
               customerId={process.customerId}
               title="Buchhaltung (Stornorechnung)"
+              demoUnavailable={cancellation.accountingBlocker === 'demo_unavailable'}
             />
           )}
           {cancellation.releasedResources !== null && (
@@ -1676,7 +1688,11 @@ function ProcessView() {
             <p className="warning-red">{EXTERNAL_REFUND_HINT}</p>
           )}
           {preview.feeCents > 0 && !preview.accountingConfigured && (
-            <p className="muted">{ACCOUNTING_NOT_CONFIGURED_HINT}</p>
+            <p className="muted">
+              {preview.accountingBlocker === 'demo_unavailable'
+                ? ACCOUNTING_DEMO_UNAVAILABLE_HINT
+                : ACCOUNTING_NOT_CONFIGURED_HINT}
+            </p>
           )}
           {preview.blockers.length > 0 && (
             <div className="conflict-box">

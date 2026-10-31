@@ -170,6 +170,12 @@ export interface OfflineTourSnapshot {
 export interface OfflinePackage<H = unknown, R = unknown> {
   packageId: string;
   environment: OfflineEnvironment;
+  /**
+   * Phase 14 (offline epoch, Order §91/§92): Generation des Demo-Datensatzes,
+   * zu der dieses Paket gehört – nur in APP_ENV=demo gesetzt, sonst null.
+   * Nach einem Demo-Reset gilt ein Paket mit alter Epoch nicht mehr.
+   */
+  datasetEpoch: string | null;
   serverTime: string;
   horizonFrom: string;
   horizonTo: string;
@@ -204,6 +210,8 @@ export interface LeaseGrant {
   leaseId: string;
   userId: string;
   environment: OfflineEnvironment;
+  /** Phase 14 (offline epoch): aktuelle Dataset-Epoch der Demo (sonst null). */
+  datasetEpoch: string | null;
   deviceId: string;
   issuedAt: string;
   expiresAt: string;
@@ -299,4 +307,9 @@ export interface OfflineStatusResponse {
   appLocked: boolean;
   serverTime: string;
   environment: OfflineEnvironment;
+  /**
+   * Phase 14 (offline epoch): aktuelle Dataset-Epoch der Demo (sonst null) –
+   * der Client erkennt daran ohne Mutation, dass die Demo zurückgesetzt wurde.
+   */
+  datasetEpoch: string | null;
 }

@@ -102,7 +102,8 @@ describe('Phase 14 – Demo-Seed (kanonischer Datensatz)', () => {
       expect(result.seeded.conversationMessages).toBeGreaterThanOrEqual(3);
       const keys = new Set((await demo.registry.list()).map((entry) => entry.seedKey));
       for (const required of REQUIRED_DEMO_SEED_KEYS) expect(keys.has(required)).toBe(true);
-      expect(keys.has('voucher.situation')).toBe(false); // WARTET W1
+      // Phase 14 (accounting), W1.1: Gutschein-Situation als Seed-Fixture (kein Mock-Transfer).
+      expect(keys.has(DEMO_SEED_KEYS.voucherSituation)).toBe(true);
       expect(result.seeded.seedEntities).toBe(keys.size);
       const state = await demo.dataset.state(now);
       expect(state.datasetVersion).toBe(DEMO_DATASET_VERSION);
@@ -315,7 +316,7 @@ describe('Phase 14 – Demo-Seed (kanonischer Datensatz)', () => {
     expect(jobs.rows[0].n).toBe(0);
   });
 
-  it('D-S10. Abrechnungen: Schaden/Fehlteil/Prüfung mit offenen Klärungen, Reinigungsfall ohne Blocker (W1: Auto-Transfer-Job bleibt in der Queue)', async () => {
+  it('D-S10. Abrechnungen: Schaden/Fehlteil/Prüfung mit offenen Klärungen, Reinigungsfall ohne Blocker bleibt „Bereit zur Buchhaltung“ (W1: kein Transfer-Job, kein Transfer in der Demo)', async () => {
     for (const key of [
       DEMO_SEED_KEYS.settlementReview,
       DEMO_SEED_KEYS.settlementDamage,
@@ -336,16 +337,29 @@ describe('Phase 14 – Demo-Seed (kanonischer Datensatz)', () => {
       await ctx.db.select().from(settlements).where(eq(settlements.processId, cleaningProcess))
     )[0]!;
     expect(cleaningSettlement.status).toBe('ready_for_accounting');
+    expect(cleaningSettlement.accountingTransferId).toBeNull();
+    expect(cleaningSettlement.accountingReference).toBeNull();
+    // Phase 14 (accounting), Order W1/§29: Gateway in demo `disabled` ⇒ der Settlement-Hook
+    // stellt keinen Auto-Transfer-Job ein; nichts wird (auch nicht per Mock) übertragen.
     const jobs = await ctx.pool.query(
       `SELECT count(*)::int AS n FROM integration_jobs
-       WHERE type = 'settlement.accounting_transfer' AND status = 'pending'`,
+       WHERE type IN ('settlement.accounting_transfer', 'cancellation.accounting_transfer', 'lexware.event.process')`,
     );
-    expect(jobs.rows[0].n).toBeGreaterThanOrEqual(2);
+    expect(jobs.rows[0].n).toBe(0);
+    const transfers = await ctx.pool.query(`SELECT count(*)::int AS n FROM accounting_transfers`);
+    expect(transfers.rows[0].n).toBe(0);
     const completedProcess = await resolveId(DEMO_SEED_KEYS.processCompleted);
     const completed = (
       await ctx.db.select().from(processes).where(eq(processes.id, completedProcess))
     )[0]!;
     expect(completed.mainStatus).toBe('completed');
+    // Abschluss über den normalen Fachpfad (ProcessService.complete) – die Abrechnung des
+    // abgeschlossenen Vorgangs bleibt ohne Übertragung „Bereit zur Buchhaltung“.
+    const completedSettlement = (
+      await ctx.db.select().from(settlements).where(eq(settlements.processId, completedProcess))
+    )[0]!;
+    expect(completedSettlement.status).toBe('ready_for_accounting');
+    expect(completedSettlement.accountingTransferId).toBeNull();
     const repeatCustomer = await resolveId(DEMO_SEED_KEYS.customerPrivateRepeat);
     const repeatProcesses = await ctx.db
       .select({ id: processes.id })

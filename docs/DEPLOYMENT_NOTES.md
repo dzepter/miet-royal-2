@@ -346,6 +346,18 @@ Release `pnpm check:env-isolation <prod.env> <demo.env>`):
   --force` überspringen (nur CLI, siehe Seed-/Reset-Kommandos).
 - Die Demo-Routen `/staff/demo/*` existieren ausschließlich in `APP_ENV=demo`
   (sonst 404) – es gibt keinen Reset-Endpunkt in production/staging/development.
+- **Nach dem Reset (Phase 14 RESET):** Der Demo-Worker beendet Business-Jobs, die
+  vor dem Reset-Beginn eingereiht wurden, als `dead`/`DEMO_DATASET_CHANGED`
+  (erwartet, kein Fehler). Storage-Objekte, die beim Reset nicht gelöscht werden
+  konnten, räumt der Job `demo.storage_cleanup` nach – er läuft nur im Demo-Worker
+  (demo-Konfiguration, eigener Storage); „Bereinigung alter Demo-Dateien
+  fehlgeschlagen“ in Einstellungen → Demo bedeutet einen dauerhaft `dead`
+  gegangenen Cleanup-Job (Storage-Zugang/Logs prüfen; der Datensatz selbst ist
+  konsistent). Offline-Geräte, die vor dem Reset ein Arbeitspaket hatten, erhalten
+  beim nächsten Onlinekontakt den Hinweis „Demo-Daten zurückgesetzt“ und laden
+  nach Bestätigung ein neues Paket (Dataset-Epoch); alte Offline-Erfassungen
+  werden mit `409 DEMO_DATASET_CHANGED` abgewiesen und nie auf den neuen Seed
+  angewendet. Production/Staging kennen keine Epoch – kein Unterschied dort.
 
 
 ### Seed-/Reset-Kommandos (Phase 14, SEED)

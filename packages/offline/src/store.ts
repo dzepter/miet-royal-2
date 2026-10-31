@@ -8,6 +8,7 @@
  * Index-/Schlüsselfelder (IDs, Status, Zeitstempel, SHA-256-Hashes).
  */
 import { decryptBytes, decryptJson, encryptBytes, encryptJson } from './crypto.ts';
+import { META_DATASET_CHANGED_PENDING, META_DATASET_EPOCH } from './dataset-epoch.ts';
 import type { OfflineDb, StoreName } from './db.ts';
 import type {
   ConflictDetails,
@@ -87,6 +88,8 @@ export interface NewMutationInput {
   dependsOn: string[];
   mediaIds?: string[];
   baseVersion?: string | null;
+  /** Phase 14 (offline epoch): Dataset-Epoch beim Einreihen (Demo), sonst null/weggelassen. */
+  datasetEpoch?: string | null;
 }
 
 export interface NewMediaInput {
@@ -166,6 +169,10 @@ export class OfflineStore {
 
   setMeta(key: string, value: MetaRecord['value'], now: string): Promise<void> {
     return this.db.put<MetaRecord>('meta', { key, value, updatedAt: now });
+  }
+
+  deleteMeta(key: string): Promise<void> {
+    return this.db.delete('meta', key);
   }
 
   // ── Pakete ───────────────────────────────────────────────────────────────
@@ -373,6 +380,7 @@ export class OfflineStore {
       nextAttemptAt: null,
       lastErrorCode: null,
       summary: input.summary,
+      datasetEpoch: input.datasetEpoch ?? null, // Phase 14 (offline epoch)
       payload: await encryptJson(key, input.payload, AAD.mutation(input.clientMutationId)),
     };
     await this.db.put('mutations', record);
@@ -580,6 +588,27 @@ export class OfflineStore {
   /** Alle fachlichen Daten entfernen (Logout ohne Pending, §38) – Workspace-Datensatz bleibt. */
   wipeData(): Promise<void> {
     return this.db.clearAll(DATA_STORES);
+  }
+
+  /**
+   * Phase 14 (offline epoch, Order §92): alten Demo-Datenstand verwerfen –
+   * Pakete, Vorgänge, Maschinen, Dokumente, Mutationen, Medien, Konflikte und
+   * Quittungen löschen sowie die Epoch-Metadaten entfernen. Workspace-Datensatz
+   * (Schlüssel-Wraps, Lease) und übrige Metadaten (Uhr, Zähler) bleiben.
+   */
+  async discardDataset(): Promise<void> {
+    await this.db.clearAll([
+      'packages',
+      'bookings',
+      'machines',
+      'documents',
+      'mutations',
+      'media',
+      'conflicts',
+      'receipts',
+    ]);
+    await this.deleteMeta(META_DATASET_EPOCH);
+    await this.deleteMeta(META_DATASET_CHANGED_PENDING);
   }
 
   /** Alles entfernen – einschließlich der eingewickelten Schlüssel. */
