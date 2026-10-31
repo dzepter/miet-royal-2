@@ -276,9 +276,9 @@ describe('Reconciliation – pnpm lexware:reconcile / Adminaktion (§53, Tests 1
     const { admin } = await adminSession(ctx);
     await createMappedTransfer(ctx, admin.id, await createFakeInvoice(ctx));
     await createMappedTransfer(ctx, admin.id, await createFakeInvoice(ctx));
-    await ctx.pool.query('TRUNCATE lexware_rate_limit');
+    await ctx.pool.query('TRUNCATE integration_rate_limits');
     const throttled = createLexwareContext(ctx.config, ctx.db, ctx.lexware.logger, {
-      throttle: new PostgresLexwareThrottle(ctx.db),
+      throttle: new PostgresLexwareThrottle(ctx.db, { environment: ctx.config.appEnv }),
     });
     const conn = new LexwareConnectionService(throttled);
     const service = new LexwareReconcileService(throttled, ctx.db, transfers(), conn);

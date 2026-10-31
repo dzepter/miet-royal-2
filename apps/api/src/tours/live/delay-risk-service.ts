@@ -8,7 +8,12 @@ import {
   type Tour,
   type TourDelayIncident,
 } from '@mietroyal/database';
-import { evaluateOrder, stopDeadline, type PlanStop } from '@mietroyal/domain';
+import {
+  DELAY_LOCATION_MAX_ACCURACY_METERS,
+  evaluateOrder,
+  stopDeadline,
+  type PlanStop,
+} from '@mietroyal/domain';
 import type { JobRunnerLogger } from '@mietroyal/integrations';
 import { and, eq, inArray, isNull } from 'drizzle-orm';
 import { AuthError } from '../../auth/service.ts';
@@ -21,6 +26,7 @@ import {
   type PermissionResolver,
 } from '../../communication/push/recipients.ts';
 import { RoutingError, type GeoPoint, type RoutingGateway } from '../../routing/types.ts';
+import { loadSubstitutions } from '../../scheduling/assignee.ts';
 import type { LoadedStop, LoadedTour, TourService } from '../tour-service.ts';
 import type { OperativeAddressResolver, TourGeocodingResolver } from '../types.ts';
 import { LIVE_LOCATION_STALE_MS } from '../views.ts';
@@ -54,15 +60,46 @@ import {
  *   erledigt/übersprungen“, „Plan geändert“, „Neu berechnen“ immer.
  * - Keine DB-Transaktion während des Provider-Aufrufs; Pushs laufen über die
  *   Phase-12-Outbox (PushService). KEINE Kundennachricht.
+ * - Phase 13 Final (§2): Die Push-Outbox wird ATOMAR mit dem Incident
+ *   geschrieben (eine kurze Transaktion: Tour FOR SHARE, Incident FOR UPDATE,
+ *   Empfänger, `createDelivery(…, tx)`, `notification_enqueued_at`); der Job
+ *   `push.send` wird erst NACH dem Commit eingereiht – fehlt er (Absturz,
+ *   Queue-Fehler), holt ihn der Push-Outbox-Backstop nach. Nie ein zweiter
+ *   Pool-Acquire in der gehaltenen Transaktion (Pool max=1 sicher).
+ * - Phase 13 Final (§3): Bewertung NUR bei Standortgenauigkeit ≤
+ *   `DELAY_LOCATION_MAX_ACCURACY_METERS` (250 m, domain); sonst `unavailable`
+ *   mit Grund LOCATION_INACCURATE – Incidents bleiben unverändert.
  * - Phase 13 (Fix F2): Incidents/Pushs nur, wenn die Tour beim Schreiben noch
  *   aktiv und ihre Version seit dem Laden unverändert ist (Tour FOR SHARE in
  *   derselben Transaktion) – ein Ende/eine Übernahme/Planänderung während des
  *   Provider-Aufrufs verwirft die Bewertung (nichts geschrieben, kein Push).
+ * - Phase 13 Final (Review F1/F2): Verspätung gibt es NUR für Stopps, die in
+ *   der Schreibtransaktion FRISCH geladen noch `open` sind. `arrived`-Stopps
+ *   bleiben Zwischenpunkte der Restroute (Fahrzeiten), öffnen aber keinen
+ *   Incident (Ankunft ist erfolgt – „Angekommen“ nach der Deadline ist kein
+ *   Risiko). Wird ein Stopp während des Provider-Aufrufs erreicht/erledigt/
+ *   übersprungen (die Tourversion ändert sich dabei nicht), entsteht weder
+ *   Incident noch Push; ein offener Incident zu einem solchen Stopp wird wie
+ *   „nicht mehr verbleibend“ gelöst.
  * - An den Provider gehen nur Koordinaten; Logs enthalten nur IDs/Status.
  */
 
 export const DELAY_EVALUATION_MIN_INTERVAL_MS = 3 * 60_000;
 export const DELAY_EVALUATION_MIN_MOVE_METERS = 500;
+/** Phase 13 Final (§3): zentrale Genauigkeitsgrenze (packages/domain) – hier nur weitergereicht. */
+export { DELAY_LOCATION_MAX_ACCURACY_METERS };
+
+/** Push-Zielgruppe eines Verspätungs-Pushs (Payload-Variante, Ziel-URL). */
+type DelayPushAudience = 'driver' | 'planning';
+
+/** Offene Incidents einer Tour, deren Push-Outbox noch nicht geschrieben wurde. */
+function pendingIncidentsWhere(tourId: string) {
+  return and(
+    eq(tourDelayIncidents.tourId, tourId),
+    isNull(tourDelayIncidents.resolvedAt),
+    isNull(tourDelayIncidents.notificationEnqueuedAt),
+  );
+}
 
 export type DelayTrigger =
   'location' | 'scanner' | 'stop_changed' | 'plan_changed' | 'recalculate' | 'manual';
@@ -97,8 +134,14 @@ export interface DelayRiskServiceDeps {
   logger?: JobRunnerLogger | undefined;
 }
 
+/** Verbleibende Stopps der Restroute (Fahrzeiten): offen ODER erreicht (noch nicht erledigt). */
 function isRemaining(entry: LoadedStop): boolean {
   return entry.state === 'open' || entry.state === 'arrived';
+}
+
+/** Nur ein noch OFFENER Stopp kann verspätet sein (Review F1/F2). */
+function isOpen(entry: LoadedStop): boolean {
+  return entry.state === 'open';
 }
 
 /** Luftlinie in Metern (nur für die Bewegungs-Drossel – kein Routing). */
@@ -149,6 +192,13 @@ export class DelayRiskService {
     if (live === undefined || now.getTime() - live.observedAt.getTime() > LIVE_LOCATION_STALE_MS) {
       return this.record(tourId, now, 'unavailable', 'NO_LIVE_LOCATION', null, [], trigger);
     }
+    // Phase 13 Final (§3): nur ein hinreichend genauer Standort trägt eine Prognose.
+    // Sonst `unavailable`/LOCATION_INACCURATE: kein Incident, keine Entwarnung, kein
+    // Push; Gedächtnis OHNE Position, damit der nächste genaue Standort sofort
+    // (ohne Drossel) bewertet wird. Der Genauigkeitswert wird nie geloggt.
+    if (live.accuracyMeters === null || live.accuracyMeters > DELAY_LOCATION_MAX_ACCURACY_METERS) {
+      return this.record(tourId, now, 'unavailable', 'LOCATION_INACCURATE', null, [], trigger);
+    }
     const loaded = await this.deps.tours.load(tourId, now);
     if (loaded.tour.status !== 'active') {
       return { status: 'unavailable', evaluatedAt: now, reason: 'TOUR_NOT_ACTIVE', stops: [] };
@@ -167,7 +217,9 @@ export class DelayRiskService {
     }
 
     const remaining = loaded.stops.filter(isRemaining);
-    if (remaining.length === 0) {
+    // Ohne offenen Stopp gibt es nichts zu prognostizieren (erreichte Stopps sind
+    // keine Verspätung mehr): Incidents lösen, kein Provider-Aufruf (Review F1).
+    if (!remaining.some(isOpen)) {
       await this.resolveAll(tourId, now);
       return this.record(tourId, now, 'ok', null, position, [], trigger);
     }
@@ -242,7 +294,12 @@ export class DelayRiskService {
         stopId: entry.stop.id,
         predictedArrivalAt: predicted,
         deadlineAt: deadline,
-        late: deadline !== null && predicted !== null && predicted.getTime() > deadline.getTime(),
+        // Review F1: ein bereits erreichter Stopp ist nie „verspätet“.
+        late:
+          isOpen(entry) &&
+          deadline !== null &&
+          predicted !== null &&
+          predicted.getTime() > deadline.getTime(),
       };
     });
 
@@ -251,7 +308,10 @@ export class DelayRiskService {
     // in derselben Transaktion). Sonst wird die Bewertung verworfen: nichts
     // geschrieben, kein Push, kein Gedächtnis-Eintrag (eine jüngere Bewertung
     // der geänderten Tour wird nie überschrieben).
-    if (!(await this.applyIncidents(loaded, results, now))) {
+    // Review F2: `applied` trägt die Verspätung nur für Stopps, die in der
+    // Schreibtransaktion noch offen waren (frisch geladen).
+    const applied = await this.applyIncidents(loaded, results, now);
+    if (applied === null) {
       this.deps.logger?.info(
         { tourId, trigger, status: 'unavailable', reason: 'TOUR_CHANGED' },
         'Verspätungsbewertung verworfen (Tour beendet oder geändert)',
@@ -259,8 +319,8 @@ export class DelayRiskService {
       return { status: 'unavailable', evaluatedAt: now, reason: 'TOUR_CHANGED', stops: [] };
     }
     await this.notifyPending(loaded, processNumbers, now);
-    const status: DelayEvaluationStatus = results.some((r) => r.late) ? 'risk' : 'ok';
-    return this.record(tourId, now, status, null, position, results, trigger);
+    const status: DelayEvaluationStatus = applied.some((r) => r.late) ? 'risk' : 'ok';
+    return this.record(tourId, now, status, null, position, applied, trigger);
   }
 
   /**
@@ -287,21 +347,36 @@ export class DelayRiskService {
     return new Map(rows.map((row) => [row.id, row.processNumber]));
   }
 
-  /** Incidents fortschreiben – kurze Transaktion ohne externe Aufrufe; false ⇒ verworfen (Fix F2). */
+  /**
+   * Incidents fortschreiben – kurze Transaktion ohne externe Aufrufe; null ⇒
+   * verworfen (Fix F2). Review F1/F2: Die Stoppzustände werden in der
+   * Transaktion FRISCH geladen (`TourService.loadStops(tx)`, nur `tx`, kein
+   * zweiter Pool-Acquire); verspätet zählt nur ein noch OFFENER Stopp. Ein
+   * offener Incident zu einem inzwischen erreichten/erledigten/übersprungenen
+   * Stopp wird wie „nicht mehr verbleibend“ gelöst. Rückgabe: die Ergebnisse
+   * mit der tatsächlich übernommenen Verspätung.
+   */
   private async applyIncidents(
     loaded: LoadedTour,
     results: readonly DelayStopResult[],
     now: Date,
-  ): Promise<boolean> {
+  ): Promise<DelayStopResult[] | null> {
     const tourId = loaded.tour.id;
     return this.deps.db.transaction(async (tx) => {
-      if ((await this.lockUnchanged(tx, loaded)) === null) return false;
+      if ((await this.lockUnchanged(tx, loaded)) === null) return null;
+      const openStopIds = new Set(
+        (await this.deps.tours.loadStops(tx, tourId)).filter(isOpen).map((e) => e.stop.id),
+      );
+      const applied = results.map((result) => ({
+        ...result,
+        late: result.late && openStopIds.has(result.stopId),
+      }));
       const open = await tx
         .select()
         .from(tourDelayIncidents)
         .where(and(eq(tourDelayIncidents.tourId, tourId), isNull(tourDelayIncidents.resolvedAt)));
       const openByStop = new Map(open.map((row) => [row.stopId, row]));
-      for (const result of results) {
+      for (const result of applied) {
         const existing = openByStop.get(result.stopId);
         if (result.late && result.predictedArrivalAt !== null && result.deadlineAt !== null) {
           if (existing !== undefined) {
@@ -347,7 +422,7 @@ export class DelayRiskService {
           .set({ resolvedAt: now, lastEvaluatedAt: now })
           .where(eq(tourDelayIncidents.id, stale.id));
       }
-      return true;
+      return applied;
     });
   }
 
@@ -359,45 +434,76 @@ export class DelayRiskService {
   }
 
   /**
-   * Genau ein Push je Incident (Order §54): offene Incidents ohne
-   * `notification_sent_at` ⇒ Outbox-Zeilen (Schlüssel je Incident+Empfänger)
-   * ⇒ `notification_sent_at` setzen (auch bei 0 Empfängern). Ein Absturz
-   * dazwischen wiederholt nur dedupliziert.
+   * Genau ein Push je Incident und Empfänger (Order §54; Phase 13 Final §2,
+   * Outbox atomar). In EINER kurzen Transaktion: Tour FOR SHARE (Fix F2 –
+   * Ende/Übernahme/Versionsänderung ⇒ nichts), offene Incidents ohne
+   * `notification_enqueued_at` FOR UPDATE (parallele Bewertungen serialisieren
+   * sich hier; die zweite sieht nichts mehr), effektiver Fahrer aus der
+   * gesperrten Tour + Vertretungen derselben Transaktion, Stoppzustände
+   * FRISCH aus derselben Transaktion (Review F2: nur für einen noch OFFENEN
+   * Stopp wird eine Delivery angelegt – ein inzwischen erreichter/erledigter/
+   * übersprungener Stopp bekommt keinen Push, sein Incident wird gelöst),
+   * Planung/Admin (vorab ermittelt – die Rechteauflösung nutzt eigene
+   * Verbindungen und darf nie in der gehaltenen Transaktion laufen),
+   * Delivery-Zeilen über
+   * `PushService.createDelivery(…, tx)` (UNIQUE-Schlüssel je Incident+Empfänger
+   * ⇒ ein Retry erzeugt nie eine zweite Zeile; eine Person in beiden Rollen ⇒
+   * genau eine Zustellung), `notification_enqueued_at`, Commit.
+   * KEIN `enqueueSendJob` in der Transaktion. Erst nach dem Commit wird je
+   * neuer Zeile der Job `push.send` eingereiht; schlägt das fehl, wird nur
+   * geloggt – der Push-Outbox-Backstop (`PushRuleScanner.scheduleOutboxBackstop`)
+   * holt den Job mit demselben stabilen Schlüssel nach.
    */
   private async notifyPending(
     loaded: LoadedTour,
     processNumbers: Map<string, string>,
     now: Date,
   ): Promise<void> {
-    // Fix F2: Tour FOR SHARE – Ende/Übernahme (FOR NO KEY UPDATE) warten bzw. sind
-    // bereits sichtbar; Empfänger (effektiver Fahrer) wird aus der gesperrten Zeile
-    // frisch bestimmt. Die Outbox-Zeilen (PushService, eigene Verbindung) sind
-    // je Incident+Empfänger dedupliziert; `notification_sent_at` wird in derselben
-    // Transaktion gesetzt.
-    await this.deps.db.transaction(async (tx) => {
+    const tourId = loaded.tour.id;
+    // Billige Vorprüfung ohne Sperre: meist gibt es nichts zu melden.
+    const probe = await this.deps.db
+      .select({ id: tourDelayIncidents.id })
+      .from(tourDelayIncidents)
+      .where(pendingIncidentsWhere(tourId))
+      .limit(1);
+    if (probe.length === 0) return;
+    const planners = await listActiveUsersWithAnyPermission(
+      this.deps.db,
+      this.deps.auth,
+      PLANNING_PUSH_PERMISSIONS,
+    );
+    const created = await this.deps.db.transaction(async (tx): Promise<string[]> => {
       const current = await this.lockUnchanged(tx, loaded);
-      if (current === null) return;
+      if (current === null) return [];
       const pending: TourDelayIncident[] = await tx
         .select()
         .from(tourDelayIncidents)
-        .where(
-          and(
-            eq(tourDelayIncidents.tourId, current.id),
-            isNull(tourDelayIncidents.resolvedAt),
-            isNull(tourDelayIncidents.notificationSentAt),
-          ),
-        );
-      if (pending.length === 0) return;
-      const driver = await this.deps.tours.driverContext(current, now);
-      const driverId = driver.effectiveDriverId ?? current.assignedUserId;
-      const planners = await listActiveUsersWithAnyPermission(
-        this.deps.db,
-        this.deps.auth,
-        PLANNING_PUSH_PERMISSIONS,
-      );
+        .where(pendingIncidentsWhere(current.id))
+        .for('update');
+      if (pending.length === 0) return [];
+      const substitutions = await loadSubstitutions(tx);
+      const driverId =
+        this.deps.tours.effectiveDriverId(current, substitutions, now) ?? current.assignedUserId;
+      // Dedupe über alle Rollen: der Fahrer bekommt die Fahrer-Variante, jeder weitere
+      // Planer/Admin die Planungs-Variante – nie zwei Zustellungen an dieselbe Person.
+      const recipients = new Map<string, DelayPushAudience>([[driverId, 'driver']]);
+      for (const userId of planners) {
+        if (!recipients.has(userId)) recipients.set(userId, 'planning');
+      }
+      const freshStops = await this.deps.tours.loadStops(tx, current.id);
+      const newDeliveryIds: string[] = [];
       for (const incident of pending) {
-        const entry = loaded.stops.find((stop) => stop.stop.id === incident.stopId);
+        const entry = freshStops.find((stop) => stop.stop.id === incident.stopId);
         if (entry === undefined) continue;
+        if (!isOpen(entry)) {
+          // Review F2: Stopp zwischen Incident-Transaktion und Outbox erreicht/erledigt/
+          // übersprungen ⇒ kein Push; Incident wie „nicht mehr verbleibend“ lösen.
+          await tx
+            .update(tourDelayIncidents)
+            .set({ resolvedAt: now, lastEvaluatedAt: now })
+            .where(eq(tourDelayIncidents.id, incident.id));
+          continue;
+        }
         const base = {
           processId: entry.appointment.processId,
           processNumber: processNumbers.get(entry.appointment.processId) ?? '',
@@ -405,34 +511,50 @@ export class DelayRiskService {
           tourId: current.id,
           incidentId: incident.id,
         } as const;
-        const keyFor = (userId: string) => pushKeys.tourDelayRisk(incident.id, userId);
-        await this.deps.push.enqueueForUsers(
-          [driverId],
-          'tour_delay_risk',
-          buildPushPayload({ kind: 'tour_delay_risk', audience: 'driver', ...base }),
-          keyFor,
-        );
-        await this.deps.push.enqueueForUsers(
-          planners.filter((userId) => userId !== driverId),
-          'tour_delay_risk',
-          buildPushPayload({ kind: 'tour_delay_risk', audience: 'planning', ...base }),
-          keyFor,
-        );
+        for (const [userId, audience] of recipients) {
+          const result = await this.deps.push.createDelivery(
+            {
+              kind: 'tour_delay_risk',
+              userId,
+              idempotencyKey: pushKeys.tourDelayRisk(incident.id, userId),
+              payload: buildPushPayload({ kind: 'tour_delay_risk', audience, ...base }),
+            },
+            tx,
+          );
+          if (!result.deduplicated) newDeliveryIds.push(result.deliveryId);
+        }
         await tx
           .update(tourDelayIncidents)
-          .set({ notificationSentAt: now })
-          .where(
-            and(
-              eq(tourDelayIncidents.id, incident.id),
-              isNull(tourDelayIncidents.notificationSentAt),
-            ),
-          );
+          .set({ notificationEnqueuedAt: now })
+          .where(eq(tourDelayIncidents.id, incident.id));
         this.deps.logger?.info(
-          { tourId: current.id, incidentId: incident.id, stopId: incident.stopId },
-          'Verspätungsrisiko gemeldet (Push eingereiht)',
+          {
+            tourId: current.id,
+            incidentId: incident.id,
+            stopId: incident.stopId,
+            recipients: recipients.size,
+          },
+          'Verspätungsrisiko gemeldet (Push-Outbox geschrieben)',
         );
       }
+      return newDeliveryIds;
     });
+    // Nach dem Commit: Jobs einreihen. Fehler nur loggen – der Push-Outbox-Backstop
+    // holt fehlende `push.send`-Jobs nach (gleicher Schlüssel, nie ein zweiter Job).
+    for (const deliveryId of created) {
+      try {
+        await this.deps.push.enqueueSendJob(deliveryId);
+      } catch (error) {
+        this.deps.logger?.warn(
+          {
+            tourId,
+            deliveryId,
+            errorCode: error instanceof Error ? error.name || 'Error' : 'Error',
+          },
+          'push.send-Job nicht eingereiht – Push-Outbox-Backstop holt nach',
+        );
+      }
+    }
   }
 
   private record(

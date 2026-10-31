@@ -94,6 +94,8 @@ export interface TourWarning {
   code: string;
   message: string;
   stopId?: string;
+  /** Phase 13 Final (§3): neutraler Grund (z. B. LOCATION_INACCURATE) – nie ein Meterwert. */
+  reason?: string;
 }
 
 export interface TourView {
@@ -129,6 +131,30 @@ export interface TourView {
   canTakeover: boolean;
   canEdit: boolean;
   canOpenProcess: boolean;
+}
+
+/** Phase 13 Final (§7): mehrere aktive Touren derselben effektiven Person (GET /staff/tours/active). */
+export interface ActiveTourConflictEntry {
+  id: string;
+  tourDate: string;
+  assignedUserId: string;
+  assignedName: string | null;
+  effectiveDriverId: string | null;
+  effectiveDriverName: string | null;
+  substituted: boolean;
+  startedAt: string | null;
+}
+
+export interface ActiveTourConflict {
+  /** Alle betroffenen Touren, zuerst gestartete zuerst – jede über `/touren/aktiv?id=` erreichbar. */
+  tours: ActiveTourConflictEntry[];
+}
+
+export interface ActiveTourResult {
+  /** Bei Konflikt deterministisch die zuerst gestartete Tour. */
+  tour: TourView | null;
+  /** null = eindeutig (ältere Server liefern das Feld nicht). */
+  conflict?: ActiveTourConflict | null;
 }
 
 export interface TourPlanConflict {
@@ -202,6 +228,8 @@ export interface OfflineTourSnapshot {
 export interface DelayStatus {
   status: 'ok' | 'risk' | 'unavailable';
   evaluatedAt: string | null;
+  /** Phase 13 Final (§3): bei `unavailable` z. B. LOCATION_INACCURATE, NO_LIVE_LOCATION. */
+  reason?: string;
   stops: {
     stopId: string;
     predictedArrivalAt: string | null;
@@ -220,6 +248,10 @@ export const TOUR_TEXTS = {
   locationUnavailable: 'Standort nicht verfügbar – Verspätungswarnungen sind eingeschränkt.',
   locationStale: 'Standort nicht aktuell',
   delayUnknown: 'Verspätungsprognose derzeit nicht verfügbar.',
+  /** Phase 13 Final (§3): kein Meterwert, kein rotes Risiko. */
+  locationInaccurate: 'Standort derzeit zu ungenau.',
+  /** Phase 13 Final (§7). */
+  multipleActiveTours: 'Mehrere aktive Touren gleichzeitig – Planung prüfen.',
   openStops: 'Die Tour enthält noch offene Stopps.',
   versionConflict: 'Die Tour wurde zwischenzeitlich geändert.',
   stale: 'Route veraltet – neu berechnen',
@@ -270,6 +302,9 @@ export function warningText(warning: TourWarning): string {
   if (warning.code === 'PLAN_STALE') return TOUR_TEXTS.stale;
   if (warning.code === 'DEPOT_ADDRESS_MISSING') return TOUR_TEXTS.depotMissing;
   if (warning.code === 'ADDRESS_MISSING') return TOUR_TEXTS.addressMissing;
+  // Phase 13 Final (§3/§7)
+  if (warning.code === 'DELAY_LOCATION_INACCURATE') return TOUR_TEXTS.locationInaccurate;
+  if (warning.code === 'MULTIPLE_ACTIVE_TOURS') return TOUR_TEXTS.multipleActiveTours;
   return warning.message;
 }
 
@@ -303,7 +338,7 @@ export function listTours(date: string) {
 }
 
 export function getActiveTour() {
-  return apiFetch<{ tour: TourView | null }>('/staff/tours/active');
+  return apiFetch<ActiveTourResult>('/staff/tours/active');
 }
 
 export function getTour(id: string) {

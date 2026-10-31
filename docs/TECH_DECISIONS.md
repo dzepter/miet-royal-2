@@ -1889,7 +1889,8 @@ Shell cwd was reset to /home/user/Sparkoffer.de
   maskierten IDs im Log). Retries entscheidet die Queue anhand `transient`.
   Das Lexware-Limit von 2 Requests/Sekunde gilt prozessübergreifend:
   `PostgresLexwareThrottle` reserviert in einer kurzen Transaktion
-  (`lexware_rate_limit` FOR UPDATE) den nächsten Slot (≥ 500 ms Abstand) und
+  (`lexware_rate_limit` FOR UPDATE; seit Phase 13 Final die Zeile
+  provider = 'lexware' in `integration_rate_limits`) den nächsten Slot (≥ 500 ms Abstand) und
   wartet AUSSERHALB jeder Transaktion – API und Worker teilen sich so dieselbe
   Grenze ohne offene Business-Sperren.
 - **Geld**: Lexware erwartet Dezimalbeträge; `money.ts` konvertiert
@@ -1912,7 +1913,8 @@ Shell cwd was reset to /home/user/Sparkoffer.de
   (je accounting_transfer: Rechnungs-ID, Nummer, Status, Fälligkeit, offener
   Betrag, Zahlungsstatus, `delivery_status` pending, stabiler
   `transfer_marker`), `lexware_webhook_events` (Fingerprint-Dedup),
-  `lexware_rate_limit`, `accounting_tax_config`; `accounting_transfers`
+  `lexware_rate_limit` (Phase 13 Final: ersetzt durch `integration_rate_limits`),
+  `accounting_tax_config`; `accounting_transfers`
   erhält `in_progress|outcome_unknown|attention`, Claim-Felder und einen
   versionierten Provider-Snapshot (v2), der den Phase-9-Snapshot nie ersetzt.
 - **Webhook-Signatur**: offizieller Lexware-Public-Key (RSA-4096, PEM) im
@@ -3452,8 +3454,9 @@ Vom Auftraggeber bestätigt (2026-10-19) – keine offenen Fachfragen mehr:
 - **Fehlerklassifikation** (auth_invalid, validation, not_found,
   rate_limited, credit_limited, timeout, network, server_error,
   invalid_response, disabled) mit `transient`-Flag; Antworten werden
-  zod-minimal validiert (fail-closed). Keine Client-Retries; in-process
-  Drossel 1 Request/s und Pause bis `X-RateLimit-Reset` nach 429. Routing
+  zod-minimal validiert (fail-closed). Keine Client-Retries; Drossel
+  1 Request/s und Pause nach 429 – seit Phase 13 Final GLOBAL je Umgebung
+  (siehe „Phase 13 Final: globale Provider-Drossel“). Routing
   ist read-only – transiente Fehler dürfen jederzeit neu berechnet werden.
 - **Datenminimierung:** Requests enthalten nur Koordinaten/Adresse,
   Zeitfenster, Servicezeiten und anonyme Stopp-IDs (Pflichttest T12/T13).
@@ -3596,3 +3599,100 @@ VRP-Job, feste Positionen per undokumentierter Provider-Funktion.
 - **Navigation starten**: Links kommen fertig aus der View (`navigation`), die
   Plattformwahl trifft der Client aus dem User-Agent (iOS/iPadOS/Mac ⇒ Apple
   Maps, Android ⇒ `geo:`-Intent, sonst Web-Fallback) – nur Ziel, nie Name/Key.
+
+## Phase 13 Final: bestätigte Produktentscheidungen
+
+Vom Auftraggeber bestätigt (2026-10-31, Phase 13 Final §6) – nicht mehr offen:
+
+- **A Verspätungsschwelle:** Risk ⇔ predictedArrivalAt > deadlineAt (exact:
+  Terminzeit; window: Fensterende); kein Vorwarn-Puffer.
+- **B Mehrere Risiken:** Incident je Stopp, je neuer Incident genau ein Push je
+  Empfänger; Dedupe.
+- **C GPS-Mindestqualität:** ≤ 250 m (Punkt 3 des Auftrags:
+  `DELAY_LOCATION_MAX_ACCURACY_METERS = 250`; Standort mit `accuracyMeters`
+  null oder > 250 m wird weiterhin als „letzter bekannter Standort“ gespeichert,
+  die Prognose ist dann `unavailable`/`LOCATION_INACCURATE` – keine
+  Incident-Eröffnung, keine Entwarnung, kein Push; ein späterer genauer
+  Standort wird normal bewertet).
+- **D „Angekommen“:** keine GPS-Näheprüfung, bewusste Mitarbeiteraktion.
+- **E Stopp aus aktiver Tour entfernen:** nicht erledigter Stopp darf durch
+  calendar.manage bewusst entfernt werden; Termin bleibt scheduled; Route
+  stale; erledigte Stopps bleiben Historie und sind nicht entfernbar; keine
+  Fachstornierung.
+
+## Phase 13 Final: Offline-Lease für reine Tourfahrer, GraphHopper-Go-live-Schalter (2026-10-31)
+
+- **Offline-Lease (§4):** `calendar.view` ist ein weiteres
+  `OFFLINE_ENABLING_PERMISSION` (`apps/api/src/offline/lease-service.ts`), damit
+  ein reiner Tourfahrer ein 72-h-Lease und damit den read-only Snapshot seiner
+  eigenen/effektiven aktiven Tour (`OfflinePackage.activeTour`: Reihenfolge,
+  Terminart, Vorgangsnummer, operative Adresse, Zeiten, Navigations-Links,
+  Zustand) erhält. Keine neuen Rechte. Datenminimierung bleibt am Fachrecht
+  (`OfflinePackageService.rightsFor`): ohne `process.view_all` ∧
+  `handover.view`/`return.view` gibt es keine Vorgänge (auch nicht per
+  `extraBookingIds` oder Einzel-Snapshot ⇒ neutral 404), ohne `machine.view`
+  keinen Maschinenstamm, ohne `inventory.view` kein Lager, keine Dokumente;
+  Admin-/Finanz-/Systemrechte stehen nie im Lease (`OFFLINE_RELEVANT_PERMISSIONS`).
+  Kein GPS im Paket (Navigations-Links enthalten nur Zielkoordinaten aus dem
+  Geocoding-Cache). Offline bleibt verboten: Tour erstellen/Stopps/Reihenfolge/
+  Start/Übernahme/Angekommen/Ende/GPS nachsenden – `OFFLINE_MUTATION_TYPES`
+  kennt keine Tour-Mutation, und jede vorhandene Mutation verlangt
+  `handover.view`, `return.view` oder `machine.view` (ein calendar.view-Konto
+  kann nie etwas synchronisieren). Tests O1–O10
+  (`apps/api/test/offline-tour-lease.integration.test.ts`).
+- **GraphHopper-Terms/Server-Cache – Go-live fail-closed (§5):**
+  `ROUTING_PROVIDER_TERMS_CONFIRMED` (true|false, Default false, kein Secret,
+  keine Isolationsprüfung): `APP_ENV=production ∧ effektiver Provider
+  graphhopper ∧ Bestätigung ≠ true ⇒ ConfigError` („GraphHopper in production
+  erfordert ROUTING_PROVIDER_TERMS_CONFIRMED=true nach vertraglicher Prüfung der
+  serverseitigen Zwischenspeicherung“). production `disabled` braucht keine
+  Bestätigung; demo/development/staging ignorieren den Schalter (staging bewusst
+  nicht erzwungen). Keine UI-Einstellung, keine juristische Automatik, kein
+  Default in production: das Flag bedeutet „Vertrag gegen implementierte
+  Nutzung geprüft“. Blocker und Ableitung: `docs/OPEN_ITEMS.md` „GO-LIVE-BLOCKER
+  Routing“, `docs/PRE_START_CHECKLIST.md`, `docs/ROUTING_API_NOTES.md`. Tests
+  C1–C7 (`packages/config/test/routing-config.test.ts`,
+  `packages/config/test/routing-go-live-docs.test.ts`).
+- **`push_deliveries`-Retention** bleibt bewusst ein dokumentierter
+  Retention-/Go-live-Punkt (§9; `docs/OPEN_ITEMS.md`).
+
+## Phase 13 Final: globale Provider-Drossel (2026-10-31)
+
+- **Ein Limiter für alle Provider** (Auftrag §1.1): statt zweier fast
+  identischer Systeme (Lexware in PostgreSQL, GraphHopper in-process) gibt es
+  den generischen `PostgresIntegrationRateLimiter`
+  (`apps/api/src/integrations/rate-limiter.ts`) über die Tabelle
+  `integration_rate_limits` (provider PK, environment, next_slot_at,
+  paused_until, pause_kind, updated_at; Migration 0028 übernimmt den
+  Lexware-Slot und löscht `lexware_rate_limit`). `PostgresLexwareThrottle`
+  ist nur noch eine dünne Hülle (provider `lexware`, 500 ms, Verhalten
+  unverändert); GraphHopper nutzt provider `graphhopper` mit 1000 ms –
+  GLOBAL höchstens 1 Request/s je Umgebung (API + Worker + Replikate), keine
+  Beschleunigung durch größere Pläne. Zeitautorität ist `now()` der
+  Datenbank (abweichende Prozessuhren sehen dieselbe Grenze).
+- **Ablauf ohne Sperre während I/O** (§1.2): `reserveSlot()` = eine kurze
+  Transaktion (Upsert der Zeile, `FOR UPDATE`, Pause prüfen, Slot ≥ Intervall
+  nach max(now, next_slot_at) reservieren, Commit); `acquire()` wartet erst
+  danach, der HTTP-Request folgt ohne jede DB-Sperre (Tests G7/G8 belegen
+  „keine `idle in transaction`“ und sofort sperrbare Zeile während sleep bzw.
+  langsamer Provider-Antwort). Providerfehler (5xx/Timeout) geben den Slot
+  nicht frei (G9).
+- **429 global** (§1.3/§1.4): der Client wertet X-RateLimit-* wie bisher aus
+  (Minuten-429 ⇒ Pause ≤ 60 s, Remaining ≤ 0 ∧ Reset > 60 s ⇒
+  `credit_limited` bis Reset) und persistiert die Pause mit `pause(until,
+  kind)` – nur verlängern, nie verkürzen. Jeder Prozess sieht die Pause beim
+  nächsten Reservieren und scheitert sofort (`RoutingError`, Status 429,
+  Rest als `retryAfterMs`); niemand wartet bis zum Tagesreset; abgelaufene
+  Pausen räumt die nächste Reservierung auf; ein Neustart verliert nichts
+  (G10). Kein eigenes Credit-System – GraphHopper bleibt Autorität.
+- **Injektion statt Verstecken**: `GraphHopperRoutingGateway` erhält den
+  Limiter als Konstruktor-Option (`limiter`); die Fabrik
+  `createRoutingGateway(config, logger, { db | limiter })` erzeugt im Betrieb
+  ausschließlich den Postgres-Limiter und verweigert GraphHopper ohne globale
+  Drossel (nie eine nur prozesslokale Drossel im Betrieb). app.ts und der
+  Worker übergeben dieselbe Datenbank ⇒ dieselbe Zeile. Unit-Tests nutzen den
+  `InMemoryIntegrationRateLimiter` mit identischer Schnittstelle. Die Zeile
+  und die Logs enthalten nie Key, URL oder Request-Inhalte (G11).
+- **Lexware-Pausen**: Lexware setzt keine globalen Pausen (Retry-After
+  behandelt der Client wie bisher); eine dennoch vorhandene Pause wird dort
+  wie Wartezeit behandelt, nie als Fehler.

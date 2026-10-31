@@ -278,6 +278,18 @@ Claude Code deployt niemals eigenmächtig auf Produktion.
 - **Smoke vor Freischaltung:** `ROUTING_SMOKE=1 GRAPHHOPPER_API_KEY=… pnpm
   routing:smoke` (ein Geocode, eine Route; gibt Status und Credits aus, nie
   den Key). Nicht in production ausführen.
+- **Go-live-Schalter `ROUTING_PROVIDER_TERMS_CONFIRMED` (Phase 13 Final):**
+  production mit gesetztem `GRAPHHOPPER_API_KEY` (effektiver Provider
+  `graphhopper`) startet NUR mit `ROUTING_PROVIDER_TERMS_CONFIRMED=true`
+  (API und Worker). Der Wert ist kein Secret, sondern die dokumentierte
+  Bestätigung, dass Vertrag/Paket die implementierte serverseitige
+  Zwischenspeicherung (`geocoding_cache` mit Kandidaten/Koordinaten/
+  OSM-Referenzen, TTL 90/30 Tage; persistierte minimale Distanz-/
+  Fahrzeitwerte) erlaubt – siehe `docs/OPEN_ITEMS.md` „GO-LIVE-BLOCKER
+  Routing“. Ohne Bestätigung: `ROUTING_PROVIDER=disabled` lassen (Touren
+  bleiben organisatorisch nutzbar) oder Caching/Persistenz vor dem Go-live
+  reduzieren. Kein automatischer Default; demo/development/staging
+  ignorieren den Schalter.
 - **Depotadresse:** Einstellung `pickup_exact_address` muss vollständig sein,
   sonst sind Gesamtrouten blockiert („Depotadresse ist noch nicht vollständig
   hinterlegt.“).

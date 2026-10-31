@@ -12,3 +12,4 @@ export * from './lexware.ts';
 export * from './voucher.ts';
 export * from './communication.ts';
 export * from './tours.ts';
+export * from './integration-rate-limits.ts';

@@ -38,6 +38,8 @@ const demo = {
   COMMUNICATION_PAYLOAD_KEY: 'demo-communication-payload-key-0123456789',
 };
 const SYNTH_KEY = 'SYNTH-graphhopper-key-never-real';
+/** Phase 13 Final (§5): production mit effektivem GraphHopper nur mit bestätigter Vertragsprüfung. */
+const productionConfirmed = { ...production, ROUTING_PROVIDER_TERMS_CONFIRMED: 'true' };
 
 describe('Routing-Konfiguration (Phase 13)', () => {
   it('T1. production ohne GRAPHHOPPER_API_KEY ⇒ provider disabled (fail closed, kein Fake)', () => {
@@ -60,7 +62,7 @@ describe('Routing-Konfiguration (Phase 13)', () => {
       loadConfig({ ...production, ROUTING_PROVIDER: 'mock', GRAPHHOPPER_API_KEY: SYNTH_KEY }),
     ).toThrow(/ROUTING_PROVIDER/);
     // Mit Key ⇒ graphhopper; explizit disabled bleibt disabled (Key dann nicht im Objekt).
-    const live = loadConfig({ ...production, GRAPHHOPPER_API_KEY: SYNTH_KEY });
+    const live = loadConfig({ ...productionConfirmed, GRAPHHOPPER_API_KEY: SYNTH_KEY });
     expect(live.routing.provider).toBe('graphhopper');
     expect(live.routing.enabled).toBe(true);
     expect(live.routing.graphhopper.apiKey).toBe(SYNTH_KEY);
@@ -159,7 +161,7 @@ describe('Routing-Konfiguration (Phase 13)', () => {
   });
 
   it('T6./T7./T8. der Key existiert nur unter routing.graphhopper.apiKey – keine Kopie an anderer Stelle (Browser/DB/Log erhalten das Objekt nie)', () => {
-    const config = loadConfig({ ...production, GRAPHHOPPER_API_KEY: SYNTH_KEY });
+    const config = loadConfig({ ...productionConfirmed, GRAPHHOPPER_API_KEY: SYNTH_KEY });
     const { routing, ...rest } = config;
     expect(JSON.stringify(rest)).not.toContain(SYNTH_KEY);
     const { apiKey, ...routingRest } = routing.graphhopper;
@@ -175,10 +177,10 @@ describe('Routing-Konfiguration (Phase 13)', () => {
   });
 
   it('T9. production: Host fest https://graphhopper.com/api/1 (auch mit gleichlautender Angabe)', () => {
-    const config = loadConfig({ ...production, GRAPHHOPPER_API_KEY: SYNTH_KEY });
+    const config = loadConfig({ ...productionConfirmed, GRAPHHOPPER_API_KEY: SYNTH_KEY });
     expect(config.routing.graphhopper.baseUrl).toBe('https://graphhopper.com/api/1');
     const same = loadConfig({
-      ...production,
+      ...productionConfirmed,
       GRAPHHOPPER_API_KEY: SYNTH_KEY,
       GRAPHHOPPER_BASE_URL: 'https://graphhopper.com/api/1/',
     });
@@ -193,7 +195,11 @@ describe('Routing-Konfiguration (Phase 13)', () => {
       'https://staff.example.de/api/1',
     ]) {
       try {
-        loadConfig({ ...production, GRAPHHOPPER_API_KEY: SYNTH_KEY, GRAPHHOPPER_BASE_URL: url });
+        loadConfig({
+          ...productionConfirmed,
+          GRAPHHOPPER_API_KEY: SYNTH_KEY,
+          GRAPHHOPPER_BASE_URL: url,
+        });
         expect.unreachable(`fremder Host ${url} darf in production nicht starten`);
       } catch (error) {
         expect(error).toBeInstanceOf(ConfigError);
@@ -208,7 +214,7 @@ describe('Routing-Konfiguration (Phase 13)', () => {
   });
 
   it('T16. Environment-Isolation: derselbe GraphHopper-Key in zwei Umgebungen kollidiert; getrennte Keys nicht', () => {
-    const prod = loadConfig({ ...production, GRAPHHOPPER_API_KEY: SYNTH_KEY });
+    const prod = loadConfig({ ...productionConfirmed, GRAPHHOPPER_API_KEY: SYNTH_KEY });
     const stagingSame = loadConfig({
       ...staging,
       ROUTING_ENABLED: 'true',
@@ -233,5 +239,145 @@ describe('Routing-Konfiguration (Phase 13)', () => {
     expect(() => assertConfigsIsolated(prod, stagingOther)).not.toThrow();
     // Demo (Mock, kein Key) kollidiert nie über den Routing-Key.
     expect(() => assertConfigsIsolated(prod, loadConfig(demo))).not.toThrow();
+  });
+});
+
+describe('Phase 13 Final §5: GraphHopper-Terms/Server-Cache – Go-live fail-closed (C1–C6)', () => {
+  const TERMS_MESSAGE =
+    /GraphHopper in production erfordert ROUTING_PROVIDER_TERMS_CONFIRMED=true nach vertraglicher Prüfung der serverseitigen Zwischenspeicherung/;
+
+  it('C1. production + graphhopper (Key) ohne Bestätigung ⇒ ConfigError mit klarer Meldung, nie der Key', () => {
+    for (const env of [
+      { ...production, GRAPHHOPPER_API_KEY: SYNTH_KEY },
+      { ...production, GRAPHHOPPER_API_KEY: SYNTH_KEY, ROUTING_PROVIDER_TERMS_CONFIRMED: 'false' },
+      {
+        ...production,
+        ROUTING_ENABLED: 'true',
+        ROUTING_PROVIDER: 'graphhopper',
+        GRAPHHOPPER_API_KEY: SYNTH_KEY,
+      },
+    ]) {
+      try {
+        loadConfig(env);
+        expect.unreachable('production mit GraphHopper darf ohne Bestätigung nicht starten');
+      } catch (error) {
+        expect(error).toBeInstanceOf(ConfigError);
+        const failure = error as ConfigError;
+        expect(failure.problems.join('\n')).toContain('ROUTING_PROVIDER_TERMS_CONFIRMED');
+        expect(failure.message).toMatch(TERMS_MESSAGE);
+        expect(failure.message).toContain('GO-LIVE-BLOCKER Routing');
+        expect(failure.message).not.toContain(SYNTH_KEY);
+      }
+    }
+    // Ungültiger Wert (kein true|false) ist ebenfalls ein Konfigurationsfehler, der die Variable nennt.
+    expect(() =>
+      loadConfig({
+        ...production,
+        GRAPHHOPPER_API_KEY: SYNTH_KEY,
+        ROUTING_PROVIDER_TERMS_CONFIRMED: 'yes',
+      }),
+    ).toThrow(/ROUTING_PROVIDER_TERMS_CONFIRMED/);
+  });
+
+  it('C2. production + graphhopper mit ROUTING_PROVIDER_TERMS_CONFIRMED=true wird akzeptiert', () => {
+    const config = loadConfig({ ...productionConfirmed, GRAPHHOPPER_API_KEY: SYNTH_KEY });
+    expect(config.routing.provider).toBe('graphhopper');
+    expect(config.routing.enabled).toBe(true);
+    expect(config.routing.termsConfirmed).toBe(true);
+    expect(config.routing.graphhopper.apiKey).toBe(SYNTH_KEY);
+    expect(config.routing.graphhopper.baseUrl).toBe(ROUTING_PRODUCTION_BASE_URL);
+  });
+
+  it('C3. production disabled braucht keine Bestätigung (ohne Key, Key + disabled, Key + ROUTING_ENABLED=false)', () => {
+    for (const env of [
+      production,
+      { ...production, ROUTING_ENABLED: 'true' },
+      { ...production, GRAPHHOPPER_API_KEY: SYNTH_KEY, ROUTING_PROVIDER: 'disabled' },
+      { ...production, GRAPHHOPPER_API_KEY: SYNTH_KEY, ROUTING_ENABLED: 'false' },
+    ]) {
+      const config = loadConfig(env);
+      expect(config.routing.provider).toBe('disabled');
+      expect(config.routing.enabled).toBe(false);
+      expect(config.routing.termsConfirmed).toBe(false);
+      expect(config.routing.graphhopper.apiKey).toBeNull();
+    }
+    // Auch mit gesetztem Schalter bleibt disabled disabled (kein stilles Einschalten).
+    expect(loadConfig(productionConfirmed).routing.provider).toBe('disabled');
+  });
+
+  it('C4. demo bleibt unverändert Mock – der Schalter ändert nichts, Key bleibt verboten', () => {
+    for (const env of [
+      demo,
+      { ...demo, ROUTING_PROVIDER_TERMS_CONFIRMED: 'true' },
+      { ...demo, ROUTING_PROVIDER_TERMS_CONFIRMED: 'false' },
+    ]) {
+      const config = loadConfig(env);
+      expect(config.routing.provider).toBe('mock');
+      expect(config.routing.graphhopper.apiKey).toBeNull();
+    }
+    expect(() =>
+      loadConfig({
+        ...demo,
+        GRAPHHOPPER_API_KEY: SYNTH_KEY,
+        ROUTING_PROVIDER_TERMS_CONFIRMED: 'true',
+      }),
+    ).toThrow(/GRAPHHOPPER_API_KEY/);
+  });
+
+  it('C5. development/staging unverändert: Default und Opt-in ohne Bestätigung; Schalter wird ignoriert (staging nicht erzwungen)', () => {
+    expect(loadConfig({ APP_ENV: 'development' }).routing.provider).toBe('mock');
+    expect(
+      loadConfig({ APP_ENV: 'development', ROUTING_PROVIDER_TERMS_CONFIRMED: 'true' }).routing
+        .provider,
+    ).toBe('mock');
+    const devOptIn = loadConfig({
+      APP_ENV: 'development',
+      ROUTING_ENABLED: 'true',
+      ROUTING_PROVIDER: 'graphhopper',
+      GRAPHHOPPER_API_KEY: SYNTH_KEY,
+      GRAPHHOPPER_BASE_URL: 'http://127.0.0.1:4567/api/1',
+    });
+    expect(devOptIn.routing.provider).toBe('graphhopper');
+    expect(devOptIn.routing.termsConfirmed).toBe(false);
+    expect(loadConfig(staging).routing.provider).toBe('disabled');
+    const stagingOptIn = loadConfig({
+      ...staging,
+      ROUTING_ENABLED: 'true',
+      ROUTING_PROVIDER: 'graphhopper',
+      GRAPHHOPPER_API_KEY: SYNTH_KEY,
+    });
+    expect(stagingOptIn.routing.provider).toBe('graphhopper');
+    expect(stagingOptIn.routing.termsConfirmed).toBe(false);
+    expect(
+      loadConfig({ ...staging, ROUTING_PROVIDER_TERMS_CONFIRMED: 'true' }).routing.provider,
+    ).toBe('disabled');
+  });
+
+  it('C6. der Schalter ist kein Secret: Boolean im Config-Objekt, keine Isolations-Kollision, Variablenname darf in Meldungen stehen', () => {
+    const prod = loadConfig({ ...productionConfirmed, GRAPHHOPPER_API_KEY: SYNTH_KEY });
+    const stagingConfirmed = loadConfig({
+      ...staging,
+      ROUTING_ENABLED: 'true',
+      ROUTING_PROVIDER: 'graphhopper',
+      GRAPHHOPPER_API_KEY: 'SYNTH-other-staging-key',
+      ROUTING_PROVIDER_TERMS_CONFIRMED: 'true',
+    });
+    // Beide „true“ ⇒ keine Kollision (nur Zugangsdaten/Datenbank/Storage kollidieren).
+    expect(() => assertConfigsIsolated(prod, stagingConfirmed)).not.toThrow();
+    expect(() => assertConfigsIsolated(prod, loadConfig(demo))).not.toThrow();
+    // Der Wert ist ein einfacher Boolean neben dem (geheimen) Key – ohne Key serialisierbar.
+    const { apiKey, ...publicGraphhopper } = prod.routing.graphhopper;
+    expect(apiKey).toBe(SYNTH_KEY);
+    const serialized = JSON.stringify({ ...prod.routing, graphhopper: publicGraphhopper });
+    expect(serialized).toContain('"termsConfirmed":true');
+    expect(serialized).not.toContain(SYNTH_KEY);
+    // Die Fehlermeldung nennt den Schalter (kein Geheimnis), aber nie den Key.
+    try {
+      loadConfig({ ...production, GRAPHHOPPER_API_KEY: SYNTH_KEY });
+      expect.unreachable();
+    } catch (error) {
+      expect(String(error)).toContain('ROUTING_PROVIDER_TERMS_CONFIRMED=true');
+      expect(String(error)).not.toContain(SYNTH_KEY);
+    }
   });
 });

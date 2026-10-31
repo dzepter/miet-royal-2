@@ -130,6 +130,39 @@ nicht, aber den Produktivbetrieb der Buchhaltung.
    production, nie im Quality Gate) – Profil, Subscriptions, Steuerplausibilität
    und eine Testrechnung im Testaccount gegen die Erwartungen prüfen.
 
+## GO-LIVE-BLOCKER Routing (nach Phase 13 Final verbindlich offen)
+Das System trifft hier bewusst KEINE juristische Entscheidung (kein
+technischer Default). Production ist fail-closed: mit gesetztem
+`GRAPHHOPPER_API_KEY` (effektiver Provider `graphhopper`) startet die
+Konfiguration nur mit `ROUTING_PROVIDER_TERMS_CONFIRMED=true`
+(`packages/config`, Phase 13 Final §5). Der Schalter ist kein Secret und
+bedeutet ausschließlich „Vertrag gegen die implementierte Nutzung geprüft“.
+
+1. **Vertrag/Paket muss die implementierte serverseitige Zwischenspeicherung
+   erlauben:** `geocoding_cache` speichert Geocoding-Kandidaten (≤ 5, mit
+   OSM-Referenz), Koordinaten und bestätigte OSM-Referenzen mit TTL 90 Tage
+   (resolved) bzw. 30 Tage (review_required/no_result); außerdem werden
+   minimale skalare Distanz-/Fahrzeitwerte (Meter/Sekunden, geplante Zeiten)
+   je Tour/Stopp persistiert. Die GraphHopper-ToS regeln ausdrücklich nur
+   temporäres clientseitiges Caching; eine dauerhafte serverseitige Speicherung
+   ist nicht ausdrücklich geregelt (`docs/ROUTING_API_NOTES.md`, Abschnitt
+   „Persistenz- und Caching-Grenzen“). Vor dem Go-live mit dem gewählten Paket
+   bzw. per Custom-Vertrag klären – ohne Behauptung „laut ToS erlaubt“.
+2. **Ergebnis negativ ⇒ vor dem Go-live reduzieren/umbauen:** TTLs verkürzen
+   oder Geocoding-Cache/Kandidatenlisten/Koordinaten nicht persistieren,
+   Distanz-/Fahrzeitwerte nur transient halten – NICHT den Schalter setzen.
+   Bis zur Klärung bleibt production mit `ROUTING_PROVIDER=disabled`
+   startbar (Touren organisatorisch nutzbar, keine Routen/Prognosen).
+3. **Ergebnis positiv ⇒** `ROUTING_PROVIDER_TERMS_CONFIRMED=true` bei API und
+   Worker setzen (dokumentierte Entscheidung, `docs/PRE_START_CHECKLIST.md`),
+   zusätzlich bezahlter Plan (Basic oder höher) und Kontoinhaber.
+4. **`push_deliveries`-Retention (Retention-/Go-live-Punkt, bewusst nicht in
+   Phase 13 Final gebaut, §9):** Push-Zustellungen (`push_deliveries`, inkl.
+   `tour_delay_risk`) haben noch keine eigene Aufbewahrungs-/Bereinigungsregel;
+   vor dem Go-live Frist festlegen (Vorschlag analog `mail_deliveries`:
+   prozessgebunden 12 Berliner Kalendermonate, sonst 90 Tage nach Endzustand)
+   und als Retention-Job nachziehen. Keine Fachregel erfinden.
+
 ## Alte Website (vor Phase 17)
 URL-Liste, wichtige Rankings, Redirect-Mapping, zu übernehmender Content.
 
@@ -139,17 +172,20 @@ URL-Liste, wichtige Rankings, Redirect-Mapping, zu übernehmender Content.
 - Maschinengewichte/Transporttexte
 
 ## Touren/Routing (nach Phase 13 offen)
+Mit Phase 13 Final ENTSCHIEDEN (nicht mehr offen, siehe TECH_DECISIONS.md
+„Phase 13 Final: bestätigte Produktentscheidungen“ und DOMAIN_RULES.md
+„Touren“): Verspätungsschwelle (prognostizierte Ankunft nach der Frist, kein
+Vorwarn-Puffer), mehrere Risiken (Incident je Stopp, ein Push je Empfänger),
+GPS-Mindestqualität (≤ 250 m), „Angekommen“ ohne GPS-Näheprüfung, Entfernen
+eines Stopps aus einer aktiven Tour; außerdem Offline-Lease für reine
+Tourfahrer (`calendar.view`) und der GraphHopper-Go-live-Schalter (siehe
+„GO-LIVE-BLOCKER Routing“).
 - Lieferpreis-Vorschlagslogik bleibt undefiniert: Phase 13 zeigt nur Distanz
   und Fahrzeit; `DeliveryPriceSuggestion` liefert bewusst `null` (keine
   €/km-, Mindest- oder Zeitpreisregel erfunden).
 - GraphHopper-Plan für den Produktivbetrieb (Basic oder höher; Free ist laut
   Pricing nicht für kommerziellen Produktivbetrieb) und Kontoinhaber.
-- Schwellen für Verspätungsrisiko (derzeit: prognostizierte Ankunft nach der
-  Terminfrist), Mindestgenauigkeit des Standorts und Verhalten bei mehreren
-  gleichzeitigen Risiken.
-- Prozessübergreifende Drossel der Provider-Aufrufe (API und Worker drosseln
-  heute je Prozess mit 1 Request/s).
-- Offline-Arbeitspaket setzt ein Phase-8-Recht voraus; ein Fahrer nur mit
-  `calendar.view` erhält keinen Tour-Snapshot.
+- `push_deliveries`-Retention: siehe „GO-LIVE-BLOCKER Routing“ Punkt 4
+  (späterer Retention-/Go-live-Punkt, nicht in Phase 13 Final gebaut).
 - Kundenstatus „Unterwegs“ ist nur als Grenze vorbereitet
   (`getCustomerTravelStatus`), ohne Endpunkt (Kundenportal spätere Phase).

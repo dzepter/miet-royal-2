@@ -2,6 +2,8 @@
  * Phase 10 – gemeinsamer Rate-Limiter in PostgreSQL (Order §11; Pflichttests
  * 15–17): Slots mit ≥ 500 ms Abstand, zwei Prozesse teilen den Zustand,
  * während der Wartezeit ist KEINE Transaktion/Verbindung belegt.
+ * Phase 13 Final (§1.1): Zustand liegt in `integration_rate_limits`
+ * (provider 'lexware'), Verhalten unverändert.
  */
 import { createDb, createPool } from '@mietroyal/database';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
@@ -20,12 +22,14 @@ afterAll(async () => {
   await destroyTestContext(ctx);
 });
 beforeEach(async () => {
-  await ctx.pool.query('TRUNCATE lexware_rate_limit');
+  await ctx.pool.query(`DELETE FROM integration_rate_limits WHERE provider = 'lexware'`);
 });
+
+const throttleOptions = () => ({ environment: ctx.config.appEnv });
 
 describe('PostgresLexwareThrottle (§11)', () => {
   it('15. Fünf parallele Reservierungen erhalten Slots mit mindestens 500 ms Abstand', async () => {
-    const throttle = new PostgresLexwareThrottle(ctx.db);
+    const throttle = new PostgresLexwareThrottle(ctx.db, throttleOptions());
     const started = Date.now();
     const waits = await Promise.all(Array.from({ length: 5 }, () => throttle.reserveSlot()));
     const elapsed = Date.now() - started;
@@ -40,7 +44,7 @@ describe('PostgresLexwareThrottle (§11)', () => {
     }
     // Absoluter Beleg: der nächste freie Slot liegt ≥ 5 × 500 ms nach dem Start.
     const row = await ctx.pool.query<{ ms: string }>(
-      `SELECT (EXTRACT(EPOCH FROM next_slot_at) * 1000)::bigint::text AS ms FROM lexware_rate_limit WHERE id = 1`,
+      `SELECT (EXTRACT(EPOCH FROM next_slot_at) * 1000)::bigint::text AS ms FROM integration_rate_limits WHERE provider = 'lexware'`,
     );
     expect(Number(row.rows[0]!.ms)).toBeGreaterThanOrEqual(
       started + 5 * LEXWARE_MIN_SLOT_INTERVAL_MS - 50,
@@ -52,8 +56,8 @@ describe('PostgresLexwareThrottle (§11)', () => {
   it('16. Zwei Throttle-Instanzen auf getrennten Pools („zwei Prozesse“) teilen dieselbe Grenze', async () => {
     const poolB = createPool(ctx.config.databaseUrl, { max: 2 });
     try {
-      const a = new PostgresLexwareThrottle(ctx.db);
-      const b = new PostgresLexwareThrottle(createDb(poolB));
+      const a = new PostgresLexwareThrottle(ctx.db, throttleOptions());
+      const b = new PostgresLexwareThrottle(createDb(poolB), throttleOptions());
       const first = await a.reserveSlot();
       const second = await b.reserveSlot();
       const third = await a.reserveSlot();
@@ -70,7 +74,7 @@ describe('PostgresLexwareThrottle (§11)', () => {
     // während des Wartens, würde die parallele Abfrage bis zum Ende warten.
     const single = createPool(ctx.config.databaseUrl, { max: 1 });
     try {
-      const throttle = new PostgresLexwareThrottle(createDb(single));
+      const throttle = new PostgresLexwareThrottle(createDb(single), throttleOptions());
       await throttle.reserveSlot(); // Slot 1 sofort
       await throttle.reserveSlot(); // Slot 2 in ≥ 500 ms
       const acquiring = throttle.acquire(); // Slot 3: wartet ≈ 1000 ms
@@ -94,6 +98,7 @@ describe('PostgresLexwareThrottle (§11)', () => {
   it('acquire() schläft außerhalb der Transaktion genau die reservierte Zeit', async () => {
     const sleeps: number[] = [];
     const throttle = new PostgresLexwareThrottle(ctx.db, {
+      ...throttleOptions(),
       sleep: async (ms) => {
         sleeps.push(ms);
       },

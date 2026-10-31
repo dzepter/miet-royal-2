@@ -1,4 +1,5 @@
 import { z } from '@mietroyal/validation';
+import type { IntegrationRateLimiter, RateLimitPauseKind } from '../integrations/rate-limiter.ts';
 import {
   RoutingError,
   type GeocodeCandidate,
@@ -30,8 +31,13 @@ import {
  *   das Tageskontingent erschöpft ist), 5xx server_error, Abbruch timeout,
  *   Netzfehler network. Keine eigenen Retries – Aufrufer entscheiden über
  *   `RoutingError.transient`.
- * - In-process-Drossel: höchstens ein Request je `minIntervalMs` (Default 1 s,
- *   konservativ unter dem Basic-Plan) plus Pause nach 429 – kein Request-Sturm.
+ * - Drossel: Phase 13 Final (§1) – GLOBAL über den injizierten
+ *   `IntegrationRateLimiter` (im Betrieb Postgres-Zeile provider 'graphhopper':
+ *   höchstens ein Request je Sekunde je Umgebung, geteilt von API, Worker und
+ *   Replikaten; keine Beschleunigung durch größere Pläne). Ablauf je Request:
+ *   Slot reservieren (kurze Tx) → Commit → ggf. warten → fetch – nie eine
+ *   DB-Sperre während sleep() oder fetch(). Providerfehler geben den Slot nicht
+ *   frei. Pause nach 429 wird global persistiert (`limiter.pause`).
  *   Phase 13 (Fix F1): während der Pause scheitern Aufrufe SOFORT (fail-fast,
  *   `rate_limited`/`credit_limited`, Status 429, Rest der Pause als
  *   retryAfterMs) statt zu schlafen; Minuten-429 (Remaining > 0) pausiert
@@ -54,13 +60,15 @@ export interface GraphHopperGatewayOptions {
   timeoutMs: number;
   fetchImpl?: typeof fetch;
   logger?: RoutingLogger;
-  /** Mindestabstand zwischen zwei Requests (Default 1000 ms). */
-  minIntervalMs?: number;
+  /**
+   * Phase 13 Final (§1): globale Drossel (Postgres im Betrieb; In-Memory nur in
+   * Unit-Tests). Slot-Abstand und Pausen leben im Limiter, nicht im Client.
+   */
+  limiter: IntegrationRateLimiter;
   /** Pause nach 429 ohne auswertbaren Reset-Header (Default 60 s – „bis zur nächsten Minute“). */
   defaultRetryAfterMs?: number;
-  /** Nur Tests: Zeit/Schlaf injizierbar. */
+  /** Nur Tests: Zeit injizierbar (dieselbe Uhr wie der In-Memory-Limiter). */
   now?: () => number;
-  sleep?: (ms: number) => Promise<void>;
 }
 
 export const GRAPHHOPPER_PROFILE = 'car';
@@ -212,16 +220,9 @@ export class GraphHopperRoutingGateway implements RoutingGateway {
   readonly kind = 'graphhopper' as const;
   readonly providerName = 'graphhopper';
   private readonly fetchImpl: typeof fetch;
-  private readonly minIntervalMs: number;
+  private readonly limiter: IntegrationRateLimiter;
   private readonly defaultRetryAfterMs: number;
   private readonly now: () => number;
-  private readonly sleep: (ms: number) => Promise<void>;
-  /** Frühester Zeitpunkt des nächsten Requests (1-s-Drossel). */
-  private nextSlotAt = 0;
-  /** Phase 13 (Fix F1): 429-Pause – bis dahin scheitern Aufrufe sofort (kein Schlafen). */
-  private pausedUntil = 0;
-  private pauseKind: 'rate_limited' | 'credit_limited' = 'rate_limited';
-  private chain: Promise<void> = Promise.resolve();
 
   constructor(private readonly options: GraphHopperGatewayOptions) {
     if (!/^https?:\/\//.test(options.baseUrl)) {
@@ -229,10 +230,9 @@ export class GraphHopperRoutingGateway implements RoutingGateway {
     }
     if (options.apiKey.trim() === '') throw new Error('Routing apiKey fehlt');
     this.fetchImpl = options.fetchImpl ?? ((input, init) => fetch(input, init));
-    this.minIntervalMs = options.minIntervalMs ?? GRAPHHOPPER_MIN_INTERVAL_MS;
+    this.limiter = options.limiter;
     this.defaultRetryAfterMs = options.defaultRetryAfterMs ?? GRAPHHOPPER_DEFAULT_RETRY_AFTER_MS;
     this.now = options.now ?? (() => Date.now());
-    this.sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
   }
 
   // ── RoutingGateway ──────────────────────────────────────────────────────
@@ -405,38 +405,52 @@ export class GraphHopperRoutingGateway implements RoutingGateway {
   // ── Transport ───────────────────────────────────────────────────────────
 
   /**
-   * Drossel: ein Request je minIntervalMs (kurzes Warten). Phase 13 (Fix F1):
-   * Eine aktive 429-Pause lässt NIEMANDEN schlafen – jeder Aufruf scheitert
-   * sofort mit `rate_limited`/`credit_limited` (Status 429, Rest der Pause als
-   * retryAfterMs) und ohne Provider-Request. So hängen weder HTTP-Handler noch
-   * der Worker (scan_due) bis zu einem Tagesreset; „kein Retry-Sturm“ bleibt.
+   * Globale Drossel (Phase 13 Final §1.2): der Limiter reserviert den nächsten
+   * Slot in einer kurzen Transaktion, committet und wartet erst danach – ohne
+   * jede DB-Sperre. Phase 13 (Fix F1): Eine aktive 429-Pause (global, von
+   * irgendeinem Prozess gesetzt) lässt NIEMANDEN schlafen – jeder Aufruf
+   * scheitert sofort mit `rate_limited`/`credit_limited` (Status 429, Rest der
+   * Pause als retryAfterMs) und ohne Provider-Request. So hängen weder
+   * HTTP-Handler noch der Worker (scan_due) bis zu einem Tagesreset.
+   * Phase 13 Final (Review N1): Ein Fehler des Limiters selbst (z. B. DB nicht
+   * erreichbar) wird auf `RoutingError('network')` abgebildet – die Planung
+   * antwortet 503 ROUTING_UNAVAILABLE statt 500; Log neutral, nie Key/URL.
    */
   private async acquireSlot(): Promise<void> {
-    const ticket = this.chain.then(async () => {
-      const now = this.now();
-      if (this.pausedUntil > now) {
-        throw new RoutingError(this.pauseKind, 429, this.pausedUntil - now);
-      }
-      const startAt = Math.max(now, this.nextSlotAt);
-      this.nextSlotAt = startAt + this.minIntervalMs;
-      if (startAt > now) await this.sleep(startAt - now);
-    });
-    this.chain = ticket.catch(() => undefined);
-    await ticket;
+    let result;
+    try {
+      result = await this.limiter.acquire();
+    } catch (error) {
+      if (error instanceof RoutingError) throw error;
+      this.options.logger?.warn(
+        { routing: { provider: 'graphhopper', outcome: 'limiter_failed' } },
+        'Globale Routing-Drossel nicht verfügbar',
+      );
+      throw new RoutingError('network');
+    }
+    if (result.paused !== null) {
+      throw new RoutingError(result.paused.kind, 429, Math.max(0, result.paused.remainingMs));
+    }
   }
 
   /**
    * Pause nach 429 (Fix F1): Minuten-Limit (Remaining > 0 bzw. unbekannt) ⇒
    * höchstens 60 s, auch wenn X-RateLimit-Reset den Tagesreset nennt;
    * Tageskontingent erschöpft (credit_limited) ⇒ bis zum Reset – beides fail-fast.
+   * Phase 13 Final (§1.3): die Pause wird GLOBAL persistiert (nur verlängern);
+   * schlägt das Persistieren fehl, bleibt der RoutingError trotzdem der Fehler
+   * des Aufrufers (neutraler Log, kein Key/URL).
    */
-  private pauseFor(kind: 'rate_limited' | 'credit_limited', ms: number): number {
+  private async pauseFor(kind: RateLimitPauseKind, ms: number): Promise<number> {
     const pauseMs =
       kind === 'credit_limited' ? ms : Math.min(ms, GRAPHHOPPER_RATE_LIMIT_PAUSE_MAX_MS);
-    const until = this.now() + pauseMs;
-    if (until > this.pausedUntil) {
-      this.pausedUntil = until;
-      this.pauseKind = kind;
+    try {
+      await this.limiter.pause(new Date(this.now() + pauseMs), kind);
+    } catch {
+      this.options.logger?.warn(
+        { routing: { provider: 'graphhopper', outcome: 'pause_persist_failed' } },
+        'Routing-Pause konnte nicht global gespeichert werden',
+      );
     }
     return pauseMs;
   }
@@ -502,7 +516,7 @@ export class GraphHopperRoutingGateway implements RoutingGateway {
             : this.defaultRetryAfterMs;
         if (remaining !== null && remaining <= 0 && resetMs > 60_000) kind = 'credit_limited';
         // Fix F1: retryAfterMs = tatsächliche Pause dieses Clients (Minuten-Limit ≤ 60 s).
-        retryAfterMs = this.pauseFor(
+        retryAfterMs = await this.pauseFor(
           kind === 'credit_limited' ? 'credit_limited' : 'rate_limited',
           resetMs,
         );

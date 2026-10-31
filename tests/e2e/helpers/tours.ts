@@ -148,12 +148,12 @@ export interface DelayIncidentDbRow {
   tour_id: string;
   stop_id: string;
   resolved_at: string | null;
-  notification_sent_at: string | null;
+  notification_enqueued_at: string | null;
 }
 
 export function delayIncidents(tourId: string): DelayIncidentDbRow[] {
   return queryTestDb<DelayIncidentDbRow>(
-    'SELECT id, tour_id, stop_id, resolved_at, notification_sent_at FROM tour_delay_incidents WHERE tour_id = $1 ORDER BY detected_at ASC',
+    'SELECT id, tour_id, stop_id, resolved_at, notification_enqueued_at FROM tour_delay_incidents WHERE tour_id = $1 ORDER BY detected_at ASC',
     [tourId],
   );
 }

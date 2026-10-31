@@ -215,7 +215,9 @@ function Home() {
           )}
 
           {/* Phase 13 (UI): prominent vor den heutigen Terminen (Überfälliges bleibt ganz oben). */}
-          {activeTour !== null && <ActiveTourCard tour={activeTour} />}
+          {activeTour.tour !== null && (
+            <ActiveTourCard tour={activeTour.tour} conflict={activeTour.conflict} />
+          )}
 
           <div className="card">
             <h2>Heutige Termine</h2>

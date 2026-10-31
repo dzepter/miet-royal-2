@@ -180,7 +180,10 @@ Admin kann Gate manuell übersteuern.
   jede Mutation beim Sync erneut gegen die AKTUELLEN Rechte – ein widerrufenes
   Recht führt zur Ablehnung (`PERMISSION_REVOKED`), nie zur Anwendung.
 - Ein Offline-Lease (72 h) erhalten nur Konten mit operativen Rechten
-  (`handover.view`, `return.view` oder `machine.view`). Der lokale
+  (`handover.view`, `return.view`, `machine.view` oder – seit Phase 13 Final –
+  `calendar.view` für reine Tourfahrer: diese erhalten im Paket ausschließlich
+  den read-only Snapshot ihrer eigenen/effektiven aktiven Tour, keine Vorgänge,
+  keinen Maschinenstamm, kein Lager, keine Dokumente und keine Mutation). Der lokale
   Rechte-Snapshot enthält ausschließlich operative Keys
   (`OFFLINE_RELEVANT_PERMISSIONS`); Admin-, Finanz- und Systemrechte werden
   nie übertragen und steuern lokal nur die Darstellung.

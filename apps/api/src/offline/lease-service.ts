@@ -27,11 +27,21 @@ import { OfflineLeaseSigner } from './lease-signing.ts';
 
 export const OFFLINE_LEASE_MS = 72 * 3_600_000;
 
-/** Ein Lease erhalten nur Konten mit operativen Rechten (Order §8). */
+/**
+ * Ein Lease erhalten nur Konten mit operativen Rechten (Order §8).
+ * Phase 13 Final (offline, §4): `calendar.view` ist ebenfalls lease-aktivierend,
+ * damit ein reiner Tourfahrer den read-only Snapshot seiner eigenen aktiven
+ * Tour offline erhält. Welche Paketabschnitte befüllt werden, entscheidet
+ * weiterhin ausschließlich das jeweilige Fachrecht (`OfflinePackageService`):
+ * nur `calendar.view` ⇒ ausschließlich `activeTour`, keine Vorgänge, kein
+ * Maschinenstamm, kein Lager, keine Dokumente – und keine Tour-Mutationen
+ * (es gibt keine in `OFFLINE_MUTATION_TYPES`).
+ */
 export const OFFLINE_ENABLING_PERMISSIONS: readonly PermissionKey[] = [
   'handover.view',
   'return.view',
   'machine.view',
+  'calendar.view', // Phase 13 Final (offline, §4)
 ];
 
 /**
@@ -107,7 +117,7 @@ export class OfflineLeaseService {
     }
   }
 
-  /** Offline-Berechtigung: mindestens ein operatives Recht (Order §8). */
+  /** Offline-Berechtigung: mindestens ein operatives Recht (Order §8; Phase 13 Final: auch calendar.view). */
   hasOfflineAccess(effective: ReadonlySet<PermissionKey>): boolean {
     return OFFLINE_ENABLING_PERMISSIONS.some((key) => effective.has(key));
   }

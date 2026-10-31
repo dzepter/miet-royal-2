@@ -338,3 +338,52 @@ describe('Review-13-Fixes: Restroute-CAS, Termin an anderem Tag', () => {
     ).toHaveLength(1);
   });
 });
+
+describe('Phase 13 Final (§6E): Stopp aus aktiver Tour entfernen', () => {
+  it('E1. Nicht erledigter Stopp: calendar.manage entfernt ihn bewusst aus der AKTIVEN Tour (Termin bleibt scheduled, Route stale, Tour aktiv); Fahrer ohne manage 403; erledigte Stopps bleiben Historie (409 TOUR_STOP_DONE)', async () => {
+    const today = todayBerlin();
+    const { api, driver, driverApi, tour, bookings } = await setup(today, { untimed: true });
+    await applyPlan(api, tour.id, today);
+    const started = await driverApi('POST', `/staff/tours/${tour.id}/start`, {});
+    expect(started.body.started).toBe(true);
+    const before = await getTour(api, tour.id);
+    expect(before.planningStatus).toBe('planned');
+    const doneStop = before.stops[0];
+    const openStop = before.stops[1];
+    await completeAppointment(world, driver.id, doneStop.appointmentId);
+    // Erledigter Stopp: nicht entfernbar (Historie).
+    const blocked = await api('DELETE', `/staff/tours/${tour.id}/stops/${doneStop.id}`, {});
+    expect(blocked.status).toBe(409);
+    expect(blocked.body.error.code).toBe('TOUR_STOP_DONE');
+    // Fahrer ohne calendar.manage: nicht erlaubt.
+    const forbidden = await driverApi('DELETE', `/staff/tours/${tour.id}/stops/${openStop.id}`, {});
+    expect(forbidden.status).toBe(403);
+    // Planer: bewusstes Entfernen eines nicht erledigten Stopps.
+    const current = await getTour(api, tour.id);
+    const removed = await api('DELETE', `/staff/tours/${tour.id}/stops/${openStop.id}`, {
+      expectedVersion: current.version,
+    });
+    expect(removed.status).toBe(200);
+    const view = removed.body.tour;
+    expect(view.status).toBe('active');
+    expect(view.planningStatus).toBe('stale');
+    expect(view.version).toBeGreaterThan(current.version);
+    expect(view.stops.map((s: { id: string }) => s.id)).toEqual(
+      current.stops
+        .filter((s: { id: string }) => s.id !== openStop.id)
+        .map((s: { id: string }) => s.id),
+    );
+    expect(view.stops[0].state).toBe('done');
+    // Termin bleibt fachlich unangetastet (scheduled, keine Stornierung).
+    const appointment = (
+      await world.ctx.pool.query('SELECT status FROM appointments WHERE id = $1', [
+        openStop.appointmentId,
+      ])
+    ).rows[0] as { status: string };
+    expect(appointment.status).toBe('scheduled');
+    expect(
+      (await world.ctx.db.select().from(tourStops).where(eq(tourStops.id, openStop.id))).length,
+    ).toBe(0);
+    void bookings;
+  });
+});

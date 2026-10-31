@@ -527,7 +527,9 @@ export function buildApp({
       );
       // Phase 13 (routing): eine Gateway-Instanz je Prozess (Order §2); die
       // Fabrik entscheidet nach config.routing (production: nur graphhopper|disabled).
-      const routing: RoutingGateway = routingGateway ?? createRoutingGateway(config, app.log);
+      // Phase 13 Final (routing): globale Drossel in integration_rate_limits (API + Worker teilen die Zeile).
+      const routing: RoutingGateway =
+        routingGateway ?? createRoutingGateway(config, app.log, { db });
       // Phase 13 (tours): Tour-Listener werden in registerTourRoutes (Agent TOUR) erzeugt und
       // hier an die Terminplanung gehängt – Einfügepunkt, nicht entfernen.
       const schedulingListeners = [riskRefreshListener, createTourStaleListener(tourService)];

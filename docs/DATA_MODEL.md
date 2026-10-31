@@ -385,7 +385,8 @@ nach dem Ende keine Standorte mehr an. Nie in Logs, nie in Kundenpfaden.
 ### TourDelayIncident (Phase 13)
 Verspätungsrisiko je Stopp: `tour_id`, `stop_id`, `detected_at`,
 `last_evaluated_at`, `predicted_arrival_at`, `deadline_at`,
-`notification_sent_at` (genau ein Push je Incident), `resolved_at`.
+`notification_enqueued_at` (Push-Zustellungen als Outbox-Zeilen genau einmal je
+Incident angelegt; der Versandjob folgt nach dem Commit), `resolved_at`.
 Partial-Unique auf `stop_id WHERE resolved_at IS NULL` ⇒ ein offener Incident je
 Stopp. Keine Kundenkommunikation aus diesem Pfad.
 
@@ -398,6 +399,17 @@ Adresstext, nie Kundenbezug): `address_hash`, `address_text`, `status`
 cachen“), `confirmed_by/at`, `confirmed_osm_ref` (Mitarbeiterentscheidung
 „Adresse für Route prüfen“ überlebt den Ablauf: nach erneuter Abfrage wird der
 bestätigte Treffer wiedererkannt).
+
+### IntegrationRateLimit (Phase 13 Final, `integration_rate_limits`)
+Prozessübergreifender Rate-Limit-Zustand je externem Provider (ersetzt
+`lexware_rate_limit`, Migration 0028): `provider` (PK: `lexware`,
+`graphhopper`), `environment` (APP_ENV, informativ – jede Umgebung hat ihre
+eigene Datenbank), `next_slot_at` (frühester nächster Request; Slot wird in
+einer kurzen `FOR UPDATE`-Transaktion reserviert, gewartet wird außerhalb),
+`paused_until` + `pause_kind` (`rate_limited` | `credit_limited`; Check: beide
+null oder beide gesetzt – vom Provider verhängte Pause, die API, Worker und
+Replikate gleichermaßen sehen, fail-fast), `updated_at`. Enthält nie Keys,
+URLs oder Request-Inhalte.
 
 ### SystemSetting
 Nur sinnvolle veränderbare Betriebsparameter; keine komplette Fachlogik als freie JSON-Regel.

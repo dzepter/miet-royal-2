@@ -5,6 +5,7 @@ import {
   staffUsers,
   tourDelayIncidents,
   tourLiveLocations,
+  tours,
   type Appointment,
   type Database,
   type Tour,
@@ -13,7 +14,7 @@ import {
 } from '@mietroyal/database';
 import { berlinDateOf, navigationLinks, stopDeadline, type TourStopState } from '@mietroyal/domain';
 import type { PermissionKey } from '@mietroyal/permissions';
-import { and, inArray, isNull } from 'drizzle-orm';
+import { and, eq, inArray, isNull } from 'drizzle-orm';
 import type { GeoPoint } from '../routing/types.ts';
 import type { GeocodingResolution, OperativeAddress } from '../routing/geocoding-types.ts';
 import { effectiveAssigneeForAppointment, loadSubstitutions } from '../scheduling/assignee.ts';
@@ -74,6 +75,8 @@ export interface TourWarning {
   code: string;
   message: string;
   stopId?: string;
+  /** Phase 13 Final (§3): neutraler Grund bei DELAY_FORECAST_UNAVAILABLE/DELAY_LOCATION_INACCURATE. */
+  reason?: string;
 }
 
 export interface TourView {
@@ -127,6 +130,10 @@ export interface TourViewDeps {
 
 /** Phase 13 (tours-live): Warnungstexte der Verspätungsprognose (Design §13). */
 export const DELAY_FORECAST_UNAVAILABLE_MESSAGE = 'Verspätungsprognose derzeit nicht verfügbar.';
+/** Phase 13 Final (§3): Standort vorhanden, aber zu ungenau für eine Prognose (kein Meterwert). */
+export const DELAY_LOCATION_INACCURATE_MESSAGE = 'Standort derzeit zu ungenau.';
+/** Phase 13 Final (§7): dieselbe effektive Person ist für mehrere aktive Touren zuständig. */
+export const MULTIPLE_ACTIVE_TOURS_MESSAGE = 'Mehrere aktive Touren gleichzeitig – Planung prüfen.';
 
 const DELAY_KIND_LABELS: Record<Appointment['kind'], string> = {
   delivery: 'Liefertermin',
@@ -220,6 +227,26 @@ export async function buildTourViews(
     bookingRows.map((row) => [row.id, machineNameOf(row.itemsSnapshot)]),
   );
   const substitutions = await loadSubstitutions(db);
+  // Phase 13 Final (§7): Konflikt „mehrere aktive Touren derselben effektiven Person“ –
+  // zuständig = gespeicherter ODER effektiver Fahrer (dieselbe Regel wie
+  // TourService.findActiveToursFor). Nur für aktive Touren geprüft.
+  const activeRows: Tour[] = loadedTours.some((entry) => entry.tour.status === 'active')
+    ? await db.select().from(tours).where(eq(tours.status, 'active'))
+    : [];
+  const responsibleOf = (tour: Tour): string[] => {
+    const effective = deps.tours.effectiveDriverId(tour, substitutions, now);
+    return effective === null || effective === tour.assignedUserId
+      ? [tour.assignedUserId]
+      : [tour.assignedUserId, effective];
+  };
+  const activeResponsible = activeRows.map((row) => ({ id: row.id, users: responsibleOf(row) }));
+  const hasActiveConflict = (tour: Tour): boolean => {
+    if (tour.status !== 'active') return false;
+    const mine = responsibleOf(tour);
+    return activeResponsible.some(
+      (other) => other.id !== tour.id && other.users.some((userId) => mine.includes(userId)),
+    );
+  };
   const liveRows: TourLiveLocation[] =
     tourIds.length === 0
       ? []
@@ -287,18 +314,33 @@ export async function buildTourViews(
     if (depot.status === 'missing') {
       warnings.push({ code: 'DEPOT_ADDRESS_MISSING', message: TOUR_MESSAGES.DEPOT_MISSING });
     }
+    if (hasActiveConflict(tour)) {
+      warnings.push({ code: 'MULTIPLE_ACTIVE_TOURS', message: MULTIPLE_ACTIVE_TOURS_MESSAGE });
+    }
     // Phase 13 (tours-live): Live-Prognose nur mit frischem Standort UND frischer
     // In-Process-Bewertung (ok/risk); sonst „unknown“ – nie eine stille Entwarnung.
     const live = liveRows.find((row) => row.tourId === tour.id) ?? null;
     const liveFresh =
       live !== null && now.getTime() - live.observedAt.getTime() <= LIVE_LOCATION_STALE_MS;
     const lastEvaluation = deps.delay?.get(tour.id);
+    const evaluationFresh =
+      lastEvaluation !== undefined &&
+      now.getTime() - lastEvaluation.evaluatedAt.getTime() <= LIVE_LOCATION_STALE_MS;
     const forecastAvailable =
       tour.status === 'active' &&
       liveFresh &&
+      evaluationFresh &&
       lastEvaluation !== undefined &&
-      lastEvaluation.status !== 'unavailable' &&
-      now.getTime() - lastEvaluation.evaluatedAt.getTime() <= LIVE_LOCATION_STALE_MS;
+      lastEvaluation.status !== 'unavailable';
+    // Phase 13 Final (§3): neutraler Grund der letzten (frischen) „unavailable“-Bewertung –
+    // z. B. LOCATION_INACCURATE; nie ein Meter- oder Koordinatenwert.
+    const unavailableReason =
+      tour.status === 'active' &&
+      evaluationFresh &&
+      lastEvaluation !== undefined &&
+      lastEvaluation.status === 'unavailable'
+        ? lastEvaluation.reason
+        : null;
     let forecastUnknown = false;
     const isOpen = tour.status === 'draft' || tour.status === 'ready' || tour.status === 'active';
 
@@ -428,6 +470,15 @@ export async function buildTourViews(
       warnings.push({
         code: 'DELAY_FORECAST_UNAVAILABLE',
         message: DELAY_FORECAST_UNAVAILABLE_MESSAGE,
+        ...(unavailableReason === null ? {} : { reason: unavailableReason }),
+      });
+    }
+    // Phase 13 Final (§3): eigener, kleiner Hinweis für die UI (kein rotes Risiko, kein Meterwert).
+    if (unavailableReason === 'LOCATION_INACCURATE' && remainingStopIds.size > 0) {
+      warnings.push({
+        code: 'DELAY_LOCATION_INACCURATE',
+        message: DELAY_LOCATION_INACCURATE_MESSAGE,
+        reason: 'LOCATION_INACCURATE',
       });
     }
     return {

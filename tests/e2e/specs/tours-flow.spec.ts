@@ -762,7 +762,7 @@ test('G Verspätungsrisiko: Fake-ETA zu spät ⇒ Risk, genau ein Push je Empfä
   const e1Stop = stopOf(await tourViaApi(paul, tourT1), b('e1').outbound.id);
   expect(incident.stop_id).toBe(e1Stop.id);
   await expect
-    .poll(() => delayIncidents(tourT1)[0]!.notification_sent_at, { timeout: 20_000 })
+    .poll(() => delayIncidents(tourT1)[0]!.notification_enqueued_at, { timeout: 20_000 })
     .not.toBeNull();
   expect(e1Stop.delay?.status).toBe('risk');
 
@@ -795,7 +795,8 @@ test('G Verspätungsrisiko: Fake-ETA zu spät ⇒ Risk, genau ein Push je Empfä
   expect(push!.payload.kind).toBe('tour_delay_risk');
   expect(push!.payload.title).toBe('Tour droht Termin zu verpassen');
   expect(push!.payload.body).toContain(b('e1').processNumber);
-  expect(push!.payload.url).toBe('/touren/aktiv');
+  // Phase 13 Final (Review F3): Fahrer-Push verlinkt die konkrete Tour (Mehrfach-Touren-Konflikt).
+  expect(push!.payload.url).toBe(`/touren/aktiv?id=${tourT1}`);
   expect(push!.plaintext).not.toContain('Lieferweg');
   expect(push!.plaintext).not.toContain('Erste');
   expect(push!.plaintext).not.toContain('49.');

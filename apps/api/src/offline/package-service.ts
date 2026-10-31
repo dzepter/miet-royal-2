@@ -98,6 +98,14 @@ export type OfflineBookingSnapshotView = OfflineBookingSnapshot<
 >;
 export type OfflinePackageView = OfflinePackage<HandoverDetailView, ReturnDetailView>;
 
+/**
+ * Welche Paketabschnitte ein Konto erhält, entscheidet ausschließlich das
+ * jeweilige Fachrecht – nie die Lease-Berechtigung. Phase 13 Final (§4): ein
+ * reiner Tourfahrer (nur `calendar.view`) hat `handover`/`returns`/`machines`/
+ * `inventory` = false und bekommt damit keine Vorgänge (auch nicht per
+ * `extraBookingIds` oder Einzel-Snapshot), keinen Maschinenstamm, kein Lager,
+ * keine Dokumente – nur `activeTour` (eigene/effektive aktive Tour, ohne GPS).
+ */
 interface Rights {
   effective: ReadonlySet<PermissionKey>;
   visibility: ProcessVisibilityContext;
@@ -105,6 +113,8 @@ interface Rights {
   returns: boolean;
   machines: boolean;
   inventory: boolean;
+  /** Mindestens eine Vorgangssicht (Übergabe/Rückgabe) – sonst nie ein Vorgang im Paket. */
+  bookings: boolean;
 }
 
 interface Candidate {
@@ -152,13 +162,16 @@ export class OfflinePackageService {
       now,
     );
     const viewAll = effective.has('process.view_all');
+    const handover = viewAll && effective.has('handover.view');
+    const returns = viewAll && effective.has('return.view');
     return {
       effective,
       visibility,
-      handover: viewAll && effective.has('handover.view'),
-      returns: viewAll && effective.has('return.view'),
+      handover,
+      returns,
       machines: effective.has('machine.view'),
       inventory: effective.has('inventory.view'),
+      bookings: handover || returns,
     };
   }
 
@@ -223,7 +236,9 @@ export class OfflinePackageService {
         if (entry.overdue) add(entry.bookingId, 'overdue', day);
       }
     }
-    for (const bookingId of input.extraBookingIds ?? []) {
+    // Phase 13 Final (offline, §4): ohne Vorgangssicht werden auch bewusst
+    // geöffnete Vorgänge nie geladen (reiner Tourfahrer: nur `activeTour`).
+    for (const bookingId of rights.bookings ? (input.extraBookingIds ?? []) : []) {
       if (candidates.has(bookingId)) {
         candidates.get(bookingId)!.relevance.add('extra');
         continue;
@@ -327,7 +342,7 @@ export class OfflinePackageService {
     bookingId: string,
     rights: Rights,
   ): Promise<{ booking: Booking; process: Process } | null> {
-    if (!rights.handover && !rights.returns) return null;
+    if (!rights.bookings) return null;
     const rows = await this.deps.db
       .select({ booking: bookings, process: processes })
       .from(bookings)

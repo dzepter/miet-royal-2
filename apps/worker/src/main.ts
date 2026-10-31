@@ -168,7 +168,8 @@ await enqueueInboundPoll(queue, inboundMailSource);
 // Phase 13 (tours-live): eigene Routing-Gateway-Instanz je Prozess (Fabrik nach
 // config.routing, production nur graphhopper|disabled); Pushs über pushModule.push;
 // Rechteauflösung der Planungs-Empfänger über einen eigenen (zustandslosen) Auth-Service.
-const routing = createRoutingGateway(config, logger);
+// Phase 13 Final (routing): globale Drossel in integration_rate_limits – Worker teilt die Zeile mit der API.
+const routing = createRoutingGateway(config, logger, { db });
 const tourLive = createTourLiveModule({
   db,
   tours: new TourService(db),

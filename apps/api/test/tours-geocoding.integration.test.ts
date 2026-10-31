@@ -26,6 +26,7 @@ import {
   parseAddressInput,
 } from '../src/routing/geocoding-service.ts';
 import { MockRoutingGateway } from '../src/routing/fake.ts';
+import { InMemoryIntegrationRateLimiter } from '../src/integrations/rate-limiter.ts';
 import { GraphHopperRoutingGateway } from '../src/routing/graphhopper.ts';
 import {
   FAKE_HITS,
@@ -83,7 +84,8 @@ beforeAll(async () => {
     apiKey: SYNTH_KEY,
     baseUrl: fake.baseUrl,
     timeoutMs: 2000,
-    minIntervalMs: 0,
+    // Phase 13 Final (§1): Geocoding-Tests prüfen nicht die globale Drossel – eigener In-Memory-Limiter je Client.
+    limiter: new InMemoryIntegrationRateLimiter({ provider: 'graphhopper', intervalMs: 0 }),
   });
   service = new GeocodingService(ctx.db, gateway);
 });
@@ -494,7 +496,7 @@ describe('Adressautorität und Geocoding (Phase 13, Agent ROUTE)', () => {
       apiKey: SYNTH_KEY,
       baseUrl: fake.baseUrl,
       timeoutMs: 2000,
-      minIntervalMs: 0,
+      limiter: new InMemoryIntegrationRateLimiter({ provider: 'graphhopper', intervalMs: 0 }),
     });
     const freshService = new GeocodingService(ctx.db, freshGateway);
     fake.state.failures.push({ endpoint: 'geocode', times: 1, status: 401 });
@@ -528,7 +530,7 @@ describe('Adressautorität und Geocoding (Phase 13, Agent ROUTE)', () => {
         apiKey: SYNTH_KEY,
         baseUrl: fake.baseUrl,
         timeoutMs: 2000,
-        minIntervalMs: 0,
+        limiter: new InMemoryIntegrationRateLimiter({ provider: 'graphhopper', intervalMs: 0 }),
       }),
     );
     const demo = await service.resolve(demoDepot, { now: NOW });

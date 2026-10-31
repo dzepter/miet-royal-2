@@ -25,7 +25,7 @@ import { createAcceptedBooking } from './scheduling-helpers.ts';
 export async function truncateLexwareWorld(pool: pg.Pool): Promise<void> {
   await pool.query(
     `TRUNCATE lexware_webhook_events, lexware_invoice_mappings, lexware_contact_mappings,
-     lexware_integration_state, lexware_rate_limit, accounting_tax_config,
+     lexware_integration_state, integration_rate_limits, accounting_tax_config,
      accounting_transfers, cancellations, process_relations, integration_jobs CASCADE`,
   );
   await truncateAuthTables(pool);

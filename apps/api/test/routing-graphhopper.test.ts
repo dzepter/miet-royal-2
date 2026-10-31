@@ -7,8 +7,13 @@
  */
 import { loadConfig } from '@mietroyal/config';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { InMemoryIntegrationRateLimiter } from '../src/integrations/rate-limiter.ts';
 import { createRoutingGateway } from '../src/routing/factory.ts';
-import { GraphHopperRoutingGateway, maskRoutingUrl } from '../src/routing/graphhopper.ts';
+import {
+  GraphHopperRoutingGateway,
+  maskRoutingUrl,
+  type GraphHopperGatewayOptions,
+} from '../src/routing/graphhopper.ts';
 import {
   FAKE_HITS,
   startGraphHopperFakeServer,
@@ -30,16 +35,43 @@ const logger = {
 };
 const sleeps: number[] = [];
 
+/**
+ * Phase 13 Final (§1): Unit-Tests ohne DB nutzen den In-Memory-Limiter mit
+ * derselben Schnittstelle wie der Postgres-Limiter (Uhr/Schlaf teilbar).
+ */
+function limiterFor(
+  overrides: {
+    minIntervalMs?: number;
+    now?: () => number;
+    sleep?: (ms: number) => Promise<void>;
+  } = {},
+): InMemoryIntegrationRateLimiter {
+  return new InMemoryIntegrationRateLimiter({
+    provider: 'graphhopper',
+    intervalMs: overrides.minIntervalMs ?? 0,
+    ...(overrides.now === undefined ? {} : { now: overrides.now }),
+    ...(overrides.sleep === undefined ? {} : { sleep: overrides.sleep }),
+  });
+}
+
 function gatewayFor(
-  overrides: Partial<ConstructorParameters<typeof GraphHopperRoutingGateway>[0]> = {},
+  overrides: Partial<GraphHopperGatewayOptions> & {
+    minIntervalMs?: number;
+    sleep?: (ms: number) => Promise<void>;
+  } = {},
 ): GraphHopperRoutingGateway {
+  const { minIntervalMs, sleep, ...options } = overrides;
   return new GraphHopperRoutingGateway({
     apiKey: SYNTH_KEY,
     baseUrl: fake.baseUrl,
     timeoutMs: 2000,
     logger,
-    minIntervalMs: 0,
-    ...overrides,
+    limiter: limiterFor({
+      ...(minIntervalMs === undefined ? {} : { minIntervalMs }),
+      ...(overrides.now === undefined ? {} : { now: overrides.now }),
+      ...(sleep === undefined ? {} : { sleep }),
+    }),
+    ...options,
   });
 }
 
@@ -282,9 +314,8 @@ describe('GraphHopper-Client (Contract-Fake)', () => {
       apiKey: SYNTH_KEY,
       baseUrl: 'http://127.0.0.1:1/api/1',
       timeoutMs: 1000,
-      minIntervalMs: 0,
+      limiter: limiterFor({ now: () => clock, sleep: async (ms) => void minuteSleeps.push(ms) }),
       now: () => clock,
-      sleep: async (ms) => void minuteSleeps.push(ms),
       fetchImpl: async () => new Response('{"message":"limit"}', { status: 429 }),
     });
     const noHeader = await expectRoutingError(bare.route({ points: [DEPOT, CUSTOMER] }));
@@ -317,13 +348,67 @@ describe('GraphHopper-Client (Contract-Fake)', () => {
       apiKey: SYNTH_KEY,
       baseUrl: 'http://127.0.0.1:9/api/1',
       timeoutMs: 1000,
-      minIntervalMs: 0,
+      limiter: limiterFor(),
       logger,
     });
     const network = await expectRoutingError(closed.route({ points: [DEPOT, CUSTOMER] }));
     expect(network.kind).toBe('network');
     expect(network.transient).toBe(true);
     expect(String(network)).not.toContain('127.0.0.1:9');
+  });
+
+  it('N1. Limiter wirft selbst (DB-Fehler) ⇒ RoutingError network (transient), kein Provider-Request, Log neutral ohne Key/URL/Fehlertext', async () => {
+    const failing = {
+      provider: 'graphhopper',
+      reserveSlot: async () => {
+        throw new Error('connect ECONNREFUSED postgresql://db:5432/mietroyal SECRET-DB-PW');
+      },
+      acquire: async () => {
+        throw new Error('connect ECONNREFUSED postgresql://db:5432/mietroyal SECRET-DB-PW');
+      },
+      pause: async () => undefined,
+    };
+    const gateway = new GraphHopperRoutingGateway({
+      apiKey: SYNTH_KEY,
+      baseUrl: fake.baseUrl,
+      timeoutMs: 1000,
+      logger,
+      limiter: failing,
+    });
+    const error = await expectRoutingError(gateway.route({ points: [DEPOT, CUSTOMER] }));
+    expect(error.kind).toBe('network');
+    expect(error.code).toBe('ROUTING_NETWORK');
+    expect(error.transient).toBe(true);
+    expect(error.status).toBeNull();
+    expect(String(error)).not.toContain('SECRET-DB-PW');
+    expect(fake.state.requests).toHaveLength(0);
+    expect(logs.some((entry) => /Drossel/.test(entry.msg))).toBe(true);
+    expect(logs.at(-1)!.obj).toMatchObject({
+      routing: { endpoint: '/route', outcome: 'network', status: null },
+    });
+    const serialized = JSON.stringify(logs);
+    expect(serialized).not.toContain(SYNTH_KEY);
+    expect(serialized).not.toContain('SECRET-DB-PW');
+    expect(serialized).not.toContain('postgresql://');
+    expect(serialized).not.toContain(fake.baseUrl);
+    // Ein RoutingError des Limiters (z. B. Pause) bleibt unverändert.
+    const pausing = {
+      ...failing,
+      acquire: async () => {
+        throw new RoutingError('credit_limited', 429, 1000);
+      },
+    };
+    const paused = await expectRoutingError(
+      new GraphHopperRoutingGateway({
+        apiKey: SYNTH_KEY,
+        baseUrl: fake.baseUrl,
+        timeoutMs: 1000,
+        logger,
+        limiter: pausing,
+      }).route({ points: [DEPOT, CUSTOMER] }),
+    );
+    expect(paused.kind).toBe('credit_limited');
+    expect(fake.state.requests).toHaveLength(0);
   });
 
   it('T14. Malformed/unerwartete Antwort ⇒ invalid_response (fail-closed, permanent); kein Ergebnis wird erraten', async () => {
@@ -557,7 +642,7 @@ describe('GraphHopper-Client (Contract-Fake)', () => {
     }
   });
 
-  it('Fabrik: graphhopper nur mit Key, mock nie in production, disabled sonst; Start-Log nennt nur den Provider', async () => {
+  it('Fabrik: graphhopper nur mit Key und globaler Drossel (db|limiter), mock nie in production, disabled sonst; Start-Log nennt nur den Provider', async () => {
     const base = {
       APP_ENV: 'production',
       DATABASE_URL: 'postgresql://app:pw@db.internal:5432/mietroyal_prod',
@@ -565,6 +650,8 @@ describe('GraphHopper-Client (Contract-Fake)', () => {
       STORAGE_FS_ROOT: '/var/lib/mietroyal/prod',
       AUTH_SECRET_KEY: 'prod-auth-secret-key-0123456789abcdef',
       COMMUNICATION_PAYLOAD_KEY: 'prod-communication-payload-key-0123456789',
+      // Phase 13 Final (§5, Agent OC): production + GraphHopper nur mit bestätigter Vertragsprüfung.
+      ROUTING_PROVIDER_TERMS_CONFIRMED: 'true',
     };
     const disabled = createRoutingGateway(loadConfig(base), logger);
     expect(disabled.kind).toBe('disabled');
@@ -576,9 +663,16 @@ describe('GraphHopper-Client (Contract-Fake)', () => {
       'Routing: provider=disabled',
     ]);
     logs.length = 0;
+    // Phase 13 Final (§1): ohne db/limiter verweigert die Fabrik den echten Provider
+    // (nie eine nur prozesslokale Drossel im Betrieb).
+    expect(() =>
+      createRoutingGateway(loadConfig({ ...base, GRAPHHOPPER_API_KEY: SYNTH_KEY }), logger),
+    ).toThrow(/globale Drossel/);
+    logs.length = 0;
     const live = createRoutingGateway(
       loadConfig({ ...base, GRAPHHOPPER_API_KEY: SYNTH_KEY }),
       logger,
+      { limiter: limiterFor() },
     );
     expect(live.kind).toBe('graphhopper');
     expect(live.providerName).toBe('graphhopper');
@@ -607,6 +701,8 @@ describe('GraphHopper-Client (Contract-Fake)', () => {
         GRAPHHOPPER_API_KEY: SYNTH_KEY,
         GRAPHHOPPER_BASE_URL: fake.baseUrl,
       }),
+      undefined,
+      { limiter: limiterFor() },
     );
     expect(dev.kind).toBe('graphhopper');
     const hits = await dev.geocode({

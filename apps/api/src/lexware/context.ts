@@ -40,7 +40,10 @@ export function createLexwareContext(
 ): LexwareContext {
   const throttle =
     options.throttle ??
-    (config.lexware.enabled ? new PostgresLexwareThrottle(db) : new NoopLexwareThrottle());
+    (config.lexware.enabled
+      ? // Phase 13 Final (§1.1): globale Drossel (integration_rate_limits, provider 'lexware').
+        new PostgresLexwareThrottle(db, { environment: config.appEnv })
+      : new NoopLexwareThrottle());
   const client =
     config.lexware.enabled && config.lexware.apiKey !== null
       ? new LexwareClient({

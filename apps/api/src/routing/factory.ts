@@ -10,15 +10,38 @@
  * Ein einmaliger Start-Log nennt nur den Provider – nie Key oder URL.
  */
 import type { AppConfig } from '@mietroyal/config';
+import type { Database } from '@mietroyal/database';
+import {
+  PostgresIntegrationRateLimiter,
+  type IntegrationRateLimiter,
+} from '../integrations/rate-limiter.ts';
 import { DisabledRoutingGateway, MockRoutingGateway } from './fake.ts';
-import { GraphHopperRoutingGateway, type RoutingLogger } from './graphhopper.ts';
+import {
+  GRAPHHOPPER_MIN_INTERVAL_MS,
+  GraphHopperRoutingGateway,
+  type RoutingLogger,
+} from './graphhopper.ts';
 import type { RoutingGateway } from './types.ts';
 
 export type { RoutingLogger } from './graphhopper.ts';
 
+export const GRAPHHOPPER_RATE_LIMIT_PROVIDER = 'graphhopper';
+
+/**
+ * Phase 13 Final (§1): Abhängigkeiten der Fabrik. Für provider graphhopper
+ * ist die GLOBALE Drossel Pflicht – entweder die Datenbank (⇒ Postgres-Limiter,
+ * Zeile provider 'graphhopper', 1 Request/s je Umgebung) oder ein injizierter
+ * Limiter (Tests). Mock/Fake/Disabled brauchen keinen Limiter.
+ */
+export interface RoutingGatewayDeps {
+  db?: Database;
+  limiter?: IntegrationRateLimiter;
+}
+
 export function createRoutingGateway(
   config: Pick<AppConfig, 'appEnv' | 'routing'>,
   logger?: RoutingLogger,
+  deps: RoutingGatewayDeps = {},
 ): RoutingGateway {
   const routing = config.routing;
   let gateway: RoutingGateway;
@@ -27,10 +50,26 @@ export function createRoutingGateway(
       // Durch loadConfig nicht erreichbar (Key ⇔ provider graphhopper); fail-closed.
       gateway = new DisabledRoutingGateway();
     } else {
+      const limiter =
+        deps.limiter ??
+        (deps.db === undefined
+          ? null
+          : new PostgresIntegrationRateLimiter(deps.db, {
+              provider: GRAPHHOPPER_RATE_LIMIT_PROVIDER,
+              environment: config.appEnv,
+              intervalMs: GRAPHHOPPER_MIN_INTERVAL_MS,
+            }));
+      if (limiter === null) {
+        // Nie eine nur prozesslokale Drossel im Betrieb (Auftrag §1: global je Umgebung).
+        throw new Error(
+          'Routing: GraphHopper braucht die globale Drossel (db oder limiter) – keine In-Process-Drossel.',
+        );
+      }
       gateway = new GraphHopperRoutingGateway({
         apiKey: routing.graphhopper.apiKey,
         baseUrl: routing.graphhopper.baseUrl,
         timeoutMs: routing.graphhopper.requestTimeoutMs,
+        limiter,
         ...(logger === undefined ? {} : { logger }),
       });
     }

@@ -6,10 +6,16 @@
  */
 import { randomUUID } from 'node:crypto';
 import { Writable } from 'node:stream';
-import { appointments, type Appointment } from '@mietroyal/database';
-import { berlinDateOf, berlinDateTimeToUtc } from '@mietroyal/domain';
+import {
+  appointments,
+  pushDeliveries,
+  tourDelayIncidents,
+  type Appointment,
+  type TourDelayIncident,
+} from '@mietroyal/database';
+import { berlinDateOf, berlinDateTimeToUtc, berlinStartOfDay } from '@mietroyal/domain';
 import type { PermissionKey } from '@mietroyal/permissions';
-import { eq } from 'drizzle-orm';
+import { asc, eq } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 import type pg from 'pg';
 import { buildApp } from '../src/app.ts';
@@ -177,10 +183,14 @@ export interface ToursWorldOptions {
   captureLog?: boolean;
   /** Rate-Limit der Standort-Updates (Default 10 s; Tests kürzer). */
   locationMinIntervalMs?: number;
+  /** Phase 13 Final (§2.4): PostgreSQL-Pool der Test-App begrenzen (1 ⇒ jeder zweite Acquire in gehaltener Tx hängt). */
+  poolMax?: number;
 }
 
 export async function createToursWorld(options: ToursWorldOptions = {}): Promise<ToursWorld> {
-  const ctx = await createTestContext();
+  const ctx = await createTestContext(
+    options.poolMax === undefined ? {} : { poolMax: options.poolMax },
+  );
   const routing = new FakeRoutingGateway();
   const geocoding = new TestGeocodingResolver(routing);
   const delayState = new DelayEvaluationState();
@@ -280,20 +290,25 @@ export async function sendLocation(
   });
 }
 
-/** Live-Standort direkt setzen (deterministische Delay-Tests ohne asynchrone Bewertung). */
+/**
+ * Live-Standort direkt setzen (deterministische Delay-Tests ohne asynchrone Bewertung).
+ * Phase 13 Final (§3): Genauigkeit Default 20 m (prognosefähig); `null` = unbekannt.
+ */
 export async function setLiveLocation(
   world: ToursWorld,
   tourId: string,
   userId: string,
   point: { latitude: number; longitude: number },
   observedAt = new Date(),
+  accuracyMeters: number | null = 20,
 ): Promise<void> {
   await world.ctx.pool.query(
-    `INSERT INTO tour_live_locations (tour_id, user_id, latitude, longitude, observed_at, received_at)
-     VALUES ($1, $2, $3, $4, $5, now())
+    `INSERT INTO tour_live_locations (tour_id, user_id, latitude, longitude, accuracy_meters, observed_at, received_at)
+     VALUES ($1, $2, $3, $4, $5, $6, now())
      ON CONFLICT (tour_id) DO UPDATE SET user_id = EXCLUDED.user_id, latitude = EXCLUDED.latitude,
-       longitude = EXCLUDED.longitude, observed_at = EXCLUDED.observed_at, received_at = now()`,
-    [tourId, userId, point.latitude, point.longitude, observedAt.toISOString()],
+       longitude = EXCLUDED.longitude, accuracy_meters = EXCLUDED.accuracy_meters,
+       observed_at = EXCLUDED.observed_at, received_at = now()`,
+    [tourId, userId, point.latitude, point.longitude, accuracyMeters, observedAt.toISOString()],
   );
 }
 
@@ -523,4 +538,176 @@ export async function getTour(api: ReturnType<typeof apiFor>, tourId: string) {
   const result = await api('GET', `/staff/tours/${tourId}`);
   if (result.status !== 200) throw new Error(`Tour laden: ${JSON.stringify(result.body)}`);
   return result.body.tour;
+}
+
+// ── Phase 13 Final: gemeinsame Fixtures der Delay-/Push-/Genauigkeits-/Konflikt-Tests ──
+
+export const MINUTES = 60_000;
+/** Fahrer-Position weit vom Ziel (Koordinate geht nur an das Fake-Gateway). */
+export const DRIVER_POINT = { latitude: 49.99, longitude: 8.24 };
+/** Nahe am Ziel „Lieferweg 12“. */
+export const NEAR_POINT = { latitude: 49.9742, longitude: 8.2566 };
+
+/**
+ * Feste Fahrzeiten: Zeile 0 = Live-Standort, danach die Stopps in Tour-Reihenfolge.
+ * `fromOrigin[i]` = Sekunden Standort → Stopp i+1, `between` = Sekunden zwischen Stopps.
+ */
+export function configureFixedMatrix(world: ToursWorld, fromOrigin: number[], between = 600): void {
+  world.routing.configure({
+    matrix: (request) => {
+      const n = request.points.length;
+      const durationsSeconds: (number | null)[][] = [];
+      const distancesMeters: (number | null)[][] = [];
+      for (let i = 0; i < n; i += 1) {
+        const row: (number | null)[] = [];
+        for (let j = 0; j < n; j += 1) {
+          if (i === j) row.push(0);
+          else if (i === 0) row.push(fromOrigin[j - 1] ?? between);
+          else if (j === 0) row.push(fromOrigin[i - 1] ?? between);
+          else row.push(between);
+        }
+        durationsSeconds.push(row);
+        distancesMeters.push(row.map((value) => (value === null ? null : value * 11)));
+      }
+      return { durationsSeconds, distancesMeters };
+    },
+  });
+}
+
+/**
+ * Zeitpunkt relativ zu jetzt; Vergangenheitswerte bleiben am heutigen Berliner Tag
+ * (Tourdatum), damit Läufe kurz nach Mitternacht nicht an „Termin nicht am Tourdatum“ scheitern.
+ */
+export function inMinutes(minutes: number): Date {
+  const at = Date.now() + minutes * MINUTES;
+  const dayStart = berlinStartOfDay(todayBerlin()).getTime() + MINUTES;
+  return new Date(minutes < 0 ? Math.max(at, dayStart) : at);
+}
+
+export interface ActiveTourStopSpec {
+  startAt: Date;
+  endAt?: Date | null;
+  street: string;
+  bufferMinutes?: number;
+}
+
+/**
+ * Aktive Tour eines Fahrers (calendar.view) mit Stopps (Zeiten relativ zu jetzt) und
+ * – sofern nicht abgeschaltet – frischem Live-Standort (Default: genau, 20 m).
+ */
+export async function startActiveTour(
+  world: ToursWorld,
+  stops: readonly ActiveTourStopSpec[],
+  options: {
+    driverLabel?: string;
+    /** Genauigkeit des initialen Live-Standorts (null = unbekannt). */
+    accuracyMeters?: number | null;
+    /** false ⇒ kein Live-Standort setzen. */
+    liveLocation?: boolean;
+    /** Rechte des Fahrers (Default calendar.view; P3: Fahrer zugleich Planer). */
+    driverPermissions?: readonly PermissionKey[];
+  } = {},
+) {
+  const { admin, cookie } = await adminSession(world);
+  const api = apiFor(world.app, cookie);
+  const driver = await staffWith(
+    world,
+    admin.id,
+    options.driverPermissions ?? DRIVER_PERMISSIONS,
+    options.driverLabel ?? 'Fahrer',
+  );
+  const driverApi = apiFor(world.app, driver.cookie);
+  const today = todayBerlin();
+  const bookings: BookingWithAppointments[] = [];
+  for (const spec of stops) {
+    bookings.push(
+      await bookingWithAppointments(world, admin.id, {
+        assignTo: driver.user.id,
+        outboundStartAt: spec.startAt,
+        outboundEndAt: spec.endAt ?? null,
+        street: spec.street,
+      }),
+    );
+  }
+  let tour = await tourWithStops(api, {
+    tourDate: today,
+    assignedUserId: driver.user.id,
+    appointmentIds: bookings.map((b) => b.outbound.id),
+  });
+  for (let i = 0; i < stops.length; i += 1) {
+    const buffer = stops[i]!.bufferMinutes;
+    if (buffer === undefined) continue;
+    const patched = await api('PATCH', `/staff/tours/${tour.id}/stops/${tour.stops[i].id}`, {
+      bufferMinutes: buffer,
+    });
+    if (patched.status !== 200) throw new Error(`Puffer setzen: ${JSON.stringify(patched.body)}`);
+    tour = patched.body.tour;
+  }
+  const started = await driverApi('POST', `/staff/tours/${tour.id}/start`, {});
+  if (started.status !== 200) throw new Error(`Tour starten: ${JSON.stringify(started.body)}`);
+  tour = started.body.tour;
+  if (options.liveLocation !== false) {
+    await setLiveLocation(
+      world,
+      tour.id,
+      driver.user.id,
+      DRIVER_POINT,
+      new Date(),
+      options.accuracyMeters === undefined ? 20 : options.accuracyMeters,
+    );
+  }
+  // Asynchrone Bewertungen aus der Planungsphase (Stopp hinzufügen/Start) abwarten.
+  await world.delayState.settle();
+  return {
+    admin,
+    adminCookie: cookie,
+    api,
+    driver: driver.user,
+    driverCookie: driver.cookie,
+    driverApi,
+    today,
+    tour,
+    bookings,
+  };
+}
+
+export async function delayIncidents(
+  world: ToursWorld,
+  tourId: string,
+): Promise<TourDelayIncident[]> {
+  return world.ctx.db
+    .select()
+    .from(tourDelayIncidents)
+    .where(eq(tourDelayIncidents.tourId, tourId))
+    .orderBy(asc(tourDelayIncidents.detectedAt));
+}
+
+export async function delayDeliveries(world: ToursWorld, kind = 'tour_delay_risk') {
+  return world.ctx.db
+    .select()
+    .from(pushDeliveries)
+    .where(eq(pushDeliveries.kind, kind))
+    .orderBy(asc(pushDeliveries.createdAt));
+}
+
+export function pushEndpointFor(label: string): string {
+  return `https://push.example.test/send/${label}-${'e'.repeat(40)}`;
+}
+
+/** Push-Subscription anlegen (Versand bis zum Fake-Gateway) – Rückgabe: HTTP-Status. */
+export async function subscribePush(
+  world: ToursWorld,
+  cookie: string,
+  label: string,
+): Promise<number> {
+  const response = await world.app.inject({
+    method: 'POST',
+    url: '/staff/push/subscriptions',
+    headers: { cookie },
+    payload: {
+      endpoint: pushEndpointFor(label),
+      keys: { p256dh: 'BPk'.padEnd(87, 'A'), auth: 'auth-secret-16by' },
+    },
+  });
+  return response.statusCode;
 }

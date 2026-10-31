@@ -216,7 +216,8 @@ export const tourDelayIncidents = pgTable(
     lastEvaluatedAt: timestamp('last_evaluated_at', { withTimezone: true }).notNull().defaultNow(),
     predictedArrivalAt: timestamp('predicted_arrival_at', { withTimezone: true }).notNull(),
     deadlineAt: timestamp('deadline_at', { withTimezone: true }).notNull(),
-    notificationSentAt: timestamp('notification_sent_at', { withTimezone: true }),
+    /** Zeitpunkt, zu dem die Push-Zustellungen (Outbox-Zeilen) für diesen Incident angelegt wurden – genau einmal je Incident. */
+    notificationEnqueuedAt: timestamp('notification_enqueued_at', { withTimezone: true }),
     resolvedAt: timestamp('resolved_at', { withTimezone: true }),
   },
   (table) => [

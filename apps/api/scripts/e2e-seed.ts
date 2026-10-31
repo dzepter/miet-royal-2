@@ -46,7 +46,7 @@ try {
   await pool.query('TRUNCATE voucher_redemptions, vouchers CASCADE');
   // Phase 10: Lexware-Zustand und Steuerkonfiguration je Spec frisch (Fake-Account wechselt).
   await pool.query(
-    'TRUNCATE lexware_webhook_events, lexware_invoice_mappings, lexware_contact_mappings, lexware_integration_state, lexware_rate_limit, accounting_tax_config',
+    'TRUNCATE lexware_webhook_events, lexware_invoice_mappings, lexware_contact_mappings, lexware_integration_state, integration_rate_limits, accounting_tax_config',
   );
   await pool.query(
     `TRUNCATE staff_security_events, staff_user_permission_overrides, staff_user_roles,

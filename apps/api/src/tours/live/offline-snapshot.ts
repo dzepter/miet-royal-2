@@ -15,6 +15,13 @@ import type { OperativeAddressResolver, TourGeocodingResolver } from '../types.t
  * (Adressen nur für den Fahrer der Tour); keine GPS-Daten, keine Kunden-
  * namen/Telefonnummern. Kein Provider-Aufruf (nur Geocoding-Cache für die
  * Koordinate im Navigations-Link, sonst Adress-Variante).
+ *
+ * Phase 13 Final (§7): Ist die Person effektiv für mehrere aktive Touren
+ * zuständig, enthält das Paket deterministisch die ZUERST gestartete Tour
+ * (`TourService.findActiveFor`); der Konflikt wird online über
+ * `GET /staff/tours/active` (`conflict`) und die View-Warnung
+ * MULTIPLE_ACTIVE_TOURS ausgewiesen (kein neues Snapshot-Feld – Paket-Typen
+ * liegen in packages/offline und bleiben unverändert).
  */
 export interface OfflineTourSnapshotDeps {
   db: Database;

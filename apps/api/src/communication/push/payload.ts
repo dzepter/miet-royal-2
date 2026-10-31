@@ -152,11 +152,14 @@ export function buildPushPayload(input: PushPayloadInput): PushPayload {
       const number = assertProcessNumber(input.processNumber);
       const tourId = assertUuid(input.tourId, 'Tour-ID');
       const incidentId = assertUuid(input.incidentId, 'Incident-ID');
+      // Phase 13 Final (Review F3): die Fahrer-Variante nennt die Tour-ID
+      // (`/touren/aktiv?id=…`), damit der Push bei mehreren aktiven Touren
+      // derselben effektiven Person (§7) nicht auf der falschen Tour landet.
       return {
         kind: input.kind,
         title: 'Tour droht Termin zu verpassen',
         body: `${label} ${number}`,
-        url: input.audience === 'driver' ? TOUR_ACTIVE_PATH : `/touren/${tourId}`,
+        url: input.audience === 'driver' ? tourActivePath(tourId) : `/touren/${tourId}`,
         tag: `tour-delay:${incidentId}`,
       };
     }
@@ -165,6 +168,11 @@ export function buildPushPayload(input: PushPayloadInput): PushPayload {
 
 /** Staff-Pfad der Seite „Aktive Tour“ (Phase 13, Design §13). */
 export const TOUR_ACTIVE_PATH = '/touren/aktiv';
+
+/** Seite „Aktive Tour“ für eine konkrete Tour (Review F3; die UI wertet `?id=` aus). */
+export function tourActivePath(tourId: string): string {
+  return `${TOUR_ACTIVE_PATH}?id=${tourId}`;
+}
 
 function assertUuid(value: string, what: string): string {
   if (!UUID_PATTERN.test(value)) throw new Error(`Ungültige ${what} für Push-Nutzlast`);

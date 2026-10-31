@@ -211,9 +211,31 @@ export function registerTourRoutes(app: FastifyInstance, options: TourRouteOptio
     const context = await requireAuth(request, reply, auth, config);
     if (context === null) return;
     if (!(await requirePermission(request, reply, auth, context, 'calendar.view'))) return;
-    const loaded = await tours.findActiveFor(context.user.id);
-    if (loaded === null) return { tour: null };
-    return { tour: await buildTourView(viewDeps, loaded, await viewerOf(context)) };
+    // Phase 13 Final (§7): mehrere aktive Touren derselben effektiven Person werden nicht
+    // still verborgen – `tour` ist deterministisch die zuerst gestartete, `conflict`
+    // nennt alle betroffenen (jede einzeln über ihre ID erreichbar; nichts wird
+    // automatisch beendet oder übertragen).
+    const active = await tours.findActiveToursFor(context.user.id);
+    if (active.length === 0) return { tour: null, conflict: null };
+    const views = await buildTourViews(viewDeps, active, await viewerOf(context));
+    return {
+      tour: views[0]!,
+      conflict:
+        views.length < 2
+          ? null
+          : {
+              tours: views.map((view) => ({
+                id: view.id,
+                tourDate: view.tourDate,
+                assignedUserId: view.assignedUserId,
+                assignedName: view.assignedName,
+                effectiveDriverId: view.effectiveDriverId,
+                effectiveDriverName: view.effectiveDriverName,
+                substituted: view.substituted,
+                startedAt: view.startedAt,
+              })),
+            },
+    };
   });
 
   app.get('/staff/tours/:id', async (request, reply) => {

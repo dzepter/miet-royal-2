@@ -268,7 +268,7 @@ export async function createTestContext(
   // (Push-Regeln über ein eigenes Push-Modul mit demselben Fake-Gateway).
   const testPushModule = createPushModule({ db, config, queue, gateway: push }, auth);
   // Phase 13 (tours-live): Live-Modul des Test-Runners (Mock-Routing; Tour-Tests nutzen eigene Fakes).
-  const testRouting = createRoutingGateway(config, testLogger);
+  const testRouting = createRoutingGateway(config, testLogger, { db }); // Phase 13 Final (routing): globale Drossel
   const testTourLive = createTourLiveModule({
     db,
     tours: new TourService(db),

@@ -658,7 +658,10 @@ export function createGraphHopperFakeHandler(
       }
       if (mode === 'delay') {
         await new Promise((resolve) => setTimeout(resolve, failure.delayMs ?? 1000));
-        if (res.destroyed || req.destroyed) {
+        // Phase 13 Final (RL): nur die Antwortseite prüfen – `req.destroyed` ist nach
+        // vollständig gelesenem POST-Body immer true (autoDestroy) und würde die
+        // verzögerte Antwort fälschlich unterdrücken.
+        if (res.destroyed || res.writableEnded) {
           record.status = 499;
           return true;
         }

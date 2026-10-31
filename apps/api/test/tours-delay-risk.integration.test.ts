@@ -213,7 +213,7 @@ describe('80.–86. Bewertung', () => {
     expect(incident.deadlineAt.toISOString()).toBe(bookings[0]!.outbound.endAt!.toISOString());
     expect(incident.predictedArrivalAt.getTime()).toBeGreaterThanOrEqual(before + 7200_000 - 1000);
     expect(incident.predictedArrivalAt.getTime()).toBeGreaterThan(incident.deadlineAt.getTime());
-    expect(incident.notificationSentAt).not.toBeNull();
+    expect(incident.notificationEnqueuedAt).not.toBeNull();
     const view = await driverApi('GET', `/staff/tours/${tour.id}`);
     expect(view.body.tour.stops[0].delay).toEqual({
       status: 'risk',
@@ -433,7 +433,7 @@ describe('87.–94. Push, Spam, Auflösung, keine Kundenkommunikation, PII', () 
     expect(driverPush.idempotencyKey).toBe(
       `push:tour_delay_risk:${incident!.id}:${substitute.user.id}`,
     );
-    expect((driverPush.payload as { url: string }).url).toBe('/touren/aktiv');
+    expect((driverPush.payload as { url: string }).url).toBe(`/touren/aktiv?id=${tour.id}`);
     expect(byUser.has(driver.id)).toBe(false); // vertretener Fahrer ist nicht zuständig
     // T88: Planung/Admin genau einmal, Ziel Tourseite; Unbeteiligte nie.
     for (const userId of [admin.id, planner.user.id]) {
@@ -490,8 +490,8 @@ describe('87.–94. Push, Spam, Auflösung, keine Kundenkommunikation, PII', () 
     expect(rows).toHaveLength(1);
     expect(rows[0]!.id).toBe(first!.id);
     expect(rows[0]!.lastEvaluatedAt.getTime()).toBeGreaterThan(first!.lastEvaluatedAt.getTime());
-    expect(rows[0]!.notificationSentAt!.toISOString()).toBe(
-      first!.notificationSentAt!.toISOString(),
+    expect(rows[0]!.notificationEnqueuedAt!.toISOString()).toBe(
+      first!.notificationEnqueuedAt!.toISOString(),
     );
     expect(await deliveries()).toHaveLength(count);
     // Der zentrale scan_due kennt den Scanner `tour_delay`.
@@ -531,7 +531,7 @@ describe('87.–94. Push, Spam, Auflösung, keine Kundenkommunikation, PII', () 
     expect(rows).toHaveLength(2);
     const second = rows.find((row) => row.resolvedAt === null)!;
     expect(second.id).not.toBe(first!.id);
-    expect(second.notificationSentAt).not.toBeNull();
+    expect(second.notificationEnqueuedAt).not.toBeNull();
     expect((await deliveries()).length).toBe(pushes * 2);
     expect(
       (await deliveries()).filter((row) => row.idempotencyKey.includes(second.id)),
@@ -724,6 +724,88 @@ describe('Review-13-Fixes: Race Tourende/Version, stale Warnung, Stopp entfernen
   });
 });
 
+describe('Review 13 Final: Verspätung nur für offene Stopps', () => {
+  const codes = (view: { body: { tour: { warnings: { code: string }[] } } }) =>
+    view.body.tour.warnings.map((w) => w.code);
+
+  it('RF1. „Angekommen“ NACH der Deadline ⇒ kein Incident, kein Push, keine DELAY_RISK-Warnung; der erreichte Stopp bleibt Zwischenpunkt der Restroute (late=false)', async () => {
+    const { driverApi, tour } = await activeTour([
+      { startAt: inMinutes(-30), endAt: inMinutes(-2), street: 'Lieferweg 12' },
+      { startAt: inMinutes(180), endAt: inMinutes(240), street: 'Ahornweg 1' },
+    ]);
+    const [first, second] = tour.stops as { id: string }[];
+    // Fahrer steht am Ziel (30 s), zweiter Stopp bequem erreichbar.
+    fixedMatrix([30, 600]);
+    expect(await incidents(tour.id)).toHaveLength(0);
+    const arrived = await driverApi(
+      'POST',
+      `/staff/tours/${tour.id}/stops/${first!.id}/arrived`,
+      {},
+    );
+    expect(arrived.status).toBe(200);
+    expect(arrived.body.tour.stops[0].state).toBe('arrived');
+    // Trigger stop_changed bewertet asynchron – abwarten.
+    await world.delayState.settle();
+    expect(await incidents(tour.id)).toHaveLength(0);
+    expect(await deliveries()).toHaveLength(0);
+    const view = await driverApi('GET', `/staff/tours/${tour.id}`);
+    expect(view.body.tour.stops[0].state).toBe('arrived');
+    expect(codes(view)).not.toContain('DELAY_RISK');
+    expect(view.body.tour.openIncidents).toEqual([]);
+    // Erneute Bewertung: der erreichte Stopp bleibt Zwischenpunkt (Matrix mit 3 Punkten),
+    // ist aber nie „late“; der offene zweite Stopp ist pünktlich.
+    const before = world.routing.calls.filter((c) => c.method === 'matrix').length;
+    const evaluation = await world.live.delay.evaluate(tour.id, 'manual');
+    expect(evaluation.status).toBe('ok');
+    if (evaluation.status === 'skipped') throw new Error('unerwartet übersprungen');
+    expect(evaluation.stops.map((s) => [s.stopId, s.late])).toEqual([
+      [first!.id, false],
+      [second!.id, false],
+    ]);
+    const calls = world.routing.calls.filter((c) => c.method === 'matrix');
+    expect(calls).toHaveLength(before + 1);
+    expect((calls.at(-1)!.request as { points: unknown[] }).points).toHaveLength(3);
+    expect(await incidents(tour.id)).toHaveLength(0);
+    expect(await deliveries()).toHaveLength(0);
+    const delay = await driverApi('GET', `/staff/tours/${tour.id}/delay`);
+    expect(delay.body.status).toBe('ok');
+  });
+
+  it('RF1b. Offener Incident, dann „Angekommen“ (nach der Deadline) ⇒ Incident gelöst, kein zweiter Push, keine DELAY_RISK-Warnung; einziger Stopp erreicht ⇒ kein Provider-Aufruf', async () => {
+    const { driverApi, tour } = await activeTour([
+      { startAt: inMinutes(-10), endAt: inMinutes(20), street: 'Lieferweg 12' },
+    ]);
+    fixedMatrix([7200]);
+    expect((await world.live.delay.evaluate(tour.id, 'manual')).status).toBe('risk');
+    const open = (await incidents(tour.id)).filter((row) => row.resolvedAt === null);
+    expect(open).toHaveLength(1);
+    const sentBefore = await deliveries();
+    expect(sentBefore).toHaveLength(2);
+    const matrixCalls = world.routing.calls.filter((c) => c.method === 'matrix').length;
+    const arrived = await driverApi(
+      'POST',
+      `/staff/tours/${tour.id}/stops/${tour.stops[0].id}/arrived`,
+      {},
+    );
+    expect(arrived.status).toBe(200);
+    await world.delayState.settle();
+    const rows = await incidents(tour.id);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.resolvedAt).not.toBeNull();
+    expect((await deliveries()).map((row) => row.id).sort()).toEqual(
+      sentBefore.map((row) => row.id).sort(),
+    );
+    // Kein offener Stopp mehr ⇒ keine Prognose nötig, kein Provider-Aufruf.
+    expect(world.routing.calls.filter((c) => c.method === 'matrix')).toHaveLength(matrixCalls);
+    const view = await driverApi('GET', `/staff/tours/${tour.id}`);
+    expect(view.body.tour.stops[0].state).toBe('arrived');
+    expect(view.body.tour.stops[0].delay.status).toBe('none');
+    expect(codes(view)).not.toContain('DELAY_RISK');
+    expect(view.body.tour.openIncidents).toEqual([]);
+    expect((await driverApi('GET', `/staff/tours/${tour.id}/delay`)).body.status).toBe('ok');
+  });
+});
+
 describe('Zusatz: Drossel, Standort-Trigger', () => {
   it('Location-Trigger: < 3 min und < 500 m seit der letzten Bewertung ⇒ übersprungen; ≥ 500 m ⇒ bewertet', async () => {
     const { tour, driver } = await activeTour([
@@ -756,7 +838,10 @@ describe('Zusatz: Drossel, Standort-Trigger', () => {
     ]);
     world.delayState.reset();
     fixedMatrix([7200]);
-    expect((await sendLocation(driverApi, tour.id, DRIVER_POINT)).status).toBe(204);
+    // Phase 13 Final (§3): nur ein genauer Standort (≤ 250 m) trägt eine Prognose.
+    expect(
+      (await sendLocation(driverApi, tour.id, { ...DRIVER_POINT, accuracyMeters: 20 })).status,
+    ).toBe(204);
     let record = world.delayState.get(tour.id);
     for (let i = 0; i < 100 && record === undefined; i += 1) {
       await sleep(30);

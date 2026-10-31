@@ -12,6 +12,7 @@ import {
   STOP_STATE_LABELS,
   TOUR_STATUS_LABELS,
   TOUR_TEXTS,
+  type ActiveTourConflict,
   type TourAddressStatus,
   type TourStopState,
   type TourStopView,
@@ -23,23 +24,66 @@ import {
  * (Design §13) – Badges, Attribution, Karte „Aktive Tour fortsetzen“.
  */
 
-/** Eigene aktive Tour (inkl. Vertretung) – null, wenn keine; nur online abgefragt. */
-export function useActiveTour(enabled: boolean): TourView | null {
-  const [tour, setTour] = useState<TourView | null>(null);
+/** Phase 13 Final (§7): eigene aktive Tour plus Konflikt (mehrere aktive Touren derselben Person). */
+export interface ActiveTourState {
+  tour: TourView | null;
+  conflict: ActiveTourConflict | null;
+}
+
+/** Eigene aktive Tour (inkl. Vertretung) – tour null, wenn keine; nur online abgefragt. */
+export function useActiveTour(enabled: boolean): ActiveTourState {
+  const [state, setState] = useState<ActiveTourState>({ tour: null, conflict: null });
   useEffect(() => {
     if (!enabled) return;
     let cancelled = false;
     void getActiveTour().then((result) => {
-      if (!cancelled && result.data !== null) setTour(result.data.tour);
+      if (!cancelled && result.data !== null) {
+        setState({ tour: result.data.tour, conflict: result.data.conflict ?? null });
+      }
     });
     return () => {
       cancelled = true;
     };
   }, [enabled]);
-  return tour;
+  return state;
 }
 
-export function ActiveTourCard({ tour }: { tour: TourView }) {
+/**
+ * Phase 13 Final (§7): deutlich sichtbarer Hinweis „Mehrere aktive Touren gleichzeitig –
+ * Planung prüfen.“ – alle betroffenen Touren bleiben über ihre ID erreichbar; nichts
+ * wird automatisch beendet oder übertragen.
+ */
+export function ActiveTourConflictNotice({ conflict }: { conflict: ActiveTourConflict }) {
+  return (
+    <div className="warning-red" role="alert" data-testid="active-tour-conflict">
+      ⚠︎ {TOUR_TEXTS.multipleActiveTours}
+      <ul>
+        {conflict.tours.map((entry) => (
+          <li key={entry.id}>
+            <Link
+              href={`/touren/aktiv?id=${entry.id}`}
+              data-testid={`active-tour-conflict-link-${entry.id}`}
+            >
+              Tour {entry.assignedName ?? '–'}
+              {entry.substituted && entry.effectiveDriverName !== null && (
+                <> (Vertretung: {entry.effectiveDriverName})</>
+              )}
+              {entry.startedAt !== null && <> · gestartet {berlinTime(entry.startedAt)} Uhr</>}
+            </Link>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+export function ActiveTourCard({
+  tour,
+  conflict = null,
+}: {
+  tour: TourView;
+  conflict?: ActiveTourConflict | null;
+}) {
   const remaining = tour.stops.filter(
     (stop) => stop.state === 'open' || stop.state === 'arrived',
   ).length;
@@ -47,6 +91,7 @@ export function ActiveTourCard({ tour }: { tour: TourView }) {
   return (
     <div className="card next-stop-card" data-testid="active-tour-card">
       <h2>Aktive Tour</h2>
+      {conflict !== null && <ActiveTourConflictNotice conflict={conflict} />}
       <p>
         {remaining === 1 ? '1 offener Stopp' : `${remaining} offene Stopps`}
         {next !== null && (

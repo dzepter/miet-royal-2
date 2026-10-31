@@ -244,8 +244,9 @@ const KEY_PATTERN = /key=|apiKey|GRAPHHOPPER|graphhopper\.com/i;
 async function activeToday() {
   const { admin, cookie } = await adminSession(world);
   const api = apiFor(world.app, cookie);
-  // Offline-Lease setzt ein operatives Recht voraus (Phase 8: handover/return/machine.view);
-  // calendar.view allein berechtigt nicht zum Offlinebetrieb.
+  // Offline-Lease: seit Phase 13 Final (§4) berechtigt auch calendar.view allein zum
+  // (read-only) Offlinebetrieb; handover.view bleibt hier für den vollen Phase-8-Pfad
+  // (Handover-Paket/Mutationen) gesetzt.
   const driverA = await staffWith(
     world,
     admin.id,

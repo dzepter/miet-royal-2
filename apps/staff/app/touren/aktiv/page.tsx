@@ -6,6 +6,7 @@ import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'rea
 import { AuthGuard, useMe } from '../../../components/auth-guard';
 import { ConfirmDialog } from '../../../components/confirm-dialog';
 import {
+  ActiveTourConflictNotice,
   DelayBadge,
   RouteAttribution,
   StopStateBadge,
@@ -33,6 +34,7 @@ import {
   TOUR_TEXTS,
   tourErrorText,
   warningText,
+  type ActiveTourConflict,
   type LocationSendState,
   type OfflineTourSnapshot,
   type TourStopView,
@@ -122,6 +124,8 @@ function ActiveTour() {
   const myId = me?.user.id;
 
   const [tour, setTour] = useState<TourView | null>(null);
+  // Phase 13 Final (§7): mehrere aktive Touren derselben Person (nur ohne ?id=).
+  const [conflict, setConflict] = useState<ActiveTourConflict | null>(null);
   const [snapshot, setSnapshot] = useState<OfflineTourSnapshot | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [fromSnapshot, setFromSnapshot] = useState(false);
@@ -178,6 +182,7 @@ function ActiveTour() {
     const result = requestedId === null ? await getActiveTour() : await getTour(requestedId);
     if (result.data !== null) {
       setTour(result.data.tour);
+      setConflict('conflict' in result.data ? (result.data.conflict ?? null) : null);
       setFromSnapshot(false);
       setError(null);
     } else if (result.status === 0) {
@@ -392,6 +397,16 @@ function ActiveTour() {
     tour !== null &&
     tour.status === 'active' &&
     tour.stops.some((stop) => stop.delay?.status === 'unknown');
+  // Phase 13 Final (§3): Standort zu ungenau ⇒ kleiner Hinweis (kein Meterwert, kein rotes Risiko).
+  const locationInaccurate =
+    tour !== null &&
+    !fromSnapshot &&
+    tour.status === 'active' &&
+    tour.warnings.some((warning) => warning.code === 'DELAY_LOCATION_INACCURATE');
+  const visibleWarnings =
+    tour === null
+      ? []
+      : tour.warnings.filter((warning) => warning.code !== 'DELAY_LOCATION_INACCURATE');
   const forceValid =
     (forceReason ?? '').trim().length >= 3 && (forceReason ?? '').trim().length <= 500;
   const showingSnapshot = fromSnapshot && snapshot !== null;
@@ -459,6 +474,8 @@ function ActiveTour() {
         </p>
       )}
 
+      {conflict !== null && !fromSnapshot && <ActiveTourConflictNotice conflict={conflict} />}
+
       {riskStops.length > 0 && (
         <div className="delay-banner" role="alert" data-testid="delay-banner">
           Tour droht Termin zu verpassen – {riskStops[0]!.appointment.processNumber}
@@ -481,14 +498,18 @@ function ActiveTour() {
           )}
         </div>
       )}
-      {delayUnknown && (
+      {(delayUnknown || locationInaccurate) && (
         <p className="muted" data-testid="delay-unknown">
-          {TOUR_TEXTS.delayUnknown}
+          {delayUnknown && TOUR_TEXTS.delayUnknown}
+          {delayUnknown && locationInaccurate && ' '}
+          {locationInaccurate && (
+            <span data-testid="delay-location-inaccurate">{TOUR_TEXTS.locationInaccurate}</span>
+          )}
         </p>
       )}
-      {tour !== null && !fromSnapshot && tour.warnings.length > 0 && (
+      {tour !== null && !fromSnapshot && visibleWarnings.length > 0 && (
         <div className="conflict-box" data-testid="active-tour-warnings">
-          {tour.warnings.map((warning, index) => (
+          {visibleWarnings.map((warning, index) => (
             <div key={`${warning.code}-${index}`}>⚠︎ {warningText(warning)}</div>
           ))}
         </div>

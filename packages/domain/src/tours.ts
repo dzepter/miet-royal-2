@@ -22,6 +22,14 @@ export const DEFAULT_TOUR_DEPARTURE_HOUR = 8;
 /** Flexible Segmente bis zu dieser Größe werden vollständig permutiert (Design §6). */
 export const TOUR_PLAN_FULL_PERMUTATION_MAX = 7;
 
+/**
+ * Phase 13 Final (§3): Eine Verspätungsprognose wird NUR aus einem Live-Standort
+ * mit Genauigkeit ≤ 250 m berechnet (einzige Stelle; API-Service und UI lesen hier).
+ * Ungenauere Standorte werden weiterhin gespeichert („letzter bekannter Standort“),
+ * tragen aber keine Prognose: kein Incident, keine Entwarnung, kein Push.
+ */
+export const DELAY_LOCATION_MAX_ACCURACY_METERS = 250;
+
 export interface TourTimePosition {
   startAt: Date | null;
   endAt: Date | null;

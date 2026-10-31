@@ -233,19 +233,47 @@ export class TourService {
     );
   }
 
-  /** Eigene aktive Tour (gespeicherter Fahrer ODER effektive Vertretung, Order §30). */
-  async findActiveFor(userId: string, now = new Date()): Promise<LoadedTour | null> {
+  /**
+   * Aktive Touren, für die diese Person zuständig ist (gespeicherter Fahrer ODER
+   * effektive Vertretung, Order §30) – deterministisch nach Startzeit, dann ID.
+   */
+  private async activeTourRowsFor(userId: string, now: Date): Promise<Tour[]> {
     const rows = await this.db
       .select()
       .from(tours)
       .where(eq(tours.status, 'active'))
       .orderBy(asc(tours.startedAt), asc(tours.id));
     const substitutions = await loadSubstitutions(this.db);
-    const own = rows.find(
+    return rows.filter(
       (row) =>
         row.assignedUserId === userId || this.effectiveDriverId(row, substitutions, now) === userId,
     );
-    return own === undefined ? null : this.load(own.id, now);
+  }
+
+  /**
+   * Phase 13 Final (§7): ALLE eigenen aktiven Touren (zuerst gestartete zuerst).
+   * Mehr als eine (z. B. nachträgliche Vertretung nach beiden Starts) ist ein
+   * Planungskonflikt, der nicht still verborgen wird: `GET /staff/tours/active`
+   * liefert `conflict`, die View jeder betroffenen Tour trägt die Warnung
+   * MULTIPLE_ACTIVE_TOURS. Nichts wird automatisch beendet oder übertragen.
+   */
+  async findActiveToursFor(userId: string, now = new Date()): Promise<LoadedTour[]> {
+    const rows = await this.activeTourRowsFor(userId, now);
+    return this.loadMany(
+      rows.map((row) => row.id),
+      now,
+    );
+  }
+
+  /**
+   * Eigene aktive Tour (Order §30) – bei mehreren deterministisch die ZUERST
+   * gestartete (Offline-Snapshot, Fahrer-Sicht). Der Konflikt selbst ist über
+   * `findActiveToursFor` sichtbar und wird hier nicht verschwiegen, sondern
+   * von Route/View ausgewiesen.
+   */
+  async findActiveFor(userId: string, now = new Date()): Promise<LoadedTour | null> {
+    const [first] = await this.activeTourRowsFor(userId, now);
+    return first === undefined ? null : this.load(first.id, now);
   }
 
   /**
@@ -646,6 +674,10 @@ export class TourService {
       this.assertEditable(tour);
       this.assertVersion(tour, input.expectedVersion);
       const entry = await this.stopOfTour(tx, tourId, stopId);
+      // Phase 13 Final (§6E, entschieden): ein nicht erledigter Stopp darf – auch aus
+      // einer AKTIVEN Tour – bewusst durch calendar.manage entfernt werden (Route);
+      // der Termin bleibt scheduled, die Route wird stale (bumpWithin/invalidatePlan).
+      // Erledigte Stopps bleiben Historie und sind nie entfernbar (409 TOUR_STOP_DONE).
       if (entry.state === 'done') {
         throw new TourError(
           'CONFLICT',

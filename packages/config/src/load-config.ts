@@ -63,12 +63,27 @@ export const ROUTING_PRODUCTION_BASE_URL = 'https://graphhopper.com/api/1';
  * - development: Default `mock`; staging: Default `disabled`. Echter Provider
  *   nur per Opt-in ROUTING_ENABLED=true + ROUTING_PROVIDER=graphhopper + Key;
  *   GRAPHHOPPER_BASE_URL darf dort auf einen lokalen Contract-Fake zeigen.
+ * - Phase 13 Final (§5, Go-live fail-closed): production mit effektivem
+ *   Provider `graphhopper` verlangt zusätzlich
+ *   ROUTING_PROVIDER_TERMS_CONFIRMED=true – die bewusste Bestätigung, dass
+ *   Vertrag/Paket gegen die implementierte serverseitige Zwischenspeicherung
+ *   (geocoding_cache, persistierte Distanz-/Fahrzeitwerte) geprüft wurde
+ *   (docs/OPEN_ITEMS.md „GO-LIVE-BLOCKER Routing“). Kein Default, keine
+ *   juristische Automatik; production `disabled` braucht keine Bestätigung;
+ *   demo/development/staging ignorieren den Schalter. Das Flag ist kein
+ *   Geheimnis (keine Redaction, keine Isolationsprüfung).
  * Der API-Key existiert ausschließlich in diesem Objekt (nie Log/DB/Antwort/Browser).
  */
 export interface RoutingConfig {
   /** false ⇔ provider === 'disabled'. */
   enabled: boolean;
   provider: 'graphhopper' | 'mock' | 'disabled';
+  /**
+   * Phase 13 Final: ROUTING_PROVIDER_TERMS_CONFIRMED=true (nur informativ –
+   * die Durchsetzung passiert beim Laden; in production ist graphhopper ohne
+   * Bestätigung ein ConfigError). Kein Secret.
+   */
+  termsConfirmed: boolean;
   graphhopper: {
     /** Nur gesetzt, wenn provider === 'graphhopper'; nie serialisieren. */
     apiKey: string | null;
@@ -340,6 +355,8 @@ const rawEnvSchema = z.object({
     .regex(/^https?:\/\/.+/, 'muss eine http(s)-URL sein')
     .optional(),
   ROUTING_REQUEST_TIMEOUT_MS: z.coerce.number().int().min(1000).max(120_000).optional(),
+  // Phase 13 Final – Go-live-Schalter (kein Secret): Vertrag gegen implementierte Nutzung geprüft.
+  ROUTING_PROVIDER_TERMS_CONFIRMED: z.enum(['true', 'false']).optional(),
 });
 
 /**
@@ -551,6 +568,7 @@ function buildRoutingConfig(raw: RawEnv, problems: string[]): RoutingConfig {
   const requested = raw.ROUTING_PROVIDER;
   const optIn = raw.ROUTING_ENABLED === 'true';
   const optOut = raw.ROUTING_ENABLED === 'false';
+  const termsConfirmed = raw.ROUTING_PROVIDER_TERMS_CONFIRMED === 'true';
   let provider: RoutingConfig['provider'];
   let baseUrl = ROUTING_PRODUCTION_BASE_URL;
 
@@ -570,6 +588,14 @@ function buildRoutingConfig(raw: RawEnv, problems: string[]): RoutingConfig {
     }
     // Ohne Key bleibt Routing deaktiviert (kein Fehler, kein Fake) – Order §6.
     provider = hasKey && !optOut && requested !== 'disabled' ? 'graphhopper' : 'disabled';
+    // Phase 13 Final (§5): GraphHopper in production nur mit bewusster Bestätigung,
+    // dass der Vertrag die serverseitige Zwischenspeicherung erlaubt (fail-closed,
+    // kein Default). `disabled` braucht keine Bestätigung.
+    if (provider === 'graphhopper' && !termsConfirmed) {
+      problems.push(
+        'ROUTING_PROVIDER_TERMS_CONFIRMED: GraphHopper in production erfordert ROUTING_PROVIDER_TERMS_CONFIRMED=true nach vertraglicher Prüfung der serverseitigen Zwischenspeicherung (geocoding_cache, persistierte Distanz-/Fahrzeitwerte) – siehe docs/OPEN_ITEMS.md „GO-LIVE-BLOCKER Routing“',
+      );
+    }
   } else if (raw.APP_ENV === 'demo') {
     if (hasKey) {
       problems.push(
@@ -606,6 +632,7 @@ function buildRoutingConfig(raw: RawEnv, problems: string[]): RoutingConfig {
   return {
     enabled: provider !== 'disabled',
     provider,
+    termsConfirmed,
     graphhopper: {
       apiKey: provider === 'graphhopper' && hasKey ? key : null,
       baseUrl,

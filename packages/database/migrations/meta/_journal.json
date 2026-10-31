@@ -197,6 +197,13 @@
       "when": 1793395780408,
       "tag": "0027_phase13_tours",
       "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1793429600543,
+      "tag": "0028_phase13_final_rate_limits",
+      "breakpoints": true
     }
   ]
 }

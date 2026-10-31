@@ -45,6 +45,29 @@ Die jeweils benötigten Zugangsdaten/Stammdaten stehen in `OPEN_ITEMS.md`.
   Testaccount-Smoke): siehe `docs/OPEN_ITEMS.md` → „GO-LIVE-BLOCKER
   Buchhaltung“.
 
+## Production mit Routing/GraphHopper (ab Phase 13)
+- **GO-LIVE-BLOCKER Routing (vertraglich, Phase 13 Final §5):** Vor dem
+  Setzen eines `GRAPHHOPPER_API_KEY` in production mit GraphHopper (Vertrag/
+  Paket, ggf. Custom-Vertrag) klären, ob die implementierte serverseitige
+  Zwischenspeicherung erlaubt ist: `geocoding_cache` mit Kandidaten,
+  Koordinaten und OSM-Referenzen (TTL 90 Tage resolved / 30 Tage review bzw.
+  kein Treffer) sowie die persistierten minimalen Distanz-/Fahrzeitwerte je
+  Tour/Stopp. Die ToS regeln ausdrücklich nur temporäres clientseitiges
+  Caching; eine dauerhafte serverseitige Speicherung ist nicht ausdrücklich
+  geregelt (`docs/ROUTING_API_NOTES.md`). Ergebnis negativ ⇒ Caching/
+  Persistenz vor dem Go-live reduzieren/umbauen, nicht den Schalter setzen.
+- Erst nach positiver Prüfung `ROUTING_PROVIDER_TERMS_CONFIRMED=true` bei API
+  und Worker setzen (kein Secret, kein Default) – ohne diesen Wert startet
+  production mit gesetztem Key nicht (fail-closed, Konfigurationsfehler).
+  Alternative bis zur Klärung: `ROUTING_PROVIDER=disabled` (Touren
+  organisatorisch nutzbar, keine Routen/Prognosen).
+- Bezahlter GraphHopper-Plan (Basic oder höher) und Kontoinhaber; Key nur als
+  Secret der Produktionsumgebung (`GRAPHHOPPER_API_KEY`), nie im Repo; ein
+  Key gilt nur in einer Umgebung (Isolationsprüfung).
+- Verzeichnis der Verarbeitungstätigkeiten um GraphHopper (Request-Retention
+  bis 5 Wochen, Subprozessoren Geocoding) ergänzen; Depotadresse
+  (`pickup_exact_address`) vollständig hinterlegen.
+
 ## Sicherheitsregel
 Echte Zugangsdaten nie in Chat-Prompts oder Git-Dateien kopieren, wenn sie als
 Secrets/Environment-Variablen auf dem Zielsystem gesetzt werden können.

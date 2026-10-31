@@ -177,6 +177,14 @@ Während Zeitraum neue Aufgaben/Pushs zur Vertretung.
 Nach Ende offene Aufgaben zurück an Ursprung.
 Vorzeitiges Ende sofort.
 
+## Touren (Phase 13 Final, entschieden)
+Verspätungsrisiko genau dann, wenn die prognostizierte Ankunft nach der Frist liegt (exakter Termin: Terminzeit; Zeitfenster: Fensterende); kein Vorwarn-Puffer.
+Je Stopp ein Incident; je neuem Incident genau ein Push je Empfänger (Dedupe), kein zweiter Push solange der Incident offen ist.
+Verspätungsprognose nur mit Standortgenauigkeit ≤ 250 m (`DELAY_LOCATION_MAX_ACCURACY_METERS`); ungenauer Standort wird als letzter bekannter Standort gespeichert, erzeugt aber weder Risiko noch Entwarnung noch Push („Verspätungsprognose derzeit nicht verfügbar.“).
+„Angekommen“ ist eine bewusste Mitarbeiteraktion ohne GPS-Näheprüfung.
+Ein nicht erledigter Stopp darf durch `calendar.manage` bewusst aus einer aktiven Tour entfernt werden: Termin bleibt scheduled, Route wird stale; erledigte Stopps bleiben Historie und sind nicht entfernbar; keine Fachstornierung.
+Offline: ein reiner Tourfahrer (`calendar.view`) erhält nur den read-only Snapshot seiner eigenen/effektiven aktiven Tour; alle Tour-Aktionen und GPS nur online.
+
 ## Reinigung
 Nach Rückgabe immer Reinigung.
 „Gereinigt & einsatzbereit“ → Einsatzbereit.

@@ -94,6 +94,8 @@ export function assertConfigsIsolated(a: AppConfig, b: AppConfig): void {
   ) {
     collisions.push('GRAPHHOPPER_API_KEY: beide Umgebungen nutzen denselben GraphHopper-API-Key');
   }
+  // Phase 13 Final: ROUTING_PROVIDER_TERMS_CONFIRMED ist ein Deployment-Schalter,
+  // kein Geheimnis – bewusst keine Kollisionsprüfung.
 
   if (collisions.length > 0) {
     throw new EnvironmentIsolationError(a.appEnv, b.appEnv, collisions);

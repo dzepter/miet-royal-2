@@ -112,6 +112,7 @@ verschiedene Schlüssel (sie teilen kein `AUTH_SECRET_KEY`).
 | `GRAPHHOPPER_API_KEY` | nur Server, nie Browser/DB/Logs/Git |
 | `GRAPHHOPPER_BASE_URL` | nur development/staging überschreibbar (Fake-Server) |
 | `ROUTING_REQUEST_TIMEOUT_MS` | Timeout je Provider-Aufruf (Default 15000) |
+| `ROUTING_PROVIDER_TERMS_CONFIRMED` | `true`/`false` (Default false, kein Secret) – Go-live-Schalter: Vertrag/Paket gegen die implementierte serverseitige Zwischenspeicherung geprüft; production mit effektivem `graphhopper` startet ohne `true` nicht |
 
 Regeln: **production** erlaubt nur `graphhopper` oder `disabled`, der Host ist
 fest `https://graphhopper.com/api/1` (abweichende URL ⇒ Konfigurationsfehler),
@@ -122,3 +123,15 @@ Standard `mock`, **staging** Standard `disabled`; der echte Provider nur mit
 `ROUTING_ENABLED=true`, `ROUTING_PROVIDER=graphhopper` und Key. Die
 Isolationsprüfung meldet denselben `GRAPHHOPPER_API_KEY` in zwei Umgebungen
 als Kollision.
+
+**Go-live-Schalter (Phase 13 Final, §5):** `APP_ENV=production` mit effektivem
+Provider `graphhopper` (Key gesetzt, nicht deaktiviert) verlangt zusätzlich
+`ROUTING_PROVIDER_TERMS_CONFIRMED=true`; andernfalls bricht der Start mit einem
+Konfigurationsfehler ab („GraphHopper in production erfordert
+ROUTING_PROVIDER_TERMS_CONFIRMED=true nach vertraglicher Prüfung der
+serverseitigen Zwischenspeicherung“). production mit `disabled` braucht keine
+Bestätigung; demo/development/staging ignorieren den Schalter (staging wird
+bewusst nicht erzwungen). Das Flag ist kein Geheimnis (keine Redaction, keine
+Isolationsprüfung) und hat in production keinen automatischen Default – es
+dokumentiert die bewusste Entscheidung nach Vertragsprüfung
+(`docs/OPEN_ITEMS.md` → „GO-LIVE-BLOCKER Routing“).

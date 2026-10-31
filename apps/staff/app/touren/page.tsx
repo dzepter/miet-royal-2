@@ -54,7 +54,9 @@ function ToursList() {
   return (
     <main className="page">
       <h1>Touren</h1>
-      {activeTour !== null && <ActiveTourCard tour={activeTour} />}
+      {activeTour.tour !== null && (
+        <ActiveTourCard tour={activeTour.tour} conflict={activeTour.conflict} />
+      )}
 
       <div className="calendar-toolbar">
         <span>

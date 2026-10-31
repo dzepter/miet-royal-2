@@ -38,9 +38,10 @@ erneut gegen die Doku prüfen (ein Changelog wurde nicht gefunden).
   unterscheidbar ⇒ Client: `rate_limited` (transient) mit `retryAfterMs` aus
   `X-RateLimit-Reset`; nur wenn `X-RateLimit-Remaining ≤ 0` UND Reset > 60 s ⇒
   `credit_limited` (permanent, keine Retries). Ohne auswertbaren Header: Pause
-  60 s. Der Client macht NIE eigene Retries; eine in-process-Drossel erlaubt
-  höchstens 1 Request/s (konservativ unter dem Basic-Plan) und pausiert nach
-  429 – kein Retry-Sturm. Review-Fix F1: Die Pause lässt NIEMANDEN warten –
+  60 s. Der Client macht NIE eigene Retries; die GLOBALE Drossel (Phase 13
+  Final, `integration_rate_limits`, siehe „Konfiguration/Drossel“) erlaubt
+  höchstens 1 Request/s je Umgebung (konservativ unter dem Basic-Plan) und
+  pausiert nach 429 für ALLE Prozesse – kein Retry-Sturm. Review-Fix F1: Die Pause lässt NIEMANDEN warten –
   während der Pause scheitert jeder Aufruf sofort (`rate_limited` bzw.
   `credit_limited`, Status 429, Rest der Pause als `retryAfterMs`, kein
   Provider-Request); ein Minuten-429 (Remaining > 0 oder unbekannt) pausiert
@@ -136,8 +137,11 @@ Provider-Fehlertexte werden nie weitergegeben (nur neutrale Codes
 - Basic 69 €/Monat: 5.000 Credits/Tag, 30 Locations, 2 Vehicles, 1 req/s, 100 Credits/min.
 - Standard 199 €/Monat: 15.000/Tag, 80 Locations, 10 Vehicles, 2 req/s, 400 Credits/min.
 - Premium 479 €/Monat: 50.000/Tag, 200 Locations, 20 Vehicles, 10 req/s, 1000 Credits/min.
-- Unsere Drossel (1 req/s) bleibt unter dem Basic-Plan; Credits je Request
-  werden aus `X-RateLimit-Credits` als Zahl geloggt (ohne Request-Inhalte).
+- Unsere Drossel (global 1 req/s je Umgebung, API + Worker + Replikate
+  zusammen) bleibt unter dem Basic-Plan und wird durch größere Pläne NICHT
+  beschleunigt; Credits je Request werden aus `X-RateLimit-Credits` als Zahl
+  geloggt (ohne Request-Inhalte). Kein eigenes Credit-System: GraphHopper
+  bleibt Autorität (429/`credit_limited` ⇒ globale Pause).
 
 ## Kommerzielle Nutzung
 Produktiver Einsatz nur mit einem bezahlten Plan (Basic oder höher) bzw.
@@ -173,6 +177,20 @@ KEIN Live-Aufruf ausgeführt; `pnpm routing:smoke` ist ein manueller Smoke
   OSM-Referenz). Eine bewusste Staff-Bestätigung (`confirmed_*`) ist eine
   eigene Geschäftsentscheidung und wird nach Ablauf nur dann erneut
   angewendet, wenn der Provider dieselbe OSM-Referenz liefert.
+- **Klarstellung (Phase 13 Final, §5):** Die obige Ableitung ist KEINE
+  Rechtsauskunft und behauptet nicht, dass die implementierte Nutzung „laut
+  ToS erlaubt“ ist. Die ToS regeln ausdrücklich nur temporäres clientseitiges
+  Caching; unsere serverseitige Zwischenspeicherung (`geocoding_cache` mit
+  Kandidaten, Koordinaten, OSM-Referenzen, TTL 90/30 Tage) und die
+  persistierten minimalen Distanz-/Fahrzeitwerte sind dort nicht ausdrücklich
+  geregelt und VOR dem Go-live vertraglich zu klären (Paket bzw. Custom-
+  Vertrag). Bis dahin ist dies ein Go-live-Blocker (`docs/OPEN_ITEMS.md`
+  „GO-LIVE-BLOCKER Routing“, `docs/PRE_START_CHECKLIST.md`). Technisch
+  fail-closed: production mit effektivem Provider `graphhopper` startet nur
+  mit `ROUTING_PROVIDER_TERMS_CONFIRMED=true` (Deployment-Schalter, kein
+  Secret, kein Default; Bedeutung „Vertrag gegen implementierte Nutzung
+  geprüft“). Fällt die Prüfung negativ aus, sind Caching/Persistenz vor dem
+  Go-live zu reduzieren oder umzubauen – nicht der Schalter zu setzen.
 
 ## Attribution
 - OpenStreetMap-Daten (ODbL): Link auf `https://www.openstreetmap.org/copyright`
@@ -195,7 +213,7 @@ KEIN Live-Aufruf ausgeführt; `pnpm routing:smoke` ist ein manueller Smoke
 - Header-Auth (nicht dokumentiert), eigene Retries (Queue/Aufrufer entscheiden
   anhand `transient`).
 
-## Konfiguration (packages/config, `RoutingConfig`)
+## Konfiguration/Drossel (packages/config, `RoutingConfig`; `integration_rate_limits`)
 `ROUTING_ENABLED`, `ROUTING_PROVIDER` (graphhopper|mock|disabled),
 `GRAPHHOPPER_API_KEY`, `GRAPHHOPPER_BASE_URL`, `ROUTING_REQUEST_TIMEOUT_MS`
 (Default 15000). production: nur graphhopper|disabled, Host fest, ohne Key
@@ -206,3 +224,28 @@ echter Provider nur per Opt-in (ENABLED=true + PROVIDER=graphhopper + Key),
 Base-URL dort überschreibbar (Contract-Fake). Env-Isolation: derselbe
 GraphHopper-Key in zwei Umgebungen ist eine Kollision
 (`assertConfigsIsolated`). Der Key existiert nur in `config.routing.graphhopper.apiKey`.
+
+**Globale Drossel (Phase 13 Final §1).** API, Worker und alle Replikate einer
+Umgebung teilen EINE Zeile `integration_rate_limits` (provider `graphhopper`,
+`environment` = APP_ENV, `next_slot_at`, `paused_until`, `pause_kind`) –
+derselbe generische `PostgresIntegrationRateLimiter`
+(`apps/api/src/integrations/rate-limiter.ts`), den auch Lexware nutzt
+(provider `lexware`, 500 ms). Ablauf je Provider-Request: kurze Transaktion
+(Zeile `FOR UPDATE`) → aktive Pause? ⇒ keine Reservierung, sofort
+`RoutingError` (`rate_limited`/`credit_limited`, 429, Rest als `retryAfterMs`)
+→ sonst nächsten Slot ≥ 1000 ms nach max(now, next_slot_at) reservieren →
+Commit → ggf. warten AUSSERHALB der Transaktion → fetch. Niemals eine
+DB-Sperre während sleep() oder fetch(); Providerfehler geben den Slot nicht
+frei. 429 ⇒ `pause(until, kind)` global (nur verlängern): Minuten-429
+(Remaining > 0/unbekannt) ≤ 60 s, Tageskontingent erschöpft (Remaining ≤ 0 ∧
+Reset > 60 s) bis `X-RateLimit-Reset` (`credit_limited`). Abgelaufene Pausen
+löscht die nächste Reservierung. Die Zeile enthält nie Key, URL oder
+Request-Inhalte. Die Fabrik (`createRoutingGateway(config, logger, { db })`)
+verweigert GraphHopper ohne globale Drossel; Mock/Fake/Disabled brauchen
+keine. Unit-Tests nutzen `InMemoryIntegrationRateLimiter` (gleiche
+Schnittstelle), Integrationstests G1–G12 in
+`apps/api/test/routing-global-rate-limit.integration.test.ts`.
+Phase 13 Final: `ROUTING_PROVIDER_TERMS_CONFIRMED` (true|false, Default false,
+kein Secret) – production ∧ effektiver Provider graphhopper ∧ nicht `true` ⇒
+Konfigurationsfehler beim Start; production `disabled` ohne Bestätigung
+startbar; demo/development/staging ignorieren den Schalter.

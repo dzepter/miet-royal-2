@@ -182,7 +182,7 @@ export function resetLexwareE2eState(options: { onlyTaxConfig?: boolean } = {}):
           'TRUNCATE accounting_tax_config',
           "DELETE FROM system_settings WHERE key = 'accounting_lexware_tax_type'",
           'TRUNCATE lexware_webhook_events',
-          'TRUNCATE lexware_rate_limit',
+          'TRUNCATE integration_rate_limits', // Phase 13 Final: ersetzt lexware_rate_limit
           'TRUNCATE lexware_integration_state',
         ];
   const script = [

@@ -192,16 +192,6 @@ export const lexwareWebhookEvents = pgTable(
 );
 
 /**
- * Gemeinsamer Rate-Limit-Zustand für API und Worker (Order §11): genau eine
- * Zeile; `nextSlotAt` ist der früheste Zeitpunkt des nächsten Requests. Der
- * Slot wird in einer kurzen Transaktion reserviert; gewartet wird außerhalb.
- */
-export const lexwareRateLimit = pgTable('lexware_rate_limit', {
-  id: integer('id').primaryKey(),
-  nextSlotAt: timestamp('next_slot_at', { withTimezone: true }).notNull().defaultNow(),
-});
-
-/**
  * Explizite Steuerkonfiguration je Abrechnungskategorie (Order §13/§62).
  * Es gibt KEINE Produktionsdefaults; `synthetic = true` kennzeichnet
  * Test-/Entwicklungswerte, die in production nie gelten.
