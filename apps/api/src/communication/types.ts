@@ -191,7 +191,9 @@ export type PushKind =
   // Phase 12 (push): Vertretungsbeginn – kleiner Hinweis an die Vertretung (Order §31).
   | 'substitution_started'
   // Phase 12 (push): kurzfristige Neuzuweisung am Durchführungstag (Order §31, Phase-4-Feld assignmentNotifiedAt).
-  | 'assignment_reassigned';
+  | 'assignment_reassigned'
+  // Phase 13 (tours-live): drohende Verspätung eines Tourstopps – genau ein Push je Incident (Order §53/§54).
+  | 'tour_delay_risk';
 
 /** Datenminimierung: keine Kundennamen/Telefon/Adresse/Schäden/Beträge. */
 export interface PushPayload {

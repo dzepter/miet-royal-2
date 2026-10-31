@@ -35,6 +35,8 @@ import {
 } from './device';
 import type { LocalMutation, LocalSnapshot } from './projection';
 import { createSyncTransport } from './transport';
+// Phase 13 (UI): Snapshot der eigenen aktiven Tour im Paket (Design §11).
+import type { OfflineTourSnapshot } from '../tours';
 
 /**
  * Offline-Laufzeit der Staff-PWA (Phase-8-Order §§5–9, 30, 36–44, 77/78):
@@ -74,6 +76,8 @@ export interface PackagePayload {
   truncated: boolean;
   horizonFrom: string;
   horizonTo: string;
+  /** Phase 13 (UI): eigene aktive Tour (ohne GPS) – optional, da ältere Pakete das Feld nicht haben. */
+  activeTour?: OfflineTourSnapshot | null;
 }
 
 /** Nach jedem erfolgreichen Paketabruf (Provider cacht dann die Seiten-Shells vor). */
@@ -827,6 +831,8 @@ export class OfflineRuntime {
       truncated: pkg.truncated,
       horizonFrom: pkg.horizonFrom,
       horizonTo: pkg.horizonTo,
+      // Phase 13 (UI): defensiv – Feld kommt vom ACTIVE-Agenten (Server), kann fehlen.
+      activeTour: (pkg as { activeTour?: OfflineTourSnapshot | null }).activeTour ?? null,
     };
     await store.putPackage(
       {

@@ -44,7 +44,8 @@
     "communication:rewrap-secrets": "pnpm --filter @mietroyal/api communication:rewrap-secrets",
     "mail:smoke": "pnpm --filter @mietroyal/api mail:smoke",
     "whatsapp:smoke": "pnpm --filter @mietroyal/api whatsapp:smoke",
-    "push:generate-vapid-keys": "pnpm --filter @mietroyal/api push:generate-vapid-keys"
+    "push:generate-vapid-keys": "pnpm --filter @mietroyal/api push:generate-vapid-keys",
+    "routing:smoke": "pnpm --filter @mietroyal/api routing:smoke"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",

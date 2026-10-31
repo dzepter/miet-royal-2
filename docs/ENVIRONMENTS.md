@@ -102,3 +102,23 @@ Nach einer Rotation von `AUTH_SECRET_KEY` muss der Wert neu ausgegeben und
 gesetzt werden; bestehende Leases werden ungültig und beim nächsten
 Onlinekontakt neu ausgestellt. Production und Demo haben zwingend
 verschiedene Schlüssel (sie teilen kein `AUTH_SECRET_KEY`).
+
+## Routing-Provider (Phase 13)
+
+| Variable | Bedeutung |
+| --- | --- |
+| `ROUTING_ENABLED` | `true`/`false` – explizites Ein-/Ausschalten |
+| `ROUTING_PROVIDER` | `graphhopper` \| `mock` \| `disabled` |
+| `GRAPHHOPPER_API_KEY` | nur Server, nie Browser/DB/Logs/Git |
+| `GRAPHHOPPER_BASE_URL` | nur development/staging überschreibbar (Fake-Server) |
+| `ROUTING_REQUEST_TIMEOUT_MS` | Timeout je Provider-Aufruf (Default 15000) |
+
+Regeln: **production** erlaubt nur `graphhopper` oder `disabled`, der Host ist
+fest `https://graphhopper.com/api/1` (abweichende URL ⇒ Konfigurationsfehler),
+ohne Key startet die API mit `disabled` (Hinweis im Log, kein Fake).
+**demo** nutzt immer den Mock; ein gesetzter Key oder `graphhopper` ist ein
+Konfigurationsfehler (Demo ruft nie einen echten Provider). **development**
+Standard `mock`, **staging** Standard `disabled`; der echte Provider nur mit
+`ROUTING_ENABLED=true`, `ROUTING_PROVIDER=graphhopper` und Key. Die
+Isolationsprüfung meldet denselben `GRAPHHOPPER_API_KEY` in zwei Umgebungen
+als Kollision.

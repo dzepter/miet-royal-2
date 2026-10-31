@@ -178,6 +178,23 @@ Profiländerung verändert laufenden Booking-Snapshot nicht.
   `communication-ops.spec.ts` (Demo-Isolation im eigenen Projekt).
 - Optionale Live-Smokes `pnpm mail:smoke`, `pnpm whatsapp:smoke` nur mit expliziten Flags.
 
+## Touren, Routing, aktive Fahrt, GPS (Phase 13)
+- Pflichttests T1–T124 (Nummer im Testnamen „T<n>. …“): Config
+  `packages/config/test/routing-config.test.ts`, Provider-Client gegen den
+  Contract-Fake `apps/api/test/routing-graphhopper.test.ts`
+  (`apps/api/src/routing/testing/fake-server.ts`), Integrationstests
+  `apps/api/test/tours-*.integration.test.ts` (geocoding, planning,
+  assignment, route-changes, travel-status, security, end, active-gps,
+  delay-risk), Domänentests `packages/domain/test/tours.test.ts`.
+  Traceability: `docs/PHASE13_TEST_TRACEABILITY.md`.
+- Keine echten Provider im Gate: `FakeRoutingGateway` in Integrationstests;
+  in E2E der echte GraphHopper-Client gegen den lokalen Contract-Fake auf dem
+  HTTPS-Dispatcher (4567, Präfix `/api/1`, Test-CA nur über
+  `NODE_EXTRA_CA_CERTS`); Demo-Projekt ohne Key (Mock, kein Provider-Aufruf).
+- E2E-Szenarien A–O: `tests/e2e/specs/tours-flow.spec.ts`.
+- Optionaler Live-Smoke `pnpm routing:smoke` nur mit `ROUTING_SMOKE=1` und
+  echtem Key, nie in production, nie im Gate.
+
 ## Definition of Done
 Fachregel korrekt, Rechte serverseitig, Validierung, Fehlerfall,
 responsive, Tests ausgeführt, Doku aktualisiert, Staging geprüft.

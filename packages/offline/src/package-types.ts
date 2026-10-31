@@ -131,6 +131,39 @@ export interface OfflineDocumentPayload extends OfflineDocumentReference {
   dataBase64: string;
 }
 
+/**
+ * Phase 13 (Order §46, Design §11): Stopp der eigenen aktiven Tour im
+ * Offline-Paket – nur Lesedaten für die Fahrt (Reihenfolge, Terminart,
+ * Vorgangsnummer, Zeiten, operative Adresse, Navigations-Links, Zustand).
+ * Keine GPS-Daten, keine Kundennamen, keine Telefonnummern.
+ */
+export interface OfflineTourStopSnapshot {
+  stopId: string;
+  appointmentId: string;
+  sequence: number;
+  kind: string;
+  processNumber: string;
+  processId: string;
+  bookingId: string;
+  startAt: string | null;
+  endAt: string | null;
+  /** Operative Adresse des Stopps (Lieferadresse des Termins bzw. Depot) – leer, wenn sie fehlt. */
+  addressLines: string[];
+  /** Externe Karten-Links (nur Ziel: Koordinate oder Adresse) – null ohne Adresse. */
+  navigation: { apple: string; android: string; web: string } | null;
+  state: 'open' | 'arrived' | 'done' | 'skipped';
+}
+
+/** Eigene aktive Tour (gespeicherter Fahrer oder Vertretung) zum Zeitpunkt des Paketabrufs. */
+export interface OfflineTourSnapshot {
+  tourId: string;
+  tourDate: string;
+  status: string;
+  version: number;
+  snapshotAt: string;
+  stops: OfflineTourStopSnapshot[];
+}
+
 export interface OfflinePackage<H = unknown, R = unknown> {
   packageId: string;
   environment: OfflineEnvironment;
@@ -150,6 +183,12 @@ export interface OfflinePackage<H = unknown, R = unknown> {
   /** Bestände laut Sync (nur Anzeige, §23/§24) – null ohne inventory.view. */
   inventory: unknown[] | null;
   documents: OfflineDocumentPayload[];
+  /**
+   * Phase 13 (Order §46): eigene aktive Tour (offline nur lesbar – Start,
+   * Übernahme, Reihenfolge, Ende und GPS-Updates bleiben online-only).
+   * null ohne aktive Tour oder ohne calendar.view.
+   */
+  activeTour: OfflineTourSnapshot | null;
 }
 
 /** Antwort von POST /staff/offline/lease (Ausstellung/Verlängerung; jede Verlängerung = neues Secret). */

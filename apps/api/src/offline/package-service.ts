@@ -42,6 +42,7 @@ import type { HandoverService } from '../handover/handover-service.ts';
 import type { DamageService } from '../returns/damage-service.ts';
 import type { ReturnDetailView, ReturnService } from '../returns/return-service.ts';
 import { effectiveAssigneeForAppointment, loadSubstitutions } from '../scheduling/assignee.ts';
+import type { OfflineTourSnapshotSource } from '../tours/live/offline-snapshot.ts';
 import type { InventoryService } from '../warehouse/inventory-service.ts';
 import type { MachineService } from '../warehouse/machine-service.ts';
 import type { OfflineLeaseService } from './lease-service.ts';
@@ -87,6 +88,8 @@ export interface OfflinePackageDeps {
   inventory: InventoryService;
   documents: DocumentService;
   leases: OfflineLeaseService;
+  /** Phase 13 (tours-live, Order §46): eigene aktive Tour im Paket – optional (ohne ⇒ null). */
+  tours?: OfflineTourSnapshotSource | undefined;
 }
 
 export type OfflineBookingSnapshotView = OfflineBookingSnapshot<
@@ -257,6 +260,11 @@ export class OfflinePackageService {
 
     const machines = rights.machines ? await this.machineSnapshots() : [];
     const inventory = rights.inventory ? await this.deps.inventory.listItems() : null;
+    // Phase 13 (tours-live): nur die EIGENE aktive Tour (gespeichert/Vertretung), ohne GPS.
+    const activeTour =
+      this.deps.tours === undefined
+        ? null
+        : await this.deps.tours.activeTourSnapshotFor(context.user.id, rights.effective, now);
     await this.deps.leases.touchPackage(lease.id, now);
 
     return {
@@ -278,6 +286,7 @@ export class OfflinePackageService {
       machines,
       inventory,
       documents: documentPayloads,
+      activeTour,
     };
   }
 

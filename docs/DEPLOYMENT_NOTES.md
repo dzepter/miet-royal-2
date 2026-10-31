@@ -263,3 +263,30 @@ Claude Code deployt niemals eigenmächtig auf Produktion.
   ihren Retention-Anker beim ersten 2-min-Backstop (Anker = vorhandener
   Abschluss-/Stornozeitpunkt); ältere Daten können dadurch beim ersten
   Tageslauf sofort fällig sein.
+
+## Routing/Touren (Phase 13)
+
+- **Migration 0027** (`tours`, `tour_stops`, `tour_live_locations`,
+  `tour_delay_incidents`, `geocoding_cache`, Enums `tour_status`,
+  `tour_planning_status`, `geocoding_status`) ist rein additiv.
+- **GraphHopper-Konto:** Produktivbetrieb braucht einen bezahlten Plan (Basic
+  oder höher, `docs/ROUTING_API_NOTES.md`); Key nur als Secret der
+  Produktionsumgebung (`GRAPHHOPPER_API_KEY`), nie in `.env`-Dateien im Repo.
+  Ohne Key läuft die API mit `ROUTING_PROVIDER=disabled`: Touren sind
+  organisatorisch nutzbar, Routen/Prognosen melden „Routing ist nicht
+  konfiguriert.“
+- **Smoke vor Freischaltung:** `ROUTING_SMOKE=1 GRAPHHOPPER_API_KEY=… pnpm
+  routing:smoke` (ein Geocode, eine Route; gibt Status und Credits aus, nie
+  den Key). Nicht in production ausführen.
+- **Depotadresse:** Einstellung `pickup_exact_address` muss vollständig sein,
+  sonst sind Gesamtrouten blockiert („Depotadresse ist noch nicht vollständig
+  hinterlegt.“).
+- **Worker:** registriert den Scanner `tour_delay` im `communication.scan_due`
+  und braucht dieselben Routing-Variablen wie die API (eigene
+  Gateway-Instanz, eigene Drossel).
+- **Datenschutz:** Standort nur während aktiver Tour in einer Zeile je Tour,
+  gelöscht bei Tourende; Provider speichert Requests bis zu 5 Wochen
+  (Privacy-Policy) – Verzeichnis der Verarbeitungstätigkeiten ergänzen
+  (GraphHopper GmbH, Hetzner DE; Geocoding-Subprozessoren laut Notiz).
+- **Attribution:** Die Staff-UI zeigt bei Routenwerten den
+  OpenStreetMap-Hinweis (ODbL).

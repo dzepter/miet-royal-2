@@ -44,6 +44,38 @@ export interface AppConfig {
   whatsapp: WhatsAppConfig;
   /** Phase 12: Web Push (RFC 8030/8291/8292, VAPID). */
   push: PushConfig;
+  /** Phase 13: Routing/Geocoding (GraphHopper Directions API, Mock oder deaktiviert). */
+  routing: RoutingConfig;
+}
+
+export const ROUTING_PRODUCTION_BASE_URL = 'https://graphhopper.com/api/1';
+
+/**
+ * Routing-Konfiguration (Phase 13, Order §6; verifiziert 2026-10-30 –
+ * docs/ROUTING_API_NOTES.md):
+ * - production: provider ausschließlich `graphhopper` oder `disabled`; `mock`
+ *   ist ein Konfigurationsfehler; Host fest https://graphhopper.com/api/1
+ *   (GRAPHHOPPER_BASE_URL wird in production abgelehnt); ohne
+ *   GRAPHHOPPER_API_KEY ⇒ `disabled` (nie ein Fake als echt).
+ * - demo: immer `mock`; ein gesetzter GRAPHHOPPER_API_KEY oder
+ *   ROUTING_PROVIDER=graphhopper ist ein Konfigurationsfehler (Demo ruft nie
+ *   einen echten Routing-Provider).
+ * - development: Default `mock`; staging: Default `disabled`. Echter Provider
+ *   nur per Opt-in ROUTING_ENABLED=true + ROUTING_PROVIDER=graphhopper + Key;
+ *   GRAPHHOPPER_BASE_URL darf dort auf einen lokalen Contract-Fake zeigen.
+ * Der API-Key existiert ausschließlich in diesem Objekt (nie Log/DB/Antwort/Browser).
+ */
+export interface RoutingConfig {
+  /** false ⇔ provider === 'disabled'. */
+  enabled: boolean;
+  provider: 'graphhopper' | 'mock' | 'disabled';
+  graphhopper: {
+    /** Nur gesetzt, wenn provider === 'graphhopper'; nie serialisieren. */
+    apiKey: string | null;
+    baseUrl: string;
+    /** Timeout je HTTP-Aufruf (Default 15000). */
+    requestTimeoutMs: number;
+  };
 }
 
 /**
@@ -299,6 +331,15 @@ const rawEnvSchema = z.object({
     .string()
     .regex(/^(mailto:[^\s@]+@[^\s@]+|https:\/\/[^\s]+)$/, 'muss mailto: oder https:// sein')
     .optional(),
+  // Phase 13 – Routing (GraphHopper Directions API)
+  ROUTING_ENABLED: z.enum(['true', 'false']).optional(),
+  ROUTING_PROVIDER: z.enum(['graphhopper', 'mock', 'disabled']).optional(),
+  GRAPHHOPPER_API_KEY: z.string().min(1).max(512).optional(),
+  GRAPHHOPPER_BASE_URL: z
+    .string()
+    .regex(/^https?:\/\/.+/, 'muss eine http(s)-URL sein')
+    .optional(),
+  ROUTING_REQUEST_TIMEOUT_MS: z.coerce.number().int().min(1000).max(120_000).optional(),
 });
 
 /**
@@ -442,6 +483,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   const mail = buildMailConfig(raw, problems);
   const whatsapp = buildWhatsAppConfig(raw, problems);
   const push = buildPushConfig(raw, problems);
+  const routing = buildRoutingConfig(raw, problems);
 
   if (problems.length > 0) {
     throw new ConfigError(problems);
@@ -493,10 +535,84 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     },
     whatsapp,
     push,
+    routing,
   };
 }
 
 type RawEnv = z.infer<typeof rawEnvSchema>;
+
+/**
+ * Phase 13: Routing je Umgebung (fail-closed, nie Mock in production, nie ein
+ * echter Provider in demo). Siehe Doc-Kommentar an `RoutingConfig`.
+ */
+function buildRoutingConfig(raw: RawEnv, problems: string[]): RoutingConfig {
+  const key = raw.GRAPHHOPPER_API_KEY?.trim();
+  const hasKey = key !== undefined && key !== '';
+  const requested = raw.ROUTING_PROVIDER;
+  const optIn = raw.ROUTING_ENABLED === 'true';
+  const optOut = raw.ROUTING_ENABLED === 'false';
+  let provider: RoutingConfig['provider'];
+  let baseUrl = ROUTING_PRODUCTION_BASE_URL;
+
+  if (raw.APP_ENV === 'production') {
+    if (requested === 'mock') {
+      problems.push(
+        'ROUTING_PROVIDER: in production nicht zulässig (nur graphhopper oder disabled – nie ein simulierter Provider)',
+      );
+    }
+    if (
+      raw.GRAPHHOPPER_BASE_URL !== undefined &&
+      raw.GRAPHHOPPER_BASE_URL.replace(/\/+$/, '') !== ROUTING_PRODUCTION_BASE_URL
+    ) {
+      problems.push(
+        'GRAPHHOPPER_BASE_URL: in production ist ausschließlich https://graphhopper.com/api/1 zulässig',
+      );
+    }
+    // Ohne Key bleibt Routing deaktiviert (kein Fehler, kein Fake) – Order §6.
+    provider = hasKey && !optOut && requested !== 'disabled' ? 'graphhopper' : 'disabled';
+  } else if (raw.APP_ENV === 'demo') {
+    if (hasKey) {
+      problems.push(
+        'GRAPHHOPPER_API_KEY: in demo nicht zulässig (Demo ruft nie einen echten Routing-Provider)',
+      );
+    }
+    if (requested === 'graphhopper') {
+      problems.push(
+        'ROUTING_PROVIDER: in demo nicht zulässig (Demo ruft nie einen echten Routing-Provider – immer mock)',
+      );
+    }
+    if (raw.GRAPHHOPPER_BASE_URL !== undefined) {
+      problems.push('GRAPHHOPPER_BASE_URL: in demo nicht zulässig (Demo nutzt nur den Mock)');
+    }
+    provider = optOut || requested === 'disabled' ? 'disabled' : 'mock';
+  } else {
+    // development/staging: echter Provider nur per vollständigem Opt-in.
+    if (requested === 'graphhopper') {
+      if (!hasKey) {
+        problems.push('GRAPHHOPPER_API_KEY: muss gesetzt sein, wenn ROUTING_PROVIDER=graphhopper');
+      }
+      if (!optIn) {
+        problems.push('ROUTING_ENABLED: muss true sein, wenn ROUTING_PROVIDER=graphhopper');
+      }
+    }
+    if (optIn && requested === 'graphhopper' && hasKey) provider = 'graphhopper';
+    else if (optOut || requested === 'disabled') provider = 'disabled';
+    else if (requested === 'mock') provider = 'mock';
+    else provider = raw.APP_ENV === 'development' ? 'mock' : 'disabled';
+    if (raw.GRAPHHOPPER_BASE_URL !== undefined)
+      baseUrl = raw.GRAPHHOPPER_BASE_URL.replace(/\/+$/, '');
+  }
+
+  return {
+    enabled: provider !== 'disabled',
+    provider,
+    graphhopper: {
+      apiKey: provider === 'graphhopper' && hasKey ? key : null,
+      baseUrl,
+      requestTimeoutMs: raw.ROUTING_REQUEST_TIMEOUT_MS ?? 15_000,
+    },
+  };
+}
 
 const isTlsRequiredEnv = (env: AppEnvironment): boolean =>
   env === 'production' || env === 'staging';

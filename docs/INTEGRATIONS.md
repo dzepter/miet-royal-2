@@ -122,6 +122,28 @@ Miet-Royal schlägt vor, Mitarbeiter entscheidet.
 Keine eigene Turn-by-Turn-Navigation.
 „Navigation starten“ öffnet bevorzugte Karten-App.
 
+Phase 13 (verifiziert 2026-10-30, `docs/ROUTING_API_NOTES.md`): primärer
+Produktionsprovider ist die GraphHopper Directions API hinter der
+provider-neutralen Grenze `RoutingGateway` (`geocode`, `route`, `matrix`,
+`optimizeTour`; `apps/api/src/routing/`). Implementierungen:
+`GraphHopperRoutingGateway` (einziger Provider-Client), `MockRoutingGateway`
+(Demo/Entwicklung, deterministisch), `FakeRoutingGateway` (Tests),
+`DisabledRoutingGateway`. Genutzte Endpunkte: `GET /geocode`
+(provider=nominatim, locale de, limit 5), `POST /route`, `POST /matrix`
+(fail_fast=false), `POST /vrp` (synchron, harte Zeitfenster, `in_sequence`).
+An den Provider gehen ausschließlich Adresse/Koordinaten, Zeitfenster,
+Servicezeiten und anonyme Stopp-IDs – nie Kundenname, Telefon, E-Mail,
+Vorgangsnummer, Preise, Schäden, Notizen. API-Key nur serverseitig (Query
+`key=`), in Logs redigiert; Fehler werden klassifiziert (auth_invalid,
+validation, not_found, rate_limited, credit_limited, timeout, network,
+server_error, invalid_response, disabled) und erreichen den Browser nur als
+neutrale Meldung („Route konnte gerade nicht berechnet werden.“). Routing ist
+read-only und blockiert nie Buchung, Termin, Übergabe oder Rückgabe.
+Persistiert werden nur eigene Planungswerte (Reihenfolge, Zeiten, Distanz,
+Fahrzeit); Geocoding-Ergebnisse liegen in einem Cache mit Ablauf.
+Kartenlinks (Apple Maps, `geo:`, Google/OSM-Web) enthalten nur das Ziel.
+Keine Lieferpreisformel: `DeliveryPriceSuggestion` ist eine leere Grenze.
+
 ## Dokumente
 Serverseitige Templates:
 Angebot, AB, Lieferschein, Übergabeprotokoll, Rückgabeprotokoll.

@@ -42,4 +42,6 @@ export {
   type SpecialPriceEntry,
 } from './pricing.ts';
 export * from './settlement.ts';
+// Phase 13: Touren – Puffer, Deadline-Regel, lokaler Planer, Navigation (tours.ts).
+export * from './tours.ts';
 export * from './voucher.ts';

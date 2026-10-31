@@ -27,6 +27,7 @@ import { SchedulingService } from '../scheduling/scheduling-service.ts';
 import { InventoryService } from '../warehouse/inventory-service.ts';
 import { MachineService } from '../warehouse/machine-service.ts';
 import type { DeliveryPacketMailer } from '../communication/transactional/mailers.ts';
+import type { OfflineTourSnapshotSource } from '../tours/live/offline-snapshot.ts';
 import type { CleaningEndedListener } from '../voucher/voucher-jobs.ts';
 import { UUID_PATTERN } from './auth.ts';
 
@@ -48,6 +49,8 @@ interface OfflineRouteOptions {
   cleaningEndedListener?: CleaningEndedListener;
   /** Phase 12 (Order §11): Protokollmails nach Finalisierung über die Mail-Outbox. */
   packetMailer?: DeliveryPacketMailer;
+  /** Phase 13 (tours-live, Order §46): eigene aktive Tour im Offline-Paket. */
+  tourSnapshots?: OfflineTourSnapshotSource | undefined;
 }
 
 /**
@@ -102,6 +105,7 @@ export function registerOfflineRoutes(app: FastifyInstance, options: OfflineRout
     inventory,
     documents: documentService,
     leases,
+    tours: options.tourSnapshots, // Phase 13 (tours-live)
   });
   const sync = new OfflineSyncService({
     db,

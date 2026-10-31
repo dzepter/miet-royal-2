@@ -89,6 +89,20 @@ import {
 import { registerCommunicationActionRoutes } from './routes/communication-actions.ts';
 import { enqueuePendingVoucherDeliveries } from './communication/voucher-delivery-job.ts';
 import { enqueuePendingInvoiceDeliveries } from './communication/invoice-delivery-job.ts';
+import type { RoutingGateway } from './routing/types.ts';
+import { createRoutingGateway } from './routing/factory.ts';
+// Phase 13 (tours): Touren, Planung, Stale-/Storno-Listener; Adressautorität + Geocoding aus routing/.
+import { getDepotAddress, resolveOperativeAddress } from './routing/address-resolver.ts';
+import { GeocodingService } from './routing/geocoding-service.ts';
+import { registerTourRoutes } from './routes/tours.ts';
+import { createTourCancellationListener, createTourStaleListener } from './tours/listeners.ts';
+import { TourService } from './tours/tour-service.ts';
+import type { OperativeAddressResolver, TourGeocodingResolver } from './tours/types.ts';
+// Phase 13 (tours-live): GPS, Verspätungsrisiko, Scanner tour_delay, Offline-Tour-Snapshot.
+import { DelayEvaluationState } from './tours/live/delay-state.ts';
+import { createTourLiveModule } from './tours/live/module.ts';
+import { createOfflineTourSnapshotSource } from './tours/live/offline-snapshot.ts';
+import { registerTourLiveRoutes } from './routes/tours-live.ts';
 
 export const API_VERSION = '0.1.0';
 
@@ -152,6 +166,14 @@ export interface AppOptions {
   inboundMailSource?: InboundMailSource;
   /** Phase 12 (inbound): Test-Injection des WhatsApp-Gateways (Default: nach config.whatsapp.mode; Fake/Mock nie in production). */
   whatsappGateway?: WhatsAppGateway;
+  /** Phase 13 (routing): Test-Injection der Routing-Grenze (Default: aus config.routing; Fake/Mock nie in production). */
+  routingGateway?: RoutingGateway;
+  /** Phase 13 (tours): Test-Injection der Geokodierung (Default: GeocodingService auf dem Routing-Gateway). */
+  geocodingResolver?: TourGeocodingResolver;
+  /** Phase 13 (tours): Test-Injection der Adressautorität (Default: routing/address-resolver.ts). */
+  addressResolver?: OperativeAddressResolver;
+  /** Phase 13 (tours-live): Tests – geteiltes Bewertungsgedächtnis und kürzeres GPS-Rate-Limit. */
+  tourLiveOptions?: { state?: DelayEvaluationState; locationMinIntervalMs?: number };
 }
 
 /**
@@ -182,7 +204,18 @@ export function buildApp({
   pushGateway,
   inboundMailSource,
   whatsappGateway,
+  routingGateway,
+  geocodingResolver,
+  addressResolver,
+  tourLiveOptions,
 }: AppOptions): FastifyInstance {
+  // Phase 13 (routing): production startet nie mit Fake-/Mock-Routing (Order §5).
+  if (
+    config.appEnv === 'production' &&
+    (routingGateway?.kind === 'fake' || routingGateway?.kind === 'mock')
+  ) {
+    throw new Error('Fake-/Mock-Routing-Gateway ist in production nicht zulässig.');
+  }
   // Phase 12 (inbound): production startet nie mit Fake-/Mock-WhatsApp (Order §39).
   if (
     config.appEnv === 'production' &&
@@ -219,6 +252,13 @@ export function buildApp({
           '*.headers.authorization',
           // Phase 12 (mail): SMTP-/IMAP-Passwörter, WhatsApp-/Push-/Communication-Keys.
           ...COMMUNICATION_LOG_REDACT_PATHS,
+          // Phase 13 (routing): GraphHopper-API-Key unter keinem Pfad im Log (Order §4/§64).
+          'routing.graphhopper.apiKey',
+          '*.routing.graphhopper.apiKey',
+          'config.routing.graphhopper.apiKey',
+          '*.config.routing.graphhopper.apiKey',
+          'GRAPHHOPPER_API_KEY',
+          '*.GRAPHHOPPER_API_KEY',
         ],
         censor: '[REDACTED]',
       },
@@ -441,6 +481,10 @@ export function buildApp({
       const retentionListener = createRetentionCompletionListener(queue, app.log);
       // Eine Storno-Instanz für die Storno-Routen UND die Legacy-Storno-Route
       // (Vorgänge mit bestätigter Buchung werden nur über diesen Pfad storniert).
+      // Phase 13 (tours): Storno ⇒ Stopps stornierter Termine operativ übersprungen
+      // (Nach-Commit-Listener, Order §36); der Service braucht nur die DB.
+      const tourService = new TourService(db);
+      const tourCancellationListener = createTourCancellationListener(tourService);
       const cancellationService = createCancellationService({
         db,
         config,
@@ -448,7 +492,7 @@ export function buildApp({
         transfers,
         confirmations: transactional.cancellationMailer, // Phase 12 (transactional)
         logger: app.log,
-        processListeners: [retentionListener], // Phase 12 (retention-final)
+        processListeners: [retentionListener, tourCancellationListener], // Phase 12 (retention-final), Phase 13 (tours)
       });
       registerCrmRoutes(instance, {
         db,
@@ -481,11 +525,33 @@ export function buildApp({
       const riskRefreshListener = createRiskRefreshListener(
         new AssignmentService(db, new MachineService(db, storageProvider), storageProvider),
       );
+      // Phase 13 (routing): eine Gateway-Instanz je Prozess (Order §2); die
+      // Fabrik entscheidet nach config.routing (production: nur graphhopper|disabled).
+      const routing: RoutingGateway = routingGateway ?? createRoutingGateway(config, app.log);
+      // Phase 13 (tours): Tour-Listener werden in registerTourRoutes (Agent TOUR) erzeugt und
+      // hier an die Terminplanung gehängt – Einfügepunkt, nicht entfernen.
+      const schedulingListeners = [riskRefreshListener, createTourStaleListener(tourService)];
       registerSchedulingRoutes(instance, {
         db,
         auth: authService,
         config,
-        listeners: [riskRefreshListener],
+        listeners: schedulingListeners,
+      });
+      // Phase 13 (tours): Tour-Routen (Design §8) – Adressautorität + Geocoding aus routing/.
+      // Phase 13 (tours-live): dieselben Instanzen für Live-Modul/Offline-Snapshot; das
+      // Bewertungsgedächtnis entsteht vor den Routen (die View liest daraus).
+      const tourGeocoding = geocodingResolver ?? new GeocodingService(db, routing, app.log);
+      const tourAddresses = addressResolver ?? { resolveOperativeAddress, getDepotAddress };
+      const tourDelayState = tourLiveOptions?.state ?? new DelayEvaluationState();
+      registerTourRoutes(instance, {
+        db,
+        auth: authService,
+        config,
+        tours: tourService,
+        routing,
+        geocoding: tourGeocoding,
+        addresses: tourAddresses,
+        delay: tourDelayState,
       });
       registerWarehouseRoutes(instance, {
         db,
@@ -533,6 +599,13 @@ export function buildApp({
         finalizedListeners: [settlementListener],
         cleaningEndedListener: voucherTriggers.cleaningEndedListener,
         packetMailer: transactional.packetMailer, // Phase 12 (transactional)
+        // Phase 13 (tours-live, Order §46): eigene aktive Tour im Offline-Paket (ohne GPS).
+        tourSnapshots: createOfflineTourSnapshotSource({
+          db,
+          tours: tourService,
+          addresses: tourAddresses,
+          geocoding: tourGeocoding,
+        }),
       });
       // Nicht gestarteter Runner: verarbeitet Finanz-Jobs nur auf Anforderung
       // der Mock-Steuerung (nicht in production); den Dauerbetrieb übernimmt
@@ -627,6 +700,27 @@ export function buildApp({
         gateway: pushModule.gateway,
       });
       registerCalendarFeedRoutes(instance, { db, auth: authService, config, rateLimitEnabled });
+      // Phase 13 (tours-live): GPS-/Delay-Routen, Offline-Tour-Snapshot, Scanner tour_delay
+      // (Push über die Phase-12-Outbox; Provider nur über das Routing-Gateway).
+      const tourLive = createTourLiveModule({
+        db,
+        tours: tourService,
+        routing,
+        geocoding: tourGeocoding,
+        addresses: tourAddresses,
+        push: pushModule.push,
+        auth: authService,
+        logger: app.log,
+        state: tourDelayState,
+        locationMinIntervalMs: tourLiveOptions?.locationMinIntervalMs,
+      });
+      registerTourLiveRoutes(instance, {
+        db,
+        auth: authService,
+        config,
+        tours: tourService,
+        live: tourLive,
+      });
       // Phase 12 (scan): zentraler communication.scan_due (Erinnerungen 7d/1d,
       // Push-Regeln, Outbox-/Retention-Backstop), cleanup_retention, Aktionslinks,
       // Terminänderungs-Mail – dieselben Handler im Worker.
@@ -648,6 +742,8 @@ export function buildApp({
             name: 'invoice_sweep',
             scanDue: (now) => enqueuePendingInvoiceDeliveries({ db, queue, now, config }),
           },
+          // Phase 13 (tours-live): Verspätungsbewertung aktiver Touren mit frischem Standort.
+          tourLive.scanner,
         ],
         logger: app.log,
       });

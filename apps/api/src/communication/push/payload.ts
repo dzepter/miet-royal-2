@@ -39,6 +39,16 @@ export type PushPayloadInput =
       processId: string;
       processNumber: string;
       appointmentKind: PushAppointmentKind;
+    }
+  // Phase 13 (tours-live): Fahrer ⇒ Aktive-Tour-Seite, Planung ⇒ Tourseite; nie Adresse/Name/Koordinaten.
+  | {
+      kind: 'tour_delay_risk';
+      processId: string;
+      processNumber: string;
+      appointmentKind: PushAppointmentKind;
+      tourId: string;
+      incidentId: string;
+      audience: 'driver' | 'planning';
     };
 
 function assertProcessNumber(value: string): string {
@@ -136,10 +146,36 @@ export function buildPushPayload(input: PushPayloadInput): PushPayload {
         url: '/',
         tag: 'substitution-started',
       };
+    case 'tour_delay_risk': {
+      // Phase 13 (Order §53): datenminimiert – Terminart + Vorgangsnummer, sonst nichts.
+      const label = appointmentKindLabel(input.appointmentKind);
+      const number = assertProcessNumber(input.processNumber);
+      const tourId = assertUuid(input.tourId, 'Tour-ID');
+      const incidentId = assertUuid(input.incidentId, 'Incident-ID');
+      return {
+        kind: input.kind,
+        title: 'Tour droht Termin zu verpassen',
+        body: `${label} ${number}`,
+        url: input.audience === 'driver' ? TOUR_ACTIVE_PATH : `/touren/${tourId}`,
+        tag: `tour-delay:${incidentId}`,
+      };
+    }
   }
 }
 
-/** Alle Push-Arten, die es fachlich gibt – Touren (tour.delay_risk) sind bewusst KEINE (Order §31/§45). */
+/** Staff-Pfad der Seite „Aktive Tour“ (Phase 13, Design §13). */
+export const TOUR_ACTIVE_PATH = '/touren/aktiv';
+
+function assertUuid(value: string, what: string): string {
+  if (!UUID_PATTERN.test(value)) throw new Error(`Ungültige ${what} für Push-Nutzlast`);
+  return value;
+}
+
+/**
+ * Alle Push-Arten, die es fachlich gibt. Phase 13 ergänzt `tour_delay_risk`
+ * (Order §53: drohende Verspätung – genau ein Push je Incident); die Phase-12-
+ * Grenzkonstante `tour.delay_risk` bleibt kein PushKind.
+ */
 export const PUSH_KINDS: readonly PushKind[] = [
   'appointment_1h',
   'return_overdue',
@@ -148,4 +184,5 @@ export const PUSH_KINDS: readonly PushKind[] = [
   'session_new_device_login',
   'substitution_started',
   'assignment_reassigned',
+  'tour_delay_risk',
 ];

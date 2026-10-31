@@ -52,6 +52,17 @@ export const PUSH_VAPID_PUBLIC_KEY =
 export const PUSH_VAPID_PRIVATE_KEY = 'WVnsIOaSETh8X2t2T6Elm0aKh0PU1Z7d9oUgWbVz2PY';
 export const PUSH_VAPID_SUBJECT = 'mailto:e2e-push@miet-royal.test';
 
+/**
+ * Phase 13 (E2E): GraphHopper-Contract-Fake (apps/api/src/routing/testing/
+ * fake-server.ts) im HTTPS-Dispatcher 4567 unter dem Pfadpräfix `/api/1` –
+ * nur die Haupt-/Lexware-API (development) zeigen darauf; die Demo-API
+ * (APP_ENV=demo) bekommt KEINEN Key und KEINE Base-URL (immer Mock).
+ * Der Key ist synthetisches Testmaterial ohne Bezug zu einem echten Konto.
+ */
+export const ROUTING_FAKE_API_KEY = 'e2e-fake-graphhopper-key-only-for-tests';
+export const ROUTING_FAKE_PATH_PREFIX = '/api/1';
+export const GRAPHHOPPER_FAKE_BASE_URL = `${PUSH_FAKE_ORIGIN}${ROUTING_FAKE_PATH_PREFIX}`;
+
 const TLS_DIR = resolve(import.meta.dirname, '../fixtures/tls');
 /** Test-CA (für NODE_EXTRA_CA_CERTS der API-Prozesse). */
 export const TEST_CA_FILE = resolve(TLS_DIR, 'ca.pem');

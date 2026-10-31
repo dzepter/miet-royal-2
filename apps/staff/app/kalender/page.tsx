@@ -18,6 +18,8 @@ import {
   todayBerlinIso,
   type CalendarEntry,
 } from '../../lib/scheduling';
+// Phase 13 (UI): kleines Badge „In Tour“ für Termine in offenen Touren des Tages.
+import { listTours } from '../../lib/tours';
 
 /**
  * Kalender (Order §§13/14/16/19): Tag/Woche/Monat, Filter (Meine/Alle,
@@ -32,10 +34,12 @@ const KINDS = ['pickup', 'return', 'delivery'] as const;
 function Chip({
   entry,
   draggable,
+  inTour,
   onSelect,
 }: {
   entry: CalendarEntry;
   draggable: boolean;
+  inTour: boolean;
   onSelect: (entry: CalendarEntry) => void;
 }) {
   const strong = entry.conflicts.some((conflict) => conflict.severity === 'strong');
@@ -56,6 +60,11 @@ function Chip({
       <span className="chip-sub">
         {entry.customerName}
         {entry.overdue && <span className="badge locked">Überfällig</span>}
+        {inTour && (
+          <span className="badge" data-testid="in-tour-badge">
+            In Tour
+          </span>
+        )}
         {entry.conflicts.length > 0 && (
           <span className="conflict-icon" aria-label="Konflikt" title="Konflikt">
             ⚠︎
@@ -81,6 +90,8 @@ function CalendarView() {
   const [open, setOpen] = useState<CalendarEntry[]>([]);
   const [selected, setSelected] = useState<CalendarEntry | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Phase 13 (UI): Termin-IDs in offenen Touren (draft/ready/active) der sichtbaren Tage.
+  const [inTour, setInTour] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     if (canViewAll) setScope('all');
@@ -137,6 +148,30 @@ function CalendarView() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  // Phase 13 (UI): nur Tag-/Wochenansicht (≤ 7 Abfragen); Fehler werden ignoriert (optionales Badge).
+  useEffect(() => {
+    if (view === 'month') {
+      setInTour(new Set());
+      return;
+    }
+    let cancelled = false;
+    void Promise.all(days.map((day) => listTours(day))).then((results) => {
+      if (cancelled) return;
+      const ids = new Set<string>();
+      for (const result of results) {
+        for (const tour of result.data?.tours ?? []) {
+          if (tour.status !== 'draft' && tour.status !== 'ready' && tour.status !== 'active')
+            continue;
+          for (const stop of tour.stops) if (stop.state !== 'skipped') ids.add(stop.appointmentId);
+        }
+      }
+      setInTour(ids);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [view, days, entries]);
 
   useEffect(() => {
     if (!canViewAll) return;
@@ -314,7 +349,13 @@ function CalendarView() {
           >
             <div className="calendar-day-head">{berlinDateLabel(day)}</div>
             {(byDay.get(day) ?? []).map((entry) => (
-              <Chip key={entry.id} entry={entry} draggable={canDrag} onSelect={setSelected} />
+              <Chip
+                key={entry.id}
+                entry={entry}
+                draggable={canDrag}
+                inTour={inTour.has(entry.id)}
+                onSelect={setSelected}
+              />
             ))}
           </div>
         ))}

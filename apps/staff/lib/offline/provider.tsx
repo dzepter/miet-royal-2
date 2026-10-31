@@ -161,6 +161,8 @@ async function prefetchShells(runtime: OfflineRuntime): Promise<void> {
     '/sync',
     '/maschinen',
     '/suche',
+    // Phase 13 (UI): aktive Tour offline lesbar (Design §11).
+    '/touren/aktiv',
   ]);
   for (const booking of await runtime.listBookings()) {
     if (booking.handover !== null) {

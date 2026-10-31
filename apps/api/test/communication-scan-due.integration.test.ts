@@ -145,12 +145,14 @@ describe('Self-Re-Enqueue mit Bucket-Schlüssel', () => {
     );
   });
 
-  it('Der produktive Scan enthält Reminder-, Push-, Gutschein- und Rechnungs-Scanner (Reminder zuerst)', () => {
+  it('Der produktive Scan enthält Reminder-, Push-, Gutschein-, Rechnungs- und Tour-Delay-Scanner (Reminder zuerst)', () => {
+    // Phase 13 (tours-live): `tour_delay` bewertet aktive Touren mit frischem Live-Standort (Design §9).
     expect(ctx.scan.scanners.map((scanner) => scanner.name)).toEqual([
       'reminders',
       'push_rules',
       'voucher_sweep',
       'invoice_sweep',
+      'tour_delay',
     ]);
   });
 });

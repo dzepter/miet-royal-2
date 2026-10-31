@@ -3,6 +3,9 @@
 import Link from 'next/link';
 import { useCallback, useEffect, useState } from 'react';
 import { AuthGuard, useMe } from '../components/auth-guard';
+// Phase 13 (UI): Karte „Aktive Tour fortsetzen“.
+import { useOfflineNow } from '../components/communication';
+import { ActiveTourCard, useActiveTour } from '../components/tours';
 import type { CleaningWarning, MissingCaseView } from '../lib/returns';
 import { AppointmentPreview } from '../components/appointment-preview';
 import { apiFetch, hasPermission } from '../lib/api';
@@ -70,6 +73,9 @@ function Home() {
   const canCalendar = hasPermission(me, 'calendar.view');
   const canSeeProcesses = hasPermission(me, 'process.view_all');
   const canWarehouse = hasPermission(me, 'machine.view') || hasPermission(me, 'inventory.view');
+  // Phase 13 (UI): eigene aktive Tour (inkl. Vertretung) – nur online abgefragt.
+  const offlineNow = useOfflineNow();
+  const activeTour = useActiveTour(canCalendar && !offlineNow);
 
   const load = useCallback(async () => {
     if (!canCalendar) return;
@@ -207,6 +213,9 @@ function Home() {
               ))}
             </div>
           )}
+
+          {/* Phase 13 (UI): prominent vor den heutigen Terminen (Überfälliges bleibt ganz oben). */}
+          {activeTour !== null && <ActiveTourCard tour={activeTour} />}
 
           <div className="card">
             <h2>Heutige Termine</h2>

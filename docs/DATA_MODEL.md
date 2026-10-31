@@ -347,6 +347,58 @@ Ursprung, Vertreter, von/bis.
 ### TrainingDefinition / Path / Assignment / Attempt
 Demo-Trainings-Metaebene.
 
+### Tour (Phase 13)
+Tagesplan einer Fahrt: `tour_date` (Berliner Kalendertag), `status`
+(draft|ready|active|completed|cancelled), `assigned_user_id` (gespeicherter
+Fahrer; die effektive Person ergibt sich zur Laufzeit aus Vertretungen),
+`version` (optimistische Nebenläufigkeit; jede Mutation +1, `expectedVersion`
+der Clients ⇒ 409 `TOUR_VERSION_CONFLICT`), `started_at/by`, `ended_at/by`,
+`end_reason` (nur bei erzwungenem Abschluss), `cancelled_at/by`,
+`planning_status` (unplanned|planned|stale|infeasible), `route_calculated_at`,
+`route_provider`, geplante Skalare `planned_distance_meters`,
+`planned_duration_seconds`, `planned_start_at`, `planned_end_at`.
+DB-Backstop: Partial-Unique `tours_one_active_per_user_idx` (nur ein `active`
+je `assigned_user_id`). Es werden ausschließlich eigene Planungswerte
+gespeichert – nie Provider-Rohantworten, Geometrien oder Matrizen.
+
+### TourStop (Phase 13)
+Geordneter Stopp einer Tour: `tour_id`, `appointment_id` (der Termin bleibt
+Source of Truth für Art, Zeit, Zuständigkeit, Status), `sequence` (≥ 1),
+`is_pinned`, `buffer_minutes` (0–240, Standard 15 – einzige Stelle:
+`TOUR_STOP_BUFFER_MINUTES_DEFAULT` in `@mietroyal/domain`), `arrived_at`
+(nur Info), `skipped_at` (Termin während der Tour storniert),
+`planned_arrival_at/departure_at`, `leg_distance_meters`,
+`leg_duration_seconds`, `released_at` (gesetzt bei Tourabschluss/-abbruch).
+DB-Backstop: Partial-Unique `tour_stops_open_appointment_unique` auf
+`appointment_id WHERE released_at IS NULL` ⇒ höchstens EIN Stopp je Termin in
+offenen Touren; abgeschlossene/abgebrochene Touren behalten die Historie.
+Stopp-Zustand wird nie gespeichert, sondern abgeleitet: done (Termin
+completed über Übergabe/Rückgabe), skipped (Termin cancelled/`skipped_at`),
+arrived, open.
+
+### TourLiveLocation (Phase 13)
+Genau EINE Zeile je aktiver Tour (`tour_id` PK): `user_id`, `latitude`,
+`longitude`, `accuracy_meters`, `observed_at`, `received_at`. Keine Historie
+(Upsert); wird bei Tourende, Abbruch und Übernahme gelöscht; der Server nimmt
+nach dem Ende keine Standorte mehr an. Nie in Logs, nie in Kundenpfaden.
+
+### TourDelayIncident (Phase 13)
+Verspätungsrisiko je Stopp: `tour_id`, `stop_id`, `detected_at`,
+`last_evaluated_at`, `predicted_arrival_at`, `deadline_at`,
+`notification_sent_at` (genau ein Push je Incident), `resolved_at`.
+Partial-Unique auf `stop_id WHERE resolved_at IS NULL` ⇒ ein offener Incident je
+Stopp. Keine Kundenkommunikation aus diesem Pfad.
+
+### GeocodingCache (Phase 13)
+Temporärer Cache für serverseitiges Geocoding operativer Adressen (nur
+Adresstext, nie Kundenbezug): `address_hash`, `address_text`, `status`
+(resolved|review_required|no_result), Koordinate, `display_label`, `osm_ref`,
+`candidates` (≤ 5, nur bei Prüfbedarf), `provider`, `fetched_at`,
+`expires_at` (TTL 90 Tage resolved, 30 Tage sonst – Terms §5.2 „temporär
+cachen“), `confirmed_by/at`, `confirmed_osm_ref` (Mitarbeiterentscheidung
+„Adresse für Route prüfen“ überlebt den Ablauf: nach erneuter Abfrage wird der
+bestätigte Treffer wiedererkannt).
+
 ### SystemSetting
 Nur sinnvolle veränderbare Betriebsparameter; keine komplette Fachlogik als freie JSON-Regel.
 

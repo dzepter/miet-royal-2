@@ -8,6 +8,8 @@ import {
   IMAP_FAKE_PORT,
   IMAP_FAKE_USER,
   PUSH_FAKE_ORIGIN,
+  ROUTING_FAKE_API_KEY,
+  ROUTING_FAKE_PATH_PREFIX,
   SMTP_SINK_HOST,
   SMTP_SINK_PASSWORD,
   SMTP_SINK_PORT,
@@ -18,6 +20,12 @@ import {
   WHATSAPP_GRAPH_FAKE_PORT,
   WHATSAPP_PHONE_NUMBER_ID,
 } from './constants.ts';
+// Phase 13 (E2E): GraphHopper-Contract-Fake der API (Pfadpräfix /api/1 im HTTPS-Dispatcher).
+import {
+  createGraphHopperFakeHandler,
+  createGraphHopperFakeState,
+  type GraphHopperFakeFailure,
+} from '../../../apps/api/src/routing/testing/fake-server.ts';
 import { startImapFake } from './imap-server.ts';
 import { createPushServiceFake, type PushResponseRule } from './push-service.ts';
 import { startSmtpSink, type SmtpFailure } from './smtp-sink.ts';
@@ -31,7 +39,8 @@ import { createWhatsAppGraphFake, type WhatsAppFailure } from './whatsapp-graph.
  * |----------------------------|-----------|-------------------------------------------|
  * | SMTP_SINK_PORT 4565        | SMTPS     | SMTP-Senke (implizites TLS, AUTH)          |
  * | FAKES_CONTROL_PORT 4566    | HTTP      | Steuerung/Abfrage (siehe unten)            |
- * | FAKES_HTTPS_PORT 4567      | HTTPS     | Push-Endpunkte, WhatsApp-Mediendownload    |
+ * | FAKES_HTTPS_PORT 4567      | HTTPS     | Push-Endpunkte, WhatsApp-Mediendownload,   |
+ * |                            |           | GraphHopper-Fake (/api/1/…, Phase 13)      |
  * | WHATSAPP_GRAPH_FAKE_PORT   | HTTP      | WhatsApp-Graph-API-Fake                    |
  * | IMAP_FAKE_PORT 4569        | IMAPS     | Inbound-Mailbox (implizites TLS, LOGIN)    |
  *
@@ -48,6 +57,10 @@ import { createWhatsAppGraphFake, type WhatsAppFailure } from './whatsapp-graph.
  * - GET /imap/messages (ohne Rohdaten) + /imap/commands, DELETE /imap/messages (Mailboxen,
  *   Kommando-/Login-Protokoll), POST /imap/messages {raw (Base64), folder?, flags?} ⇒ {uid},
  *   POST /imap/uidvalidity {folder?, uidValidity}
+ * - Phase 13: GET /routing/requests (Aufzeichnung OHNE Key), DELETE /routing/requests
+ *   (setzt den gesamten Fake-Zustand zurück: Aufzeichnung, Störungen, unerreichbare Paare),
+ *   POST /routing/fail-next {endpoint:'geocode'|'route'|'matrix'|'vrp'|'all', times?, mode?,
+ *   status?, delayMs?}, POST /routing/unreachable {pairs: ["i,j", …]} (Matrix-Paare ⇒ null)
  */
 
 const key = readFileSync(process.env.E2E_TLS_KEY_FILE ?? TEST_SERVER_KEY_FILE);
@@ -70,6 +83,12 @@ const imap = await startImapFake({
   password: IMAP_FAKE_PASSWORD,
 });
 const push = createPushServiceFake();
+// Phase 13 (E2E): fester Test-Key; die APIs erhalten ihn über GRAPHHOPPER_API_KEY.
+const routingState = createGraphHopperFakeState({
+  apiKey: ROUTING_FAKE_API_KEY,
+  pathPrefix: ROUTING_FAKE_PATH_PREFIX,
+});
+const graphhopper = createGraphHopperFakeHandler(routingState);
 const whatsapp = createWhatsAppGraphFake({
   accessToken: WHATSAPP_ACCESS_TOKEN,
   phoneNumberId: WHATSAPP_PHONE_NUMBER_ID,
@@ -247,6 +266,44 @@ async function handleControl(request: IncomingMessage, response: ServerResponse)
       );
       return json(response, 200, { ok: true });
     }
+    // ── Phase 13 (E2E): Steuerung des GraphHopper-Fakes ───────────────────
+    case 'GET /routing/requests':
+      return json(response, 200, { requests: routingState.requests });
+    case 'DELETE /routing/requests':
+      routingState.reset();
+      return json(response, 200, { cleared: true });
+    case 'POST /routing/fail-next': {
+      const input = parseJson(body);
+      const endpoint = input.endpoint;
+      if (
+        endpoint !== 'geocode' &&
+        endpoint !== 'route' &&
+        endpoint !== 'matrix' &&
+        endpoint !== 'vrp' &&
+        endpoint !== 'all'
+      ) {
+        return json(response, 400, { error: 'endpoint ungültig' });
+      }
+      const mode = input.mode;
+      const failure: GraphHopperFakeFailure = {
+        endpoint,
+        times: Math.max(1, asInt(input.times, 1)),
+        mode: mode === 'delay' || mode === 'invalid_json' ? mode : 'status',
+        status: asInt(input.status, 500),
+        ...(typeof input.delayMs === 'number' ? { delayMs: input.delayMs } : {}),
+      };
+      routingState.failures.push(failure);
+      return json(response, 200, { queued: routingState.failures.length });
+    }
+    case 'POST /routing/unreachable': {
+      const input = parseJson(body);
+      routingState.unreachablePairs.clear();
+      for (const pair of Array.isArray(input.pairs) ? input.pairs : []) {
+        if (typeof pair === 'string' && /^\d+,\d+$/.test(pair))
+          routingState.unreachablePairs.add(pair);
+      }
+      return json(response, 200, { pairs: [...routingState.unreachablePairs] });
+    }
     default:
       return json(response, 404, { error: `Unbekannte Steuerung: ${route}` });
   }
@@ -272,10 +329,13 @@ const control = createServer((request, response) => {
   });
 });
 
-// HTTPS: Push-Endpunkte + WhatsApp-Mediendownload (localhost UND 127.0.0.1 – Zertifikat-SAN).
+// HTTPS: Push-Endpunkte + WhatsApp-Mediendownload + GraphHopper-Fake (localhost UND
+// 127.0.0.1 – Zertifikat-SAN).
 const https = createHttpsServer({ key, cert, minVersion: 'TLSv1.2' }, (request, response) => {
   readBody(request)
-    .then((body) => {
+    .then(async (body) => {
+      // Phase 13 (E2E): Pfadpräfix /api/1 gehört dem Routing-Fake (false ⇒ weiterreichen).
+      if (await graphhopper(request, response, body.toString('utf8'))) return;
       if (push.handle(request, response, body)) return;
       if (whatsapp.handleMediaDownload(request, response)) return;
       if (request.url === '/health') return json(response, 200, { ok: true });
@@ -296,7 +356,8 @@ await listen(graph, WHATSAPP_GRAPH_FAKE_PORT, '127.0.0.1');
 await listen(control, FAKES_CONTROL_PORT, '127.0.0.1');
 process.stdout.write(
   `Kommunikations-Fakes bereit: SMTPS ${SMTP_SINK_PORT}, Steuerung ${FAKES_CONTROL_PORT}, ` +
-    `HTTPS ${FAKES_HTTPS_PORT}, WhatsApp-Graph ${WHATSAPP_GRAPH_FAKE_PORT}, IMAPS ${IMAP_FAKE_PORT}\n`,
+    `HTTPS ${FAKES_HTTPS_PORT} (inkl. GraphHopper-Fake ${ROUTING_FAKE_PATH_PREFIX}), ` +
+    `WhatsApp-Graph ${WHATSAPP_GRAPH_FAKE_PORT}, IMAPS ${IMAP_FAKE_PORT}\n`,
 );
 
 const shutdown = () => {

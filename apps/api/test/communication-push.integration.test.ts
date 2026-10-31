@@ -501,7 +501,18 @@ describe('121.–122. Datenminimierung & notificationclick-URL', () => {
             })
           : kind === 'session_new_device_login' || kind === 'substitution_started'
             ? buildPushPayload({ kind })
-            : buildPushPayload({ kind, processId, processNumber: 'MR-2026-0001' });
+            : kind === 'tour_delay_risk'
+              ? // Phase 13 (tours-live): Tour-Push braucht Tour-/Incident-ID und Zielgruppe.
+                buildPushPayload({
+                  kind,
+                  processId,
+                  processNumber: 'MR-2026-0001',
+                  appointmentKind: 'delivery',
+                  tourId: processId,
+                  incidentId: processId,
+                  audience: 'planning',
+                })
+              : buildPushPayload({ kind, processId, processNumber: 'MR-2026-0001' });
       expect(payload.url.startsWith('/')).toBe(true);
       expect(payload.url.startsWith('//')).toBe(false);
     }
@@ -825,9 +836,11 @@ describe('132.–133. Keine Reinigungs-Pushes, keine Touren', () => {
     expect(Object.keys(scanner).some((key) => /clean|reinig/i.test(key))).toBe(false);
   });
 
-  it('133. Touren existieren nicht: tour.delay_risk ist nur Grenzkonstante, kein PushKind', () => {
+  it('133. Phase 13 ergänzt tour_delay_risk als einzige Tour-Push-Art; die Phase-12-Grenzkonstante tour.delay_risk bleibt kein PushKind', () => {
+    // Phase 12 verlangte „keine Tour-Pushs“; Phase 13 (Order §53/§54) führt genau EINE
+    // Tour-Push-Art ein (drohende Verspätung, ein Push je Incident). Alles andere bleibt.
     expect(PUSH_KINDS).not.toContain('tour.delay_risk' as never);
-    expect(PUSH_KINDS.some((kind) => /tour/i.test(kind))).toBe(false);
+    expect(PUSH_KINDS.filter((kind) => /tour/i.test(kind))).toEqual(['tour_delay_risk']);
   });
 });
 

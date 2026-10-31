@@ -604,6 +604,12 @@ export function AuthGuard({ children }: { children: ReactNode }) {
               <>
                 <Link href="/">Heute</Link>
                 {hasPermission(me, 'calendar.view') && <Link href="/kalender">Kalender</Link>}
+                {/* Phase 13 (UI): Touren neben Kalender (calendar.view). */}
+                {hasPermission(me, 'calendar.view') && (
+                  <Link href="/touren" data-testid="nav-tours">
+                    Touren
+                  </Link>
+                )}
                 {hasPermission(me, 'process.view_all') && <Link href="/vorgaenge">Vorgänge</Link>}
                 {hasPermission(me, 'handover.view') && <Link href="/ausgabe">Ausgabe</Link>}
                 {hasPermission(me, 'return.view') && <Link href="/rueckgabe">Rückgabe</Link>}

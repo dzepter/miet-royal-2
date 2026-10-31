@@ -227,6 +227,44 @@ Admin kann Gate manuell übersteuern.
   `pushStatusSummary` liefert nur enabled/öffentlichen VAPID-Key/aktive
   Geräte – nie den privaten Schlüssel.
 
+## Touren, Routing, aktive Fahrt, GPS (Phase 13)
+
+- **Kein neues Recht.** Touren nutzen die bestehenden Kalenderrechte:
+  `calendar.view` sieht nur Touren, bei denen die Person gespeicherter Fahrer
+  oder effektive Vertretung ist (fremde Touren ⇒ neutral 404);
+  `calendar.view_all` sieht alle Touren des Tages; `calendar.manage` legt
+  Touren an, bearbeitet Stopps/Reihenfolge/Pins/Puffer, berechnet Routen,
+  startet und beendet jede Tour (erzwungener Abschluss mit Pflichtgrund nur
+  hier) und bestätigt Geocoding-Kandidaten.
+- **Fahrer-Aktionen** (gespeicherter Fahrer ODER effektive Vertretung einer
+  aktiven Tour, mit `calendar.view`): Tour starten/beenden (ohne Zwang),
+  „Angekommen“, Route neu berechnen, Standort melden. Standortmeldungen
+  fremder Personen – auch Planung/Admin – werden neutral mit 404 abgelehnt.
+- **Zuständigkeit bleibt Terminplanung:** Ein Stopp eines nicht zugewiesenen
+  Termins wird über `SchedulingService.assign` (Recht `appointment.assign`,
+  Same-Day-Regel `appointment.reassign_same_day` unverändert) dem Tourfahrer
+  zugewiesen; ein Termin einer anderen Person wird nie still umgeschrieben
+  (409 `APPOINTMENT_ASSIGNED_ELSEWHERE`), sondern nur mit bewusster
+  Bestätigung (`reassign: true`) und denselben Rechten.
+- **Übernahme einer aktiven Tour** (`POST /staff/tours/:id/takeover`): nur
+  online, nur für Personen mit `appointment.assign`; alle offenen Stopps
+  werden in EINER Transaktion über die bestehende Zuweisungslogik umgehängt
+  (ein Fehler ⇒ vollständiger Rollback), erledigte bleiben beim bisherigen
+  Fahrer.
+- **Fahrerauswahl** beim Anlegen einer Tour nutzt
+  `GET /staff/scheduling/staff-options`; die Liste ist zusätzlich für
+  `calendar.manage` freigegeben (bisher `appointment.assign`,
+  `substitution.manage`, `calendar.view_all`).
+- **Vorgangsdaten in Tour-Ansichten:** Kundenname und Vorgangslink nur, wenn
+  die bestehende Sichtbarkeit (`process.view_all` bzw. eigene Zuständigkeit)
+  es erlaubt; Adressen der Stopps sehen der Fahrer der Tour, die Vertretung
+  und `calendar.view_all`.
+- **Offline-Snapshot** der aktiven Tour ist Teil des Arbeitspakets (Phase 8,
+  gleiche Rechte wie das Paket) und enthält keine GPS-Daten.
+- **Push „Tour droht Termin zu verpassen“:** effektiver Fahrer plus alle
+  aktiven Nutzer mit `calendar.view_all`/`employee.manage`; Inhalt nur
+  Terminart und Vorgangsnummer.
+
 ## Kommunikation: Konversation, Unmatched-Inbox, WhatsApp (Phase 12)
 
 - **Konversation je Vorgang** (`GET /staff/processes/:id/conversation`,

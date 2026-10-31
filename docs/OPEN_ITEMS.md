@@ -137,3 +137,19 @@ URL-Liste, wichtige Rankings, Redirect-Mapping, zu übernehmender Content.
 - genaue Gästezahl→Maschinenempfehlungslogik
 - Lieferpreis-Vorschlagslogik
 - Maschinengewichte/Transporttexte
+
+## Touren/Routing (nach Phase 13 offen)
+- Lieferpreis-Vorschlagslogik bleibt undefiniert: Phase 13 zeigt nur Distanz
+  und Fahrzeit; `DeliveryPriceSuggestion` liefert bewusst `null` (keine
+  €/km-, Mindest- oder Zeitpreisregel erfunden).
+- GraphHopper-Plan für den Produktivbetrieb (Basic oder höher; Free ist laut
+  Pricing nicht für kommerziellen Produktivbetrieb) und Kontoinhaber.
+- Schwellen für Verspätungsrisiko (derzeit: prognostizierte Ankunft nach der
+  Terminfrist), Mindestgenauigkeit des Standorts und Verhalten bei mehreren
+  gleichzeitigen Risiken.
+- Prozessübergreifende Drossel der Provider-Aufrufe (API und Worker drosseln
+  heute je Prozess mit 1 Request/s).
+- Offline-Arbeitspaket setzt ein Phase-8-Recht voraus; ein Fahrer nur mit
+  `calendar.view` erhält keinen Tour-Snapshot.
+- Kundenstatus „Unterwegs“ ist nur als Grenze vorbereitet
+  (`getCustomerTravelStatus`), ohne Endpunkt (Kundenportal spätere Phase).

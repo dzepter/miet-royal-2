@@ -34,6 +34,15 @@ import {
   enqueuePendingInvoiceDeliveries,
   enqueuePendingVoucherDeliveries,
 } from '@mietroyal/api/jobs/communication-transactional';
+// Phase 13 (tours-live): Scanner tour_delay (Verspätungsrisiko aktiver Touren) im scan_due.
+import {
+  createRoutingGateway,
+  createTourLiveModule,
+  GeocodingService,
+  getDepotAddress,
+  resolveOperativeAddress,
+  TourService,
+} from '@mietroyal/api/jobs/tours';
 // Phase 12 (inbound)
 import {
   createConversationDeliveryListeners,
@@ -66,6 +75,13 @@ const logger = pino({
       '*.config.lexware.apiKey',
       // Phase 12 (mail): Kommunikations-Geheimnisse unter keinem Pfad im Log.
       ...COMMUNICATION_LOG_REDACT_PATHS,
+      // Phase 13 (routing): GraphHopper-API-Key unter keinem Pfad im Log (Order §4/§64).
+      'routing.graphhopper.apiKey',
+      '*.routing.graphhopper.apiKey',
+      'config.routing.graphhopper.apiKey',
+      '*.config.routing.graphhopper.apiKey',
+      'GRAPHHOPPER_API_KEY',
+      '*.GRAPHHOPPER_API_KEY',
     ],
     censor: '[REDACTED]',
   },
@@ -149,6 +165,20 @@ const conversationListeners = createConversationDeliveryListeners(db, storage);
 communication.addMailSentListener(conversationListeners.sent);
 communication.addMailFailedListener(conversationListeners.failed);
 await enqueueInboundPoll(queue, inboundMailSource);
+// Phase 13 (tours-live): eigene Routing-Gateway-Instanz je Prozess (Fabrik nach
+// config.routing, production nur graphhopper|disabled); Pushs über pushModule.push;
+// Rechteauflösung der Planungs-Empfänger über einen eigenen (zustandslosen) Auth-Service.
+const routing = createRoutingGateway(config, logger);
+const tourLive = createTourLiveModule({
+  db,
+  tours: new TourService(db),
+  routing,
+  geocoding: new GeocodingService(db, routing, logger),
+  addresses: { resolveOperativeAddress, getDepotAddress },
+  push: pushModule.push,
+  auth: new StaffAuthService(db, config, createMailAdapter(config)),
+  logger,
+});
 // Phase 12 (scan): zentraler Scan alle 2 min (Erinnerungen, Push-Regeln,
 // Outbox-/Retention-Backstop) – Boot-Enqueue mit Zeit-Bucket-Schlüssel,
 // danach Self-Re-Enqueue je Lauf. cleanup_retention läuft im selben Runner.
@@ -169,6 +199,8 @@ registerScanDueJobHandlers(runner, {
       name: 'invoice_sweep',
       scanDue: (now) => enqueuePendingInvoiceDeliveries({ db, queue, now, config }),
     },
+    // Phase 13 (tours-live): Verspätungsbewertung aktiver Touren mit frischem Standort.
+    tourLive.scanner,
   ],
   logger,
 });

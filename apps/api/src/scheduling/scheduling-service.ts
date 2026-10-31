@@ -509,7 +509,27 @@ export class SchedulingService {
     effective: ReadonlySet<PermissionKey>,
     now = new Date(),
   ): Promise<Appointment> {
-    const targetRows = await this.db
+    return this.db.transaction((tx) =>
+      this.assignWithin(tx, actorId, appointmentId, input, effective, now),
+    );
+  }
+
+  /**
+   * Phase 13 (Touren): dieselbe Zuweisungslogik INNERHALB einer fremden
+   * Transaktion (Stopp hinzufügen, Tour übernehmen – Order §26/§29: keine
+   * zweite Assignment-Logik; ein Fehler rollt die gesamte Übernahme zurück).
+   * Regeln unverändert: Ziel aktiv, Version/Status, Same-Day-Recht,
+   * Übernahmebestätigung/Push-Vorbereitung.
+   */
+  async assignWithin(
+    tx: DatabaseTransaction,
+    _actorId: string,
+    appointmentId: string,
+    input: { userId: string; expectedVersion: number },
+    effective: ReadonlySet<PermissionKey>,
+    now = new Date(),
+  ): Promise<Appointment> {
+    const targetRows = await tx
       .select({ id: staffUsers.id, status: staffUsers.status })
       .from(staffUsers)
       .where(eq(staffUsers.id, input.userId));
@@ -522,55 +542,53 @@ export class SchedulingService {
       );
     }
 
-    return this.db.transaction(async (tx) => {
-      const locked = await this.lockAppointment(tx, appointmentId);
-      if (locked.version !== input.expectedVersion) {
-        throw new AuthError(
-          'CONFLICT',
-          'Der Termin wurde zwischenzeitlich geändert. Bitte neu laden und erneut prüfen.',
-        );
-      }
-      if (locked.status !== 'scheduled') {
-        throw new AuthError('CONFLICT', 'Nur offene Termine können zugewiesen werden.');
-      }
-      if (locked.assignedUserId === input.userId) return locked;
+    const locked = await this.lockAppointment(tx, appointmentId);
+    if (locked.version !== input.expectedVersion) {
+      throw new AuthError(
+        'CONFLICT',
+        'Der Termin wurde zwischenzeitlich geändert. Bitte neu laden und erneut prüfen.',
+      );
+    }
+    if (locked.status !== 'scheduled') {
+      throw new AuthError('CONFLICT', 'Nur offene Termine können zugewiesen werden.');
+    }
+    if (locked.assignedUserId === input.userId) return locked;
 
-      // Gleiche-Tages-REASSIGNMENT (Order §11): Wechsel von einem auf einen
-      // anderen Mitarbeiter am lokalen Kalendertag der Durchführung.
-      const sameDayReassignment =
-        locked.assignedUserId !== null &&
-        locked.startAt !== null &&
-        isSameBerlinDay(locked.startAt, now);
-      if (sameDayReassignment && !effective.has('appointment.reassign_same_day')) {
-        throw new AuthError(
-          'FORBIDDEN',
-          'Dir fehlt das Recht, Termine am selben Tag neu zuzuweisen.',
-        );
-      }
+    // Gleiche-Tages-REASSIGNMENT (Order §11): Wechsel von einem auf einen
+    // anderen Mitarbeiter am lokalen Kalendertag der Durchführung.
+    const sameDayReassignment =
+      locked.assignedUserId !== null &&
+      locked.startAt !== null &&
+      isSameBerlinDay(locked.startAt, now);
+    if (sameDayReassignment && !effective.has('appointment.reassign_same_day')) {
+      throw new AuthError(
+        'FORBIDDEN',
+        'Dir fehlt das Recht, Termine am selben Tag neu zuzuweisen.',
+      );
+    }
 
-      const updated = await tx
-        .update(appointments)
-        .set({
-          assignedUserId: input.userId,
-          // Erneute Zuweisung macht eine alte Bestätigung IMMER ungültig.
-          acknowledgementRequestedAt: sameDayReassignment ? now : null,
-          acknowledgementRequestedFor: sameDayReassignment ? input.userId : null,
-          acknowledgedAt: null,
-          acknowledgedBy: null,
-          // Push-Vorbereitung (§11): notwendig = requestedAt gesetzt und
-          // notifiedAt NULL; Phase 12 setzt den Versandzeitpunkt.
-          assignmentNotifiedAt: null,
-          version: locked.version + 1,
-          updatedAt: now,
-        })
-        .where(eq(appointments.id, locked.id))
-        .returning();
-      const row = updated[0];
-      if (row === undefined) {
-        throw new AuthError('CONFLICT', 'Zuweisung konnte nicht gespeichert werden.');
-      }
-      return row;
-    });
+    const updated = await tx
+      .update(appointments)
+      .set({
+        assignedUserId: input.userId,
+        // Erneute Zuweisung macht eine alte Bestätigung IMMER ungültig.
+        acknowledgementRequestedAt: sameDayReassignment ? now : null,
+        acknowledgementRequestedFor: sameDayReassignment ? input.userId : null,
+        acknowledgedAt: null,
+        acknowledgedBy: null,
+        // Push-Vorbereitung (§11): notwendig = requestedAt gesetzt und
+        // notifiedAt NULL; Phase 12 setzt den Versandzeitpunkt.
+        assignmentNotifiedAt: null,
+        version: locked.version + 1,
+        updatedAt: now,
+      })
+      .where(eq(appointments.id, locked.id))
+      .returning();
+    const row = updated[0];
+    if (row === undefined) {
+      throw new AuthError('CONFLICT', 'Zuweisung konnte nicht gespeichert werden.');
+    }
+    return row;
   }
 
   /** "Termin übernommen" – nur durch den neu zugewiesenen Mitarbeiter. */

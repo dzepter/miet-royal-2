@@ -29,6 +29,11 @@ try {
   await pool.query('TRUNCATE integration_jobs');
   // Phase 12 (push): Push-/Kalender-Tabellen hängen an staff_users (nicht an processes) – explizit leeren.
   await pool.query('TRUNCATE push_deliveries, push_subscriptions, calendar_feed_tokens');
+  // Phase 13 (E2E): Touren, Live-Standorte, Verspätungs-Incidents und Geocoding-Cache leeren
+  // (tours hängt an staff_users; der Cache ist adressbezogen und ginge sonst specübergreifend mit).
+  await pool.query(
+    'TRUNCATE tour_delay_incidents, tour_live_locations, tour_stops, tours, geocoding_cache CASCADE',
+  );
   // Phase 12: Kommunikationstabellen vollständig leeren – einige hängen ohne FK
   // an Vorgängen (Outbox, Inbound-Belege, WhatsApp-Ereignisse, IMAP-Zustand).
   await pool.query(

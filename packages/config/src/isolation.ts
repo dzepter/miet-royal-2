@@ -86,6 +86,15 @@ export function assertConfigsIsolated(a: AppConfig, b: AppConfig): void {
     collisions.push('MAIL_IMAP_*: beide Umgebungen lesen dasselbe IMAP-Postfach');
   }
 
+  // Phase 13: Ein GraphHopper-API-Key darf nie in zwei Umgebungen gleichzeitig
+  // gelten (sonst verbraucht z. B. Staging das Production-Kontingent).
+  if (
+    a.routing.graphhopper.apiKey !== null &&
+    a.routing.graphhopper.apiKey === b.routing.graphhopper.apiKey
+  ) {
+    collisions.push('GRAPHHOPPER_API_KEY: beide Umgebungen nutzen denselben GraphHopper-API-Key');
+  }
+
   if (collisions.length > 0) {
     throw new EnvironmentIsolationError(a.appEnv, b.appEnv, collisions);
   }

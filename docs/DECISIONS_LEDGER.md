@@ -47,3 +47,11 @@ Miet-Royal verfolgt nur Rechnungs-/Zahlungsstatus, nicht Mailzustellung.
 ## Externe APIs
 Lexware, Apple Kalender, WhatsApp und Routing technisch erst mit aktueller
 offizieller Doku validieren; keine Schnittstelle erfinden.
+
+## Touren und Routing (Phase 13)
+GraphHopper Directions API ist der Produktionsprovider hinter
+`RoutingGateway`; Provider schlägt vor, Mitarbeiter entscheidet.
+Keine Lieferpreisformel; keine automatische Kundennachricht bei Verspätung;
+keine Kunden-ETA; GPS nur während aktiver Tour ohne Historie.
+Feste Stopppositionen rechnet Miet-Royal selbst (Matrix + eigener Planer),
+weil der Provider sie nicht dokumentiert.

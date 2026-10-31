@@ -390,7 +390,9 @@ export function registerSchedulingRoutes(
     if (
       !effective.has('appointment.assign') &&
       !effective.has('substitution.manage') &&
-      !effective.has('calendar.view_all')
+      !effective.has('calendar.view_all') &&
+      // Phase 13 (tours): Tourplaner wählen den Fahrer einer Tour aus derselben Liste.
+      !effective.has('calendar.manage')
     ) {
       sendError(request, reply, 403, 'FORBIDDEN', 'Dir fehlt das Recht für diese Auswahl.');
       return;

@@ -54,6 +54,12 @@ import { createPushModule } from '../src/jobs/communication-push.ts';
 import { registerScanDueJobHandlers, type ScanModule } from '../src/jobs/communication-scan.ts';
 import { enqueuePendingVoucherDeliveries } from '../src/communication/voucher-delivery-job.ts';
 import { enqueuePendingInvoiceDeliveries } from '../src/communication/invoice-delivery-job.ts';
+// Phase 13 (tours-live): Scanner tour_delay im Test-Runner (Mock-Routing wie die App ohne Injection).
+import { createRoutingGateway } from '../src/routing/factory.ts';
+import { GeocodingService } from '../src/routing/geocoding-service.ts';
+import { getDepotAddress, resolveOperativeAddress } from '../src/routing/address-resolver.ts';
+import { TourService } from '../src/tours/tour-service.ts';
+import { createTourLiveModule } from '../src/tours/live/module.ts';
 
 // Phase 12 (inbound): feste Test-Geheimnisse (nur Tests; nie echte Werte).
 const WHATSAPP_TEST_ACCESS_TOKEN = 'test-whatsapp-access-token-never-real';
@@ -261,6 +267,18 @@ export async function createTestContext(
   // Phase 12 (scan): communication.scan_due / cleanup_retention im Test-Runner
   // (Push-Regeln über ein eigenes Push-Modul mit demselben Fake-Gateway).
   const testPushModule = createPushModule({ db, config, queue, gateway: push }, auth);
+  // Phase 13 (tours-live): Live-Modul des Test-Runners (Mock-Routing; Tour-Tests nutzen eigene Fakes).
+  const testRouting = createRoutingGateway(config, testLogger);
+  const testTourLive = createTourLiveModule({
+    db,
+    tours: new TourService(db),
+    routing: testRouting,
+    geocoding: new GeocodingService(db, testRouting, testLogger),
+    addresses: { resolveOperativeAddress, getDepotAddress },
+    push: testPushModule.push,
+    auth,
+    logger: testLogger,
+  });
   const scan = registerScanDueJobHandlers(jobs, {
     db,
     config,
@@ -278,6 +296,8 @@ export async function createTestContext(
         name: 'invoice_sweep',
         scanDue: (now) => enqueuePendingInvoiceDeliveries({ db, queue, now, config }),
       },
+      // Phase 13 (tours-live): Verspätungsbewertung aktiver Touren mit frischem Standort.
+      testTourLive.scanner,
     ],
   });
   const transfersFor = (workerId = 'test-direct') =>

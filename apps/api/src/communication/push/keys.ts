@@ -40,4 +40,7 @@ export const pushKeys = {
   /** Stabiler Recipient-Fingerprint: K(R) je Zuweisungs-Version und EFFEKTIVEM Empfänger. */
   reassignment: (appointmentId: string, requestedAt: Date, userId: string) =>
     `${reassignmentKeyPrefix(appointmentId, requestedAt)}${userId}`,
+  /** Phase 13 (tours-live): genau ein Push je Verspätungs-Incident und Empfänger (Order §54). */
+  tourDelayRisk: (incidentId: string, userId: string) =>
+    `push:tour_delay_risk:${incidentId}:${userId}`,
 };

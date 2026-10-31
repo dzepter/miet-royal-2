@@ -3,6 +3,7 @@ import { resolve } from 'node:path';
 import { defineConfig, devices } from '@playwright/test';
 import {
   FAKES_CONTROL_PORT,
+  GRAPHHOPPER_FAKE_BASE_URL,
   IMAP_FAKE_PASSWORD,
   IMAP_FAKE_PORT,
   IMAP_FAKE_USER,
@@ -11,6 +12,7 @@ import {
   PUSH_VAPID_PRIVATE_KEY,
   PUSH_VAPID_PUBLIC_KEY,
   PUSH_VAPID_SUBJECT,
+  ROUTING_FAKE_API_KEY,
   SMTP_SINK_HOST,
   SMTP_SINK_PASSWORD,
   SMTP_SINK_PORT,
@@ -95,6 +97,18 @@ import {
  *   nur an `@demo.test`, kein WhatsApp-Live-Zugang, kein Push) – reine
  *   API-Tests ohne eigene Staff-Instanz (helpers/demo-env.ts).
  *
+ * Phase 13 (Touren/Routing, nur gegen den lokalen GraphHopper-Contract-Fake):
+ * - Der Fake (apps/api/src/routing/testing/fake-server.ts) hängt im HTTPS-
+ *   Dispatcher der Kommunikations-Fakes (Port 4567, Pfadpräfix /api/1); Haupt-
+ *   und Lexware-API (development) erhalten ROUTING_ENABLED/PROVIDER=graphhopper
+ *   + festen Test-Key + GRAPHHOPPER_BASE_URL auf den Fake (TLS über die Test-CA,
+ *   `NODE_EXTRA_CA_CERTS`). Steuerung über den Control-Server 4566
+ *   (`/routing/*`, helpers/routing.ts).
+ * - Die Demo-API (APP_ENV=demo) bekommt KEIN Routing-Env: Demo ist immer
+ *   Mock („Simulation (Demo)“); Szenario O (tours-demo.spec.ts, Projekt
+ *   `demo-communication`) prüft, dass dort kein Request den Fake erreicht.
+ * - Szenarien A–N: tours-flow.spec.ts im Projekt `chromium`.
+ *
  * In Umgebungen mit vorinstalliertem Chromium kann CHROMIUM_PATH auf die
  * Browser-Binärdatei zeigen; sonst nutzt Playwright seine eigene Installation
  * (npx playwright install chromium).
@@ -171,6 +185,17 @@ const WHATSAPP_PUSH_E2E_ENV = {
   PUSH_VAPID_SUBJECT,
 };
 
+/**
+ * Phase 13: Routing gegen den GraphHopper-Contract-Fake (nur development-APIs;
+ * der Key ist synthetisches Testmaterial, siehe fakes/constants.ts).
+ */
+const ROUTING_E2E_ENV = {
+  ROUTING_ENABLED: 'true',
+  ROUTING_PROVIDER: 'graphhopper',
+  GRAPHHOPPER_API_KEY: ROUTING_FAKE_API_KEY,
+  GRAPHHOPPER_BASE_URL: GRAPHHOPPER_FAKE_BASE_URL,
+};
+
 const chromiumLaunch = process.env.CHROMIUM_PATH
   ? { launchOptions: { executablePath: process.env.CHROMIUM_PATH } }
   : {};
@@ -207,6 +232,8 @@ export default defineConfig({
         /communication-lexware\.spec\.ts$/,
         // Phase 12 (E2E-Agent 2): Szenario T läuft nur gegen die Demo-API.
         /communication-demo\.spec\.ts$/,
+        // Phase 13 (E2E): Szenario O (Demo-Routing nur Mock) läuft nur gegen die Demo-API.
+        /tours-demo\.spec\.ts$/,
       ],
     },
     ...(WEBKIT_ENABLED
@@ -231,7 +258,8 @@ export default defineConfig({
       // Phase 12 (E2E-Agent 2): Szenario T – reine API-Tests gegen die Demo-API (APP_ENV=demo).
       name: 'demo-communication',
       use: { ...devices['Desktop Chrome'], ...chromiumLaunch },
-      testMatch: /communication-demo\.spec\.ts$/,
+      // Phase 13 (E2E): tours-demo.spec.ts (Szenario O) ebenfalls gegen die Demo-API.
+      testMatch: /(communication-demo|tours-demo)\.spec\.ts$/,
     },
   ],
   webServer: [
@@ -283,6 +311,8 @@ export default defineConfig({
         // Phase 12: Mail (SMTP-Senke + IMAP-Fake), WhatsApp (Graph-Fake), Web Push (VAPID-Test).
         ...MAIL_E2E_ENV,
         ...WHATSAPP_PUSH_E2E_ENV,
+        // Phase 13: Routing gegen den GraphHopper-Fake (HTTPS 4567, /api/1).
+        ...ROUTING_E2E_ENV,
       },
     },
     {
@@ -323,6 +353,8 @@ export default defineConfig({
         LEXWARE_REQUEST_TIMEOUT_MS: '5000',
         // Phase 12: Rechnungs-/Gutscheinmails an die SMTP-Senke (wie die Haupt-API).
         ...MAIL_E2E_ENV,
+        // Phase 13: Routing gegen den GraphHopper-Fake (wie die Haupt-API).
+        ...ROUTING_E2E_ENV,
       },
     },
     {

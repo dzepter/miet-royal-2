@@ -3432,3 +3432,167 @@ Vom Auftraggeber bestätigt (2026-10-19) – keine offenen Fachfragen mehr:
 - **Vertretungsende:** Endet eine Vertretung, fällt die Zuständigkeit an die
   ursprüngliche Person zurück; das darf eine neue Erinnerung (1-h-Push, neuer
   Fingerprint) an die ursprüngliche Person auslösen.
+
+## Phase 13: Touren, Routing, aktive Fahrt, GPS & Verspätungsrisiko (2026-10-30)
+
+### Provider und Grenze
+- **GraphHopper Directions API** ist der Produktionsprovider; die
+  Verifikation gegen die offizielle Dokumentation (Redocly-Seiten, OpenAPI
+  3.1-Bundle, Pricing, ToS, Privacy; 2026-10-30) steht in
+  `docs/ROUTING_API_NOTES.md`. Fachcode spricht nur mit `RoutingGateway`
+  (`apps/api/src/routing/types.ts`); `GraphHopperRoutingGateway` ist der
+  einzige Provider-Client; Mock (Demo/Dev), Fake (Tests) und Disabled sind
+  austauschbare Implementierungen derselben Grenze. Die Fabrik
+  (`routing/factory.ts`) entscheidet nach `config.routing`; production
+  verweigert Mock/Fake hart (`buildApp` und Fabrik).
+- **Auth nur per Query-Parameter** (`key=`) – deshalb erscheinen URLs/Queries
+  nie in Logs oder Fehlermeldungen (`maskRoutingUrl`, Pino-Redaction in API
+  und Worker, Log nur `{method, endpoint, status, outcome, durationMs,
+  credits}`); der Fehlerbody des Providers wird nicht gelesen.
+- **Fehlerklassifikation** (auth_invalid, validation, not_found,
+  rate_limited, credit_limited, timeout, network, server_error,
+  invalid_response, disabled) mit `transient`-Flag; Antworten werden
+  zod-minimal validiert (fail-closed). Keine Client-Retries; in-process
+  Drossel 1 Request/s und Pause bis `X-RateLimit-Reset` nach 429. Routing
+  ist read-only – transiente Fehler dürfen jederzeit neu berechnet werden.
+- **Datenminimierung:** Requests enthalten nur Koordinaten/Adresse,
+  Zeitfenster, Servicezeiten und anonyme Stopp-IDs (Pflichttest T12/T13).
+  `elevation=false` (keine Mapterhorn-Attribution), `provider=nominatim` für
+  Geocoding (offizielle Empfehlung für nicht-interaktive Nutzung).
+- **Persistenz:** nur eigene Planungswerte (Reihenfolge, geplante Zeiten,
+  Distanz/Fahrzeit als Skalare, Provider-Name); nie Rohantworten,
+  Geometrien, Matrizen. Geocoding-Cache mit TTL (ToS §5.2 „temporär
+  cachen“); Mitarbeiterbestätigungen sind Geschäftsentscheidungen und
+  überleben den Ablauf per `confirmed_osm_ref`.
+
+### Geocoding und Adressautorität
+- Operative Adresse je Termin kommt ausschließlich aus der bestehenden
+  Autorität (`routing/address-resolver.ts`): Lieferung = eingefrorener
+  `locationSnapshot` der Buchung, Abholung/Rückgabe am Standort =
+  `pickup_exact_address`; nie der aktuelle Kundenstamm, nie geraten.
+  Depot = `pickup_exact_address`; fehlt sie ⇒ Gesamtroute blockiert mit
+  `DEPOT_ADDRESS_MISSING`.
+- Geocoding nur serverseitig, nur wenn Routing es braucht, konservativ:
+  eindeutig nur bei Straße + PLZ + Hausnummer-Treffer; fehlende Hausnummer,
+  abweichende PLZ oder mehrere plausible Treffer ⇒ `review_required` mit ≤ 5
+  Kandidaten, die ein Planer bestätigt („Adresse für Route prüfen“); freie
+  Koordinaten vom Client werden nie akzeptiert.
+
+### Tourmodell und Planung
+- Tabellen `tours`, `tour_stops`, `tour_live_locations`,
+  `tour_delay_incidents`, `geocoding_cache` (Migration 0027,
+  `docs/DATA_MODEL.md`). Der Termin bleibt Source of Truth; Stopp-Zustand
+  wird abgeleitet. DB-Backstops: ein offener Stopp je Termin
+  (Partial-Unique `released_at IS NULL`), eine aktive Tour je gespeichertem
+  Fahrer; der Service prüft zusätzlich die effektive Person (Vertretung).
+- Optimistische Nebenläufigkeit über `tours.version`: jede Mutation (auch
+  Stale-Ereignisse) erhöht die Version; `apply` berechnet die gesendete
+  Reihenfolge serverseitig neu und schreibt nur per Compare-and-Set –
+  Provider-Ergebnisse werden nie auf eine veraltete Version committet; kein
+  DB-Lock während HTTP (lesen → HTTP → CAS → 409).
+- Vorschlag ohne gepinnte Stopps: Route Optimization (`POST /vrp`, harte
+  Zeitfenster, Servicezeiten, `in_sequence`). Mit gepinnten Stopps: Matrix
+  + eigener deterministischer Planer `planWithAnchors` (Pins = feste Anker,
+  Segmente ≤ 7 vollständig permutiert, sonst Nächster-Nachbar + 2-opt), weil
+  der Provider feste Positionen nicht dokumentiert (Order §20: nicht
+  tricksen). Beide Wege liefern dieselbe `TourPlan`-Struktur; Zeitfenster
+  sind hart ⇒ `infeasible` mit verständlichen Konflikten je Stopp; exakte
+  Termine sind Anker (Warnung, nie Mutation des Termins).
+- 15-Minuten-Puffer zentral (`TOUR_STOP_BUFFER_MINUTES_DEFAULT`), je Stopp
+  durch Planer (0–240) überschreibbar. Metriken sind intern; keine
+  „garantierte Ankunft“, keine Kunden-ETA.
+- Zuständigkeit ausschließlich über `SchedulingService.assign`/`assignWithin`
+  (neu: transaktionale Variante, Verhalten unverändert); fremde Termine
+  werden nie still umgeschrieben. Übernahme einer aktiven Tour ist eine
+  Transaktion mit vollständigem Rollback.
+- Stale-Erkennung: Terminverschiebung (AppointmentChangeListener), Storno
+  (ProcessCompletionListener ⇒ Stopp `skipped_at`), Depotadresse geändert
+  (`system_settings.updated_at` > `route_calculated_at`), Reihenfolge/Pin/
+  Puffer ⇒ `planning_status = stale`; aktive Tour zeigt die Warnung und
+  rechnet nur die verbleibenden Stopps neu.
+
+### Aktive Fahrt, GPS, Verspätungsrisiko
+- Start manuell und idempotent (Voraussetzungen: heutiges Tourdatum
+  Berlin, mindestens ein Stopp, aktiver Fahrer, keine zweite aktive Tour
+  derselben effektiven Person; Warnungen blockieren nicht). Ende: alle
+  Stopps erledigt/übersprungen ⇒ completed; offene ⇒ 409; `calendar.manage`
+  kann mit Pflichtgrund erzwingen (Termine bleiben scheduled). Abbruch nur
+  draft/ready; kein Hard Delete.
+- Standort: eine Zeile je Tour (Upsert), nur vom effektiven Fahrer einer
+  aktiven Tour, Validierung (Bereiche, Genauigkeit, `observedAt` ±10 min/2
+  min), 512-Byte-Body, Rate-Limit 1/10 s je Tour, neutral 404 für alle
+  anderen, Löschung bei Ende/Abbruch/Übernahme; Koordinaten erscheinen nie
+  in Logs (T64) und nie in Kundenpfaden. Client sendet nur auf der Seite
+  „Aktive Tour“ nach Freigabe, gedrosselt (≥ 60 s oder ≥ 250 m, nie < 15 s).
+  PWA/iOS: kein Hintergrund-GPS – ehrlich dokumentiert, keine Annahme.
+- Verspätungsrisiko: nur mit frischem Standort (≤ 10 min), Restroute per
+  Matrix + `evaluateOrder` inkl. Wartezeiten und Puffer vorheriger Stopps;
+  Frist = exakte Terminzeit bzw. Fensterende. Ein offener Incident je Stopp,
+  genau ein Push je Incident (Outbox-Idempotenz
+  `push:tour_delay_risk:<incidentId>:<userId>`) an effektiven Fahrer und
+  Planung/Admin; Provider-Ausfall ⇒ „nicht verfügbar“, nie falsche
+  Entwarnung. Trigger: Standort-Update (asynchron nach 204), Planänderungen,
+  Scanner `tour_delay` (API und Worker, in `communication.scan_due`). Keine
+  automatische Kundennachricht.
+- „Unterwegs“ für den Kunden ist nur als Grenze
+  (`getCustomerTravelStatus`) vorbereitet: aktive Tour, Stopp offen und
+  nächster Kundenstopp; ohne ETA, GPS oder Fahrername; kein Endpunkt.
+- Navigation: externe Kartenlinks (Apple Maps, `geo:`-Intent, Web-Fallback)
+  nur mit Ziel (Koordinate oder Adresse) – ohne Provider nutzbar.
+- Offline: Snapshot der eigenen aktiven Tour im Arbeitspaket (lesbar, ohne
+  GPS); alle Tour-Mutationen nur online, Standorte werden offline verworfen
+  und nie nachgesendet.
+
+### Bewusst nicht gebaut
+Lieferpreisformel (Grenze `DeliveryPriceSuggestion` liefert `null`),
+Kunden-ETA/Live-Karte, automatische Kundennachricht, Turn-by-Turn,
+Flotten-/Kapazitätsplanung, GPS-Historie, neues Recht, asynchroner
+VRP-Job, feste Positionen per undokumentierter Provider-Funktion.
+
+## Phase 13 (UI): Touren-Oberfläche, GPS-Grenzen der PWA, Offline-Lesbarkeit
+
+- **Seiten** (`apps/staff/app/touren/*`, Design §13): `/touren` (Touren eines
+  Tages, Datumwahl, Status/Fahrer/Vertretung/Stoppzahl/Planungsstatus, „Neue
+  Tour“ nur `calendar.manage`, Karte „Aktive Tour fortsetzen“), `/touren/neu`,
+  `/touren/[id]` (Planen: natives HTML5-Drag&Drop wie im Kalender plus
+  Pfeil-Buttons, Pin, Puffer 0–240, Adress-Status + „Adresse für Route prüfen“,
+  verfügbare Stopps mit bewusster Zuständigkeits-Bestätigung, Routenvorschlag
+  als reines Client-Panel bis „Vorschlag übernehmen“), `/touren/aktiv`
+  (mobile-first). Navigation „Touren“ neben Kalender (`calendar.view`). Kein
+  neues Recht; alle Rechte-Entscheidungen trifft der Server (`can*`-Felder).
+- **Versionskonflikte** (`409 TOUR_VERSION_CONFLICT`) fängt jede Tour-Seite
+  generell ab: Tour neu laden, Vorschlag verwerfen, Hinweis „Die Tour wurde
+  zwischenzeitlich geändert.“ Routing-Fehler werden nie als Provider-Text
+  gezeigt, nur „Route konnte gerade nicht berechnet werden.“ (503) bzw.
+  „Routing ist nicht konfiguriert.“ (409). Angezeigte Routenwerte tragen immer
+  den OSM-Attributionslink; `routeProvider` `mock`/`fake` erscheint als
+  „Simulation (Demo)“. Keine Preise, nie „garantierte Ankunft“.
+- **GPS nur im Vordergrund – ehrlich dokumentierte PWA-/iOS-Grenze**
+  (Order §38–§45, Design §9): `navigator.geolocation.watchPosition` läuft
+  ausschließlich auf `/touren/aktiv`, nur bei eigener aktiver Tour (gespeicherter
+  oder effektiver Fahrer) und erst nach dem Klick „Standort freigeben“. Der
+  Zustand (Watch-ID, letzter Sendezeitpunkt/-punkt) lebt nur im Speicher der
+  Seite (Refs) – nichts in `localStorage`/IndexedDB. Client-Drossel: senden bei
+  ≥ 60 s seit dem letzten Senden ODER ≥ 250 m Bewegung (Haversine), nie öfter
+  als alle 15 s (`shouldSendLocation` in `apps/staff/lib/tours.ts`). Der Watch
+  stoppt beim Verlassen der Seite, bei Tourende, offline und bei `404` (Tour
+  nicht mehr aktiv/fremd). **Es gibt kein Hintergrund-GPS:** Wechselt der Fahrer
+  die App, sperrt das Gerät oder schließt den Tab, liefert der Browser (vor
+  allem iOS/Safari als PWA) keine Positionen mehr; der Server kennzeichnet den
+  letzten Standort nach 10 Minuten als „Standort nicht aktuell“, die
+  Verspätungsprognose wird dann „derzeit nicht verfügbar“. Verweigerte
+  Berechtigung ⇒ Tour läuft weiter, Hinweis „Standort nicht verfügbar –
+  Verspätungswarnungen sind eingeschränkt.“ Offline werden Positionen verworfen
+  und nie nachsynchronisiert (kein Track).
+- **Offline-Lesbarkeit der aktiven Tour** (Design §11): Das Arbeitspaket trägt
+  `activeTour` (Stoppliste, Adressen, Zeiten, Vorgangsnummern, fertige
+  Navigations-Links; keine GPS-Daten) im verschlüsselten Paket-Payload mit
+  (`PackagePayload.activeTour`, optional für ältere Pakete). `/touren/aktiv`
+  zeigt offline diesen Snapshot (Banner „Offline – Stand des letzten
+  Arbeitspakets“); alle Mutationen (Start, Übernahme, Reihenfolge, Angekommen,
+  Beenden, Standort) sind offline deaktiviert („Diese Aktion ist nur online
+  möglich.“). Die Seite ist in `prefetchShells` aufgenommen. Plan-, Listen- und
+  Anlege-Seiten bleiben online-only (bewusst kein zweiter Offline-Router).
+- **Navigation starten**: Links kommen fertig aus der View (`navigation`), die
+  Plattformwahl trifft der Client aus dem User-Agent (iOS/iPadOS/Mac ⇒ Apple
+  Maps, Android ⇒ `geo:`-Intent, sonst Web-Fallback) – nur Ziel, nie Name/Key.

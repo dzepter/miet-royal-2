@@ -15,6 +15,7 @@ import {
 import { eq } from 'drizzle-orm';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { LexwareConnectionService } from '../src/lexware/connection-service.ts';
+import { berlinTodayIso, normalizeLexwarePaymentStatus } from '../src/lexware/context.ts';
 import type { FakeLexwareServer } from '../src/lexware/testing/fake-server.ts';
 import { LEXWARE_EVENT_PROCESS_JOB_TYPE } from '../src/lexware/webhook-service.ts';
 import { createTestContext, destroyTestContext, type TestContext } from './auth-helpers.ts';
@@ -241,7 +242,19 @@ describe('Job lexware.event.process – Worker (§48–51, Tests 132–136)', ()
   it('132. Worker liest den aktuellen Stand bei Lexware (GET invoice + GET payment), nicht den Payload', async () => {
     const { admin } = await adminSession(ctx);
     const invoice = await createFakeInvoice(ctx);
-    const { mapping } = await createMappedTransfer(ctx, admin.id, invoice);
+    // Datumsunabhängig (Phase 13 Gate): Das Mapping startet mit dem Zahlungsstatus,
+    // den der Abgleich HEUTE aus dem Fälligkeitsdatum der Fake-Rechnung ableitet
+    // (open vor, overdue nach dem Zahlungsziel) – sonst meldet der Worker ab dem
+    // Zahlungsziel „UPDATED“ statt „UNCHANGED“, obwohl Lexware nichts geändert hat.
+    const expectedStatus = normalizeLexwarePaymentStatus({
+      voucherStatus: 'open',
+      openAmountCents: invoice.grossCents,
+      dueDate: invoice.dueDate,
+      todayBerlinIso: berlinTodayIso(),
+    });
+    const { mapping } = await createMappedTransfer(ctx, admin.id, invoice, {
+      paymentStatus: expectedStatus,
+    });
     fake.requestLog.length = 0;
     const signed = fake.signWebhook({ eventType: 'invoice.changed', resourceId: invoice.id });
     await postWebhook(ctx, signed.body, signed.signature);
@@ -255,7 +268,7 @@ describe('Job lexware.event.process – Worker (§48–51, Tests 132–136)', ()
       .select()
       .from(lexwareInvoiceMappings)
       .where(eq(lexwareInvoiceMappings.id, mapping.id));
-    expect(after!.paymentStatus).toBe('open');
+    expect(after!.paymentStatus).toBe(expectedStatus);
     expect(after!.lastSyncedAt!.getTime()).toBeGreaterThan(mapping.lastSyncedAt!.getTime());
   });
 

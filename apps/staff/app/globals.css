@@ -633,3 +633,95 @@ a.touch-card:hover {
   outline: 2px dashed #d97706;
   outline-offset: 2px;
 }
+
+/* ── Phase 13 (UI): Touren ───────────────────────────────────────────────── */
+.tour-stop {
+  display: flex;
+  gap: 0.6rem;
+  align-items: flex-start;
+  padding: 0.6rem 0;
+  border-top: 1px solid #eee;
+  flex-wrap: wrap;
+}
+.tour-stop:first-of-type {
+  border-top: none;
+}
+.tour-stop[draggable='true'] {
+  cursor: grab;
+}
+.tour-stop.dragging {
+  opacity: 0.5;
+}
+.tour-stop.drop-target {
+  outline: 2px dashed var(--accent);
+  outline-offset: 2px;
+}
+.tour-stop .seq {
+  font-weight: 700;
+  min-width: 2.2rem;
+  white-space: nowrap;
+}
+.tour-stop .stop-main {
+  flex: 1 1 14rem;
+  min-width: 0;
+}
+.tour-stop .stop-actions {
+  display: flex;
+  gap: 0.3rem;
+  flex-wrap: wrap;
+  align-items: center;
+  width: 100%;
+}
+.tour-stop .stop-actions button {
+  min-height: 36px;
+  padding: 0.3rem 0.6rem;
+}
+.tour-stop .stop-actions input {
+  width: 4.5rem;
+  margin: 0;
+  padding: 0.3rem 0.4rem;
+}
+.next-stop-card {
+  border: 2px solid var(--accent);
+}
+.next-stop-card h2 {
+  font-size: 1.15rem;
+}
+.next-stop-card .big {
+  font-size: 1.15rem;
+  margin: 0.4rem 0;
+}
+.delay-banner {
+  background: #fdecea;
+  border: 1px solid #b3261e;
+  color: #7a1a14;
+  border-radius: 0.6rem;
+  padding: 0.6rem 0.9rem;
+  margin: 0.5rem 0 1rem;
+  font-weight: 600;
+}
+.tour-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 0.5rem 0;
+}
+.tour-actions button,
+.tour-actions a.button-like {
+  flex: 1 1 10rem;
+  text-align: center;
+  min-height: 44px;
+  line-height: 1.6;
+}
+.badge.risk {
+  color: #b3261e;
+  border-color: #b3261e;
+}
+.badge.warn {
+  color: #8a5a00;
+  border-color: #d97706;
+}
+.osm-attribution {
+  font-size: 0.75rem;
+  color: var(--muted);
+}

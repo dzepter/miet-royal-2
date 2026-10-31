@@ -21,6 +21,8 @@ export interface ApiResult<T> {
   data: T | null;
   errorCode: string | null;
   errorMessage: string | null;
+  /** Phase 13 (UI): strukturierte Fehlerdetails des Servers (z. B. Zuständigkeit, offene Stopps) – optional. */
+  errorDetails?: unknown;
 }
 
 export type OfflineRouter = (
@@ -70,7 +72,9 @@ export async function apiFetch<T = unknown>(
     payload = null;
   }
 
-  const errorBody = payload as { error?: { code?: string; message?: string } } | null;
+  const errorBody = payload as {
+    error?: { code?: string; message?: string; details?: unknown };
+  } | null;
   const errorCode = errorBody?.error?.code ?? null;
 
   if (response.status === 401 && errorCode === 'APP_LOCKED') {
@@ -86,6 +90,7 @@ export async function apiFetch<T = unknown>(
     data: response.ok ? (payload as T) : null,
     errorCode,
     errorMessage: errorBody?.error?.message ?? null,
+    errorDetails: errorBody?.error?.details,
   };
 }
 
