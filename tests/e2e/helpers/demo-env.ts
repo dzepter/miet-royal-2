@@ -40,3 +40,27 @@ export const DEMO_MAIL_WHITELIST = '@demo.test';
 /** Synthetischer Demo-Admin (Bootstrap im Startkommando der Demo-API). */
 export const DEMO_ADMIN_EMAIL = 'dana.demo@demo.test';
 export const DEMO_ADMIN_PASSWORD = 'e2e-demo-admin-passwort-1';
+
+/**
+ * Phase 14 (E2E, Szenarien D1–D7 – demo-environment.spec.ts): zusätzliche
+ * Demo-Instanzen des Projekts `demo-communication`.
+ *
+ * - Demo-Staff-Instanz: `next dev` gegen die Demo-API (wie die Lexware-Staff-
+ *   Instanz), eigenes distDir `.next/demo`, weil `next dev` sein Verzeichnis
+ *   sperrt und die Lexware-Instanz bereits `.next/dev` belegt.
+ * - Demo-Web-Instanz: `next dev` mit WEB_APP_ENV=demo (fester Banner).
+ * - STAFF_LIVE_URL der Demo-API: fester Origin unter der reservierten Domain
+ *   `example.invalid` – wird nie aufgelöst; die Spec fängt das neue Fenster
+ *   per Routing ab (kein Netzwerkzugriff).
+ */
+export const DEMO_STAFF_PORT = 3107;
+export const DEMO_STAFF_ORIGIN = `http://127.0.0.1:${DEMO_STAFF_PORT}`;
+export const DEMO_STAFF_DIST_DIR = '.next/demo';
+export const DEMO_WEB_PORT = 3108;
+export const DEMO_WEB_ORIGIN = `http://127.0.0.1:${DEMO_WEB_PORT}`;
+export const DEMO_WEB_DIST_DIR = '.next/demo';
+export const DEMO_LIVE_URL = 'https://live.example.invalid';
+
+/** Zweiter Demo-Mitarbeiter (Rolle ohne demo.manage) – synthetisches TEST-Material. */
+export const DEMO_TRAINEE_EMAIL = 'sven.schulung@demo.test';
+export const DEMO_TRAINEE_PASSWORD = 'e2e-demo-schulung-passwort-1';

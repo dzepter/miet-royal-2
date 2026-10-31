@@ -34,8 +34,13 @@ import {
   DEMO_AUTH_SECRET_KEY,
   DEMO_COMMUNICATION_PAYLOAD_KEY,
   DEMO_DATABASE_URL,
+  DEMO_LIVE_URL,
   DEMO_MAIL_WHITELIST,
+  DEMO_STAFF_DIST_DIR,
+  DEMO_STAFF_PORT,
   DEMO_STORAGE_ROOT,
+  DEMO_WEB_DIST_DIR,
+  DEMO_WEB_PORT,
 } from './helpers/demo-env.ts';
 
 /**
@@ -108,6 +113,17 @@ import {
  *   Mock („Simulation (Demo)“); Szenario O (tours-demo.spec.ts, Projekt
  *   `demo-communication`) prüft, dass dort kein Request den Fake erreicht.
  * - Szenarien A–N: tours-flow.spec.ts im Projekt `chromium`.
+ *
+ * Phase 14 (Demo-Umgebung, Szenarien D1–D7 in demo-environment.spec.ts):
+ * - Die Demo-API bekommt `STAFF_LIVE_URL` (fester Origin unter example.invalid)
+ *   für den Wechsel-Button „Live öffnen“; die Spec fängt das neue Fenster per
+ *   Routing ab. Die Haupt-API bleibt OHNE `STAFF_DEMO_URL` (Live-Gegentest im
+ *   Projekt `chromium`: kein Badge, kein Button, keine Demo-Routen).
+ * - Zusätzlich eine Demo-STAFF-Instanz (Port 3107, `next dev` wie die Lexware-
+ *   Instanz, eigenes distDir `.next/demo`, da `next dev` sein Verzeichnis sperrt)
+ *   gegen die Demo-API und eine Demo-WEB-Instanz (Port 3108, `WEB_APP_ENV=demo`,
+ *   distDir `.next/demo`) für den festen Demo-Banner. Beide nur für das Projekt
+ *   `demo-communication` (baseURL ⇒ Demo-Staff).
  *
  * In Umgebungen mit vorinstalliertem Chromium kann CHROMIUM_PATH auf die
  * Browser-Binärdatei zeigen; sonst nutzt Playwright seine eigene Installation
@@ -257,9 +273,15 @@ export default defineConfig({
     {
       // Phase 12 (E2E-Agent 2): Szenario T – reine API-Tests gegen die Demo-API (APP_ENV=demo).
       name: 'demo-communication',
-      use: { ...devices['Desktop Chrome'], ...chromiumLaunch },
+      use: {
+        ...devices['Desktop Chrome'],
+        ...chromiumLaunch,
+        // Phase 14 (E2E): Demo-Staff-Instanz (Badge, Wechsel, Einstellungen → Demo, Reset).
+        baseURL: `http://127.0.0.1:${DEMO_STAFF_PORT}`,
+      },
       // Phase 13 (E2E): tours-demo.spec.ts (Szenario O) ebenfalls gegen die Demo-API.
-      testMatch: /(communication-demo|tours-demo)\.spec\.ts$/,
+      // Phase 14 (E2E): demo-environment.spec.ts (D1–D7; der Live-Gegentest darin läuft in `chromium`).
+      testMatch: /(communication-demo|tours-demo|demo-environment)\.spec\.ts$/,
     },
   ],
   webServer: [
@@ -393,6 +415,36 @@ export default defineConfig({
         MAIL_DEMO_WHITELIST: DEMO_MAIL_WHITELIST,
         E2E_DEMO_ADMIN_EMAIL: DEMO_ADMIN_EMAIL,
         E2E_DEMO_ADMIN_PASSWORD: DEMO_ADMIN_PASSWORD,
+        // Phase 14 (E2E): Gegen-URL „Live öffnen“ (nur Origin; nie aufgelöst, siehe Spec D2).
+        STAFF_LIVE_URL: DEMO_LIVE_URL,
+      },
+    },
+    {
+      // Phase 14 (E2E): Demo-STAFF-Instanz gegen die Demo-API – Dev-Server wie die Lexware-
+      // Instanz (Build bäckt STAFF_API_ORIGIN ein), eigenes distDir, weil `next dev` sein
+      // Verzeichnis sperrt und `.next/dev` bereits der Lexware-Instanz gehört.
+      command: `pnpm --filter @mietroyal/staff exec next dev --port ${DEMO_STAFF_PORT}`,
+      url: `http://127.0.0.1:${DEMO_STAFF_PORT}/login`,
+      reuseExistingServer: false,
+      timeout: 180_000,
+      cwd: '../..',
+      env: {
+        STAFF_API_ORIGIN: `http://127.0.0.1:${DEMO_API_PORT}`,
+        STAFF_DIST_DIR: DEMO_STAFF_DIST_DIR,
+      },
+    },
+    {
+      // Phase 14 (E2E): Demo-WEB-Instanz (WEB_APP_ENV=demo ⇒ fester Banner „DEMO – keine echten
+      // Kundendaten“ auf allen öffentlichen Seiten) gegen die Demo-API; eigenes distDir wie oben.
+      command: `pnpm --filter @mietroyal/web exec next dev --port ${DEMO_WEB_PORT}`,
+      url: `http://127.0.0.1:${DEMO_WEB_PORT}`,
+      reuseExistingServer: false,
+      timeout: 120_000,
+      cwd: '../..',
+      env: {
+        WEB_API_ORIGIN: `http://127.0.0.1:${DEMO_API_PORT}`,
+        WEB_APP_ENV: 'demo',
+        WEB_DIST_DIR: DEMO_WEB_DIST_DIR,
       },
     },
   ],
