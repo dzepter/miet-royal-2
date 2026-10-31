@@ -33,7 +33,8 @@ export const OFFLINE_LEASE_MS = 72 * 3_600_000;
  * damit ein reiner Tourfahrer den read-only Snapshot seiner eigenen aktiven
  * Tour offline erhält. Welche Paketabschnitte befüllt werden, entscheidet
  * weiterhin ausschließlich das jeweilige Fachrecht (`OfflinePackageService`):
- * nur `calendar.view` ⇒ ausschließlich `activeTour`, keine Vorgänge, kein
+ * nur `calendar.view` ⇒ ausschließlich `activeTours` (alle eigenen/effektiven
+ * aktiven Touren, Phase 13 Corr §3), keine Vorgänge, kein
  * Maschinenstamm, kein Lager, keine Dokumente – und keine Tour-Mutationen
  * (es gibt keine in `OFFLINE_MUTATION_TYPES`).
  */

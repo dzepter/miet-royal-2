@@ -211,17 +211,19 @@ export function registerTourRoutes(app: FastifyInstance, options: TourRouteOptio
     const context = await requireAuth(request, reply, auth, config);
     if (context === null) return;
     if (!(await requirePermission(request, reply, auth, context, 'calendar.view'))) return;
-    // Phase 13 Final (§7): mehrere aktive Touren derselben effektiven Person werden nicht
-    // still verborgen – `tour` ist deterministisch die zuerst gestartete, `conflict`
-    // nennt alle betroffenen (jede einzeln über ihre ID erreichbar; nichts wird
-    // automatisch beendet oder übertragen).
-    const active = await tours.findActiveToursFor(context.user.id);
-    if (active.length === 0) return { tour: null, conflict: null };
+    // Phase 13 Final (§7) / Corr (§2): zentrale Auflösung `resolveActiveToursFor` –
+    // keine eigene length-Semantik. `single` ⇒ `tour`; `conflict` ⇒ `tour` ist die
+    // erste in deterministischer Reihenfolge (started_at, id) UND `conflict` nennt
+    // alle betroffenen Touren (jede einzeln über ihre ID erreichbar; nichts wird
+    // automatisch beendet oder übertragen) – die Konfliktanzeige bleibt (M14).
+    const resolution = await tours.resolveActiveToursFor(context.user.id);
+    if (resolution.kind === 'none') return { tour: null, conflict: null };
+    const active = resolution.kind === 'single' ? [resolution.tour] : resolution.tours;
     const views = await buildTourViews(viewDeps, active, await viewerOf(context));
     return {
       tour: views[0]!,
       conflict:
-        views.length < 2
+        resolution.kind === 'single'
           ? null
           : {
               tours: views.map((view) => ({

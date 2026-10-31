@@ -10,9 +10,17 @@
  * unveränderten Bestandsdateien `offline-core`, `offline-hardening` und
  * `offline-idempotency` (*.integration.test.ts), die nach dieser Änderung
  * erneut ausgeführt werden.
+ *
+ * Phase 13 Corr §2/§3 (Tests M1–M5, M10–M15, M17): das Paket trägt
+ * `activeTours: OfflineTourSnapshot[]` – ALLE eigenen/effektiven aktiven
+ * Touren (0 ⇒ [], 1 ⇒ [Tour], Konflikt ⇒ alle, deterministisch nach
+ * started_at, id). Keine Tour wird still auf „die erste“ reduziert; online
+ * bleibt die Konfliktanzeige von `GET /staff/tours/active`. M6–M9 (Offline-UI)
+ * und M16 (alte `activeTour`-Pakete im Client) liegen in tests/e2e bzw.
+ * apps/staff.
  */
 import { randomUUID } from 'node:crypto';
-import { machines, offlineAccessLeases, tourLiveLocations } from '@mietroyal/database';
+import { machines, offlineAccessLeases, tourLiveLocations, tours } from '@mietroyal/database';
 import { MUTATION_PERMISSIONS, OFFLINE_MUTATION_TYPES } from '@mietroyal/offline/shared';
 import type { PermissionKey } from '@mietroyal/permissions';
 import { eq } from 'drizzle-orm';
@@ -30,8 +38,10 @@ import {
   bookingWithAppointments,
   createToursWorld,
   destroyToursWorld,
+  inMinutes,
   resetToursWorld,
   sendLocation,
+  sleep,
   staffWith,
   todayBerlin,
   tourWithStops,
@@ -89,28 +99,52 @@ interface PackageJson {
   machines: unknown[];
   inventory: unknown[] | null;
   documents: unknown[];
-  activeTour: {
-    tourId: string;
-    tourDate: string;
-    status: string;
-    version: number;
-    snapshotAt: string;
-    stops: {
-      stopId: string;
-      appointmentId: string;
-      sequence: number;
-      kind: string;
-      processNumber: string;
-      processId: string;
-      bookingId: string;
-      startAt: string | null;
-      endAt: string | null;
-      addressLines: string[];
-      navigation: { apple: string; android: string; web: string } | null;
-      state: string;
-    }[];
-  } | null;
+  /** Phase 13 Corr (§3): alle eigenen/effektiven aktiven Touren – nie `activeTour`. */
+  activeTours: TourSnapshotJson[];
 }
+
+interface TourSnapshotJson {
+  tourId: string;
+  tourDate: string;
+  status: string;
+  version: number;
+  snapshotAt: string;
+  stops: {
+    stopId: string;
+    appointmentId: string;
+    sequence: number;
+    kind: string;
+    processNumber: string;
+    processId: string;
+    bookingId: string;
+    startAt: string | null;
+    endAt: string | null;
+    addressLines: string[];
+    navigation: { apple: string; android: string; web: string } | null;
+    state: string;
+  }[];
+}
+
+const SNAPSHOT_KEYS = ['tourId', 'tourDate', 'status', 'version', 'snapshotAt', 'stops'].sort();
+const STOP_KEYS = [
+  'stopId',
+  'appointmentId',
+  'sequence',
+  'kind',
+  'processNumber',
+  'processId',
+  'bookingId',
+  'startAt',
+  'endAt',
+  'addressLines',
+  'navigation',
+  'state',
+].sort();
+/** Schlüssel/Werte, die ein Live-Standort tragen würde – nie im Paket (O8/M10). */
+const GPS_PATTERN = /latitude|longitude|liveLocation|accuracy|observedAt|receivedAt/i;
+/** Phase-8-Sichten, Kunden-/Kontakt-/Finanzdaten, Maschinenstamm – nie bei calendar.view-only (O2/M11). */
+const NON_TOUR_DATA_PATTERN =
+  /qrHash|machineCode|handover|returnSeed|returnStartable|existingDamages|candidateMachines|deliveryNote|customer|phone|email|Cents|invoice|settlement|voucher/i;
 
 async function pkg(cookie: string, extra: Record<string, unknown> = {}, deviceId = DEVICE) {
   return world.app.inject({
@@ -182,13 +216,12 @@ function expectOnlyTourSnapshot(
   expect(packageJson.machines).toEqual([]);
   expect(packageJson.inventory).toBeNull();
   expect(packageJson.documents).toEqual([]);
-  expect(packageJson.activeTour).not.toBeNull();
-  expect(packageJson.activeTour!.tourId).toBe(tourId);
+  expect(packageJson).not.toHaveProperty('activeTour');
+  expect(packageJson.activeTours).toHaveLength(1);
+  expect(packageJson.activeTours[0]!.tourId).toBe(tourId);
   const text = JSON.stringify(packageJson);
   // Keine Phase-8-Sichten, keine Kunden-/Kontakt-/Finanzdaten, kein Maschinenstamm.
-  expect(text).not.toMatch(
-    /qrHash|machineCode|handover|returnSeed|returnStartable|existingDamages|candidateMachines|deliveryNote|customer|phone|email|Cents|invoice|settlement|voucher/i,
-  );
+  expect(text).not.toMatch(NON_TOUR_DATA_PATTERN);
   expect(text).not.toMatch(/Klara|Kommerz|0171/);
   for (const booking of bookings) {
     // Der Vorgang selbst (Kunde, Übergabe, Rückgabe) liegt nicht im Paket – nur Tour-Stopp-Referenzen.
@@ -234,7 +267,7 @@ describe('Phase 13 Final §4: Offline-Lease für reine Tourfahrer (O1–O8)', ()
     const empty = await pkg(driver.cookie);
     expect(empty.statusCode).toBe(200);
     const json = empty.json() as PackageJson;
-    expect(json.activeTour).toBeNull();
+    expect(json.activeTours).toEqual([]);
     expect(json.bookings).toEqual([]);
     expect(json.machines).toEqual([]);
     expect(json.inventory).toBeNull();
@@ -245,7 +278,7 @@ describe('Phase 13 Final §4: Offline-Lease für reine Tourfahrer (O1–O8)', ()
     const { driver, driverApi, tour, booking, second } = await activeTourWorld();
     const packageJson = await packageFor(driver.cookie);
     expectOnlyTourSnapshot(packageJson, tour.id, [booking, second]);
-    const snapshot = packageJson.activeTour!;
+    const snapshot = packageJson.activeTours[0]!;
     expect(snapshot.status).toBe('active');
     expect(snapshot.tourDate).toBe(todayBerlin());
     expect(snapshot.version).toBe(tour.version);
@@ -270,8 +303,9 @@ describe('Phase 13 Final §4: Offline-Lease für reine Tourfahrer (O1–O8)', ()
         .status,
     ).toBe(200);
     const again = await packageFor(driver.cookie);
-    expect(again.activeTour!.stops[0]!.state).toBe('arrived');
-    expect(again.activeTour!.version).toBeGreaterThan(snapshot.version);
+    expect(again.activeTours).toHaveLength(1);
+    expect(again.activeTours[0]!.stops[0]!.state).toBe('arrived');
+    expect(again.activeTours[0]!.version).toBeGreaterThan(snapshot.version);
   });
 
   it('O3. Die effektive Vertretung (nur calendar.view) erhält Lease und Tour-Snapshot; nach Vertretungsende nicht mehr', async () => {
@@ -303,15 +337,15 @@ describe('Phase 13 Final §4: Offline-Lease für reine Tourfahrer (O1–O8)', ()
 
     const subPackage = await packageFor(substitute.cookie, {}, DEVICE_B);
     expectOnlyTourSnapshot(subPackage, planned.id, [booking]);
-    expect(subPackage.activeTour!.stops[0]!.processId).toBe(booking.processId);
+    expect(subPackage.activeTours[0]!.stops[0]!.processId).toBe(booking.processId);
     // Der gespeicherte Fahrer sieht seine Tour ebenfalls (Zuständigkeit bleibt bei ihm).
     const driverPackage = await packageFor(driver.cookie);
-    expect(driverPackage.activeTour!.tourId).toBe(planned.id);
+    expect(driverPackage.activeTours.map((t) => t.tourId)).toEqual([planned.id]);
 
     await substitutionServiceFor(world.ctx).endEarly(substitution.id);
     const afterEnd = await pkg(substitute.cookie, {}, DEVICE_B);
     expect(afterEnd.statusCode).toBe(200);
-    expect((afterEnd.json() as PackageJson).activeTour).toBeNull();
+    expect((afterEnd.json() as PackageJson).activeTours).toEqual([]);
   });
 
   it('O4. Eine fremde aktive Tour fehlt im Paket – auch über extraBookingIds oder den Einzel-Snapshot (neutral 404)', async () => {
@@ -319,7 +353,7 @@ describe('Phase 13 Final §4: Offline-Lease für reine Tourfahrer (O1–O8)', ()
     const foreign = await packageFor(other.cookie, {
       extraBookingIds: [booking.bookingId, second.bookingId],
     });
-    expect(foreign.activeTour).toBeNull();
+    expect(foreign.activeTours).toEqual([]);
     expect(foreign.bookings).toEqual([]);
     expect(foreign.permissions).toEqual(['calendar.view']);
     const text = JSON.stringify(foreign);
@@ -373,7 +407,7 @@ describe('Phase 13 Final §4: Offline-Lease für reine Tourfahrer (O1–O8)', ()
     expect(full.machines.length).toBeGreaterThan(0);
     expect(full.inventory).not.toBeNull();
     expect(full.bookings.length).toBeGreaterThan(0);
-    expect(full.activeTour).toBeNull();
+    expect(full.activeTours).toEqual([]);
     expect(full.permissions).toEqual(
       [...DRIVER_PERMISSIONS, ...PHASE8_DATA_PERMISSIONS].map(String).sort(),
     );
@@ -500,31 +534,385 @@ describe('Phase 13 Final §4: Offline-Lease für reine Tourfahrer (O1–O8)', ()
     const packageJson = await packageFor(driver.cookie);
     expectOnlyTourSnapshot(packageJson, tour.id, [booking, second]);
     const text = JSON.stringify(packageJson);
-    expect(text).not.toMatch(/latitude|longitude|liveLocation|accuracy|observedAt|receivedAt/i);
+    expect(text).not.toMatch(GPS_PATTERN);
     expect(text).not.toContain('49.912345');
     expect(text).not.toContain('8.261234');
     expect(text).not.toContain(observedAt.toISOString());
     // Jeder Stopp kennt nur Ziel-Navigation und Adresse, nie die Fahrerposition.
-    for (const stop of packageJson.activeTour!.stops) {
-      expect(Object.keys(stop).sort()).toEqual(
-        [
-          'stopId',
-          'appointmentId',
-          'sequence',
-          'kind',
-          'processNumber',
-          'processId',
-          'bookingId',
-          'startAt',
-          'endAt',
-          'addressLines',
-          'navigation',
-          'state',
-        ].sort(),
-      );
+    expectSnapshotShape(packageJson.activeTours[0]!);
+  });
+});
+
+/** Exakt die bisherigen Felder je Tour und je Stopp (Phase 13 Corr §4: keine neuen Daten). */
+function expectSnapshotShape(snapshot: TourSnapshotJson): void {
+  expect(Object.keys(snapshot).sort()).toEqual(SNAPSHOT_KEYS);
+  expect(snapshot.stops.length).toBeGreaterThan(0);
+  for (const stop of snapshot.stops) expect(Object.keys(stop).sort()).toEqual(STOP_KEYS);
+}
+
+/** Nur calendar.view: kein Vorgang, kein Maschinenstamm, kein Lager, keine Dokumente (M11). */
+function expectCalendarOnly(packageJson: PackageJson): void {
+  expect(packageJson.permissions).toEqual(['calendar.view']);
+  expect(packageJson.bookings).toEqual([]);
+  expect(packageJson.machines).toEqual([]);
+  expect(packageJson.inventory).toBeNull();
+  expect(packageJson.documents).toEqual([]);
+  expect(packageJson).not.toHaveProperty('activeTour');
+  const text = JSON.stringify(packageJson);
+  expect(text).not.toMatch(NON_TOUR_DATA_PATTERN);
+  expect(text).not.toMatch(/Klara|Kommerz|0171/);
+}
+
+/**
+ * Konfliktaufbau wie `tours-multi-active`: Anton und Carl (je nur calendar.view)
+ * starten je ihre eigene Tour (Anton zuerst). Danach wird NACHTRÄGLICH eine
+ * Vertretung Carl → Anton angelegt: Anton ist effektiv für BEIDE aktiven
+ * Touren zuständig.
+ */
+async function twoActiveTours(options: { substitute?: boolean } = {}) {
+  const { admin, cookie } = await adminSession(world);
+  const api = apiFor(world.app, cookie);
+  const anton = await staffWith(world, admin.id, DRIVER_PERMISSIONS, 'Anton');
+  const carl = await staffWith(world, admin.id, DRIVER_PERMISSIONS, 'Carl');
+  const today = todayBerlin();
+  const bookingA = await bookingWithAppointments(world, admin.id, {
+    assignTo: anton.user.id,
+    outboundStartAt: inMinutes(60),
+    outboundEndAt: inMinutes(180),
+    street: 'Ahornweg 1',
+  });
+  const bookingC = await bookingWithAppointments(world, admin.id, {
+    assignTo: carl.user.id,
+    outboundStartAt: inMinutes(90),
+    outboundEndAt: inMinutes(200),
+    street: 'Birkenstraße 2',
+  });
+  const tourA = await tourWithStops(api, {
+    tourDate: today,
+    assignedUserId: anton.user.id,
+    appointmentIds: [bookingA.outbound.id],
+  });
+  const tourC = await tourWithStops(api, {
+    tourDate: today,
+    assignedUserId: carl.user.id,
+    appointmentIds: [bookingC.outbound.id],
+  });
+  const antonApi = apiFor(world.app, anton.cookie);
+  const carlApi = apiFor(world.app, carl.cookie);
+  expect((await antonApi('POST', `/staff/tours/${tourA.id}/start`, {})).status).toBe(200);
+  await sleep(20);
+  expect((await carlApi('POST', `/staff/tours/${tourC.id}/start`, {})).status).toBe(200);
+  await world.delayState.settle();
+  let substitution = null;
+  if (options.substitute !== false) {
+    substitution = await substitutionServiceFor(world.ctx).create(admin.id, {
+      originalUserId: carl.user.id,
+      substituteUserId: anton.user.id,
+      startsAt: new Date(Date.now() - 3_600_000),
+      endsAt: new Date(Date.now() + 86_400_000),
+    });
+  }
+  return {
+    admin,
+    api,
+    today,
+    anton: anton.user,
+    carl: carl.user,
+    antonCookie: anton.cookie,
+    carlCookie: carl.cookie,
+    antonApi,
+    carlApi,
+    tourA: tourA as { id: string },
+    tourC: tourC as { id: string },
+    bookingA,
+    bookingC,
+    substitution,
+  };
+}
+
+interface ActiveJson {
+  tour: { id: string; startedAt: string | null; warnings: { code: string }[] } | null;
+  conflict: {
+    tours: {
+      id: string;
+      tourDate: string;
+      assignedUserId: string;
+      assignedName: string;
+      effectiveDriverId: string | null;
+      effectiveDriverName: string | null;
+      substituted: boolean;
+      startedAt: string | null;
+    }[];
+  } | null;
+}
+
+/** Menge (geordnet) der online als aktiv gemeldeten Touren: `tour` + `conflict.tours`. */
+function onlineActiveIds(active: ActiveJson): string[] {
+  if (active.tour === null) return [];
+  return active.conflict === null ? [active.tour.id] : active.conflict.tours.map((t) => t.id);
+}
+
+describe('Phase 13 Corr §2/§3: Offline-Paket enthält ALLE aktiven Touren (M1–M5, M10–M15, M17)', () => {
+  it('M1. Keine aktive Tour ⇒ activeTours [] (kein altes Feld activeTour, online tour null)', async () => {
+    const { admin } = await adminSession(world);
+    const driver = await staffWith(world, admin.id, DRIVER_PERMISSIONS, 'Fahrer');
+    const packageJson = await packageFor(driver.cookie);
+    expect(packageJson.activeTours).toEqual([]);
+    expectCalendarOnly(packageJson);
+    const active = (await apiFor(world.app, driver.cookie)('GET', '/staff/tours/active'))
+      .body as ActiveJson;
+    expect(active.tour).toBeNull();
+    expect(active.conflict).toBeNull();
+    expect(onlineActiveIds(active)).toEqual([]);
+  });
+
+  it('M2. Genau eine aktive Tour ⇒ activeTours enthält exakt diese eine Tour', async () => {
+    const { driver, driverApi, tour, booking, second } = await activeTourWorld();
+    const packageJson = await packageFor(driver.cookie);
+    expectOnlyTourSnapshot(packageJson, tour.id, [booking, second]);
+    expect(packageJson.activeTours.map((t) => t.tourId)).toEqual([tour.id]);
+    expectSnapshotShape(packageJson.activeTours[0]!);
+    const active = (await driverApi('GET', '/staff/tours/active')).body as ActiveJson;
+    expect(active.conflict).toBeNull();
+    expect(onlineActiveIds(active)).toEqual([tour.id]);
+  });
+
+  it('M3. Zwei aktive effektive Touren durch nachträgliche Vertretung ⇒ BEIDE im Paket (read-only, je mit Stopps, Adressen, Navigation)', async () => {
+    const { antonCookie, tourA, tourC, bookingA, bookingC } = await twoActiveTours();
+    const packageJson = await packageFor(antonCookie);
+    expectCalendarOnly(packageJson);
+    expect(packageJson.activeTours.map((t) => t.tourId)).toEqual([tourA.id, tourC.id]);
+    const [snapshotA, snapshotC] = packageJson.activeTours;
+    for (const snapshot of [snapshotA!, snapshotC!]) {
+      expectSnapshotShape(snapshot);
+      expect(snapshot.status).toBe('active');
+      expect(snapshot.stops).toHaveLength(1);
+      expect(snapshot.stops[0]!.kind).toBe('delivery');
+      expect(snapshot.stops[0]!.navigation).not.toBeNull();
+      expect(snapshot.stops[0]!.processNumber).toMatch(/^MR-\d{4}-\d{4,}$/);
     }
-    expect(Object.keys(packageJson.activeTour!).sort()).toEqual(
-      ['tourId', 'tourDate', 'status', 'version', 'snapshotAt', 'stops'].sort(),
+    expect(snapshotA!.stops[0]!.processId).toBe(bookingA.processId);
+    expect(snapshotA!.stops[0]!.addressLines[0]).toBe('Ahornweg 1');
+    expect(snapshotC!.stops[0]!.processId).toBe(bookingC.processId);
+    expect(snapshotC!.stops[0]!.addressLines[0]).toBe('Birkenstraße 2');
+    // Der Vorgang selbst liegt nicht im Paket – nur Tour-Stopp-Referenzen.
+    const text = JSON.stringify(packageJson);
+    expect(text).not.toContain(bookingA.customerId);
+    expect(text).not.toContain(bookingC.customerId);
+  });
+
+  it('M4. Reihenfolge deterministisch: zwei Paketabrufe identisch, Reihenfolge = started_at (zuerst gestartete zuerst)', async () => {
+    const { antonCookie, tourA, tourC } = await twoActiveTours();
+    const first = await packageFor(antonCookie);
+    const second = await packageFor(antonCookie);
+    expect(first.activeTours.map((t) => t.tourId)).toEqual([tourA.id, tourC.id]);
+    expect(second.activeTours.map((t) => t.tourId)).toEqual(first.activeTours.map((t) => t.tourId));
+    const rows = (
+      await world.ctx.pool.query(
+        'SELECT id, started_at FROM tours WHERE status = $1 ORDER BY started_at, id',
+        ['active'],
+      )
+    ).rows as { id: string; started_at: Date }[];
+    expect(rows.map((row) => row.id)).toEqual([tourA.id, tourC.id]);
+    expect(rows[0]!.started_at.getTime()).toBeLessThanOrEqual(rows[1]!.started_at.getTime());
+  });
+
+  it('M5. Keine Tour still versteckt: Paket-Touren = online gemeldete Touren (tour + conflict) = alle aktiven Touren der effektiven Person', async () => {
+    const { antonApi, antonCookie, carlApi, carlCookie, tourA, tourC } = await twoActiveTours();
+    const antonActive = (await antonApi('GET', '/staff/tours/active')).body as ActiveJson;
+    const antonPackage = await packageFor(antonCookie);
+    expect(antonPackage.activeTours.map((t) => t.tourId)).toEqual(onlineActiveIds(antonActive));
+    expect([...antonPackage.activeTours.map((t) => t.tourId)].sort()).toEqual(
+      [tourA.id, tourC.id].sort(),
     );
+    // Carl (gespeicherter, vertretener Fahrer) sieht seine Tour – online wie offline.
+    const carlActive = (await carlApi('GET', '/staff/tours/active')).body as ActiveJson;
+    const carlPackage = await packageFor(carlCookie, {}, DEVICE_B);
+    expect(carlPackage.activeTours.map((t) => t.tourId)).toEqual(onlineActiveIds(carlActive));
+    expect(carlPackage.activeTours.map((t) => t.tourId)).toEqual([tourC.id]);
+  });
+
+  it('M10. Keinerlei GPS im Paket – auch nicht bei vorhandenem Live-Standort beider Touren (keine latitude/longitude/accuracy/observedAt-Schlüssel)', async () => {
+    const { antonApi, antonCookie, tourA, tourC } = await twoActiveTours();
+    const observedAt = new Date();
+    expect(
+      (
+        await sendLocation(antonApi, tourA.id, {
+          latitude: 49.912345,
+          longitude: 8.261234,
+          accuracyMeters: 17,
+          observedAt,
+        })
+      ).status,
+    ).toBe(204);
+    expect(
+      (
+        await sendLocation(antonApi, tourC.id, {
+          latitude: 49.954321,
+          longitude: 8.274321,
+          accuracyMeters: 19,
+          observedAt,
+        })
+      ).status,
+    ).toBe(204);
+    expect(await world.ctx.db.select().from(tourLiveLocations)).toHaveLength(2);
+    const packageJson = await packageFor(antonCookie);
+    expect(packageJson.activeTours).toHaveLength(2);
+    const text = JSON.stringify(packageJson);
+    expect(text).not.toMatch(GPS_PATTERN);
+    for (const value of ['49.912345', '8.261234', '49.954321', '8.274321']) {
+      expect(text).not.toContain(value);
+    }
+    expect(text).not.toContain(observedAt.toISOString());
+    for (const snapshot of packageJson.activeTours) expectSnapshotShape(snapshot);
+  });
+
+  it('M11. calendar.view-only auch im Konfliktfall: bookings [], machines [], inventory null, documents [] – keine Handover-/Return-/Lager-/Finanzdaten', async () => {
+    const { antonCookie, bookingA, bookingC } = await twoActiveTours();
+    expect((await world.ctx.db.select().from(machines)).length).toBeGreaterThan(0);
+    const packageJson = await packageFor(antonCookie, {
+      extraBookingIds: [bookingA.bookingId, bookingC.bookingId],
+      includeDocuments: true,
+    });
+    expectCalendarOnly(packageJson);
+    expect(packageJson.activeTours).toHaveLength(2);
+    const text = JSON.stringify(packageJson);
+    expect(text).not.toContain(bookingA.customerId);
+    expect(text).not.toContain(bookingC.customerId);
+  });
+
+  it('M12. Effektive Vertretung erhält ALLE aktuell effektiven aktiven Touren (Vertretung für zwei Fahrer ⇒ beide Touren im Paket)', async () => {
+    const { admin, anton, carl, tourA, tourC } = await twoActiveTours({ substitute: false });
+    const dora = await staffWith(world, admin.id, DRIVER_PERMISSIONS, 'Dora');
+    const substitutions = substitutionServiceFor(world.ctx);
+    for (const originalUserId of [anton.id, carl.id]) {
+      await substitutions.create(admin.id, {
+        originalUserId,
+        substituteUserId: dora.user.id,
+        startsAt: new Date(Date.now() - 3_600_000),
+        endsAt: new Date(Date.now() + 86_400_000),
+      });
+    }
+    const packageJson = await packageFor(dora.cookie, {}, DEVICE_B);
+    expectCalendarOnly(packageJson);
+    expect(packageJson.activeTours.map((t) => t.tourId)).toEqual([tourA.id, tourC.id]);
+    const active = (await apiFor(world.app, dora.cookie)('GET', '/staff/tours/active'))
+      .body as ActiveJson;
+    expect(onlineActiveIds(active)).toEqual([tourA.id, tourC.id]);
+    expect(active.conflict!.tours.every((t) => t.effectiveDriverId === dora.user.id)).toBe(true);
+  });
+
+  it('M13. Vertretungsende ⇒ Liste reduziert sich auf die eigene Tour; der gespeicherte Fahrer behält seine', async () => {
+    const { antonCookie, carlCookie, tourA, tourC, substitution } = await twoActiveTours();
+    expect((await packageFor(antonCookie)).activeTours.map((t) => t.tourId)).toEqual([
+      tourA.id,
+      tourC.id,
+    ]);
+    await substitutionServiceFor(world.ctx).endEarly(substitution!.id);
+    const afterEnd = await packageFor(antonCookie);
+    expect(afterEnd.activeTours.map((t) => t.tourId)).toEqual([tourA.id]);
+    expectCalendarOnly(afterEnd);
+    expect((await packageFor(carlCookie, {}, DEVICE_B)).activeTours.map((t) => t.tourId)).toEqual([
+      tourC.id,
+    ]);
+  });
+
+  it('M14. Online bleibt die Konfliktanzeige von GET /staff/tours/active unverändert (tour = zuerst gestartete, conflict nennt alle, Warnung MULTIPLE_ACTIVE_TOURS)', async () => {
+    const { anton, antonApi, carl, carlApi, tourA, tourC } = await twoActiveTours();
+    const active = (await antonApi('GET', '/staff/tours/active')).body as ActiveJson;
+    expect(active.tour!.id).toBe(tourA.id);
+    expect(active.tour!.warnings.map((w) => w.code)).toContain('MULTIPLE_ACTIVE_TOURS');
+    expect(active.conflict!.tours.map((t) => t.id)).toEqual([tourA.id, tourC.id]);
+    expect(active.conflict!.tours[1]).toMatchObject({
+      id: tourC.id,
+      assignedUserId: carl.id,
+      effectiveDriverId: anton.id,
+      substituted: true,
+    });
+    expect(Object.keys(active.conflict!.tours[0]!).sort()).toEqual(
+      [
+        'id',
+        'tourDate',
+        'assignedUserId',
+        'assignedName',
+        'effectiveDriverId',
+        'effectiveDriverName',
+        'substituted',
+        'startedAt',
+      ].sort(),
+    );
+    const carlActive = (await carlApi('GET', '/staff/tours/active')).body as ActiveJson;
+    expect(carlActive.tour!.id).toBe(tourC.id);
+    expect(carlActive.conflict).toBeNull();
+  });
+
+  it('M15. GPS online an die konkrete tourId: Standort für Tour B landet nur bei B (eigene Zeile je Tour, nie Übertrag)', async () => {
+    const { anton, antonApi, antonCookie, tourA, tourC } = await twoActiveTours();
+    expect(
+      (
+        await sendLocation(antonApi, tourC.id, {
+          latitude: 49.95,
+          longitude: 8.27,
+          accuracyMeters: 20,
+        })
+      ).status,
+    ).toBe(204);
+    let rows = await world.ctx.db.select().from(tourLiveLocations);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.tourId).toBe(tourC.id);
+    expect(rows[0]!.userId).toBe(anton.id);
+    expect(Number(rows[0]!.latitude)).toBe(49.95);
+    expect(
+      (
+        await sendLocation(antonApi, tourA.id, {
+          latitude: 49.96,
+          longitude: 8.28,
+          accuracyMeters: 20,
+        })
+      ).status,
+    ).toBe(204);
+    rows = await world.ctx.db.select().from(tourLiveLocations);
+    expect(rows).toHaveLength(2);
+    expect(Number(rows.find((row) => row.tourId === tourC.id)!.latitude)).toBe(49.95);
+    expect(Number(rows.find((row) => row.tourId === tourA.id)!.latitude)).toBe(49.96);
+    // Das Paket bleibt davon unberührt (kein GPS, beide Touren).
+    const packageJson = await packageFor(antonCookie);
+    expect(packageJson.activeTours.map((t) => t.tourId)).toEqual([tourA.id, tourC.id]);
+    expect(JSON.stringify(packageJson)).not.toMatch(GPS_PATTERN);
+  });
+
+  it('M17. Keine Offline-Tourmutation: OFFLINE_MUTATION_TYPES kennt kein tour.*; Sync einer tour.*-Mutation für Tour A oder B ⇒ 400 (vollständige Prüfung: O7)', async () => {
+    for (const type of OFFLINE_MUTATION_TYPES) expect(type).not.toMatch(/^tour\./);
+    const { antonCookie, tourA, tourC } = await twoActiveTours();
+    expect((await lease(antonCookie)).statusCode).toBe(200);
+    for (const tourId of [tourA.id, tourC.id]) {
+      for (const type of ['tour.location', 'tour.arrived', 'tour.end', 'tour.takeover']) {
+        const response = await world.app.inject({
+          method: 'POST',
+          url: '/staff/offline/sync',
+          headers: { cookie: antonCookie },
+          payload: {
+            deviceId: DEVICE,
+            environment: ENVIRONMENT,
+            clientTime: new Date().toISOString(),
+            mutation: {
+              clientMutationId: randomUUID(),
+              type,
+              contextKind: 'booking',
+              contextId: tourId,
+              createdAt: new Date().toISOString(),
+              baseVersion: null,
+              payload: { latitude: 49.9, longitude: 8.2, observedAt: new Date().toISOString() },
+              media: [],
+            },
+          },
+        });
+        expect(response.statusCode, `${type} ${tourId}`).toBe(400);
+        expect(response.json().error.code).toBe('VALIDATION_ERROR');
+      }
+    }
+    expect(await world.ctx.db.select().from(tourLiveLocations)).toHaveLength(0);
+    const rows = await world.ctx.db.select().from(tours).where(eq(tours.status, 'active'));
+    expect(rows.map((row) => row.id).sort()).toEqual([tourA.id, tourC.id].sort());
   });
 });

@@ -180,6 +180,13 @@ GPS-Mindestqualität (≤ 250 m), „Angekommen“ ohne GPS-Näheprüfung, Entfe
 eines Stopps aus einer aktiven Tour; außerdem Offline-Lease für reine
 Tourfahrer (`calendar.view`) und der GraphHopper-Go-live-Schalter (siehe
 „GO-LIVE-BLOCKER Routing“).
+- Mehrfach-Touren-Konflikt (mehrere aktive Touren derselben effektiven Person,
+  z. B. nachträgliche Vertretung) wird nur angezeigt, nicht automatisch
+  gelöst: online `GET /staff/tours/active` (`conflict`) und Warnung
+  `MULTIPLE_ACTIVE_TOURS`; offline sind seit Phase 13 Corr ALLE betroffenen
+  Touren read-only lesbar (`activeTours`, keine Silent-first-Reduktion).
+  Keine automatische Beendigung/Übertragung, kein Planungs-Incident – die
+  Planung löst den Konflikt online (bewusst, kein offener Fachpunkt).
 - Lieferpreis-Vorschlagslogik bleibt undefiniert: Phase 13 zeigt nur Distanz
   und Fahrzeit; `DeliveryPriceSuggestion` liefert bewusst `null` (keine
   €/km-, Mindest- oder Zeitpreisregel erfunden).

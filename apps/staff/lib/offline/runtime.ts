@@ -76,8 +76,60 @@ export interface PackagePayload {
   truncated: boolean;
   horizonFrom: string;
   horizonTo: string;
-  /** Phase 13 (UI): eigene aktive Tour (ohne GPS) – optional, da ältere Pakete das Feld nicht haben. */
+  /**
+   * Phase 13 Corr (§3): ALLE eigenen/effektiven aktiven Touren (ohne GPS) in der
+   * Reihenfolge des Servers (started_at, id). Kanonische Form – `[]` ohne Tour,
+   * genau eine ⇒ `[Tour]`, Planungskonflikt ⇒ alle. Über `packageInfo()` immer gesetzt.
+   */
+  activeTours?: OfflineTourSnapshot[];
+  /**
+   * @deprecated Nur in lokal gespeicherten Paketen aus Releases VOR Phase 13 Corr
+   * (Server schrieb `activeTour: Tour | null`). Wird ausschließlich beim Lesen
+   * (`packageInfo()`) zu `activeTours` normalisiert; neue Serverpakete enthalten
+   * das Feld nicht, und der Client schreibt es nie. Entfernbar, sobald kein Paket
+   * eines Vor-Corr-Releases mehr existieren kann (Pakete laufen mit der Lease,
+   * spätestens nach 72 h, ab und werden bei jedem Abruf ersetzt).
+   */
   activeTour?: OfflineTourSnapshot | null;
+}
+
+/** Paketmetadaten, wie `packageInfo()` sie liefert: `activeTours` ist immer ein Array. */
+export type PackageInfo = Omit<PackagePayload, 'activeTour' | 'activeTours'> & {
+  activeTours: OfflineTourSnapshot[];
+};
+
+/**
+ * Phase 13 Corr (§7): Lesenormalisierung ALTER Pakete – `activeTours` vorhanden ⇒
+ * unverändert; sonst `activeTour != null` ⇒ `[activeTour]`, sonst `[]`. Keine
+ * dauerhafte zweite Semantik: Die kanonische Form ist `activeTours`, der Store
+ * wird nicht umgeschrieben (verschlüsseltes JSON ohne eigene Schemaversion; die
+ * IndexedDB-Schemaversion `OFFLINE_SCHEMA_VERSION` beschreibt nur Stores/Indizes).
+ */
+export function normalizePackageInfo(payload: PackagePayload): PackageInfo {
+  const { activeTour, activeTours, ...rest } = payload;
+  if (Array.isArray(activeTours)) return { ...rest, activeTours };
+  return {
+    ...rest,
+    activeTours: activeTour !== null && activeTour !== undefined ? [activeTour] : [],
+  };
+}
+
+/**
+ * Tourfelder des Serverpakets für den Store: gespeichert wird genau, was der
+ * Server liefert (kanonisch `activeTours`; eine noch nicht umgestellte API
+ * lieferte `activeTour`) – keine Übersetzung in die jeweils andere Form.
+ */
+function packageTourFields(
+  pkg: OfflinePackage,
+): Pick<PackagePayload, 'activeTour' | 'activeTours'> {
+  const raw = pkg as unknown as {
+    activeTours?: unknown;
+    activeTour?: OfflineTourSnapshot | null;
+  };
+  if (Array.isArray(raw.activeTours))
+    return { activeTours: raw.activeTours as OfflineTourSnapshot[] };
+  if ('activeTour' in raw) return { activeTour: raw.activeTour ?? null };
+  return { activeTours: [] };
 }
 
 /** Nach jedem erfolgreichen Paketabruf (Provider cacht dann die Seiten-Shells vor). */
@@ -831,8 +883,8 @@ export class OfflineRuntime {
       truncated: pkg.truncated,
       horizonFrom: pkg.horizonFrom,
       horizonTo: pkg.horizonTo,
-      // Phase 13 (UI): defensiv – Feld kommt vom ACTIVE-Agenten (Server), kann fehlen.
-      activeTour: (pkg as { activeTour?: OfflineTourSnapshot | null }).activeTour ?? null,
+      // Phase 13 Corr (§3/§7): Tourfelder unverändert übernehmen (kanonisch `activeTours`).
+      ...packageTourFields(pkg),
     };
     await store.putPackage(
       {
@@ -992,9 +1044,13 @@ export class OfflineRuntime {
     return (await this.store.listMachines<OfflineMachineSnapshot>()).map((row) => row.payload);
   }
 
-  /** Lager-/Rechte-Metadaten des aktuellen Pakets. */
-  async packageInfo(): Promise<PackagePayload | null> {
-    return (await this.currentPackage())?.payload ?? null;
+  /**
+   * Lager-/Rechte-Metadaten des aktuellen Pakets; `activeTours` ist immer ein Array
+   * (Phase 13 Corr §7: ältere Pakete mit `activeTour` werden hier einmalig normalisiert).
+   */
+  async packageInfo(): Promise<PackageInfo | null> {
+    const payload = (await this.currentPackage())?.payload;
+    return payload === undefined ? null : normalizePackageInfo(payload);
   }
 
   /** QR offline: SHA-256 des (kleingeschriebenen) Tokens gegen den Hash-Index (§28). */

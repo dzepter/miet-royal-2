@@ -126,7 +126,8 @@ function ActiveTour() {
   const [tour, setTour] = useState<TourView | null>(null);
   // Phase 13 Final (§7): mehrere aktive Touren derselben Person (nur ohne ?id=).
   const [conflict, setConflict] = useState<ActiveTourConflict | null>(null);
-  const [snapshot, setSnapshot] = useState<OfflineTourSnapshot | null>(null);
+  // Phase 13 Corr (§3/§5): offline ALLE gespeicherten aktiven Touren (0, 1 oder Konflikt).
+  const [snapshots, setSnapshots] = useState<OfflineTourSnapshot[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [fromSnapshot, setFromSnapshot] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -161,20 +162,19 @@ function ActiveTour() {
     sendStateRef.current = { lastSentAt: null, lastSentPoint: null };
   }, []);
 
-  const readSnapshot = useCallback(async () => {
-    if (offline === null) return null;
+  const readSnapshots = useCallback(async (): Promise<OfflineTourSnapshot[]> => {
+    if (offline === null) return [];
     try {
-      const info = (await offline.runtime.packageInfo()) as
-        ({ activeTour?: OfflineTourSnapshot | null } & Record<string, unknown>) | null;
-      return info?.activeTour ?? null;
+      // `activeTours` ist dort immer ein Array (ältere Pakete werden beim Lesen normalisiert).
+      return (await offline.runtime.packageInfo())?.activeTours ?? [];
     } catch {
-      return null;
+      return [];
     }
   }, [offline]);
 
   const load = useCallback(async () => {
     if (offlineNow) {
-      setSnapshot(await readSnapshot());
+      setSnapshots(await readSnapshots());
       setFromSnapshot(true);
       setLoaded(true);
       return;
@@ -187,7 +187,7 @@ function ActiveTour() {
       setError(null);
     } else if (result.status === 0) {
       // Server nicht erreichbar: Offline-Snapshot des Arbeitspakets anzeigen (Design §11).
-      setSnapshot(await readSnapshot());
+      setSnapshots(await readSnapshots());
       setFromSnapshot(true);
     } else if (result.status === 404) {
       setTour(null);
@@ -196,7 +196,7 @@ function ActiveTour() {
       setError(tourErrorText(result, 'Die Tour konnte nicht geladen werden.'));
     }
     setLoaded(true);
-  }, [offlineNow, readSnapshot, requestedId]);
+  }, [offlineNow, readSnapshots, requestedId]);
 
   useEffect(() => {
     void load();
@@ -375,6 +375,18 @@ function ActiveTour() {
 
   // ── Daten für die Darstellung (Online-View oder Offline-Snapshot) ─────────
 
+  /**
+   * Phase 13 Corr (§5/§6): offline wird NIE still eine Tour gewählt – genau eine
+   * gespeicherte Tour ⇒ direkt; mehrere ⇒ nur mit `?id=` die gewählte, ohne `?id=`
+   * Konflikt-Hinweis + Auswahl (kein automatisches Umschalten auf die zuerst gestartete).
+   */
+  const offlineConflict = fromSnapshot && snapshots.length > 1;
+  const snapshot = useMemo<OfflineTourSnapshot | null>(() => {
+    if (!fromSnapshot) return null;
+    if (requestedId !== null) return snapshots.find((s) => s.tourId === requestedId) ?? null;
+    return snapshots.length === 1 ? snapshots[0]! : null;
+  }, [fromSnapshot, snapshots, requestedId]);
+
   const rows = useMemo<StopRow[]>(() => {
     if (tour !== null && !fromSnapshot) return rowsFromView(tour);
     if (snapshot !== null) return rowsFromSnapshot(snapshot);
@@ -421,17 +433,49 @@ function ActiveTour() {
     );
   }
 
-  if (!showingSnapshot && tour === null) {
+  const offlineConflictNotice = offlineConflict && (
+    <div className="warning-red" role="alert" data-testid="offline-tour-conflict">
+      ⚠︎ {TOUR_TEXTS.multipleActiveTours}
+      <ul>
+        {snapshots.map((entry) => (
+          <li key={entry.tourId}>
+            <Link
+              href={`/touren/aktiv?id=${entry.tourId}`}
+              data-testid={`offline-tour-choice-${entry.tourId}`}
+              aria-current={entry.tourId === requestedId ? 'page' : undefined}
+            >
+              Tour vom {berlinDateLabel(entry.tourDate)} · {entry.stops?.length ?? 0} Stopps
+              {entry.tourId === requestedId && <> (angezeigt)</>}
+            </Link>
+          </li>
+        ))}
+      </ul>
+      <p className="muted">Offline nur lesbar – die Planung löst den Konflikt online.</p>
+    </div>
+  );
+
+  if (fromSnapshot ? snapshot === null : tour === null) {
+    // Offline: keine Tour gespeichert, Konflikt ohne Auswahl (nur Hinweis + Auswahl)
+    // oder `?id=` ohne passenden Snapshot. Online: keine aktive Tour / Fehler.
+    const emptyText = !fromSnapshot
+      ? 'Derzeit ist keine Tour aktiv.'
+      : snapshots.length === 0
+        ? 'Offline ist keine aktive Tour gespeichert.'
+        : 'Diese Tour ist offline nicht gespeichert.';
+    const showEmptyText = error === null && !(offlineConflict && requestedId === null);
     return (
       <main className="page">
         <h1>Aktive Tour</h1>
-        {error !== null ? (
-          <p className="error">{error}</p>
-        ) : (
+        {fromSnapshot && (
+          <div className="offline-banner" role="status" data-testid="active-tour-offline">
+            Offline – Stand des letzten Arbeitspakets. {TOUR_TEXTS.onlineOnly}
+          </div>
+        )}
+        {offlineConflictNotice}
+        {error !== null && <p className="error">{error}</p>}
+        {showEmptyText && (
           <p className="muted" data-testid="no-active-tour">
-            {offlineNow
-              ? 'Offline ist keine aktive Tour gespeichert.'
-              : 'Derzeit ist keine Tour aktiv.'}
+            {emptyText}
           </p>
         )}
         <p>
@@ -475,6 +519,7 @@ function ActiveTour() {
       )}
 
       {conflict !== null && !fromSnapshot && <ActiveTourConflictNotice conflict={conflict} />}
+      {offlineConflictNotice}
 
       {riskStops.length > 0 && (
         <div className="delay-banner" role="alert" data-testid="delay-banner">

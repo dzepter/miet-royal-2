@@ -154,7 +154,10 @@ export interface OfflineTourStopSnapshot {
   state: 'open' | 'arrived' | 'done' | 'skipped';
 }
 
-/** Eigene aktive Tour (gespeicherter Fahrer oder Vertretung) zum Zeitpunkt des Paketabrufs. */
+/**
+ * Eigene aktive Tour (gespeicherter Fahrer oder Vertretung) zum Zeitpunkt des
+ * Paketabrufs – ein Eintrag je Tour in `OfflinePackage.activeTours`.
+ */
 export interface OfflineTourSnapshot {
   tourId: string;
   tourDate: string;
@@ -184,11 +187,16 @@ export interface OfflinePackage<H = unknown, R = unknown> {
   inventory: unknown[] | null;
   documents: OfflineDocumentPayload[];
   /**
-   * Phase 13 (Order §46): eigene aktive Tour (offline nur lesbar – Start,
-   * Übernahme, Reihenfolge, Ende und GPS-Updates bleiben online-only).
-   * null ohne aktive Tour oder ohne calendar.view.
+   * Phase 13 (Order §46) / Phase 13 Corr (§3): ALLE eigenen/effektiven aktiven
+   * Touren (offline nur lesbar – Start, Übernahme, Reihenfolge, Ende und
+   * GPS-Updates bleiben online-only). `[]` ohne aktive Tour oder ohne
+   * calendar.view; genau eine Tour ⇒ `[Tour]`; mehrere (Planungskonflikt,
+   * z. B. nachträgliche Vertretung) ⇒ alle, deterministisch nach Startzeit,
+   * dann ID – keine Obergrenze, nie still auf „die erste“ reduziert. Der
+   * Server schreibt nur diese kanonische Form (kein `activeTour` mehr); der
+   * Client normalisiert ältere lokale Pakete einmalig beim Lesen.
    */
-  activeTour: OfflineTourSnapshot | null;
+  activeTours: OfflineTourSnapshot[];
 }
 
 /** Antwort von POST /staff/offline/lease (Ausstellung/Verlängerung; jede Verlängerung = neues Secret). */

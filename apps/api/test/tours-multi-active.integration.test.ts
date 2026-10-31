@@ -7,7 +7,9 @@
  * Planung prüfen.“); beide bleiben einzeln erreichbar; GPS bleibt an die
  * konkrete tourId gebunden; der Tourstart verhindert weiterhin Doppelstarts;
  * keine Tour wird automatisch beendet oder übertragen; nach Vertretungsende
- * verschwindet der Konflikt.
+ * verschwindet der Konflikt. Phase 13 Corr (§2/§3): die zentrale Auflösung
+ * `TourService.resolveActiveToursFor` kennt none | single | conflict; der
+ * Offline-Snapshot enthält im Konfliktfall ALLE Touren (nie still die erste).
  */
 import { tours } from '@mietroyal/database';
 import { eq } from 'drizzle-orm';
@@ -138,15 +140,19 @@ describe('V1–V3. Erkennung', () => {
     const carlActive = await carlApi('GET', '/staff/tours/active');
     expect(carlActive.body.tour.id).toBe(tourC.id);
     expect(carlActive.body.conflict).toBeNull();
+    const resolved = await new TourService(world.ctx.db).resolveActiveToursFor(
+      active.body.tour.assignedUserId,
+    );
+    expect(resolved.kind).toBe('single');
     expect(
       (
-        await snapshotSource().activeTourSnapshotFor(
+        await snapshotSource().activeTourSnapshotsFor(
           active.body.tour.assignedUserId,
           new Set(['calendar.view']),
           new Date(),
         )
-      )?.tourId,
-    ).toBe(tourA.id);
+      ).map((snapshot) => snapshot.tourId),
+    ).toEqual([tourA.id]);
   });
 
   it('V2. Zwei aktive Touren durch NACHTRÄGLICHE Vertretung ⇒ Konflikt erkannt: tour = zuerst gestartete, conflict nennt beide; nichts beendet/übertragen', async () => {
@@ -169,17 +175,25 @@ describe('V1–V3. Erkennung', () => {
     expect(new Date(active.body.conflict.tours[0].startedAt).getTime()).toBeLessThanOrEqual(
       new Date(active.body.conflict.tours[1].startedAt).getTime(),
     );
-    // Deterministisch: wiederholte Abfrage und Offline-Snapshot liefern dieselbe Tour.
+    // Deterministisch: wiederholte Abfrage liefert dieselbe Reihenfolge; die zentrale
+    // Auflösung meldet den Konflikt explizit; der Offline-Snapshot enthält BEIDE Touren
+    // in derselben Reihenfolge (Phase 13 Corr §3 – keine still gewählte „erste“ Tour).
     expect((await antonApi('GET', '/staff/tours/active')).body.tour.id).toBe(tourA.id);
+    const resolved = await new TourService(world.ctx.db).resolveActiveToursFor(anton.id);
+    expect(resolved.kind).toBe('conflict');
+    expect(resolved.kind === 'conflict' ? resolved.tours.map((t) => t.tour.id) : []).toEqual([
+      tourA.id,
+      tourC.id,
+    ]);
     expect(
       (
-        await snapshotSource().activeTourSnapshotFor(
+        await snapshotSource().activeTourSnapshotsFor(
           anton.id,
           new Set(['calendar.view']),
           new Date(),
         )
-      )?.tourId,
-    ).toBe(tourA.id);
+      ).map((snapshot) => snapshot.tourId),
+    ).toEqual([tourA.id, tourC.id]);
     // Keine automatische Beendigung/Übertragung.
     const rows = await world.ctx.db.select().from(tours).where(eq(tours.status, 'active'));
     expect(rows.map((row) => row.id).sort()).toEqual([tourA.id, tourC.id].sort());
@@ -337,7 +351,8 @@ describe('RF3. Verspätungs-Push bei mehreren aktiven Touren', () => {
     const adminPush = deliveries.find((row) => row.userId === admin.id);
     expect(adminPush).toBeDefined();
     expect((adminPush!.payload as { url: string }).url).toBe(`/touren/${tourC.id}`);
-    // Ohne Tour-ID landete der Fahrer auf der ZUERST gestarteten Tour A (Konfliktfall).
+    // Ohne Tour-ID zeigt /active die erste Tour in deterministischer Reihenfolge (A) PLUS
+    // den Konflikt – deshalb verlinkt der Push die konkrete Tour C.
     const active = await antonApi('GET', '/staff/tours/active');
     expect(active.body.tour.id).toBe(tourA.id);
     expect(active.body.conflict).not.toBeNull();

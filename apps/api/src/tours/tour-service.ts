@@ -66,6 +66,17 @@ export interface LoadedTour {
   stops: LoadedStop[];
 }
 
+/**
+ * Phase 13 Corr (§2): Ergebnis der zentralen Auflösung `resolveActiveToursFor`.
+ * Mehrere aktive Touren derselben effektiven Person sind ein expliziter
+ * Konflikt (`conflict`, alle Touren, deterministische Reihenfolge) – nie eine
+ * stillschweigend gewählte „erste“ Tour.
+ */
+export type ActiveTourResolution =
+  | { kind: 'none' }
+  | { kind: 'single'; tour: LoadedTour }
+  | { kind: 'conflict'; tours: LoadedTour[] };
+
 export interface TourDriverContext {
   effectiveDriverId: string | null;
   substituted: boolean;
@@ -251,11 +262,12 @@ export class TourService {
   }
 
   /**
-   * Phase 13 Final (§7): ALLE eigenen aktiven Touren (zuerst gestartete zuerst).
-   * Mehr als eine (z. B. nachträgliche Vertretung nach beiden Starts) ist ein
-   * Planungskonflikt, der nicht still verborgen wird: `GET /staff/tours/active`
-   * liefert `conflict`, die View jeder betroffenen Tour trägt die Warnung
-   * MULTIPLE_ACTIVE_TOURS. Nichts wird automatisch beendet oder übertragen.
+   * Phase 13 Final (§7): ALLE eigenen aktiven Touren (zuerst gestartete zuerst;
+   * Reihenfolge `started_at`, dann `id`). Mehr als eine (z. B. nachträgliche
+   * Vertretung nach beiden Starts) ist ein Planungskonflikt, der nicht still
+   * verborgen wird: `GET /staff/tours/active` liefert `conflict`, die View jeder
+   * betroffenen Tour trägt die Warnung MULTIPLE_ACTIVE_TOURS, das Offline-Paket
+   * enthält alle Touren. Nichts wird automatisch beendet oder übertragen.
    */
   async findActiveToursFor(userId: string, now = new Date()): Promise<LoadedTour[]> {
     const rows = await this.activeTourRowsFor(userId, now);
@@ -266,14 +278,20 @@ export class TourService {
   }
 
   /**
-   * Eigene aktive Tour (Order §30) – bei mehreren deterministisch die ZUERST
-   * gestartete (Offline-Snapshot, Fahrer-Sicht). Der Konflikt selbst ist über
-   * `findActiveToursFor` sichtbar und wird hier nicht verschwiegen, sondern
-   * von Route/View ausgewiesen.
+   * Phase 13 Corr (§2): ZENTRALE Auflösung „eigene aktive Tour“ ohne
+   * Silent-first-Semantik – die einzige Stelle, die aus der Liste von
+   * `findActiveToursFor` eine Bedeutung ableitet:
+   *  - `none`     ⇒ keine aktive Tour,
+   *  - `single`   ⇒ genau eine Tour,
+   *  - `conflict` ⇒ mehrere (alle, deterministisch nach `started_at`, `id`).
+   * Es gibt bewusst keinen Helfer mehr, der bei mehreren Touren „die erste“
+   * liefert; jeder Aufrufer muss den Konfliktfall explizit behandeln.
    */
-  async findActiveFor(userId: string, now = new Date()): Promise<LoadedTour | null> {
-    const [first] = await this.activeTourRowsFor(userId, now);
-    return first === undefined ? null : this.load(first.id, now);
+  async resolveActiveToursFor(userId: string, now = new Date()): Promise<ActiveTourResolution> {
+    const active = await this.findActiveToursFor(userId, now);
+    if (active.length === 0) return { kind: 'none' };
+    if (active.length === 1) return { kind: 'single', tour: active[0]! };
+    return { kind: 'conflict', tours: active };
   }
 
   /**

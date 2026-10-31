@@ -182,7 +182,9 @@ Admin kann Gate manuell übersteuern.
 - Ein Offline-Lease (72 h) erhalten nur Konten mit operativen Rechten
   (`handover.view`, `return.view`, `machine.view` oder – seit Phase 13 Final –
   `calendar.view` für reine Tourfahrer: diese erhalten im Paket ausschließlich
-  den read-only Snapshot ihrer eigenen/effektiven aktiven Tour, keine Vorgänge,
+  die read-only Snapshots ihrer eigenen/effektiven aktiven Touren
+  (`activeTours`; bei mehreren aktiven Touren alle, keine wird still
+  reduziert), keine Vorgänge,
   keinen Maschinenstamm, kein Lager, keine Dokumente und keine Mutation). Der lokale
   Rechte-Snapshot enthält ausschließlich operative Keys
   (`OFFLINE_RELEVANT_PERMISSIONS`); Admin-, Finanz- und Systemrechte werden

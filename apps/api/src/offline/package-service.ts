@@ -104,7 +104,8 @@ export type OfflinePackageView = OfflinePackage<HandoverDetailView, ReturnDetail
  * reiner Tourfahrer (nur `calendar.view`) hat `handover`/`returns`/`machines`/
  * `inventory` = false und bekommt damit keine Vorgänge (auch nicht per
  * `extraBookingIds` oder Einzel-Snapshot), keinen Maschinenstamm, kein Lager,
- * keine Dokumente – nur `activeTour` (eigene/effektive aktive Tour, ohne GPS).
+ * keine Dokumente – nur `activeTours` (alle eigenen/effektiven aktiven Touren,
+ * ohne GPS; Phase 13 Corr §3).
  */
 interface Rights {
   effective: ReadonlySet<PermissionKey>;
@@ -237,7 +238,7 @@ export class OfflinePackageService {
       }
     }
     // Phase 13 Final (offline, §4): ohne Vorgangssicht werden auch bewusst
-    // geöffnete Vorgänge nie geladen (reiner Tourfahrer: nur `activeTour`).
+    // geöffnete Vorgänge nie geladen (reiner Tourfahrer: nur `activeTours`).
     for (const bookingId of rights.bookings ? (input.extraBookingIds ?? []) : []) {
       if (candidates.has(bookingId)) {
         candidates.get(bookingId)!.relevance.add('extra');
@@ -275,11 +276,12 @@ export class OfflinePackageService {
 
     const machines = rights.machines ? await this.machineSnapshots() : [];
     const inventory = rights.inventory ? await this.deps.inventory.listItems() : null;
-    // Phase 13 (tours-live): nur die EIGENE aktive Tour (gespeichert/Vertretung), ohne GPS.
-    const activeTour =
+    // Phase 13 (tours-live) / Corr (§3): ALLE eigenen aktiven Touren (gespeichert/
+    // Vertretung), ohne GPS – bei mehreren (Planungskonflikt) alle, nie nur die erste.
+    const activeTours =
       this.deps.tours === undefined
-        ? null
-        : await this.deps.tours.activeTourSnapshotFor(context.user.id, rights.effective, now);
+        ? []
+        : await this.deps.tours.activeTourSnapshotsFor(context.user.id, rights.effective, now);
     await this.deps.leases.touchPackage(lease.id, now);
 
     return {
@@ -301,7 +303,7 @@ export class OfflinePackageService {
       machines,
       inventory,
       documents: documentPayloads,
-      activeTour,
+      activeTours,
     };
   }
 

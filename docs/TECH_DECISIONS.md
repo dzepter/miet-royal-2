@@ -3588,9 +3588,10 @@ VRP-Job, feste Positionen per undokumentierter Provider-Funktion.
   Verspätungswarnungen sind eingeschränkt.“ Offline werden Positionen verworfen
   und nie nachsynchronisiert (kein Track).
 - **Offline-Lesbarkeit der aktiven Tour** (Design §11): Das Arbeitspaket trägt
-  `activeTour` (Stoppliste, Adressen, Zeiten, Vorgangsnummern, fertige
-  Navigations-Links; keine GPS-Daten) im verschlüsselten Paket-Payload mit
-  (`PackagePayload.activeTour`, optional für ältere Pakete). `/touren/aktiv`
+  die eigenen aktiven Touren (Stoppliste, Adressen, Zeiten, Vorgangsnummern,
+  fertige Navigations-Links; keine GPS-Daten) im verschlüsselten Paket-Payload
+  mit (seit Phase 13 Corr `activeTours: OfflineTourSnapshot[]`, siehe
+  „Phase 13 Final: Mehrfach-Touren“ unten). `/touren/aktiv`
   zeigt offline diesen Snapshot (Banner „Offline – Stand des letzten
   Arbeitspakets“); alle Mutationen (Start, Übernahme, Reihenfolge, Angekommen,
   Beenden, Standort) sind offline deaktiviert („Diese Aktion ist nur online
@@ -3624,10 +3625,10 @@ Vom Auftraggeber bestätigt (2026-10-31, Phase 13 Final §6) – nicht mehr offe
 
 - **Offline-Lease (§4):** `calendar.view` ist ein weiteres
   `OFFLINE_ENABLING_PERMISSION` (`apps/api/src/offline/lease-service.ts`), damit
-  ein reiner Tourfahrer ein 72-h-Lease und damit den read-only Snapshot seiner
-  eigenen/effektiven aktiven Tour (`OfflinePackage.activeTour`: Reihenfolge,
-  Terminart, Vorgangsnummer, operative Adresse, Zeiten, Navigations-Links,
-  Zustand) erhält. Keine neuen Rechte. Datenminimierung bleibt am Fachrecht
+  ein reiner Tourfahrer ein 72-h-Lease und damit die read-only Snapshots seiner
+  eigenen/effektiven aktiven Touren (`OfflinePackage.activeTours`, je Tour:
+  Reihenfolge, Terminart, Vorgangsnummer, operative Adresse, Zeiten,
+  Navigations-Links, Zustand) erhält. Keine neuen Rechte. Datenminimierung bleibt am Fachrecht
   (`OfflinePackageService.rightsFor`): ohne `process.view_all` ∧
   `handover.view`/`return.view` gibt es keine Vorgänge (auch nicht per
   `extraBookingIds` oder Einzel-Snapshot ⇒ neutral 404), ohne `machine.view`
@@ -3655,6 +3656,55 @@ Vom Auftraggeber bestätigt (2026-10-31, Phase 13 Final §6) – nicht mehr offe
   `packages/config/test/routing-go-live-docs.test.ts`).
 - **`push_deliveries`-Retention** bleibt bewusst ein dokumentierter
   Retention-/Go-live-Punkt (§9; `docs/OPEN_ITEMS.md`).
+
+## Phase 13 Final: Mehrfach-Touren – Offline enthält alle aktiven Touren, keine Silent-first-Semantik (2026-10-31, Corr)
+
+- **Problem (Korrekturauftrag §1):** `TourService.findActiveFor` lieferte bei
+  mehreren aktiven Touren derselben effektiven Person (nachträgliche
+  Vertretung nach zwei Starts) deterministisch die zuerst gestartete; der
+  Offline-Snapshot nutzte genau diesen Helfer ⇒ Tour B war offline still
+  verborgen. Verstoß gegen „Mehrere aktive Touren dürfen niemals still auf
+  ‚die erste‘ reduziert werden“.
+- **Keine Silent-first-Semantik (§2):** `findActiveFor` ist ENTFERNT. Die
+  einzige Deutung der Liste `findActiveToursFor` (Reihenfolge `started_at`,
+  dann `id`) ist die zentrale Auflösung
+  `TourService.resolveActiveToursFor(userId, now) ⇒ { kind: 'none' } |
+  { kind: 'single', tour } | { kind: 'conflict', tours }`
+  (`ActiveTourResolution`). Es gibt keinen produktiven Helfer mehr, der bei
+  Mehrdeutigkeit eine Tour auswählt, und keine verteilten `length`-Prüfungen
+  mit eigener Semantik: `GET /staff/tours/active` und der Offline-Snapshot
+  nutzen ausschließlich diese Auflösung. Der Doppelstart-Schutz
+  (`assertDriverNotActive`, 409 `TOUR_DRIVER_ALREADY_ACTIVE`) und die
+  View-Warnung `MULTIPLE_ACTIVE_TOURS` (`views.ts`) prüfen „irgendeine andere
+  aktive Tour“ und wählen nie eine aus – unverändert.
+- **Online unverändert (§6, M14):** `GET /staff/tours/active` ⇒
+  `{ tour, conflict }`: `single` ⇒ `tour`, `conflict: null`; `conflict` ⇒
+  `tour` = erste Tour in deterministischer Reihenfolge PLUS `conflict.tours`
+  mit allen betroffenen. Keine Tour wird automatisch beendet, keine
+  Vertretung geändert, keine Übernahme; GPS bleibt an die konkrete `tourId`
+  gebunden (M15). Planung löst online.
+- **Offline bildet den Konflikt ab (§3):** `OfflinePackage.activeTour:
+  OfflineTourSnapshot | null` ⇒ `activeTours: OfflineTourSnapshot[]`
+  (`packages/offline/src/package-types.ts`): 0 ⇒ `[]`, 1 ⇒ `[Tour]`,
+  Konflikt ⇒ alle Touren in derselben Reihenfolge wie online, keine
+  Obergrenze. Quelle `OfflineTourSnapshotSource.activeTourSnapshotsFor(userId,
+  effective, now) ⇒ OfflineTourSnapshot[]` (`tours/live/offline-snapshot.ts`,
+  nur mit `calendar.view`, sonst `[]`). Je Tour exakt die bisherigen Felder
+  (`tourId, tourDate, status, version, snapshotAt, stops[]` mit `stopId,
+  appointmentId, sequence, kind, processNumber, processId, bookingId, startAt,
+  endAt, addressLines, navigation, state`) – keine zusätzlichen Vorgangs-/
+  Kundendaten, kein GPS (§4, M10/M11). Reines JSON-/Paketmodell, keine
+  Migration.
+- **Kompatibilität (§7):** Der Server schreibt nur die kanonische Form
+  (`activeTours`, kein `activeTour` mehr im JSON). Das Offline-Paket ist ein
+  interner verschlüsselter Cache mit Lease, kein historisches Format: der
+  Client (`apps/staff/lib/offline/runtime.ts`) normalisiert ältere lokal
+  gespeicherte Pakete einmalig beim Lesen (`activeTour != null ⇒
+  [activeTour]`, `null`/fehlend ⇒ `[]`); keine dauerhafte zweite Semantik.
+- **Tests:** M1–M5, M10–M15, M17 in
+  `apps/api/test/offline-tour-lease.integration.test.ts` (Konfliktaufbau wie
+  `tours-multi-active` V1–V7, dort V1/V2 auf `resolveActiveToursFor` und
+  `activeTourSnapshotsFor` umgestellt); M6–M9, M16 im Staff-Client/E2E.
 
 ## Phase 13 Final: globale Provider-Drossel (2026-10-31)
 

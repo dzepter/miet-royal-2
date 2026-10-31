@@ -307,13 +307,13 @@ async function offlinePackage(cookie: string) {
   });
   expect(response.statusCode).toBe(200);
   return response.json() as {
-    activeTour: {
+    activeTours: {
       tourId: string;
       tourDate: string;
       status: string;
       version: number;
       stops: Record<string, unknown>[];
-    } | null;
+    }[];
     bookings: unknown[];
   };
 }
@@ -392,8 +392,8 @@ describe('115.–116. Offline', () => {
       (await sendLocation(apiA, tour.id, { latitude: 49.912345, longitude: 8.261234 })).status,
     ).toBe(204);
     const pkg = await offlinePackage(cookieA);
-    expect(pkg.activeTour).not.toBeNull();
-    const snapshot = pkg.activeTour!;
+    expect(pkg.activeTours).toHaveLength(1);
+    const snapshot = pkg.activeTours[0]!;
     expect(snapshot.tourId).toBe(tour.id);
     expect(snapshot.status).toBe('active');
     expect(snapshot.stops).toHaveLength(2);
@@ -428,11 +428,11 @@ describe('115.–116. Offline', () => {
       (await apiA('POST', `/staff/tours/${tour.id}/stops/${tour.stops[0].id}/arrived`)).status,
     ).toBe(200);
     const again = await offlinePackage(cookieA);
-    expect(again.activeTour!.stops[0]!.state).toBe('arrived');
-    expect(again.activeTour!.version).toBeGreaterThan(snapshot.version);
+    expect(again.activeTours[0]!.stops[0]!.state).toBe('arrived');
+    expect(again.activeTours[0]!.version).toBeGreaterThan(snapshot.version);
     // Fremder Fahrer: keine fremde Tour im Paket.
     const foreign = await offlinePackage(cookieB);
-    expect(foreign.activeTour).toBeNull();
+    expect(foreign.activeTours).toEqual([]);
     void driverA;
   });
 
