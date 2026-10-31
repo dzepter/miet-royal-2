@@ -135,3 +135,76 @@ bewusst nicht erzwungen). Das Flag ist kein Geheimnis (keine Redaction, keine
 Isolationsprüfung) und hat in production keinen automatischen Default – es
 dokumentiert die bewusste Entscheidung nach Vertragsprüfung
 (`docs/OPEN_ITEMS.md` → „GO-LIVE-BLOCKER Routing“).
+
+## Demo-Umgebung (Phase 14)
+
+### Live↔Demo-Wechsel: `STAFF_DEMO_URL` / `STAFF_LIVE_URL`
+
+| Variable | Wo | Bedeutung |
+| --- | --- | --- |
+| `STAFF_DEMO_URL` | API in production/staging/development | fester Origin der **Demo**-Staff-App, z. B. `https://demo.<domain>`; in `demo` ein Konfigurationsfehler |
+| `STAFF_LIVE_URL` | API in demo | fester Origin der **Live**-Staff-App, z. B. `https://app.<domain>`; in `production` ein Konfigurationsfehler |
+
+Regeln (`packages/config`, `config.environmentLinks.counterpart`): nur eine
+absolute URL mit Schema `https` (`http` nur in development), ausschließlich der
+Origin – kein Pfad, keine Query, kein Fragment, keine Zugangsdaten (alles
+andere ⇒ `ConfigError`); nie beide Variablen gleichzeitig. Die Werte sind
+keine Secrets. `GET /auth/me` liefert `counterpart: { kind: 'demo' | 'live',
+url } | null`; die Staff-App zeigt nur dann „Demo öffnen“ / „Live öffnen“,
+öffnet nach bewusster Bestätigung `<Origin>/login` in einem neuen Tab und
+überträgt dabei nichts (keine Session, keine IDs, keine aktuelle URL). Ohne
+Variable gibt es keinen Button.
+
+**Isolations-Check (erweitert):** Kollision, wenn beide Umgebungen auf dieselbe
+Ziel-URL verlinken (`STAFF_DEMO_URL` der Live-Konfiguration ==
+`STAFF_LIVE_URL` der Demo-Konfiguration) oder eine Umgebung ihre eigene
+`MAIL_PUBLIC_WEB_BASE_URL` als Gegen-URL nennt. Diese Meldungen dürfen die
+URLs nennen (keine Secrets).
+
+### Web-Instanz: `WEB_APP_ENV`
+
+`WEB_APP_ENV` gilt **nur für den Web-Server** (`apps/web`, `next start`), nicht
+für API/Worker und nicht in `packages/config`. Werte wie `APP_ENV`, Default
+`development`. Die Web-Instanz der Demo-Umgebung **MUSS** `WEB_APP_ENV=demo`
+setzen: dann zeigt sie auf allen Seiten (Angebots-, Kontakt- und
+Dokumentlinks) den festen Banner „DEMO – keine echten Kundendaten“ – dieser
+Banner lässt sich durch nichts ausblenden. Der Wert wird zur Laufzeit des
+Servers gelesen (nicht beim Build); ein unbekannter Wert wird einmal im
+Serverlog gemeldet und wie `development` behandelt.
+
+**Zweite Quelle (Review F6, Härtung):** zusätzlich fragt das Root-Layout je
+Seitenaufruf serverseitig `GET <WEB_API_ORIGIN>/health` ab (Timeout 1 s,
+`cache: 'no-store'`). Meldet die konfigurierte API `environment: 'demo'`,
+erscheint der Banner ebenfalls (ODER-Logik, `apps/web/lib/environment.ts`,
+`resolveDemoBanner`). Fehler oder Timeout der Abfrage ⇒ nur `WEB_APP_ENV`
+zählt. Eine Demo-Web-Instanz mit vergessener Variable, aber korrektem
+`WEB_API_ORIGIN` auf die Demo-API, bleibt dadurch gekennzeichnet.
+
+**Pflicht außerhalb development:** fehlt `WEB_APP_ENV` bei `NODE_ENV`
+≠ `development` (`next start`), loggt der Web-Server einmal einen Fehler
+(`WEB_APP_ENV fehlt – …`) und läuft weiter – bewusst **kein Startabbruch**,
+damit die Web-App nicht ausfällt; die Demo-Kennzeichnung hängt dann allein an
+`/health`. Die Deploy-Checkliste (docs/DEPLOYMENT_NOTES.md, Release-Ablauf
+6b) verlangt den Wert für jede Web-Instanz (`demo` bzw. `production`/
+`staging`); der Isolation-Check kann ihn nicht prüfen.
+
+### Demo-Kennzeichnung der Staff-App
+
+Die Staff-App kennt ihre Umgebung über `GET /auth/me` (`environment`, auch im
+gesperrten Zustand), offline über die gespeicherte Identität und auf Seiten
+ohne Anmeldung (Login, Passwort vergessen/zurücksetzen) über `GET /api/health`.
+Bei `demo` zeigt sie dauerhaft das Badge „DEMO – keine echten Kundendaten“ im
+Header und Sperrbildschirm sowie den Titel-Präfix „DEMO · “. Dafür ist keine
+zusätzliche Staff-Variable nötig.
+
+### Demo-Reset-Gate
+
+In `APP_ENV=demo` weist die API während eines laufenden Demo-Resets
+(`demo_dataset_state.reset_in_progress`) alle Business-Mutationen
+(`POST/PUT/PATCH/DELETE` unter `/staff/*`, `/public/*`, `/webhooks/*`) mit
+`503 DEMO_RESET` und `retry-after: 15` ab; ausgenommen sind `/auth/*`,
+`/staff/demo/*`, `/staff/push/*` und `/staff/offline/lease*`. Der Worker legt
+Business-Jobs (alle außer `system.heartbeat`) in dieser Zeit um 15 s zurück,
+ohne einen Versuch zu verbrauchen. In allen anderen Umgebungen existieren
+weder Gate noch Demo-Routen (`/staff/demo/*` ⇒ 404).
+

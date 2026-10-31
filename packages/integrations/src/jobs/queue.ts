@@ -73,4 +73,11 @@ export interface JobQueue {
    * Versuchen gehen auf dead. Mehrfach/parallel aufrufbar.
    */
   reclaimExpired(): Promise<ReclaimResult>;
+  /**
+   * Phase 14 (demo): legt einen beanspruchten Job OHNE Attempt-Verbrauch auf
+   * `runAt` zurück (Lease freigeben, Status pending). Wird vom JobRunner
+   * genutzt, wenn ein `beforeRun`-Hook die Ausführung vertagt (z. B. während
+   * eines Demo-Resets). Optional, damit bestehende Queue-Fakes unverändert bleiben.
+   */
+  defer?(job: ClaimedJob, runAt: Date): Promise<void>;
 }

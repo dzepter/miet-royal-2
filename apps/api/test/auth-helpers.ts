@@ -60,6 +60,14 @@ import { GeocodingService } from '../src/routing/geocoding-service.ts';
 import { getDepotAddress, resolveOperativeAddress } from '../src/routing/address-resolver.ts';
 import { TourService } from '../src/tours/tour-service.ts';
 import { createTourLiveModule } from '../src/tours/live/module.ts';
+// Phase 14 (demo)
+import type { DemoResetRunner } from '../src/demo/types.ts';
+
+// Phase 14 (demo): feste Test-Schlüssel der Demo-Konfiguration (nur Tests; nie echte Werte).
+// APP_ENV=demo kennt keine Defaults – Storage/Schlüssel müssen explizit gesetzt sein.
+export const DEMO_TEST_AUTH_SECRET_KEY = 'test-demo-only-auth-secret-key-0000000000000001';
+export const DEMO_TEST_COMMUNICATION_PAYLOAD_KEY =
+  'test-demo-only-communication-payload-key-00000000001';
 
 // Phase 12 (inbound): feste Test-Geheimnisse (nur Tests; nie echte Werte).
 const WHATSAPP_TEST_ACCESS_TOKEN = 'test-whatsapp-access-token-never-real';
@@ -132,6 +140,14 @@ export async function createTestContext(
     env?: Record<string, string>;
     /** Phase 12 (inbound): WhatsApp als `live` konfigurieren (Webhook-Signatur/Verify prüfbar; Gateway bleibt der Fake). */
     whatsapp?: boolean;
+    /**
+     * Phase 14 (demo): Umgebung der App (Default development). `demo` lädt eine
+     * vollständige Demo-Konfiguration (eigene Test-Schlüssel, fs-Storage, kein
+     * Lexware/WhatsApp/GraphHopper) – Demo-Routen und Reset-Gate existieren nur dann.
+     */
+    appEnv?: 'development' | 'demo';
+    /** Phase 14 (demo): Test-Injection des Reset-Runners (Default: Stub bzw. Reset-Service). */
+    demoReset?: DemoResetRunner;
   } = {},
 ): Promise<TestContext> {
   const lexwareOptions =
@@ -151,10 +167,22 @@ export async function createTestContext(
             : { smallBusiness: lexwareOptions.smallBusiness }),
         });
   const lexwareBaseUrl = lexwareFake === null ? null : await lexwareFake.start();
+  // Isolierter FS-Storage je Testkontext (PDF-/Dokumententests); Phase 14: derselbe
+  // Pfad dient der Demo-Konfiguration als STORAGE_FS_ROOT.
+  const storageRoot = mkdtempSync(join(tmpdir(), 'mietroyal-test-'));
   const config = loadConfig({
-    APP_ENV: 'development',
+    APP_ENV: options.appEnv ?? 'development',
     DATABASE_URL: TEST_DATABASE_URL,
     LOG_LEVEL: options.logLevel ?? 'error',
+    // Phase 14 (demo): Pflichtwerte außerhalb von development (keine Defaults).
+    ...(options.appEnv === 'demo'
+      ? {
+          STORAGE_DRIVER: 'fs',
+          STORAGE_FS_ROOT: storageRoot,
+          AUTH_SECRET_KEY: DEMO_TEST_AUTH_SECRET_KEY,
+          COMMUNICATION_PAYLOAD_KEY: DEMO_TEST_COMMUNICATION_PAYLOAD_KEY,
+        }
+      : {}),
     ...(lexwareFake === null || lexwareBaseUrl === null
       ? {}
       : {
@@ -188,8 +216,7 @@ export async function createTestContext(
   const db = createDb(pool);
   await runMigrations(db);
   const mail = new InMemoryMailAdapter();
-  // Isolierter FS-Storage je Testkontext (PDF-/Dokumententests).
-  const storage = new FilesystemStorageProvider(mkdtempSync(join(tmpdir(), 'mietroyal-test-')));
+  const storage = new FilesystemStorageProvider(storageRoot);
   const accounting = new MockAccountingGateway();
   const queue = new PostgresJobQueue(pool);
   const testLogger = {
@@ -224,6 +251,7 @@ export async function createTestContext(
     whatsappGateway: whatsapp,
     inboundMailSource: inboundMail,
     ...(options.logDestination === undefined ? {} : { logDestination: options.logDestination }),
+    ...(options.demoReset === undefined ? {} : { demoReset: options.demoReset }), // Phase 14 (demo)
   });
   await app.ready();
   const auth = new StaffAuthService(db, config, mail);

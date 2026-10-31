@@ -3746,3 +3746,154 @@ Vom Auftraggeber bestätigt (2026-10-31, Phase 13 Final §6) – nicht mehr offe
 - **Lexware-Pausen**: Lexware setzt keine globalen Pausen (Retry-After
   behandelt der Client wie bisher); eine dennoch vorhandene Pause wird dort
   wie Wartezeit behandelt, nie als Fehler.
+
+## Phase 14: Demo-Seed und Demo-Reset (2026-10-31)
+
+- **Seed ist kein Migrations-Seed** (Order §7/§14): Der kanonische Demo-
+  Datensatz entsteht nur auf expliziten Befehl (`pnpm demo:seed`) bzw. als
+  Phase C eines Resets – nie beim Start, Deployment, bei Migration oder
+  Update. `DemoSeedService.seed()` ist dreifach geschützt: `APP_ENV=demo`
+  (sonst `DemoError FORBIDDEN/DEMO_ONLY`), vorhandene Demo-Geschäftsdaten
+  (Kunden, Vorgänge, Buchungen oder Touren > 0 ODER `seeded_at` gesetzt ⇒
+  `CONFLICT/DEMO_DATA_EXISTS` „Demo-Daten existieren bereits – demo:reset
+  verwenden.“, nie ein stilles Überschreiben) und ein BESTEHENDER aktiver
+  Systemadmin als Fachaktor (`resolveDemoSeedActor`; der Seed legt nie ein
+  Konto an – ohne Admin `CONFLICT/DEMO_ADMIN_MISSING` mit Hinweis auf
+  `pnpm staff:bootstrap-admin`). Ein übergebener Akteur ohne Systemrolle
+  (Route mit `demo.manage`) bleibt Auslöser (`seeded_by`/`last_reset_by`), die
+  Fachpfade laufen unter dem ältesten aktiven Systemadmin (sie brauchen
+  Vollrechte wie `appointment.assign`, `return.mark_cleanup_issue`).
+- **Nur echte Fachpfade, keine Fachlogik dupliziert** (`apps/api/src/demo/
+  seed/`): `createDemoSeedServices()` verdrahtet dieselben Konstruktoren wie
+  `app.ts`/die Routen (Mail-Outbox mit Demo-Whitelist, Gutschein-Trigger,
+  Settlement-Hook nach der Rückgabe, Risiko-/Tour-Stale-Listener der
+  Terminplanung, Routing-Mock); jedes Szenario ist eine Funktion
+  `(ctx) => Promise<void>` und läuft über Kunde → Vorgang (Sequenznummer) →
+  Anfrage → Angebotsentwurf → Versand → Kundenannahme per Token → Termine →
+  AB-Freigabe/-Versand → Zuweisung/Vorbereitung → Übergabe → Rückgabe →
+  Abrechnung. Kein INSERT in Business-Tabellen; Maschinen/Lager nur über
+  `MachineService`/`InventoryService`. Die Szenarioliste
+  (`canonical-dataset.ts`) ist geordnet und bestimmt die Vorgangsnummern
+  (`MR-<Jahr>-0001` = neue Anfrage usw.).
+- **Szenarien und Seed-Schlüssel** (Order §10/§13, `DEMO_SEED_KEYS`):
+  `customer.private.basic`, `customer.org.basic`, `customer.private.repeat`
+  (plus je ein Kunde je Vorgangs-Szenario, `customer.<typ>.<szenario>`);
+  `process.inquiry.new`, `process.offer.draft`, `process.offer.sent`,
+  `process.booking.accepted.pickup` (Rückgabetermin bewusst ungeplant, AB nur
+  vorbereitet, Maschine zugeordnet), `process.booking.accepted.delivery`
+  (Lieferung heute, AB versendet), `process.booking.accepted.delivery_second`
+  (Lieferadresse im Routing-Mock mehrdeutig ⇒ Adressprüfung),
+  `process.handover.ready` (Lieferung morgen, Maschine reserviert),
+  `process.rental.active`, `process.return.due` (Rückholung heute, nie
+  überfällig: frühestens `now + 1 h`, spätestens 23:59), `process.return.
+  overdue` (gestern 11:00, Überfälligkeits-Incident materialisiert),
+  `process.return.damage` (Klärung Schadenskosten, Reinigung > 24 h ⇒
+  Warnung), `process.return.missing_part` (Klärung Fehlteil),
+  `process.settlement.review` (Schaden + Fehlteil + Reinigungsmangel +
+  ungeöffnete Kommissionsware), `process.cleaning.pending` (Rückgabe vor 90
+  min), `process.completed` (manueller Abschluss nach Rückgabe und
+  Reinigungsende, ohne Buchhaltungs-Transfer), `process.repeat.second`
+  (zweiter Vorgang des Wiedermieters); Termine `appointment.delivery.today`,
+  `appointment.delivery.today_second`, `appointment.delivery.tomorrow`,
+  `appointment.return.{unplanned,planned,due_today,overdue}`; Kommunikation
+  `conversation.email.{inbound,reply,unanswered}` (Eingang über
+  `ConversationService.createInbound`, Antwort über `replyByEmail` ⇒ Outbox);
+  Touren `tour.today.multi_stop` (drei Stopps, `ready`, nicht gestartet) und
+  `tour.future.planned` (morgen, `draft`, Route über den Mock berechnet);
+  Lager `inventory.stocktake.initial`, `inventory.movement.incoming`,
+  `inventory.item.low_stock`; Maschinen `machine.{ready.basic,assigned,
+  reserved,rented,cleaning,cleaning.overdue,blocked}` (alle 11 Seed-Maschinen
+  belegt, Codes nie neu vergeben); Abrechnungen `settlement.{review,damage,
+  missing_part}`. `DEMO_DATASET_VERSION` bleibt 1.
+- **Synthetische Daten** (Order §9): erfundene Namen (Beispiel, Muster,
+  Fiktiv, Stammkunde, Demo …), E-Mails ausschließlich `@example.com` /
+  `@example.invalid`, keine Telefonnummern (kein Fachflow des Seeds verlangt
+  eine), Adressen synthetisch im Mainzer Umfeld (Depot `Robert-Koch-Straße 1,
+  55129 Mainz (SYNTHETISCH)` über `pickup_exact_address`, nur gesetzt, wenn
+  die Einstellung fehlt), Bilder als 1×1-Platzhalter (Markenassets offen).
+  Fehlt jede Mietbedingungen-Version, legt der Seed einen klar als TEST
+  markierten Platzhalter an (`TEST-Platzhalter Demo v1`, `is_test`) – nie
+  einen Rechtstext.
+- **Zeitlogik ausschließlich relativ zu `now`** (Order §12): `now` ist
+  injizierbar (`seed({ actorId, now })`), alle Zeitpunkte entstehen über
+  `createDemoClock(now)` (Berliner Kalendertage, DST-fest). Nicht injizierbar
+  bleiben DB-Defaults (`created_at`), `ProcessService.complete`
+  (`completed_at`) und Lagerbewegungen – dokumentierte Bestandsgrenzen. Die
+  Routenberechnung der Tour „morgen“ nutzt das spätere von `now` und Echtzeit,
+  weil die Depot-Einstellung den echten Schreibzeitpunkt trägt und eine
+  „früher“ berechnete Route sofort als veraltet gälte.
+- **Reset-Mechanik** (`DemoResetService`, Design §6): Phase A (kurze Tx:
+  Singleton-Zeile `FOR UPDATE`, `pg_try_advisory_xact_lock(hashtext('demo-
+  reset'))`, laufender Reset jünger als `DEMO_RESET_STALE_MS` = 10 min
+  (Review F8, vorher 30 min) ⇒ `CONFLICT/DEMO_RESET_RUNNING`, sonst
+  `reset_in_progress` setzen), Schutzfenster (Review F4: `settleDelayMs`,
+  Default Gate-Cache-TTL 1 s + 200 ms, damit API-/Worker-Caches ablaufen und
+  bereits angenommene Anfragen committen; Tests setzen 0), Phase B (eine Tx
+  unter blockierendem Advisory-Lock: Hook `beforeBusinessWipe(tx)` – WARTET
+  Trainingsschema –, 73 Business-Tabellen (69 FK-gebundene + 4 FK-freie,
+  `DEMO_BUSINESS_TABLES_DELETE_ORDER`; Review F5: zusammen mit der Behalten-
+  Liste unten sind alle 102 Tabellen der Datenbank abgedeckt, Reviewer-
+  Prüfung R7) in expliziter FK-sicherer Reihenfolge per `DELETE` ohne
+  CASCADE, Business-Jobs `pending/dead/succeeded` der Typen mail.send,
+  push.send, settlement./cancellation.accounting_transfer, voucher.*,
+  invoice.delivery, whatsapp.*, lexware.event.process löschen – laufende und
+  Infrastruktur-Jobs bleiben –, zusätzlich die vorgangsgebundenen Retention-
+  Jobs `communication.cleanup_retention` mit `scope: 'photos'` (Review F3;
+  der tägliche Backstop `scope: 'backstop'` bleibt), Maschinen und
+  Lagerartikel per `UPDATE` auf den Stammzustand, Registry leeren, `ALTER
+  SEQUENCE process_number_seq RESTART WITH 1`; scheitert die Transaktion an
+  SQLSTATE 23503 – eine parallel committete Kindzeile –, wird sie genau
+  EINMAL nach kurzer Pause wiederholt, Review F4), danach Storage-Objekte
+  der gelöschten Zeilen (Dokumente, Fotos, Unterschriften, Chatfotos,
+  Referenzfotos) über den `StorageProvider` in parallelen Batches zu 10
+  entfernen (Review F7; Fehler je Objekt nur protokolliert, nie abgebrochen),
+  Phase C (kanonischer Seed), Phase D (Flag zurück, Version/Zeitpunkte) und
+  Security-Audit `demo.reset_completed` (Actor, Dauer, Zähler). Unangetastet: alle `staff_*`, `push_subscriptions`,
+  `calendar_feed_tokens`, `offline_access_leases`, `system_settings`,
+  `accounting_tax_config`, `lexware_integration_state`, `terms_versions`,
+  `integration_rate_limits`, `inbound_mail_state`, `products`,
+  `product_prices`, Zeilen in `machines`/`inventory_items` sowie
+  `staff_substitutions` (Staff-Bindung, in Order §17/§18 nicht genannt).
+  In der Demo neu angelegte Maschinen überleben einen Reset als
+  „einsatzbereit“ (nur UPDATE, bewusst kein DELETE von Stammdaten).
+- **Sequenz-Entscheidung**: Vorgangsnummern starten nach jedem Demo-Reset bei
+  `MR-<Jahr>-0001` (deterministische Trainingsnummern). Das ist eine reine
+  Demo-Entscheidung; Live-Sequenzen laufen nie zurück (MASTER_SPEC §3), und
+  der Reset existiert außerhalb der Demo nicht.
+- **Abbruch**: Fehler in Phase B/C/D lassen `reset_in_progress` gesetzt
+  (503-Gate bleibt fail-closed, Daten evtl. unvollständig), datieren
+  `reset_started_at` aber um die Stale-Spanne zurück ⇒ Status
+  `resetStale` („Letzter Reset unterbrochen – erneut zurücksetzen“) und ein
+  sofortiger neuer Reset. Der Seed selbst ist nicht transaktional (die
+  Fachservices committen je Schritt); bricht ein Szenario ab, meldet der
+  nächste `demo:seed` DEMO_DATA_EXISTS ⇒ `demo:reset`.
+- **Hängender Reset nach Prozessabbruch (Review F8)**: `markInterrupted`
+  greift nur bei Ausnahmen im selben Prozess. Stirbt der Prozess während
+  Phase B/C (Deploy, OOM), bleibt das Flag stehen; es gilt nach
+  `DEMO_RESET_STALE_MS` = 10 min (ein Reset dauert ≈ 10 s) als abgelaufen
+  (`resetStale`, neuer Reset erlaubt). Früher löst nur die CLI auf: `pnpm
+  demo:reset --force` (`DemoResetService.releaseStaleReset`) markiert ein
+  hängendes Flag sofort als abgelaufen und startet den Reset neu – aber nur,
+  wenn kein Prozess den Advisory-Lock hält (sonst DEMO_RESET_RUNNING); Phase
+  C/D halten den Lock nicht, der Schalter ist deshalb ein bewusster Admin-
+  Eingriff für den Fall „kein Reset-Prozess läuft mehr“. Kein Override über
+  die Route oder die UI.
+- **W1 (offen, nicht gebaut)**: In der Demo liefert `MockAccountingGateway`
+  weiterhin erfolgreiche Transfers; blockerfreie Abrechnungen des Seeds
+  (`process.cleaning.pending`, `process.completed`) stellen wie bisher einen
+  Auto-Transfer-Job ein, den der Demo-Worker über den Mock „überträgt“.
+  Konkrete Auswirkung (Review F2, reproduziert; Verhalten bewusst NICHT
+  geändert, Entscheidung W1 offen): der Demo-Worker führt den Job beim
+  ERSTEN Poll nach Seed/Reset aus – binnen Sekunden, also bevor ein Trainee
+  die Oberfläche öffnet. Für `process.cleaning.pending` wird das Settlement
+  `transferred` und der Vorgang über `completeProcessAfterTransfer`
+  `completed`; der Registry-Key zeigt danach auf einen abgeschlossenen
+  Vorgang (nur `machine.cleaning` bleibt ein stabiler Trainingszustand). Der
+  zweite Job (`process.completed`) ist unkritisch (Vorgang bereits
+  abgeschlossen). Trainings-/E2E-Szenarien dürfen „offener Vorgang mit
+  Abrechnung ohne Blocker“ nicht über diesen Seed-Key voraussetzen; der
+  Status-Endpunkt bleibt unverändert. Die
+  „Gutschein-Situation“ (`voucher.situation`) braucht Transfer + Zahlungsstatus
+  „bezahlt“ und WARTET deshalb auf die Entscheidung W1; der Seed enthält sie
+  bewusst nicht. Trainingsbezug (Übungen/Pfade/Versuche) WARTET auf den
+  Auftrag ab §21.

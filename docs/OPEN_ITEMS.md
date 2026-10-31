@@ -196,3 +196,40 @@ Tourfahrer (`calendar.view`) und der GraphHopper-Go-live-Schalter (siehe
   (späterer Retention-/Go-live-Punkt, nicht in Phase 13 Final gebaut).
 - Kundenstatus „Unterwegs“ ist nur als Grenze vorbereitet
   (`getCustomerTravelStatus`), ohne Endpunkt (Kundenportal spätere Phase).
+
+## Phase 14 – offene Entscheidungen (vor Abnahme zu klären)
+
+Die Demo-Umgebung, der kanonische Seed und der Reset (Auftrag §0–§20) sind
+umgesetzt. Folgende Punkte sind keine technischen Details, sondern
+Geschäftsentscheidungen des Auftraggebers und bleiben bis zur Entscheidung
+bewusst unentschieden (keine erfundene Defaultregel im Produktivcode):
+
+- **Trainings-Metaebene (Auftrag ab §21 fehlt):** Felder und Regeln für
+  Definitionen, Pfade, Zuweisungen, Versuche, Prüfkriterien, Fortschritt,
+  Live-Sperren, Admin-Bestätigung und Override; Pflichttests, E2E, Gate und
+  Berichtsform. Bis dahin existiert kein Trainingsschema; der Reset hält den
+  Hook `beforeBusinessWipe` für „laufende Versuche ⇒ interrupted
+  (DEMO_DATA_RESET)“ bereit.
+- **W1 Lexware-Mock in der Demo:** MASTER_SPEC § 29 und Auftrag § 1/§ 2
+  verbieten eine simulierte erfolgreiche Übertragung; heute liefert der
+  Mock-Buchhaltungsadapter in demo erfolgreiche Transfers (Status
+  `transferred`, Vorgang abgeschlossen). Folge im Seed: Szenario
+  `process.cleaning.pending` wird vom Demo-Worker nach dem ersten Poll
+  abgeschlossen; `voucher.situation` (Gutschein nach „bezahlt“) ist ohne
+  Mock-Zahlungsstatus nicht erreichbar. Optionen: Mock in demo abschalten
+  (Abrechnung bleibt vor der Übertragung stehen) oder Mock behalten und
+  durchgehend als DEMO/MOCK kennzeichnen.
+- **W2 Weg eines bestandenen Demo-Trainings nach Live:** Vorschlag: Übungen,
+  Pfade, Zuweisungen und Versuche nur in der Demo-DB; Live kennt nur die
+  manuelle Admin-Bestätigung „Training X bestanden“ je Mitarbeiter über einen
+  stabilen Trainings-Schlüssel sowie Sperren/Overrides (keine ID-Kopplung,
+  keine automatische Synchronisierung).
+- **Reichweite von `training.manage`** gegenüber `demo.manage` (heute:
+  `demo.manage` = Status, Seed-Registry, Reset in der Demo).
+- **DEMO-Vermerk auf PDFs/Dokumenten** der Demo (L9): nicht umgesetzt, keine
+  Fachregel.
+- **Mietbedingungen in der Demo:** Versand von Angeboten braucht eine aktive
+  Version; der Seed legt nur dann einen klar markierten Platzhalter an, wenn
+  keine existiert.
+- **Simulation eingehender WhatsApp-Nachrichten** in der Demo (Webhook ist in
+  demo 404; nur der Service-Einstieg existiert).

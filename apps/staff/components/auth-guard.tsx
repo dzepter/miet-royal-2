@@ -29,6 +29,9 @@ import { cachedIdentity, offlineRuntime } from '../lib/offline/runtime';
 // Phase 12 Finalisierung (Push-Rebind)
 import { rebindPushOnAppStart } from '../lib/push';
 import { OfflineIndicator, UpdateBanner } from './offline-indicator';
+// Phase 14 (demo): dauerhafte Demo-Kennzeichnung und Live↔Demo-Wechsel.
+import { DemoBadge, SwitchEnvironmentButton } from './demo-badge';
+import { useDemoDocumentTitle } from '../lib/demo';
 
 export { cachedIdentity };
 
@@ -173,12 +176,15 @@ function DiscardDialog({
 function LockScreen({
   name,
   offline,
+  demo,
   onUnlockedOnline,
   onUnlockedOffline,
   onDiscardWorkspace,
 }: {
   name: string;
   offline: boolean;
+  /** Phase 14 (demo): Badge auch im Sperrbildschirm (online wie offline). */
+  demo: boolean;
   onUnlockedOnline: (password: string) => Promise<'ok' | 'rekey_refused'>;
   onUnlockedOffline: () => Promise<void>;
   onDiscardWorkspace: (password: string) => Promise<void>;
@@ -254,6 +260,11 @@ function LockScreen({
   return (
     <div className="lock-overlay" role="dialog" aria-label="App gesperrt">
       <div className="card">
+        {demo && (
+          <p className="demo-badge-row">
+            <DemoBadge />
+          </p>
+        )}
         <h1>App gesperrt</h1>
         <p className="muted">
           Aus Sicherheitsgründen wurde die App nach 15 Minuten Inaktivität gesperrt
@@ -348,6 +359,9 @@ export function AuthGuard({ children }: { children: ReactNode }) {
   } | null>(null);
   const [logoutBusy, setLogoutBusy] = useState(false);
   const lastActivityRef = useRef(Date.now());
+  // Phase 14 (demo): Umgebung online aus /auth/me, offline aus der gespeicherten Identität.
+  const isDemo = me?.environment === 'demo' || identity?.environment === 'demo';
+  useDemoDocumentTitle(isDemo, pathname);
 
   useEffect(() => {
     const syncMode = () => setWarehouseModeState(warehouseModeEnabled());
@@ -535,6 +549,7 @@ export function AuthGuard({ children }: { children: ReactNode }) {
       <LockScreen
         name={me?.user.firstName ?? ''}
         offline={state === 'offline-locked'}
+        demo={isDemo || cachedIdentity()?.environment === 'demo'}
         onUnlockedOnline={async (password) => {
           lastActivityRef.current = Date.now();
           // Online-Re-Auth: erst Lease erneuern und Passwort-Wrap aktualisieren (§7), dann
@@ -584,6 +599,8 @@ export function AuthGuard({ children }: { children: ReactNode }) {
         <UpdateBanner inCapture={inCapture} />
         <header className={`topbar${tablet ? ' topbar-tablet' : ''}`}>
           <strong>Miet-Royal Staff</strong>
+          {/* Phase 14 (demo): dauerhaft sichtbar, Text + Rahmen (Order §5). */}
+          {isDemo && <DemoBadge compact={tablet} />}
           <nav aria-label="Hauptnavigation">
             {tablet ? (
               <>
@@ -644,6 +661,10 @@ export function AuthGuard({ children }: { children: ReactNode }) {
             )}
           </nav>
           <OfflineIndicator />
+          {/* Phase 14 (demo): „Demo öffnen“/„Live öffnen“ nur mit konfigurierter Gegen-URL (nur online). */}
+          {me?.counterpart !== undefined && me.counterpart !== null && (
+            <SwitchEnvironmentButton counterpart={me.counterpart} />
+          )}
           <button onClick={() => void logout()} aria-label="Abmelden">
             Abmelden
           </button>

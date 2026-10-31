@@ -101,3 +101,24 @@ Konfigurator mobile-first, kurze Schritte, laufende Preisübersicht.
 
 ## Performance
 Keine unnötigen Animationen, Social Feeds oder riesigen Dependencies.
+
+## Demo-Umgebung (Phase 14)
+Kennzeichnung: In der Demo zeigt die Staff-App dauerhaft das Badge
+„DEMO – keine echten Kundendaten“ (kompakt „DEMO“, Text + Rahmen, nie nur
+Farbe) im Header, im Sperrbildschirm und auf den Seiten ohne Anmeldung;
+Dokumenttitel mit Präfix „DEMO · “. Öffentliche Demo-Seiten (Web) tragen den
+festen Banner „DEMO – keine echten Kundendaten“ auf allen Seiten.
+Wechsel Live↔Demo: nur mit konfigurierter fester URL („Demo öffnen“ /
+„Live öffnen“), Dialog vor dem Wechsel: „Du wechselst zur {Demo|Live}-Umgebung.
+Es wird nichts übertragen – keine Anmeldung, kein Vorgang, keine Daten. Du
+musst dich dort separat anmelden.“ Öffnet die Anmeldeseite der Gegen-Umgebung
+in einem neuen Tab; keine automatische Weiterleitung, keine editierbare URL.
+Reset: „Demo-Geschäftsdaten zurücksetzen“ (Einstellungen → Demo) ist eine
+destruktive Aktion mit Dialog nach bestehendem Muster: Pflicht-Texteingabe
+„DEMO ZURÜCKSETZEN“, Bestätigen erst bei exaktem Text aktiv, während des Laufs
+gesperrt, kein Browser-confirm(). Während eines Resets zeigen blockierte
+Aktionen „Die Demo-Umgebung wird gerade zurückgesetzt. Bitte in einer Minute
+erneut versuchen.“ (keine Abmeldung). Veralteter Datenstand: dezenter Hinweis
+„Demo-Datenstand ist veraltet – Zurücksetzen empfohlen.“ nur für Admins mit
+`demo.manage`; nie ein automatischer Reset.
+

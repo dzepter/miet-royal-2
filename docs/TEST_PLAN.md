@@ -195,6 +195,25 @@ Profiländerung verändert laufenden Booking-Snapshot nicht.
 - Optionaler Live-Smoke `pnpm routing:smoke` nur mit `ROUTING_SMOKE=1` und
   echtem Key, nie in production, nie im Gate.
 
+## Demo-Umgebung, Seed, Reset (Phase 14)
+- Pflichttest-Nummern fehlen im Auftrag (endet bei §20); Testnamen tragen
+  provisorische Kennungen: Config `D-C1…` (`packages/config/test/demo-links.test.ts`),
+  Runner `D-R1…` (`packages/integrations/test/runner-defer.test.ts`), Gate
+  `D-G1…`/`RF1` (`apps/api/test/demo-reset-gate.test.ts`), Plattform `D-P1…`
+  (`apps/api/test/demo-platform.integration.test.ts`), Seed `D-S1…`
+  (`demo-seed.integration.test.ts`), Reset `D-R1…`/`RF3…RF8`
+  (`demo-reset.integration.test.ts`), Web-Banner `RF6…` (`apps/web/lib/environment.test.ts`).
+- Demo-Testkontext: `createTestContext({ appEnv: 'demo' })` (vollständige
+  Demo-Konfiguration mit Test-Schlüsseln); Demo-Routen existieren außerhalb
+  demo nicht (404-Tests).
+- E2E: `tests/e2e/specs/demo-environment.spec.ts` (provisorisch D1–D7 im
+  Projekt `demo-communication` mit eigener Demo-Staff- und Demo-Web-Instanz,
+  Live-Gegentest im Projekt chromium).
+- Reset-Sicherheit wird reproduziert: paralleler Reset ⇒ 409, Percent-codierte
+  Pfade ⇒ 503 während des Resets, Prozessabbruch ⇒ `resetStale` nach 10 min.
+- Kein automatischer Seed in Tests oder beim Start; `pnpm demo:seed` /
+  `pnpm demo:reset` nur gegen Demo-Datenbanken (Env-Guard-Tests).
+
 ## Definition of Done
 Fachregel korrekt, Rechte serverseitig, Validierung, Fehlerfall,
 responsive, Tests ausgeführt, Doku aktualisiert, Staging geprüft.

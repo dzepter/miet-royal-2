@@ -333,3 +333,27 @@ Admin kann Gate manuell übersteuern.
 - **Öffentlich ohne Login:** `GET /public/documents/:token` – genau ein
   Dokument je Token (nur Hash gespeichert, 90 Tage), IP-Rate-Limit 30/min,
   immer dasselbe neutrale 404, Pfad im Log maskiert.
+
+## Demo (Phase 14)
+
+- `demo.manage` (Kategorie „Demo / Training“, Admin-Infrastruktur – für normale
+  Mitarbeitende ausgeblendet): Verwaltung der Demo-Umgebung – Status des
+  Demo-Datensatzes (`GET /staff/demo/status`), Seed-Registry
+  (`GET /staff/demo/seed-entities`) und der destruktive Reset der
+  Demo-Geschäftsdaten (`POST /staff/demo/reset`, Bestätigungstext „DEMO
+  ZURÜCKSETZEN“ Pflicht). Systemadmins besitzen das Recht automatisch
+  (`fullPermissionSet`), andere Rollen nur durch ausdrückliche Vergabe.
+- Diese Routen existieren **nur** in `APP_ENV=demo`; in production/staging/
+  development antworten sie mit 404 – auch für Systemadmins. Ohne Recht: 403.
+- Die Staff-App zeigt den Link „Einstellungen → Demo“ nur mit `demo.manage` in
+  der Demo-Umgebung; der Hinweis „Demo-Datenstand ist veraltet“ auf „Heute“
+  erscheint nur für diese Nutzer (Status-Abruf nur dann).
+- Der Live↔Demo-Wechsel („Demo öffnen“ / „Live öffnen“) ist kein Recht: Er
+  öffnet nur die feste Anmeldeseite der Gegen-Umgebung in einem neuen Tab;
+  dort gilt die separate Anmeldung mit den dortigen Rechten.
+- Jede Reset-Anforderung wird als Security-Event `demo.reset_requested`
+  (Actor, Session) protokolliert; der Abschluss wird vom Reset-Service
+  auditiert.
+- `training.manage` bleibt reserviert (Trainingsdetails folgen mit den
+  fehlenden Auftragsabschnitten).
+

@@ -10,7 +10,8 @@
     "./jobs/communication-inbound": "./src/jobs/communication-inbound.ts",
     "./jobs/communication-scan": "./src/jobs/communication-scan.ts",
     "./jobs/communication-transactional": "./src/jobs/communication-transactional.ts",
-    "./jobs/tours": "./src/jobs/tours.ts"
+    "./jobs/tours": "./src/jobs/tours.ts",
+    "./jobs/demo": "./src/jobs/demo.ts"
   },
   "scripts": {
     "dev": "APP_ENV=development tsx watch src/server.ts",
@@ -31,7 +32,9 @@
     "mail:smoke": "tsx scripts/mail-smoke.ts",
     "push:generate-vapid-keys": "tsx scripts/generate-vapid-keys.ts",
     "whatsapp:smoke": "tsx scripts/whatsapp-smoke.ts",
-    "routing:smoke": "tsx scripts/routing-smoke.ts"
+    "routing:smoke": "tsx scripts/routing-smoke.ts",
+    "demo:seed": "tsx scripts/demo-seed.ts",
+    "demo:reset": "tsx scripts/demo-reset.ts"
   },
   "dependencies": {
     "@fastify/cookie": "11.1.2",

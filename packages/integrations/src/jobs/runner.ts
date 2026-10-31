@@ -2,6 +2,16 @@ import type { ClaimedJob, JobQueue } from './queue.ts';
 
 export type JobHandler = (job: ClaimedJob) => Promise<void>;
 
+/**
+ * Phase 14 (demo): Entscheidung VOR der Ausführung eines beanspruchten Jobs.
+ * `'run'` führt den Handler aus; `{ defer: { delayMs } }` legt den Job ohne
+ * Attempt-Verbrauch um `delayMs` zurück (Queue.defer), z. B. solange ein
+ * Demo-Reset läuft. Wirft der Hook, läuft der Job normal (fail-open – der
+ * Handler scheitert dann ggf. selbst mit Retry).
+ */
+export type JobBeforeRunDecision = 'run' | { defer: { delayMs: number; reason?: string } };
+export type JobBeforeRunHook = (job: ClaimedJob) => Promise<JobBeforeRunDecision>;
+
 /** Minimales Logger-Interface, damit dieses Paket keinen Logger erzwingt. */
 export interface JobRunnerLogger {
   info(context: Record<string, unknown>, message: string): void;
@@ -72,6 +82,7 @@ export class JobRunner {
   private readonly workerId: string;
   private readonly logger: JobRunnerLogger;
   private readonly handlers = new Map<string, JobHandler>();
+  private beforeRun: JobBeforeRunHook | null = null;
   private timer: NodeJS.Timeout | undefined;
   private stopped = true;
   private stopInFlight: Promise<void> | undefined;
@@ -90,8 +101,20 @@ export class JobRunner {
     this.handlers.set(type, handler);
   }
 
+  /**
+   * Phase 14 (demo): Hook vor jeder Jobausführung setzen (oder mit null
+   * entfernen). Verlangt eine Queue mit `defer`, damit ein vertagter Job
+   * keinen Versuch verbraucht – sonst Programmierfehler beim Verdrahten.
+   */
+  setBeforeRun(hook: JobBeforeRunHook | null): void {
+    if (hook !== null && typeof this.queue.defer !== 'function') {
+      throw new Error('JobRunner.setBeforeRun: die Queue unterstützt kein defer()');
+    }
+    this.beforeRun = hook;
+  }
+
   /** Verarbeitet höchstens einen fälligen Job. */
-  async runOnce(): Promise<'processed' | 'failed' | 'idle'> {
+  async runOnce(): Promise<'processed' | 'failed' | 'idle' | 'deferred'> {
     const job = await this.queue.claimNext(this.workerId);
     if (job === null) return 'idle';
 
@@ -100,6 +123,28 @@ export class JobRunner {
       await this.queue.markFailed(job, `Kein Handler für Jobtyp "${job.type}" registriert`);
       this.logger.warn({ jobId: job.id, jobType: job.type }, 'Job ohne registrierten Handler');
       return 'failed';
+    }
+
+    // Phase 14 (demo): Vertagung ohne Attempt-Verbrauch (z. B. Demo-Reset läuft).
+    if (this.beforeRun !== null && typeof this.queue.defer === 'function') {
+      let decision: JobBeforeRunDecision = 'run';
+      try {
+        decision = await this.beforeRun(job);
+      } catch (error) {
+        this.logger.warn(
+          { jobId: job.id, jobType: job.type, error: summarizeJobError(error) },
+          'beforeRun-Hook fehlgeschlagen – Job läuft normal',
+        );
+      }
+      if (decision !== 'run') {
+        const delayMs = Math.max(0, Math.floor(decision.defer.delayMs));
+        await this.queue.defer(job, new Date(Date.now() + delayMs));
+        this.logger.info(
+          { jobId: job.id, jobType: job.type, delayMs, reason: decision.defer.reason ?? null },
+          'Job zurückgelegt (ohne Versuchsverbrauch)',
+        );
+        return 'deferred';
+      }
     }
 
     try {

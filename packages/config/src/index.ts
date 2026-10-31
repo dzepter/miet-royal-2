@@ -8,6 +8,7 @@ export {
   WHATSAPP_MIN_GRAPH_API_VERSION,
   ROUTING_PRODUCTION_BASE_URL,
   type RoutingConfig,
+  type EnvironmentLinksConfig,
   type LexwareConfig,
   type MailConfig,
   type CommunicationConfig,

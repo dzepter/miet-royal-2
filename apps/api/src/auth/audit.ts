@@ -35,6 +35,10 @@ export const SECURITY_EVENT_TYPES = [
   'offline.lease_renewed',
   'offline.lease_revoked',
   'offline.environment_mismatch',
+  // Phase 14 (demo): Anforderung des Demo-Resets (Actor); Abschluss auditiert der Reset-Service.
+  'demo.reset_requested',
+  // Phase 14 (demo, SEED): Abschluss eines Demo-Resets (Actor, Dauer, Zähler – nie Inhalte).
+  'demo.reset_completed',
 ] as const;
 
 export type SecurityEventType = (typeof SECURITY_EVENT_TYPES)[number];

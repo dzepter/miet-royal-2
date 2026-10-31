@@ -103,6 +103,11 @@ import { DelayEvaluationState } from './tours/live/delay-state.ts';
 import { createTourLiveModule } from './tours/live/module.ts';
 import { createOfflineTourSnapshotSource } from './tours/live/offline-snapshot.ts';
 import { registerTourLiveRoutes } from './routes/tours-live.ts';
+// Phase 14 (demo): Dataset-Zustand, Seed-Registry, Reset-Gate (503) und Demo-Routen – nur in APP_ENV=demo.
+import { createDemoModule } from './demo/module.ts';
+import { DemoResetService } from './demo/reset-service.ts';
+import type { DemoResetRunner } from './demo/types.ts';
+import { registerDemoRoutes } from './routes/demo.ts';
 
 export const API_VERSION = '0.1.0';
 
@@ -174,6 +179,8 @@ export interface AppOptions {
   addressResolver?: OperativeAddressResolver;
   /** Phase 13 (tours-live): Tests – geteiltes Bewertungsgedächtnis und kürzeres GPS-Rate-Limit. */
   tourLiveOptions?: { state?: DelayEvaluationState; locationMinIntervalMs?: number };
+  /** Phase 14 (demo): Test-Injection des Reset-Runners (Default: DemoResetService bzw. Stub, nur in demo). */
+  demoReset?: DemoResetRunner;
 }
 
 /**
@@ -208,6 +215,7 @@ export function buildApp({
   geocodingResolver,
   addressResolver,
   tourLiveOptions,
+  demoReset,
 }: AppOptions): FastifyInstance {
   // Phase 13 (routing): production startet nie mit Fake-/Mock-Routing (Order §5).
   if (
@@ -429,6 +437,20 @@ export function buildApp({
     const db = createDb(pool);
     const authService = new StaffAuthService(db, config, mailAdapter ?? createMailAdapter(config));
     const adminService = new StaffAdminService(authService);
+    // Phase 14 (demo): Demo-Modul nur in der Demo-Umgebung; das Reset-Gate
+    // (503 DEMO_RESET für Business-Mutationen während eines Resets, Design §7)
+    // hängt als onRequest-Hook auf der Root-Instanz VOR dem Routen-Plugin.
+    const demo =
+      config.appEnv === 'demo'
+        ? createDemoModule({
+            db,
+            config,
+            auth: authService,
+            logger: app.log,
+            ...(demoReset === undefined ? {} : { reset: demoReset }),
+          })
+        : null;
+    if (demo !== null) app.addHook('onRequest', demo.gate.onRequest);
     // Als Plugin NACH @fastify/rate-limit registrieren, damit dessen
     // onRoute-Hook die per-Route-Limits der Auth-Endpunkte wirklich anwendet.
     void app.register(async (instance) => {
@@ -802,6 +824,23 @@ export function buildApp({
         contacts: transfers.lexwareDeps?.contacts ?? createLexwareTransferDeps(lexware).contacts,
       });
       registerLexwareWebhookRoutes(instance, { db, config, lexware, queue });
+      // Phase 14 (demo): Status/Registry/Reset (demo.manage) – nur in demo registriert, sonst 404.
+      // Der echte Reset-Runner braucht Storage und Queue, die erst hier existieren;
+      // Tests injizieren `demoReset`, sonst wird der Stub aus createDemoModule ersetzt.
+      if (demo !== null) {
+        if (demoReset === undefined) {
+          demo.reset = new DemoResetService({
+            db,
+            config,
+            storage: storageProvider,
+            queue,
+            logger: app.log,
+            routingGateway: routing,
+            ...(mailGateway === undefined ? {} : { mailGateway }),
+          });
+        }
+        registerDemoRoutes(instance, { db, auth: authService, config, demo });
+      }
     });
   }
 

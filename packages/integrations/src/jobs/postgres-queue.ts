@@ -168,6 +168,22 @@ export class PostgresJobQueue implements JobQueue {
     );
   }
 
+  /**
+   * Phase 14 (demo): Job zurücklegen, ohne einen Versuch zu verbrauchen – der
+   * beim Claim gezählte Versuch wird zurückgenommen, die Lease freigegeben und
+   * `run_at` neu gesetzt. locked_by-Guard wie bei markSucceeded/markFailed.
+   */
+  async defer(job: ClaimedJob, runAt: Date): Promise<void> {
+    await this.pool.query(
+      `UPDATE integration_jobs
+       SET status = 'pending', attempts = GREATEST(attempts - 1, 0),
+           locked_at = NULL, locked_by = NULL, lease_expires_at = NULL,
+           run_at = $2, updated_at = now()
+       WHERE id = $1 AND status = 'processing' AND locked_by = $3`,
+      [job.id, runAt, job.claimedBy],
+    );
+  }
+
   async reclaimExpired(): Promise<ReclaimResult> {
     // Atomar und mehrworker-sicher: konkurrierende Aufrufe serialisiert
     // PostgreSQL über Zeilensperren; wer zu spät kommt, findet die Zeile

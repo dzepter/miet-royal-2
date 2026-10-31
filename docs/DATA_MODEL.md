@@ -347,6 +347,31 @@ Ursprung, Vertreter, von/bis.
 ### TrainingDefinition / Path / Assignment / Attempt
 Demo-Trainings-Metaebene.
 
+### DemoDatasetState (Phase 14, `demo_dataset_state`)
+Singleton-Zeile (`id` = 1, Check-Constraint) mit dem Zustand des kanonischen
+Demo-Datensatzes: `dataset_version` (Stand in der Datenbank; erwartete Version
+`DEMO_DATASET_VERSION` im Code – ein älterer Stand wird NIE automatisch
+zurückgesetzt, nur als „veraltet“ gemeldet), `seeded_at`, `seeded_by`
+(Staff, `ON DELETE SET NULL`), `last_reset_at`, `last_reset_by`,
+`reset_in_progress` (während eines Resets ⇒ 503-Gate für Business-Mutationen,
+Worker legt Business-Jobs zurück), `reset_started_at` (Beginn des laufenden
+Resets; älter als 10 min (`DEMO_RESET_STALE_MS`, Review F8) ⇒ „hängen
+geblieben“, erneuter Reset erlaubt (`pnpm demo:reset --force` früher); ein
+abgebrochener Reset wird um diese Spanne zurückdatiert und ist damit sofort
+erneut startbar), `updated_at`. Existiert nur fachlich in der Demo-Datenbank;
+die Tabelle ist in jeder Umgebung vorhanden (eine Migration für alle), bleibt
+außerhalb der Demo aber leer.
+
+### DemoSeedEntity (Phase 14, `demo_seed_entities`)
+Registry stabiler Seed-Schlüssel: `seed_key` (unique, Form
+`<bereich>.<szenario>[.<variante>]`, z. B. `process.return.overdue`,
+`tour.today.multi_stop`), `entity_type` (customer, process, appointment,
+tour, machine, settlement, conversation_message, inventory_*), `entity_id`
+(UUID OHNE Fremdschlüssel – Business-Tabellen tragen keine Demo-Sonderfelder;
+Reset leert Business-Daten und Registry gemeinsam), `dataset_version`,
+`created_at`. Training und Admin-UI referenzieren Demo-Szenarien ausschließlich
+über `seed_key`, nie über Business-UUIDs.
+
 ### Tour (Phase 13)
 Tagesplan einer Fahrt: `tour_date` (Berliner Kalendertag), `status`
 (draft|ready|active|completed|cancelled), `assigned_user_id` (gespeicherter

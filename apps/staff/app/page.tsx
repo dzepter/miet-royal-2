@@ -11,6 +11,8 @@ import { AppointmentPreview } from '../components/appointment-preview';
 import { apiFetch, hasPermission } from '../lib/api';
 import { customerName, formatEventDate, STATUS_LABELS, type ProcessRow } from '../lib/crm';
 import { dayTimeLabel, KIND_LABELS, type CalendarEntry } from '../lib/scheduling';
+// Phase 14 (demo): dezenter Hinweis auf einen veralteten Demo-Datenstand (nur demo.manage in demo).
+import { DEMO_OUTDATED_TEXT, fetchDemoStatus } from '../lib/demo';
 
 /**
  * „Heute“ – die operative Startseite (Order §22/§37/§38):
@@ -124,6 +126,20 @@ function Home() {
     }
   }, [canWarehouse, me]);
 
+  // Phase 14 (demo, Design §5): Status-Abruf nur mit demo.manage in der Demo-Umgebung und online.
+  const canManageDemo = me?.environment === 'demo' && hasPermission(me, 'demo.manage');
+  const [demoOutdated, setDemoOutdated] = useState<string | null>(null);
+  useEffect(() => {
+    if (!canManageDemo || offlineNow) return;
+    void fetchDemoStatus().then((result) => {
+      if (result.data !== null) {
+        setDemoOutdated(
+          result.data.outdated ? (result.data.outdatedHint ?? DEMO_OUTDATED_TEXT) : null,
+        );
+      }
+    });
+  }, [canManageDemo, offlineNow]);
+
   const canMissingItems = canReturns && hasPermission(me, 'process.view_all');
   useEffect(() => {
     if (!canMissingItems) return;
@@ -202,6 +218,11 @@ function Home() {
       <p className="muted">
         Willkommen{me !== null ? `, ${me.user.firstName}` : ''} · {dateLabel}
       </p>
+      {demoOutdated !== null && (
+        <p className="muted" data-testid="demo-outdated-hint">
+          {demoOutdated} <Link href="/einstellungen/demo">Demo-Umgebung öffnen</Link>
+        </p>
+      )}
 
       {canCalendar && today !== null && (
         <>

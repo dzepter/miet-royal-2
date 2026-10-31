@@ -4,6 +4,8 @@ import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Suspense, useState } from 'react';
 import { apiFetch } from '../../lib/api';
+// Phase 14 (demo): Kennzeichnung auch ohne Anmeldung (GET /api/health).
+import { PublicDemoBadge } from '../../components/demo-badge';
 
 function ResetForm() {
   const params = useSearchParams();
@@ -76,6 +78,7 @@ export default function ResetPasswordPage() {
   return (
     <div className="auth-page">
       <div className="card">
+        <PublicDemoBadge />
         <h1>Passwort zurücksetzen</h1>
         <Suspense fallback={<p className="muted">Wird geladen …</p>}>
           <ResetForm />

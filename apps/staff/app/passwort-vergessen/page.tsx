@@ -3,6 +3,8 @@
 import Link from 'next/link';
 import { useState } from 'react';
 import { apiFetch } from '../../lib/api';
+// Phase 14 (demo): Kennzeichnung auch ohne Anmeldung (GET /api/health).
+import { PublicDemoBadge } from '../../components/demo-badge';
 
 export default function ForgotPasswordPage() {
   const [email, setEmail] = useState('');
@@ -20,6 +22,7 @@ export default function ForgotPasswordPage() {
   return (
     <div className="auth-page">
       <div className="card">
+        <PublicDemoBadge />
         <h1>Passwort vergessen</h1>
         {done ? (
           <div>

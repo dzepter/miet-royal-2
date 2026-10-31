@@ -35,6 +35,8 @@ import {
   enqueuePendingVoucherDeliveries,
 } from '@mietroyal/api/jobs/communication-transactional';
 // Phase 13 (tours-live): Scanner tour_delay (Verspätungsrisiko aktiver Touren) im scan_due.
+// Phase 14 (demo): Reset-Guard – Business-Jobs während eines Demo-Resets zurücklegen.
+import { createDemoWorkerGuard } from '@mietroyal/api/jobs/demo';
 import {
   createRoutingGateway,
   createTourLiveModule,
@@ -96,6 +98,12 @@ runner.register(SYSTEM_HEARTBEAT_JOB_TYPE, systemHeartbeatHandler);
 // wie die Mock-Steuerung der API; in production bleibt das Gateway „disabled“
 // und jeder Transfer wird sauber als nicht konfiguriert abgewiesen.
 const db = createDb(pool);
+// Phase 14 (demo): Während eines Demo-Resets (demo_dataset_state.reset_in_progress)
+// werden alle Business-Jobs – auch communication.scan_due – um 15 s zurückgelegt,
+// ohne einen Versuch zu verbrauchen; nur system.heartbeat läuft weiter.
+if (config.appEnv === 'demo') {
+  runner.setBeforeRun(createDemoWorkerGuard({ db, logger }));
+}
 const lexware = createLexwareContext(config, db, logger);
 // Phase 11: Zahlungsstatus „bezahlt“ (Webhook/Reconcile im Worker) ⇒ Gutschein-Prüfjob.
 const voucherTriggers = createVoucherTriggers({ db, queue, logger });

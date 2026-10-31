@@ -4,6 +4,8 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
 import { apiFetch } from '../../lib/api';
+// Phase 14 (demo): Kennzeichnung auch ohne Anmeldung (GET /api/health).
+import { PublicDemoBadge } from '../../components/demo-badge';
 import { primeOfflineWorkspace } from '../../lib/offline/prime';
 // Phase 12 Finalisierung (Push-Rebind)
 import { armPushRebindAfterLogin } from '../../lib/push';
@@ -113,6 +115,7 @@ export default function LoginPage() {
   return (
     <div className="auth-page">
       <div className="card">
+        <PublicDemoBadge />
         <h1>Miet-Royal Staff – Anmeldung</h1>
 
         {phase.step === 'credentials' && (

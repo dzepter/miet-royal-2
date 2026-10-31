@@ -3,7 +3,9 @@ import type { AppConfig } from './load-config.ts';
 /**
  * Wird geworfen, wenn zwei Umgebungen (z. B. production und demo) auf
  * dieselbe Datenbank, denselben Storage oder dieselben Zugangsdaten zeigen.
- * Meldet nur, WELCHE Konfigurationsteile kollidieren – niemals die Werte.
+ * Meldet nur, WELCHE Konfigurationsteile kollidieren – niemals die Werte
+ * (Ausnahme Phase 14: die Deployment-URLs des Live↔Demo-Wechsels sind keine
+ * Secrets und werden zur Orientierung genannt).
  */
 export class EnvironmentIsolationError extends Error {
   readonly collisions: readonly string[];
@@ -97,6 +99,27 @@ export function assertConfigsIsolated(a: AppConfig, b: AppConfig): void {
   // Phase 13 Final: ROUTING_PROVIDER_TERMS_CONFIRMED ist ein Deployment-Schalter,
   // kein Geheimnis – bewusst keine Kollisionsprüfung.
 
+  // Phase 14 (demo): Die festen URLs des Live↔Demo-Wechsels sind keine Secrets,
+  // dürfen aber nicht in beide Richtungen auf dasselbe Ziel zeigen (Live und
+  // Demo wären dann dieselbe Staff-Instanz) und nie auf die eigene öffentliche
+  // Web-App (MAIL_PUBLIC_WEB_BASE_URL) – beides wäre eine Verwechslung der Umgebungen.
+  const linkA = a.environmentLinks.counterpart;
+  const linkB = b.environmentLinks.counterpart;
+  if (linkA !== null && linkB !== null && linkA.url === linkB.url) {
+    collisions.push(
+      `STAFF_DEMO_URL/STAFF_LIVE_URL: beide Umgebungen verlinken auf dieselbe Ziel-URL (${linkA.url})`,
+    );
+  }
+  for (const config of [a, b]) {
+    const link = config.environmentLinks.counterpart;
+    const ownPublicWeb = originOf(config.mail.publicWebBaseUrl);
+    if (link !== null && ownPublicWeb !== null && link.url === ownPublicWeb) {
+      collisions.push(
+        `${link.kind === 'demo' ? 'STAFF_DEMO_URL' : 'STAFF_LIVE_URL'}: ${config.appEnv} nennt die eigene MAIL_PUBLIC_WEB_BASE_URL als Gegen-URL (${link.url})`,
+      );
+    }
+  }
+
   if (collisions.length > 0) {
     throw new EnvironmentIsolationError(a.appEnv, b.appEnv, collisions);
   }
@@ -115,5 +138,15 @@ function normalizeDatabaseUrl(databaseUrl: string): string {
     return `${host}:${port}/${database}`;
   } catch {
     return databaseUrl;
+  }
+}
+
+/** Phase 14 (demo): Origin einer absoluten URL (null, wenn nicht gesetzt oder ungültig). */
+function originOf(url: string | null): string | null {
+  if (url === null) return null;
+  try {
+    return new URL(url).origin;
+  } catch {
+    return null;
   }
 }

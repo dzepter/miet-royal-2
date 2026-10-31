@@ -215,6 +215,9 @@ export function registerAuthRoutes(app: FastifyInstance, options: AuthRouteOptio
       permissions: [...permissions].sort(),
       // Umgebungs-ID (Phase 8): Namespace des lokalen Offline-Arbeitsbereichs.
       environment: config.appEnv,
+      // Phase 14 (demo): feste Gegen-Umgebung für den Live↔Demo-Wechsel – nur der
+      // Origin (kein Secret, keine weiteren Daten); null, wenn nicht konfiguriert.
+      counterpart: config.environmentLinks.counterpart,
     };
   });
 
