@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import {
   staffSecurityEvents,
   trainingAssignments,
@@ -905,6 +907,78 @@ describe('RF14-6 – Katalog-Sync fail-soft beim Start, Lazy Retry (Review-Fix F
       expect(broken.calls).toBe(4); // Start + drei Zugriffe: kein „giftiger“ Merker
     } finally {
       await brokenApp.close();
+    }
+  });
+});
+
+// ── Phase 14 Final §8 (Agent RULES): subject_ref bleibt serverseitiges Evaluator-Metadatum ──
+
+describe('Phase 14 Final §8: subject_ref bleibt intern (SR1)', () => {
+  it('SR1. subjectRef erscheint in keiner Trainings-API-Antwort und in keinem Audit-Detail – nur als serverseitige UUID in training_attempt_events', async () => {
+    const { admin, cookie } = await adminSession(demo);
+    const user = await trainee(demo, admin.id, ['calendar.view'], 'Fahrerin');
+    const adminApi = apiFor(demo.app, cookie);
+    const api = apiFor(demo.app, user.cookie);
+    expect(
+      (
+        await adminApi('POST', '/staff/training/admin/assignments', {
+          userId: user.user.id,
+          pathKey: 'delivery_tour',
+        })
+      ).status,
+    ).toBe(201);
+    const attemptId = await startedAttemptId(api, 'tour_complete');
+    const tourId = randomUUID();
+    for (const eventKey of ['tour.planned', 'tour.ready', 'tour.started'] as const) {
+      await demo.trainingRecorder.record({
+        actorUserId: user.user.id,
+        eventKey,
+        subjectRef: tourId,
+      });
+    }
+    const check = await checkAttempt(api, attemptId);
+    expect(check.status).toBe(200);
+    await adminApi('POST', '/staff/training/admin/reset', { userId: user.user.id });
+    const events = await eventsOf(demo, attemptId);
+    expect(events.filter((event) => event.subjectRef === tourId).length).toBeGreaterThan(0);
+
+    const responses = [
+      check,
+      await api('GET', '/staff/training/me'),
+      await api('GET', '/staff/training/definitions'),
+      await api('GET', `/staff/training/attempts/${attemptId}`),
+      await adminApi('GET', `/staff/training/attempts/${attemptId}`),
+      await adminApi('GET', '/staff/training/admin/overview'),
+      await adminApi('GET', `/staff/training/admin/users/${user.user.id}`),
+      await adminApi('GET', '/staff/training/admin/paths'),
+    ];
+    for (const response of responses) {
+      expect(response.status).toBe(200);
+      const serialized = JSON.stringify(response.body);
+      expect(serialized).not.toContain(tourId);
+      expect(serialized).not.toMatch(/subjectRef|subject_ref/);
+    }
+    // Audit: kein Trainings-Ereignis trägt das Fachobjekt.
+    const audit = (await demo.db.select().from(staffSecurityEvents)).filter((event) =>
+      event.type.startsWith('training.'),
+    );
+    expect(audit.length).toBeGreaterThan(0);
+    for (const event of audit) {
+      const serialized = JSON.stringify(event.details ?? {});
+      expect(serialized).not.toContain(tourId);
+      expect(serialized).not.toMatch(/subjectRef|subject_ref/);
+    }
+    // Statisch: Routen und Admin-Services kennen das Feld nicht (nur Recorder/Evaluator/Service-intern).
+    const root = fileURLToPath(new URL('../src/', import.meta.url));
+    for (const file of [
+      'routes/training.ts',
+      'routes/training-gates.ts',
+      'training/gate-admin-service.ts',
+      'training/gate-service.ts',
+      'training/gate-http.ts',
+      'auth/audit.ts',
+    ]) {
+      expect(readFileSync(root + file, 'utf8'), file).not.toMatch(/subjectRef|subject_ref/);
     }
   });
 });

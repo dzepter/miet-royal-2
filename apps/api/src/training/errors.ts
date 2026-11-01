@@ -25,6 +25,8 @@ export const TRAINING_ERROR_CODES = {
   ASSIGNMENT_EXISTS: 'TRAINING_ASSIGNMENT_EXISTS',
   PATH_INACTIVE: 'TRAINING_PATH_INACTIVE',
   ATTEMPT_NOT_ACTIVE: 'TRAINING_ATTEMPT_NOT_ACTIVE',
+  /** Phase 14 Final §9: keine neue Zuweisung an einen deaktivierten Mitarbeiter (409). */
+  USER_INACTIVE: 'TRAINING_USER_INACTIVE',
   /** Neutraler Fehlercode der bewussten Prüfung „Übung prüfen“ ohne erfüllte Kriterien (§44). */
   STEP_NOT_COMPLETED: 'STEP_NOT_COMPLETED',
 } as const;
@@ -39,6 +41,8 @@ export const TRAINING_MESSAGES = {
   ATTEMPT_NOT_ACTIVE: 'Dieser Versuch ist nicht mehr aktiv – bitte die Übung neu starten.',
   ASSIGNMENT_EXISTS: 'Dieser Trainingspfad ist dem Mitarbeiter bereits zugewiesen.',
   USER_NOT_FOUND: 'Mitarbeiter nicht gefunden.',
+  /** Phase 14 Final §9 */
+  USER_INACTIVE: 'Der Mitarbeiter ist deaktiviert.',
   RESET_SCOPE_INVALID: 'Bitte entweder einen Pfad oder eine einzelne Übung wählen – nicht beides.',
   SETTLEMENT_DEMO_NOTE:
     'Die Übung endet vor der Übertragung an die Buchhaltung – in der Demo gibt es keine Buchhaltungsübertragung.',

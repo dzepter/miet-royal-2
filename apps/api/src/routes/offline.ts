@@ -27,7 +27,8 @@ import {
 } from '../offline/lease-service.ts';
 import { OfflineLeaseRequiredError, OfflinePackageService } from '../offline/package-service.ts';
 import { OfflineSyncService, SyncInProgressError } from '../offline/sync-service.ts';
-import type { TrainingGate } from '../training/gate-service.ts'; // Phase 14 (training gate)
+import { sendTrainingGateUnavailable } from '../training/gate-http.ts'; // Phase 14 Final (offline, Review F2)
+import { TrainingGateUnavailableError, type TrainingGate } from '../training/gate-service.ts'; // Phase 14 (training gate)
 import type { TrainingEventRecorder } from '../training/recorder.ts'; // Phase 14 (training)
 import { DamageService } from '../returns/damage-service.ts';
 import { ReturnService, type ReturnFinalizedListener } from '../returns/return-service.ts';
@@ -171,6 +172,14 @@ export function registerOfflineRoutes(app: FastifyInstance, options: OfflineRout
     if (error instanceof SyncInProgressError) {
       reply.header('retry-after', '5');
       sendError(request, reply, 503, 'SYNC_IN_PROGRESS', error.message);
+      return true;
+    }
+    // Phase 14 Final (offline, Review F2): Trainingskatalog nicht verfügbar ⇒ Mutation bleibt
+    // unangewendet (Reservierung `processing` wie bei jedem Infrastrukturfehler: Retry erst nach
+    // PROCESSING_STALE_MS, keine dauerhafte Ablehnung), Antwort 503 TRAINING_CATALOG_UNAVAILABLE
+    // wie `requireTrainingGate` (§13, ohne Interna) statt 500.
+    if (error instanceof TrainingGateUnavailableError) {
+      sendTrainingGateUnavailable(request, reply, error);
       return true;
     }
     return sendAuthError(request, reply, error);

@@ -39,6 +39,24 @@ export class TrainingGateError extends AuthError {
   }
 }
 
+/**
+ * Phase 14 Final §13: der Katalog ist fail-soft beim Start, das production-Gate aber nie fail-open –
+ * scheitert der nachgeholte Katalog-Sync in der Gate-Auswertung, wird die Fachaktion blockiert
+ * (HTTP 503 `TRAINING_CATALOG_UNAVAILABLE`, siehe `gate-http.ts`; Offline-Sync: Fehler ⇒ kein Apply).
+ * Kein `TrainingGateError` (der wäre im Offline-Sync eine dauerhafte Ablehnung) – der Zustand ist vorübergehend.
+ */
+export const TRAINING_GATE_UNAVAILABLE_MESSAGE =
+  'Der Trainingskatalog ist vorübergehend nicht verfügbar.';
+
+export class TrainingGateUnavailableError extends Error {
+  readonly trainingCode = 'TRAINING_CATALOG_UNAVAILABLE' as const;
+
+  constructor(readonly featureKey: TrainingFeatureKey) {
+    super(TRAINING_GATE_UNAVAILABLE_MESSAGE);
+    this.name = 'TrainingGateUnavailableError';
+  }
+}
+
 export const TRAINING_GATE_MESSAGES = {
   required: (title: string) =>
     `Für diese Funktion ist zuerst das Training ‚${title}‘ erforderlich.`,
@@ -236,8 +254,13 @@ export class TrainingGateService implements TrainingGate {
   private async inspect(input: TrainingGateInput): Promise<GateEvaluation> {
     const now = input.now ?? new Date();
     // Review-Fix F6: nach einem fehlgeschlagenen Start-Sync liegt der Katalog erst hier vor
-    // (memoisiert, danach kostenlos); scheitert er erneut, bleibt die Aktion blockiert (Fehler).
-    await this.options.catalog?.ensureSynced();
+    // (memoisiert, danach kostenlos); scheitert er erneut, bleibt die Aktion blockiert –
+    // Phase 14 Final §13: fail-closed als `TrainingGateUnavailableError` (503, nie Interna).
+    try {
+      await this.options.catalog?.ensureSynced();
+    } catch {
+      throw new TrainingGateUnavailableError(input.featureKey);
+    }
     const [requirement] = await this.db
       .select()
       .from(trainingFeatureRequirements)

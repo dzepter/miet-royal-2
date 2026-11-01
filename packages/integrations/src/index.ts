@@ -15,6 +15,10 @@ export {
   type JobRunnerLogger,
   type JobBeforeRunDecision,
   type JobBeforeRunHook,
+  // Phase 14 Final (Reset-Barrier): Execution-Guard um die gesamte Jobausführung.
+  JOB_EXECUTION_GUARD_ERROR_DEFER_MS,
+  type JobExecutionDecision,
+  type JobExecutionGuard,
 } from './jobs/runner.ts';
 export { SYSTEM_HEARTBEAT_JOB_TYPE, systemHeartbeatHandler } from './jobs/system-heartbeat.ts';
 

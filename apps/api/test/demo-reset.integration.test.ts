@@ -20,13 +20,14 @@ import {
   DEMO_RESET_STALE_MS,
   DemoDatasetService,
 } from '../src/demo/dataset.ts';
-import { DEMO_RESET_GATE_CACHE_TTL_MS } from '../src/demo/reset-gate.ts';
+import type { BarrierLease } from '../src/demo/reset-barrier.ts';
 import {
   DemoResetService,
   DEMO_BUSINESS_TABLES_DELETE_ORDER,
-  DEMO_RESET_SETTLE_DELAY_MS,
   DEMO_RESET_STORAGE_DELETE_CONCURRENCY,
+  DEMO_RESET_WIPE_LOCK_TIMEOUT_MS,
   deleteStorageObjectsInBatches,
+  errorClassOf,
   isForeignKeyViolation,
   retryOnceOnForeignKeyViolation,
 } from '../src/demo/reset-service.ts';
@@ -363,6 +364,7 @@ describe('Phase 14 – Demo-Reset', () => {
       storage: ctx.storage,
       queue: ctx.queue,
       seed: demo.seed,
+      barrier: ctx.demoBarrier!, // Phase 14 Final (Reset-Barrier)
     });
     const error = await dev.reset({ actorId: adminId, now }).catch((e: unknown) => e);
     expect(error).toBeInstanceOf(DemoError);
@@ -518,9 +520,9 @@ describe('Phase 14 – Demo-Reset', () => {
   );
 
   it(
-    'RF4. Schutzfenster: Phase B beginnt erst settleDelayMs nach dem Flag-Commit (Default Gate-Cache-TTL + 200 ms; Tests laufen mit 0 weiter grün)',
+    'RF4. (Phase 14 Final) kein Schutzfenster mehr: Phase B beginnt erst, wenn der Reset den Exclusive-Barrier-Lock hält – ein laufender Shared-Inhaber (Business-Mutation) blockiert Phase B unabhängig von jeder Zeitspanne; settleDelayMs existiert nicht mehr',
     async () => {
-      expect(DEMO_RESET_SETTLE_DELAY_MS).toBe(DEMO_RESET_GATE_CACHE_TTL_MS + 200);
+      expect('settleDelayMs' in demo.reset).toBe(false);
       let flaggedAt = 0;
       let wipeAt = 0;
       class ObservingDataset extends DemoDatasetService {
@@ -541,7 +543,7 @@ describe('Phase 14 – Demo-Reset', () => {
         dataset: new ObservingDataset(ctx.db),
         registry: demo.registry,
         seed: demo.seed,
-        settleDelayMs: 150,
+        barrier: ctx.demoBarrier!,
         fkRetryDelayMs: 0,
         hooks: {
           beforeBusinessWipe: async () => {
@@ -549,10 +551,20 @@ describe('Phase 14 – Demo-Reset', () => {
           },
         },
       });
-      const result = await observing.reset({ actorId: adminId, now });
-      expect(result.ok).toBe(true);
+      // Eine „laufende Business-Mutation“: Shared-Lock, der erst nach 1,5 s endet.
+      const shared = (await ctx.demoBarrier!.tryAcquireShared()) as BarrierLease;
+      expect(shared).not.toBeNull();
+      const run = observing.reset({ actorId: adminId, now });
+      await sleep(1500); // weit über dem früheren Schutzfenster von 1,2 s
       expect(flaggedAt).toBeGreaterThan(0);
-      expect(wipeAt - flaggedAt).toBeGreaterThanOrEqual(150);
+      expect(wipeAt).toBe(0); // Phase B wartet auf das Ende der Mutation
+      expect(await demo.dataset.resetInProgress()).toBe(true);
+      const releasedAt = Date.now();
+      await shared.release();
+      const result = await run;
+      expect(result.ok).toBe(true);
+      expect(wipeAt).toBeGreaterThanOrEqual(releasedAt);
+      expect(result.barrierWaitMs).toBeGreaterThanOrEqual(1000);
       expect(await demo.dataset.resetInProgress()).toBe(false);
     },
     RESET_TIMEOUT_MS,
@@ -756,6 +768,7 @@ describe('Phase 14 – Demo-Reset', () => {
         storage: ctx.storage,
         queue: ctx.queue,
         seed: demo.seed,
+        barrier: ctx.demoBarrier!, // Phase 14 Final (Reset-Barrier)
       });
       await expect(dev.releaseStaleReset(now)).rejects.toMatchObject({ demoCode: 'DEMO_ONLY' });
     },
@@ -763,9 +776,12 @@ describe('Phase 14 – Demo-Reset', () => {
   );
 
   it(
-    'RF14-1. Lauf-Lock über die gesamte Laufzeit (Review-Fix F1, Order §20): während ein Reset läuft (Schutzfenster/Seed), meldet releaseStaleReset (--force) DEMO_RESET_RUNNING und ein zweiter reset() scheitert vor Phase A (nie Phase B); nach dem Ende ist der Lock frei',
+    'RF14-1. Lauf-Lock über die gesamte Laufzeit (Review-Fix F1, Order §20): während ein Reset läuft (Barrier-Wartezeit/Seed), meldet releaseStaleReset (--force) DEMO_RESET_RUNNING und ein zweiter reset() scheitert vor Phase A (nie Phase B); nach dem Ende ist der Lock frei',
     async () => {
-      const first = demoServicesFor(ctx, { settleDelayMs: 2500 });
+      const first = demoServicesFor(ctx);
+      // Phase 14 Final: der erste Reset wartet an der Barrier auf diesen Shared-Inhaber (statt Schutzfenster).
+      const holder = (await ctx.demoBarrier!.tryAcquireShared()) as BarrierLease;
+      expect(holder).not.toBeNull();
       let secondReachedPhaseB = false;
       const second = demoServicesFor(ctx, {
         hooks: {
@@ -775,7 +791,7 @@ describe('Phase 14 – Demo-Reset', () => {
         },
       });
       const firstRun = first.reset.reset({ actorId: adminId, now });
-      await sleep(500); // Phase A des ersten Resets ist committet, das Schutzfenster läuft
+      await sleep(500); // Phase A des ersten Resets ist committet, er wartet an der Barrier
       await expect(second.reset.releaseStaleReset(now)).rejects.toMatchObject({
         demoCode: 'DEMO_RESET_RUNNING',
       });
@@ -783,6 +799,7 @@ describe('Phase 14 – Demo-Reset', () => {
         demoCode: 'DEMO_RESET_RUNNING',
       });
       expect(secondReachedPhaseB).toBe(false);
+      await holder.release();
       // Der erste Reset läuft ungestört zu Ende (ein Lauf, Version aktuell, Flag frei).
       expect((await firstRun).ok).toBe(true);
       const state = await demo.dataset.state(now);
@@ -794,6 +811,55 @@ describe('Phase 14 – Demo-Reset', () => {
       expect((await second.reset.reset({ actorId: adminId, now })).ok).toBe(true);
       expect(secondReachedPhaseB).toBe(true);
       expect(await demo.dataset.resetInProgress()).toBe(false);
+    },
+    RESET_TIMEOUT_MS,
+  );
+
+  it(
+    'RF3-3. (Phase 14 Final, Härtung) fremde Tabellensperre während Phase B: lock_timeout der Wipe-Transaktion (Default 30 s, Dep wipeLockTimeoutMs) lässt den Reset mit SQLSTATE 55P03 scheitern statt zu hängen – markInterrupted (Flag bleibt, resetStale) + Audit demo.reset_failed mit errorClass SQLSTATE_55P03; nach Freigabe der Sperre gelingt ein erneuter Reset',
+    async () => {
+      expect(DEMO_RESET_WIPE_LOCK_TIMEOUT_MS).toBe(30_000);
+      const guarded = demoServicesFor(ctx, { wipeLockTimeoutMs: 1000 });
+      const before = (await ctx.db.select().from(staffSecurityEvents)).length;
+      const holder = await ctx.pool.connect();
+      try {
+        await holder.query('BEGIN');
+        await holder.query('LOCK TABLE customers IN ACCESS EXCLUSIVE MODE');
+        const startedAt = Date.now();
+        let failure: unknown = null;
+        // Echte Uhr (wie RB-T1): markInterrupted datiert den Beginn um genau die Stale-Spanne
+        // zurück; `resetStale` verlangt eine ECHT größere Differenz.
+        await guarded.reset.reset({ actorId: adminId, now: new Date() }).catch((error: unknown) => {
+          failure = error;
+        });
+        expect(failure).not.toBeNull();
+        expect(errorClassOf(failure)).toBe('SQLSTATE_55P03');
+        expect(Date.now() - startedAt).toBeLessThan(20_000); // kein Hänger (1 s lock_timeout)
+        const state = await demo.dataset.state();
+        expect(state.resetInProgress).toBe(true); // Gate bleibt fail-closed …
+        expect(state.resetStale).toBe(true); // … sofort erneut zurücksetzbar
+        const events = (
+          await ctx.db.select().from(staffSecurityEvents).orderBy(staffSecurityEvents.createdAt)
+        )
+          .slice(before)
+          .filter((event) => event.type.startsWith('demo.'));
+        expect(events.map((event) => event.type)).toEqual([
+          'demo.reset_started',
+          'demo.reset_failed',
+        ]);
+        expect(events[1]!.details).toMatchObject({
+          status: 'failed',
+          errorClass: 'SQLSTATE_55P03',
+        });
+      } finally {
+        await holder.query('ROLLBACK');
+        holder.release();
+      }
+      // Echte Uhr auch hier: das gerundete `now` läge vor dem zurückdatierten Beginn + Stale-Spanne.
+      const result = await guarded.reset.reset({ actorId: adminId, now: new Date() });
+      expect(result.ok).toBe(true);
+      expect(await demo.dataset.resetInProgress()).toBe(false);
+      expect(await count('customers')).toBeGreaterThan(0);
     },
     RESET_TIMEOUT_MS,
   );

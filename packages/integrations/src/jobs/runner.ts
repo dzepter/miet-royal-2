@@ -18,6 +18,26 @@ export type JobBeforeRunDecision =
   'run' | { defer: { delayMs: number; reason?: string } } | { skip: { reason: string } };
 export type JobBeforeRunHook = (job: ClaimedJob) => Promise<JobBeforeRunDecision>;
 
+/**
+ * Phase 14 Final (Reset-Barrier): Execution-Guard UM die Ausführung eines
+ * beanspruchten Jobs – nach dem `beforeRun`-Hook aufgerufen. `acquire(job)`
+ * liefert `run` mit einem `release()`, das der Runner im `finally` nach
+ * Handler + markSucceeded/markFailed aufruft (auch bei Handler-Exception oder
+ * Fehler von markFailed), `defer` (ohne Attempt-Verbrauch, Queue.defer) oder
+ * `skip` (Queue.markDead). Wirft `acquire`, wird der Job fail-closed ohne
+ * Attempt-Verbrauch um `JOB_EXECUTION_GUARD_ERROR_DEFER_MS` zurückgelegt – ein
+ * Handler läuft nie ohne erworbenen Guard (z. B. Shared-Barrier-Lock in der Demo).
+ */
+export type JobExecutionDecision =
+  | { action: 'run'; release(): Promise<void> }
+  | { action: 'defer'; delayMs: number; reason?: string }
+  | { action: 'skip'; reason: string };
+export interface JobExecutionGuard {
+  acquire(job: ClaimedJob): Promise<JobExecutionDecision>;
+}
+/** Phase 14 Final: Vertagung, wenn der Execution-Guard selbst scheitert (Infrastruktur). */
+export const JOB_EXECUTION_GUARD_ERROR_DEFER_MS = 15_000;
+
 /** Minimales Logger-Interface, damit dieses Paket keinen Logger erzwingt. */
 export interface JobRunnerLogger {
   info(context: Record<string, unknown>, message: string): void;
@@ -89,6 +109,7 @@ export class JobRunner {
   private readonly logger: JobRunnerLogger;
   private readonly handlers = new Map<string, JobHandler>();
   private beforeRun: JobBeforeRunHook | null = null;
+  private executionGuard: JobExecutionGuard | null = null;
   private timer: NodeJS.Timeout | undefined;
   private stopped = true;
   private stopInFlight: Promise<void> | undefined;
@@ -117,6 +138,18 @@ export class JobRunner {
       throw new Error('JobRunner.setBeforeRun: die Queue unterstützt kein defer()');
     }
     this.beforeRun = hook;
+  }
+
+  /**
+   * Phase 14 Final (Reset-Barrier): Execution-Guard um jede Jobausführung
+   * setzen (oder mit null entfernen). Verlangt wie `setBeforeRun` eine Queue
+   * mit `defer`, damit ein vertagter Job keinen Versuch verbraucht.
+   */
+  setExecutionGuard(guard: JobExecutionGuard | null): void {
+    if (guard !== null && typeof this.queue.defer !== 'function') {
+      throw new Error('JobRunner.setExecutionGuard: die Queue unterstützt kein defer()');
+    }
+    this.executionGuard = guard;
   }
 
   /** Verarbeitet höchstens einen fälligen Job. */
@@ -164,6 +197,49 @@ export class JobRunner {
       }
     }
 
+    // Phase 14 Final (Reset-Barrier): Guard UM die gesamte Ausführung (Lock bis ins finally).
+    let release: (() => Promise<void>) | null = null;
+    if (this.executionGuard !== null && typeof this.queue.defer === 'function') {
+      let decision: JobExecutionDecision;
+      try {
+        decision = await this.executionGuard.acquire(job);
+      } catch (error) {
+        // Fail-closed: ohne Guard läuft kein Handler; Vertagung ohne Versuchsverbrauch.
+        const message = summarizeJobError(error);
+        await this.queue.defer(job, new Date(Date.now() + JOB_EXECUTION_GUARD_ERROR_DEFER_MS));
+        this.logger.warn(
+          {
+            jobId: job.id,
+            jobType: job.type,
+            delayMs: JOB_EXECUTION_GUARD_ERROR_DEFER_MS,
+            error: message,
+          },
+          'Execution-Guard fehlgeschlagen – Job zurückgelegt (ohne Versuchsverbrauch)',
+        );
+        return 'deferred';
+      }
+      if (decision.action === 'skip') {
+        const reason = decision.reason;
+        if (typeof this.queue.markDead === 'function') await this.queue.markDead(job, reason);
+        else await this.queue.markFailed(job, reason);
+        this.logger.warn(
+          { jobId: job.id, jobType: job.type, reason },
+          'Job übersprungen und beendet (Execution-Guard)',
+        );
+        return 'skipped';
+      }
+      if (decision.action === 'defer') {
+        const delayMs = Math.max(0, Math.floor(decision.delayMs));
+        await this.queue.defer(job, new Date(Date.now() + delayMs));
+        this.logger.info(
+          { jobId: job.id, jobType: job.type, delayMs, reason: decision.reason ?? null },
+          'Job zurückgelegt (ohne Versuchsverbrauch)',
+        );
+        return 'deferred';
+      }
+      release = decision.release;
+    }
+
     try {
       await handler(job);
       await this.queue.markSucceeded(job);
@@ -181,6 +257,18 @@ export class JobRunner {
         'Job fehlgeschlagen',
       );
       return 'failed';
+    } finally {
+      if (release !== null) {
+        // Phase 14 Final: Guard IMMER freigeben – auch nach Handler-Exception oder markFailed-Fehler.
+        try {
+          await release();
+        } catch (error) {
+          this.logger.warn(
+            { jobId: job.id, jobType: job.type, error: summarizeJobError(error) },
+            'Execution-Guard konnte nicht freigegeben werden',
+          );
+        }
+      }
     }
   }
 

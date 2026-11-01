@@ -246,6 +246,38 @@ Profiländerung verändert laufenden Booking-Snapshot nicht.
   E2E-Buchstaben A–Q: Abschnitt „E2E Phase 14 (Order §109)“.
 - Reset-Sicherheit wird reproduziert: paralleler Reset ⇒ 409, Percent-codierte
   Pfade ⇒ 503 während des Resets, Prozessabbruch ⇒ `resetStale` nach 10 min.
+- Reset-Barrier (Phase 14 Final, Auftrag §6, Agent BARRIER):
+  `apps/api/test/demo-reset-barrier.integration.test.ts` (DB mietroyal_test5) RB1
+  Businessrequest blockiert > 1,2 s ⇒ Phase B erst nach Request-Ende (Mutation
+  anschließend gelöscht), RB2 Jobhandler blockiert > 1,2 s ⇒ kein Wipe vor
+  Handlerende, RB3 echter geclaimter `mail.send` (Fake-Gateway hängt) ⇒ Reset
+  wartet, Zustellung endet vor Phase B, danach kein Gateway-Aufruf für die alte
+  Zustellung, RB4 Flag gesetzt ⇒ 503, RB5 Gate-Cache false + ungecachte
+  Zweitprüfung true ⇒ 503 ohne Mutation, RB6 Job sieht Reset erst nach dem
+  Lock ⇒ defer ohne Attempt-Verbrauch, RB7 zwei Apps (A-Request blockiert
+  B-Reset-Route), RB8 App + Worker-Runner mit eigener Barrier, RB9 Exclusive
+  wartet auf den letzten Shared-Inhaber (zwei Barrier-Instanzen; neue Mutation
+  währenddessen 503), RB10–RB13 Freigabe bei 200/4xx/500/Jobfehler, RB14 keine
+  Lock-/Pool-Leaks (pg_locks + Pool-Zähler) nach parallelen Mutationen, RB15
+  Fach-Pool max = 1 ohne Deadlock inkl. komplettem Reset, RB16 Reset-Route hält
+  keinen Shared-Lock, RB17 neuer Datensatz nach Reset (Epoch, 200), RB18 alter
+  processing-Job ⇒ dead/DEMO_DATASET_CHANGED, RB-A1 (Review 14f F1: echter
+  TCP-Client-Abbruch während des Handlers ⇒ Shared-Lock bleibt, Reset wartet,
+  Mutation nach Handlerende nicht im neuen Datensatz, kein Leak), RF3-1 (Review
+  14f F3: Lock-Pool erschöpft ⇒ `DEMO_RESET_BARRIER_UNAVAILABLE` vor/nach Phase
+  A, Audit-errorClass, API weiter 503 DATABASE_UNAVAILABLE). RF3-3
+  (`demo-reset.integration.test.ts`): fremde Tabellensperre in Phase B ⇒
+  SQLSTATE 55P03 nach `wipeLockTimeoutMs` statt Hänger, Audit `SQLSTATE_55P03`,
+  erneuter Reset ok. FC2 (`training-gates.integration.test.ts`): Offline-Sync
+  bei Katalogausfall ⇒ 503 TRAINING_CATALOG_UNAVAILABLE, kein Receipt, danach
+  reguläre Gate-Auswertung. Unit:
+  `apps/api/test/demo-reset-barrier.test.ts` RB-H1…H7 (Hook-Reihenfolge Gate →
+  Lock → Zweitprüfung, alle Release-Pfade; RB-H7/RB-A2: Client-Abbruch/Timeout
+  geben nicht frei, Freigabe in `onSend`, fail-closed) und RB-J1…J3
+  (Execution-Guard), `packages/integrations/test/runner-defer.test.ts` RB-U1…U5
+  (Runner-Guard: release nach Erfolg/Fehler, defer/skip, Guard-Fehler ⇒ defer).
+  RF4 (`demo-reset.integration.test.ts`) prüft, dass Phase B ohne Zeitfenster auf
+  das Ende eines Shared-Inhabers wartet; `settleDelayMs` existiert nicht mehr.
 - Kein automatischer Seed in Tests oder beim Start; `pnpm demo:seed` /
   `pnpm demo:reset` nur gegen Demo-Datenbanken (Env-Guard-Tests).
 - Demo-Accounting (Auftrag Teil 2, §101 Nr. 14/15, W1/W1.1):
@@ -318,7 +350,8 @@ Profiländerung verändert laufenden Booking-Snapshot nicht.
     in_progress ⇒ interrupted/DEMO_DATA_RESET, Zuweisung bleibt, Seed-Entity danach
     auflösbar), T87 Training-Reset erhält Historie (superseded, Runde +1, neuer Versuch),
     T88 inaktive Übung ⇒ 409 TRAINING_DEFINITION_INACTIVE, T89 Spalten/Inhalte der
-    Ereignistabelle sind reine Metadaten, Versuchsansicht ohne Fachobjekt-ID.
+    Ereignistabelle sind reine Metadaten, Versuchsansicht ohne Fachobjekt-ID; Phase 14
+    Final SR1 (subjectRef in keiner API-Antwort/keinem Audit, statische Prüfung).
   - `training-exercises.integration.test.ts` (§106 Nr. 90–98, echte Fachpfade über Routen,
     Trainee mit exakt den nötigen Rechten): T90 offer_send (bearbeiten + senden ⇒ passed; nur
     senden ⇒ `send` abgelehnt, offener Schritt `edit`), T91 handover_complete (idempotente
@@ -366,6 +399,29 @@ Profiländerung verändert laufenden Booking-Snapshot nicht.
   (idempotent; ohne `training.manage` 403), T128 Override (Doppelklick
   dupliziert nicht), T129 Widerruf (idempotent, sofort wirksam, eigener Typ
   für Demo-Bestätigung), T130 Audit aller sechs Typen ohne Begründungstext.
+- Phase 14 Final (Agent RULES, Order §7/§9/§13) in denselben Dateien:
+  - `training-admin-live`: VD1 verified_demo ohne validUntil (201, null, Sperre
+    offen), VD2 verified_demo mit validUntil (Zukunft/Vergangenheit) ⇒ 400
+    VALIDATION mit festem Text, `null` erlaubt, VD3 direkter INSERT/UPDATE ⇒
+    CHECK `staff_training_clearances_verified_demo_permanent_check` (23514),
+    VD4 Override unbefristet, VD5 Override mit Zukunftsdatum (Vergangenheit
+    400); IU2 verified_demo an deaktivierten Mitarbeiter ⇒ 409
+    `TRAINING_USER_INACTIVE` (locked erlaubt, `user.status` in der Antwort),
+    IU3 Override ⇒ 409, IU4 Freigaben eines deaktivierten Mitarbeiters bleiben
+    lesbar/widerrufbar, IU5 Reaktivierung ⇒ nicht widerrufene verified_demo
+    gilt wieder im production-Gate, Widerruf sperrt.
+  - `training-gates`: VD6 abgelaufener Override blockiert, daneben bestehende
+    Demo-Bestätigung bleibt (Anzeige bevorzugt sie), VD7 verified_demo gilt
+    nach Jahren bis zum Widerruf, FC1 Katalog-Sync scheitert ⇒ production-Gate
+    503 `TRAINING_CATALOG_UNAVAILABLE` ohne Interna, keine Fachwirkung, nach
+    gelungenem Sync erlaubt (fail-closed, nie fail-open).
+  - `training-admin-demo`: IU1 Zuweisung an deaktivierten Mitarbeiter ⇒ 409
+    (locked erlaubt), IU4 Historie (Zuweisung, Versuche, Ereignisse) nach
+    Deaktivierung über Admin-Routen lesbar, IU6 Übersicht führt deaktivierte
+    mit Historie (status disabled), nicht ohne Historie.
+  - `training-meta`: SR1 `subjectRef` erscheint in keiner Trainings-API-Antwort
+    (me, definitions, attempt, check, overview, user-detail, paths) und keinem
+    Audit-Detail; statisch: Routen/Gate-Services/Audit kennen das Feld nicht.
 - Bestandstests der gegateten Module bleiben grün (development erzwingt
   nicht): commerce-offer, handover-finalization, return-finalization,
   return-cleaning, settlement-notice-wait/-security, tours-end/-security,

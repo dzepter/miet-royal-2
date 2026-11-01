@@ -7,6 +7,7 @@ import {
   type Database,
   type DatabaseExecutor,
   type StaffTrainingClearance,
+  type StaffUser,
 } from '@mietroyal/database';
 import { and, asc, desc, eq, gt, inArray, isNull, lte, or } from 'drizzle-orm';
 import { recordSecurityEvent } from '../auth/audit.ts';
@@ -47,7 +48,14 @@ export const TRAINING_GATE_ADMIN_MESSAGES = {
   USER_NOT_FOUND: 'Mitarbeiter nicht gefunden.',
   CLEARANCE_NOT_FOUND: 'Freigabe nicht gefunden.',
   VALID_UNTIL_IN_PAST: 'Das Ablaufdatum muss in der Zukunft liegen.',
+  /** Phase 14 Final §7: `verified_demo` ist unbefristet (zusätzlich CHECK-Constraint, Migration 0031). */
+  VERIFIED_DEMO_PERMANENT: 'Eine bestätigte Demo-Übung läuft nicht ab – kein Ablaufdatum möglich.',
+  /** Phase 14 Final §9: keine neue Freigabe/kein neuer Override an deaktivierte Mitarbeiter. */
+  USER_INACTIVE: 'Der Mitarbeiter ist deaktiviert.',
 } as const;
+
+/** Phase 14 Final §9: Statuswert, der neue Zuweisungen/Freigaben ausschließt (gesperrt = `locked` bleibt zulässig). */
+export const TRAINING_INACTIVE_USER_STATUS: StaffUser['status'] = 'disabled';
 
 export interface GateDefinitionRef {
   key: string;
@@ -79,7 +87,8 @@ export interface GateOverview {
 export interface ClearanceView {
   id: string;
   userId: string;
-  user: { firstName: string; lastName: string } | null;
+  /** Phase 14 Final §9: `status` (active|locked|disabled) – die UI blendet deaktivierte Mitarbeiter aus den Auswahllisten aus. */
+  user: { firstName: string; lastName: string; status: StaffUser['status'] } | null;
   definitionKey: string;
   definitionTitle: string | null;
   source: 'verified_demo' | 'override';
@@ -264,6 +273,10 @@ export class TrainingGateAdminService {
       throw new AuthError('VALIDATION', TRAINING_GATE_ADMIN_MESSAGES.OVERRIDE_REASON_REQUIRED);
     }
     const validUntil = input.validUntil ?? null;
+    // Phase 14 Final §7: eine bestätigte Demo-Übung ist unbefristet – nur ein Override darf ablaufen.
+    if (input.source === 'verified_demo' && validUntil !== null) {
+      throw new AuthError('VALIDATION', TRAINING_GATE_ADMIN_MESSAGES.VERIFIED_DEMO_PERMANENT);
+    }
     if (validUntil !== null && validUntil.getTime() <= now.getTime()) {
       throw new AuthError('VALIDATION', TRAINING_GATE_ADMIN_MESSAGES.VALID_UNTIL_IN_PAST);
     }
@@ -273,12 +286,22 @@ export class TrainingGateAdminService {
         throw new AuthError('NOT_FOUND', TRAINING_GATE_ADMIN_MESSAGES.DEFINITION_NOT_FOUND);
       }
       const [user] = await tx
-        .select({ id: staffUsers.id })
+        .select({ id: staffUsers.id, status: staffUsers.status })
         .from(staffUsers)
         .where(eq(staffUsers.id, input.userId))
         .limit(1);
       if (user === undefined) {
         throw new AuthError('NOT_FOUND', TRAINING_GATE_ADMIN_MESSAGES.USER_NOT_FOUND);
+      }
+      // Phase 14 Final §9: keine neue Freigabe (beide Quellen) an deaktivierte Mitarbeiter;
+      // bestehende Zeilen bleiben Historie, Lesen und Widerruf bleiben möglich.
+      if (user.status === TRAINING_INACTIVE_USER_STATUS) {
+        throw new TrainingGateAdminError(
+          'CONFLICT',
+          'TRAINING_USER_INACTIVE',
+          TRAINING_GATE_ADMIN_MESSAGES.USER_INACTIVE,
+          { userId: user.id, definitionKey: definition.key, source: input.source },
+        );
       }
       // Serialisierung je Mitarbeiter + Übung (Doppelklick, zwei Admins gleichzeitig).
       const existing = await tx
@@ -387,6 +410,7 @@ export class TrainingGateAdminService {
           id: staffUsers.id,
           firstName: staffUsers.firstName,
           lastName: staffUsers.lastName,
+          status: staffUsers.status,
         })
         .from(staffUsers)
         .where(inArray(staffUsers.id, userIds)),
@@ -402,7 +426,10 @@ export class TrainingGateAdminService {
       return {
         id: row.id,
         userId: row.userId,
-        user: user === undefined ? null : { firstName: user.firstName, lastName: user.lastName },
+        user:
+          user === undefined
+            ? null
+            : { firstName: user.firstName, lastName: user.lastName, status: user.status },
         definitionKey: row.definitionKey,
         definitionTitle: titleByKey.get(row.definitionKey) ?? null,
         source: row.source,

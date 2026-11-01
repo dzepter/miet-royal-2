@@ -184,7 +184,13 @@ laufen über den bestehenden Bestätigungsdialog („Abbrechen“ ändert nichts
 der Reset-Dialog nennt Umfang (gesamter Mitarbeiter / Pfad / einzelne Übung)
 und den Hinweis „Historische Versuche bleiben erhalten; eine neue Runde
 beginnt.“ Ein Override verlangt eine Begründung im Formular („Für einen
-Override ist eine Begründung erforderlich.“), optional „Gültig bis“.
+Override ist eine Begründung erforderlich.“), optional „Gültig bis“. „Demo-
+Training bestätigen“ hat kein Datum (Phase 14 Final §7: „Eine bestätigte
+Demo-Übung ist unbefristet – sie gilt bis zu einem bewussten Widerruf.“).
+Deaktivierte Mitarbeitende stehen in den Auswahllisten (Zuweisung, Reset,
+Freigabe, Override) nicht zur Wahl; in Übersicht und Freigabeliste erscheint
+ihre Historie mit dem Badge „deaktiviert“; der Servertext „Der Mitarbeiter ist
+deaktiviert.“ erscheint im jeweiligen Formular-Fehlerbereich (Phase 14 Final §9).
 Admin-Detailansichten zeigen zu Versuchen nur Zeitpunkt, Übung, Schritt und
 den Hinweis „Schritt nicht abgeschlossen“ – nie Geschäftsdaten.
 

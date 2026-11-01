@@ -32,6 +32,7 @@ import {
   TRAINING_OFFLINE_TEXT,
   TRAINING_OVERRIDE_REASON_REQUIRED,
   TRAINING_RESET_HISTORY_HINT,
+  TRAINING_VERIFIED_DEMO_PERMANENT_HINT,
   trainingErrorLabel,
   updateGate,
   type AdminCatalog,
@@ -63,9 +64,15 @@ function sortUsers(users: TrainingUserRef[]): TrainingUserRef[] {
   );
 }
 
+/**
+ * Phase 14 Final §9: Auswahllisten für Zuweisung, Freigabe und Override führen keine
+ * deaktivierten Mitarbeiter (der Server lehnt sie mit „Der Mitarbeiter ist deaktiviert.“ ab);
+ * ihre Historie bleibt in Übersicht und Freigabeliste lesbar.
+ */
 function mergeUsers(base: TrainingUserRef[], extra: TrainingUserRef[]): TrainingUserRef[] {
   const byId = new Map<string, TrainingUserRef>();
   for (const user of [...base, ...extra]) {
+    if (user.status === 'disabled') continue;
     if (!byId.has(user.id)) byId.set(user.id, user);
   }
   return sortUsers([...byId.values()]);
@@ -527,6 +534,17 @@ function DemoTrainingAdmin({ me }: { me: Me }) {
                       <tr style={ROW} data-testid="training-admin-user-row" data-user={row.user.id}>
                         <td style={CELL}>
                           {row.user.lastName}, {row.user.firstName}
+                          {row.user.status === 'disabled' && (
+                            <>
+                              {' '}
+                              <span
+                                className="badge locked"
+                                data-testid="training-admin-user-disabled"
+                              >
+                                deaktiviert
+                              </span>
+                            </>
+                          )}
                         </td>
                         <td style={CELL}>
                           {row.assignments.length === 0 && (
@@ -930,6 +948,7 @@ function LiveTrainingAdmin({ me }: { me: Me }) {
             id: clearance.userId,
             firstName: clearance.user.firstName,
             lastName: clearance.user.lastName,
+            ...(clearance.user.status === undefined ? {} : { status: clearance.user.status }),
           },
         ],
   );
@@ -1239,7 +1258,20 @@ function LiveTrainingAdmin({ me }: { me: Me }) {
                       data-user={clearance.userId}
                       data-active={clearance.active ? 'true' : 'false'}
                     >
-                      <td style={CELL}>{clearanceUserName(clearance)}</td>
+                      <td style={CELL}>
+                        {clearanceUserName(clearance)}
+                        {clearance.user?.status === 'disabled' && (
+                          <>
+                            {' '}
+                            <span
+                              className="badge locked"
+                              data-testid="training-clearance-user-disabled"
+                            >
+                              deaktiviert
+                            </span>
+                          </>
+                        )}
+                      </td>
                       <td style={CELL}>{clearanceTitle(clearance)}</td>
                       <td style={CELL}>
                         {clearanceSourceLabel(clearance.source)}
@@ -1292,7 +1324,7 @@ function LiveTrainingAdmin({ me }: { me: Me }) {
         <h3>Demo-Training bestätigen</h3>
         <p className="muted">
           Bestätige nur Übungen, deren Bestehen du in der Demo selbst geprüft hast. Zwischen Demo
-          und Live wird nichts automatisch übertragen.
+          und Live wird nichts automatisch übertragen. {TRAINING_VERIFIED_DEMO_PERMANENT_HINT}
         </p>
         {directory === null && <UsersUnavailableHint context="Freigaben" />}
         <form onSubmit={(event) => void verify(event)} data-testid="training-verify-form">

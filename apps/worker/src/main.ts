@@ -37,10 +37,12 @@ import {
 } from '@mietroyal/api/jobs/communication-transactional';
 // Phase 13 (tours-live): Scanner tour_delay (Verspätungsrisiko aktiver Touren) im scan_due.
 // Phase 14 (demo): Reset-Guard – Business-Jobs während eines Demo-Resets zurücklegen.
+// Phase 14 Final (Reset-Barrier): Shared-Lock über den gesamten Jobhandler (Execution-Guard).
 import {
   createDemoStorageCleanupHandler,
-  createDemoWorkerGuard,
+  DemoResetBarrier,
   DEMO_STORAGE_CLEANUP_JOB_TYPE,
+  installDemoWorkerGuards,
 } from '@mietroyal/api/jobs/demo';
 // Phase 14 (training): in demo zeichnet der Worker bestätigte Staff-Antworten (Mail/WhatsApp)
 // als Trainingsereignis auf; sonst Noop (Order §41–§43).
@@ -113,8 +115,15 @@ const db = createDb(pool);
 // Phase 14 (demo): Während eines Demo-Resets (demo_dataset_state.reset_in_progress)
 // werden alle Business-Jobs – auch communication.scan_due – um 15 s zurückgelegt,
 // ohne einen Versuch zu verbrauchen; nur system.heartbeat läuft weiter.
-if (config.appEnv === 'demo') {
-  runner.setBeforeRun(createDemoWorkerGuard({ db, logger }));
+// Phase 14 Final (Reset-Barrier): jeder Handler (außer system.heartbeat) hält über
+// seine gesamte Laufzeit einen Shared-Advisory-Lock (eigener Lock-Pool); der Reset
+// wartet mit dem Exclusive-Lock, bis laufende Handler beendet sind.
+const demoBarrier =
+  config.appEnv === 'demo'
+    ? new DemoResetBarrier({ databaseUrl: config.databaseUrl, logger })
+    : null;
+if (demoBarrier !== null) {
+  installDemoWorkerGuards(runner, { db, barrier: demoBarrier, logger });
 }
 const lexware = createLexwareContext(config, db, logger);
 // Phase 11: Zahlungsstatus „bezahlt“ (Webhook/Reconcile im Worker) ⇒ Gutschein-Prüfjob.
@@ -275,6 +284,7 @@ async function shutdown(signal: string): Promise<void> {
   logger.info({ signal }, 'Fahre Worker herunter');
   chainWatchdog.stop(); // Phase 12 Härtung (B6)
   await runner.stop();
+  if (demoBarrier !== null) await demoBarrier.shutdown(); // Phase 14 Final (Reset-Barrier)
   await pool.end();
   process.exit(0);
 }

@@ -14,6 +14,7 @@ import {
   type TrainingAttemptEvent,
   type TrainingDefinition,
   type TrainingPath,
+  type StaffUser,
 } from '@mietroyal/database';
 import type { PermissionKey } from '@mietroyal/permissions';
 import { and, asc, eq, inArray, isNull, sql } from 'drizzle-orm';
@@ -25,6 +26,8 @@ import {
   type TrainingCatalog,
 } from './catalog.ts';
 import { TRAINING_ERROR_CODES, TRAINING_MESSAGES, TrainingError } from './errors.ts';
+// Phase 14 Final §9: ein gemeinsamer Statuswert für Zuweisung und Live-Freigabe.
+import { TRAINING_INACTIVE_USER_STATUS } from './gate-admin-service.ts';
 import {
   evaluatorFor,
   isComplete,
@@ -143,6 +146,8 @@ export interface TrainingUserRef {
   id: string;
   firstName: string;
   lastName: string;
+  /** Phase 14 Final §9: Kontostatus (active|locked|disabled) – deaktivierte Mitarbeiter erscheinen nur lesend. */
+  status: StaffUser['status'];
 }
 
 export interface TrainingAdminItemView {
@@ -613,11 +618,17 @@ export class TrainingService {
   }
 
   async listOverview(): Promise<{ users: TrainingAdminUserOverview[] }> {
-    // Alle nicht deaktivierten Mitarbeiter – auch ohne Zuweisung (Mitarbeiterauswahl der UI).
-    const users = await this.db
-      .select({ id: staffUsers.id, firstName: staffUsers.firstName, lastName: staffUsers.lastName })
+    // Alle nicht deaktivierten Mitarbeiter – auch ohne Zuweisung (Mitarbeiterauswahl der UI);
+    // Phase 14 Final §9: deaktivierte Mitarbeiter bleiben mit ihrer Historie (Zuweisungen/Versuche)
+    // lesend sichtbar – nichts wird gelöscht; ohne Historie werden sie nicht gelistet.
+    const allUsers = await this.db
+      .select({
+        id: staffUsers.id,
+        firstName: staffUsers.firstName,
+        lastName: staffUsers.lastName,
+        status: staffUsers.status,
+      })
       .from(staffUsers)
-      .where(inArray(staffUsers.status, ['active', 'locked']))
       .orderBy(asc(staffUsers.lastName), asc(staffUsers.firstName), asc(staffUsers.id));
     const definitions = await this.allDefinitions(this.db);
     const byId = new Map(definitions.map((definition) => [definition.id, definition]));
@@ -636,6 +647,13 @@ export class TrainingService {
       .from(trainingAttempts)
       .where(isNull(trainingAttempts.supersededAt))
       .orderBy(asc(trainingAttempts.startedAt));
+    const withHistory = new Set<string>([
+      ...assignments.map((assignment) => assignment.userId),
+      ...attempts.map((attempt) => attempt.userId),
+    ]);
+    const users = allUsers.filter(
+      (user) => user.status !== TRAINING_INACTIVE_USER_STATUS || withHistory.has(user.id),
+    );
     const result: TrainingAdminUserOverview[] = users.map((user) => {
       const own = attempts.filter((attempt) => attempt.userId === user.id);
       const assignmentViews: TrainingAdminAssignmentView[] = assignments
@@ -727,6 +745,16 @@ export class TrainingService {
   ): Promise<TrainingAssignmentView> {
     const now = options.now ?? this.now();
     const user = await this.userById(input.userId);
+    // Phase 14 Final §9: keine neue Zuweisung an einen deaktivierten Mitarbeiter (409);
+    // bestehende Zuweisungen/Versuche bleiben Historie und lesbar.
+    if (user.status === TRAINING_INACTIVE_USER_STATUS) {
+      throw new TrainingError(
+        'CONFLICT',
+        TRAINING_ERROR_CODES.USER_INACTIVE,
+        TRAINING_MESSAGES.USER_INACTIVE,
+        { userId: user.id },
+      );
+    }
     const path = await this.pathByKey(input.pathKey);
     if (!path.active) {
       throw new TrainingError(
@@ -963,7 +991,12 @@ export class TrainingService {
 
   private async userById(userId: string): Promise<TrainingUserRef> {
     const rows = await this.db
-      .select({ id: staffUsers.id, firstName: staffUsers.firstName, lastName: staffUsers.lastName })
+      .select({
+        id: staffUsers.id,
+        firstName: staffUsers.firstName,
+        lastName: staffUsers.lastName,
+        status: staffUsers.status,
+      })
       .from(staffUsers)
       .where(eq(staffUsers.id, userId));
     const user = rows[0];
