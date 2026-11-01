@@ -734,7 +734,24 @@ describe('T117–T118: direkter API-Aufruf umgeht das Gate nicht', () => {
 
 // ── Phase 14 Final (Agent RULES): §7 Gate-Verhalten, §13 Katalog fail-closed ──
 
-describe('Phase 14 Final §7/§13: verified_demo unbefristet im Gate, Katalog nie fail-open (VD6, VD7, FC1)', () => {
+/** FC1/FC2: Start-Sync und der erste nachgeholte Sync scheitern (Datenbank beim Start nicht erreichbar). */
+class FlakyCatalogSync extends TrainingCatalogService {
+  calls = 0;
+  failures = 2;
+
+  override async sync(catalog?: TrainingCatalog, now?: Date) {
+    this.calls += 1;
+    if (this.failures > 0) {
+      this.failures -= 1;
+      const error = new Error('connect ECONNREFUSED 127.0.0.1:59999');
+      error.name = 'AggregateError';
+      throw error;
+    }
+    return super.sync(catalog, now);
+  }
+}
+
+describe('Phase 14 Final §7/§13: verified_demo unbefristet im Gate, Katalog nie fail-open (VD6, VD7, FC1, FC2)', () => {
   it('VD6. Abgelaufener Override blockiert wieder – eine daneben bestehende verified_demo bleibt davon unberührt', async () => {
     const { admin, cookie } = await adminSession();
     const staff = await approver(admin.id);
@@ -834,22 +851,6 @@ describe('Phase 14 Final §7/§13: verified_demo unbefristet im Gate, Katalog ni
         })
       ).status,
     ).toBe(201);
-    /** Start-Sync und der erste nachgeholte Sync scheitern (Datenbank beim Start nicht erreichbar). */
-    class FlakyCatalogSync extends TrainingCatalogService {
-      calls = 0;
-      failures = 2;
-
-      override async sync(catalog?: TrainingCatalog, now?: Date) {
-        this.calls += 1;
-        if (this.failures > 0) {
-          this.failures -= 1;
-          const error = new Error('connect ECONNREFUSED 127.0.0.1:59999');
-          error.name = 'AggregateError';
-          throw error;
-        }
-        return super.sync(catalog, now);
-      }
-    }
     const flaky = new FlakyCatalogSync(ctx.db);
     const brokenProd = await createEnvApp(ctx, 'production', { app: { trainingCatalog: flaky } });
     try {
@@ -872,6 +873,73 @@ describe('Phase 14 Final §7/§13: verified_demo unbefristet im Gate, Katalog ni
       // Nächster Zugriff: Sync gelingt ⇒ Freigabe greift, Aktion erlaubt.
       const allowed = await apiOn(brokenProd, staff.cookie)('POST', approveUrl(stocktakeId));
       expect(allowed.status, JSON.stringify(allowed.body)).toBe(200);
+      expect(flaky.calls).toBe(3);
+    } finally {
+      await brokenProd.close();
+    }
+  });
+
+  it('FC2 / RF3-2. (Review F2) Offline-Sync bei Katalogausfall: 503 TRAINING_CATALOG_UNAVAILABLE wie die Routen (fail-closed, ohne Interna) statt 500; die Mutation bleibt pending (kein Receipt, keine dauerhafte Ablehnung); nach erfolgreichem Sync wertet das Gate regulär aus', async () => {
+    const { admin, cookie } = await adminSession();
+    await enableAllGates(ctx.db, admin.id);
+    const flaky = new FlakyCatalogSync(ctx.db);
+    const brokenProd = await createEnvApp(ctx, 'production', { app: { trainingCatalog: flaky } });
+    try {
+      expect(flaky.calls).toBe(1); // Start fail-soft
+      const api = apiOn(brokenProd, cookie);
+      const deviceId = randomUUID();
+      const clientMutationId = randomUUID();
+      const machineId = randomUUID();
+      const syncBody = () => {
+        const at = new Date().toISOString();
+        return {
+          deviceId,
+          environment: 'production',
+          clientTime: at,
+          mutation: {
+            clientMutationId,
+            type: 'machine.clean_complete',
+            contextKind: 'machine',
+            contextId: machineId,
+            createdAt: at,
+            baseVersion: JSON.stringify({ machineUpdatedAt: null }),
+            payload: { expectedCleaningSince: null },
+            media: [],
+          },
+        };
+      };
+      const blocked = await api('POST', '/staff/offline/sync', syncBody());
+      expect(blocked.status).toBe(503);
+      expect(blocked.body.error).toMatchObject({
+        code: 'TRAINING_CATALOG_UNAVAILABLE',
+        message: 'Der Trainingskatalog ist vorübergehend nicht verfügbar.',
+        details: { featureKey: 'machine.clean_complete' },
+      });
+      expect(JSON.stringify(blocked.body)).not.toMatch(
+        /ECONNREFUSED|59999|AggregateError|INTERNAL_ERROR|\n\s+at /,
+      );
+      expect(flaky.calls).toBe(2);
+      // Keine Entscheidung quittiert (weder applied noch rejected): die Reservierung bleibt
+      // `processing` (Phase-8-Semantik für Infrastrukturfehler) – ein sofortiger Retry meldet
+      // 503 SYNC_IN_PROGRESS ohne Gate-Auswertung, nach PROCESSING_STALE_MS wird regulär bewertet.
+      const receipts = await ctx.pool.query<{ status: string }>(
+        'SELECT status FROM offline_mutation_receipts WHERE client_mutation_id = $1',
+        [clientMutationId],
+      );
+      expect(receipts.rows.map((row) => row.status)).toEqual(['processing']);
+      const inProgress = await api('POST', '/staff/offline/sync', syncBody());
+      expect(inProgress.status).toBe(503);
+      expect(inProgress.body.error.code).toBe('SYNC_IN_PROGRESS');
+      expect(flaky.calls).toBe(2);
+      await ctx.pool.query(
+        `UPDATE offline_mutation_receipts SET processed_at = processed_at - interval '3 minutes'
+         WHERE client_mutation_id = $1`,
+        [clientMutationId],
+      );
+      // Nächster Sync: Katalog-Sync gelingt ⇒ reguläre Gate-Auswertung (hier: ohne Freigabe ⇒ Ablehnung).
+      const evaluated = await api('POST', '/staff/offline/sync', syncBody());
+      expect(evaluated.status, JSON.stringify(evaluated.body)).toBe(200);
+      expect(evaluated.body).toMatchObject({ status: 'rejected', code: 'TRAINING_REQUIRED' });
       expect(flaky.calls).toBe(3);
     } finally {
       await brokenProd.close();

@@ -261,9 +261,19 @@ Profiländerung verändert laufenden Booking-Snapshot nicht.
   Lock-/Pool-Leaks (pg_locks + Pool-Zähler) nach parallelen Mutationen, RB15
   Fach-Pool max = 1 ohne Deadlock inkl. komplettem Reset, RB16 Reset-Route hält
   keinen Shared-Lock, RB17 neuer Datensatz nach Reset (Epoch, 200), RB18 alter
-  processing-Job ⇒ dead/DEMO_DATASET_CHANGED. Unit:
+  processing-Job ⇒ dead/DEMO_DATASET_CHANGED, RB-A1 (Review 14f F1: echter
+  TCP-Client-Abbruch während des Handlers ⇒ Shared-Lock bleibt, Reset wartet,
+  Mutation nach Handlerende nicht im neuen Datensatz, kein Leak), RF3-1 (Review
+  14f F3: Lock-Pool erschöpft ⇒ `DEMO_RESET_BARRIER_UNAVAILABLE` vor/nach Phase
+  A, Audit-errorClass, API weiter 503 DATABASE_UNAVAILABLE). RF3-3
+  (`demo-reset.integration.test.ts`): fremde Tabellensperre in Phase B ⇒
+  SQLSTATE 55P03 nach `wipeLockTimeoutMs` statt Hänger, Audit `SQLSTATE_55P03`,
+  erneuter Reset ok. FC2 (`training-gates.integration.test.ts`): Offline-Sync
+  bei Katalogausfall ⇒ 503 TRAINING_CATALOG_UNAVAILABLE, kein Receipt, danach
+  reguläre Gate-Auswertung. Unit:
   `apps/api/test/demo-reset-barrier.test.ts` RB-H1…H7 (Hook-Reihenfolge Gate →
-  Lock → Zweitprüfung, alle Release-Pfade, fail-closed) und RB-J1…J3
+  Lock → Zweitprüfung, alle Release-Pfade; RB-H7/RB-A2: Client-Abbruch/Timeout
+  geben nicht frei, Freigabe in `onSend`, fail-closed) und RB-J1…J3
   (Execution-Guard), `packages/integrations/test/runner-defer.test.ts` RB-U1…U5
   (Runner-Guard: release nach Erfolg/Fehler, defer/skip, Guard-Fehler ⇒ defer).
   RF4 (`demo-reset.integration.test.ts`) prüft, dass Phase B ohne Zeitfenster auf

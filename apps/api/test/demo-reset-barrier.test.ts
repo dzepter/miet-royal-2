@@ -61,7 +61,7 @@ class FakeBarrier {
   }
 }
 
-async function buildApp(options: { gateFlag?: () => boolean } = {}) {
+async function buildApp(options: { gateFlag?: () => boolean; probes?: boolean } = {}) {
   const barrier = new FakeBarrier();
   const gateFlag = options.gateFlag ?? (() => false);
   const gate = createDemoResetGate({
@@ -75,6 +75,16 @@ async function buildApp(options: { gateFlag?: () => boolean } = {}) {
     await gate.onRequest(request, reply);
   });
   registerDemoBarrierHooks(app, hooks);
+  if (options.probes === true) {
+    // Sonden NACH den Barrier-Hooks: zeigen, in welchem Hook die Freigabe liegt.
+    app.addHook('onSend', async (_request, _reply, payload) => {
+      barrier.events.push('onSend:after');
+      return payload;
+    });
+    app.addHook('onResponse', async () => {
+      barrier.events.push('onResponse:after');
+    });
+  }
   let captured: FastifyRequest | null = null;
   let releaseHandler: (() => void) | null = null;
   app.post('/staff/customers', async (request) => {
@@ -208,8 +218,10 @@ describe('Demo-Reset-Barrier – API-Hooks (Phase 14 Final, Unit)', () => {
     await app.close();
   });
 
-  it('RB-H7. Verbindungsabbruch/Timeout während des Handlers: onRequestAbort bzw. onTimeout geben den Lock frei; spätere onResponse/onError sind No-ops (idempotent)', async () => {
-    const { app, barrier, hooks, capturedRequest, releaseHandler } = await buildApp();
+  it('RB-H7 / RB-A2. (Review F1) Client-Abbruch/Timeout während des Handlers: onRequestAbort und onTimeout geben NICHT frei (Handler läuft weiter, Lease bleibt); die Freigabe liegt in onSend nach dem Handlerende – vor dem Schreiben der Antwort und vor onResponse; spätere onResponse/onError sind No-ops (genau eine Freigabe)', async () => {
+    const { app, barrier, hooks, capturedRequest, releaseHandler } = await buildApp({
+      probes: true,
+    });
     const pending = app.inject({
       method: 'POST',
       url: '/staff/customers',
@@ -224,17 +236,36 @@ describe('Demo-Reset-Barrier – API-Hooks (Phase 14 Final, Unit)', () => {
     });
     expect(barrier.held()).toBe(1);
     expect(hooks.activeLeases()).toBe(1);
-    // Client bricht ab: Abort-Hook gibt frei …
+    // Client bricht ab bzw. Timeout: der Handler läuft weiter – die Lease bleibt.
     await hooks.onRequestAbort(capturedRequest()!);
-    expect(barrier.held()).toBe(0);
-    expect(hooks.activeLeases()).toBe(0);
-    // … Timeout-Hook und spätere Antwort-Hooks ändern nichts mehr.
     await hooks.onTimeout(capturedRequest()!, {} as never);
+    expect(barrier.held()).toBe(1);
+    expect(hooks.activeLeases()).toBe(1);
+    expect(barrier.events.filter((event) => event.startsWith('release:'))).toEqual([]);
+    // Handlerende ⇒ onSend gibt frei (vor onResponse), Antwort normal.
     releaseHandler();
     const response = await pending;
     expect(response.statusCode).toBe(200);
-    expect(barrier.leases[0]!.releaseCalls).toBe(1);
+    expect(barrier.held()).toBe(0);
     expect(hooks.activeLeases()).toBe(0);
+    expect(barrier.leases[0]!.releaseCalls).toBe(1);
+    expect(barrier.events).toEqual([
+      'gate:POST',
+      'acquire',
+      'uncached:1',
+      'handler',
+      'release:1',
+      'onSend:after',
+      'onResponse:after',
+    ]);
+    // onSend ohne Lease: No-op, Payload unverändert, done synchron (kein verzögertes Senden).
+    const payload = { unchanged: true };
+    let forwarded: unknown = null;
+    hooks.onSend({} as never, {} as never, payload, (error?: Error | null, next?: unknown) => {
+      expect(error).toBeNull();
+      forwarded = next;
+    });
+    expect(forwarded).toBe(payload);
     await app.close();
   });
 });

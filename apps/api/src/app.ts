@@ -487,6 +487,9 @@ export function buildApp({
     // Mutation, ungecachte Zweitprüfung des Flags, Freigabe in allen Antwort-/Abbruchpfaden.
     if (demo !== null) {
       registerDemoBarrierHooks(app, createDemoBarrierHooks(demo.barrier, { logger: app.log }));
+      // Reihenfolge beim Shutdown (Review 14f Frage 2): avvio führt onClose-Hooks LIFO aus; den
+      // Server-Close-Hook registriert Fastify erst bei `preReady` (nach diesem Hook) ⇒ er läuft
+      // ZUERST und wartet auf das Ende laufender Requests – die Barrier schließt danach.
       app.addHook('onClose', async () => {
         await demo.barrier.shutdown();
       });

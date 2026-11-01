@@ -94,6 +94,15 @@ export const DEMO_RESET_RUN_LOCK_KEY = 'demo-reset-run';
 export const DEMO_RESET_FK_RETRY_DELAY_MS = 500;
 /** Review F7: gleichzeitige Storage-Löschungen je Batch. */
 export const DEMO_RESET_STORAGE_DELETE_CONCURRENCY = 10;
+/**
+ * Phase 14 Final (Härtung, Review 14f): `lock_timeout` der Phase-B-Transaktion.
+ * Hält eine fremde Sitzung eine Tabellensperre (z. B. `LOCK TABLE … IN ACCESS
+ * EXCLUSIVE MODE`, lange DDL), scheitert der Reset nach dieser Zeit mit
+ * SQLSTATE 55P03 (bestehender Fehlerpfad: `markInterrupted` + Audit
+ * `demo.reset_failed` mit `errorClass: 'SQLSTATE_55P03'`), statt unbegrenzt zu
+ * hängen; ein erneuter Reset ist sofort möglich. 0 = kein Limit.
+ */
+export const DEMO_RESET_WIPE_LOCK_TIMEOUT_MS = 30_000;
 
 /**
  * Business-Tabellen in Löschreihenfolge (Kinder vor Eltern, Code-Map B §3.3):
@@ -261,6 +270,8 @@ export interface DemoResetServiceDeps {
   fkRetryDelayMs?: number | undefined;
   /** Review F7: gleichzeitige Storage-Löschungen (Default `DEMO_RESET_STORAGE_DELETE_CONCURRENCY`). */
   storageDeleteConcurrency?: number | undefined;
+  /** Phase 14 Final: `lock_timeout` der Phase-B-Transaktion (Default `DEMO_RESET_WIPE_LOCK_TIMEOUT_MS`; 0 = kein Limit). */
+  wipeLockTimeoutMs?: number | undefined;
 }
 
 function rowCount(result: unknown): number {
@@ -369,8 +380,13 @@ export class DemoResetService implements DemoResetRunner {
   /** true, wenn der Service die Barrier selbst erzeugt hat (CLI) – `shutdown()` schließt sie. */
   private readonly ownsBarrier: boolean;
   private readonly barrierTimeoutMs: number;
+  private readonly wipeLockTimeoutMs: number;
 
   constructor(private readonly deps: DemoResetServiceDeps) {
+    this.wipeLockTimeoutMs = Math.max(
+      0,
+      Math.floor(deps.wipeLockTimeoutMs ?? DEMO_RESET_WIPE_LOCK_TIMEOUT_MS),
+    );
     this.ownsBarrier = deps.barrier === undefined;
     this.barrier =
       deps.barrier ??
@@ -581,7 +597,22 @@ export class DemoResetService implements DemoResetRunner {
    * Session-Locks mit der Verbindung auf (ebenso bei einem Prozessabbruch).
    */
   private async tryAcquireRunLock(): Promise<{ release(): Promise<void> } | null> {
-    const client = await this.pool.connect();
+    let client: pg.PoolClient;
+    try {
+      client = await this.pool.connect();
+    } catch (error) {
+      // Review F3: Lock-Pool erschöpft/DB nicht erreichbar ⇒ sprechender Demo-Fehler
+      // (Route 409 DEMO_RESET_BARRIER_UNAVAILABLE) statt generischem 500; nichts begonnen.
+      this.logger?.warn(
+        { errorName: error instanceof Error ? error.name : 'Error' },
+        'Demo-Reset: keine Verbindung für den Lauf-Lock verfügbar',
+      );
+      throw new DemoError(
+        'CONFLICT',
+        'DEMO_RESET_BARRIER_UNAVAILABLE',
+        DEMO_MESSAGES.DEMO_RESET_BARRIER_UNAVAILABLE,
+      );
+    }
     let locked: boolean;
     try {
       const result = await client.query<{ locked: boolean }>(
@@ -632,6 +663,12 @@ export class DemoResetService implements DemoResetRunner {
     now: Date,
   ): Promise<{ deleted: Record<string, number>; storageKeys: string[] }> {
     return this.deps.db.transaction(async (tx) => {
+      // Phase 14 Final (Härtung): fremde Tabellensperren lassen den Reset nach
+      // `wipeLockTimeoutMs` mit SQLSTATE 55P03 scheitern (fail-closed, nie hängen).
+      // Der Wert ist eine geprüfte Ganzzahl (SET ist nicht bindbar).
+      if (this.wipeLockTimeoutMs > 0) {
+        await tx.execute(sql.raw(`SET LOCAL lock_timeout = ${this.wipeLockTimeoutMs}`));
+      }
       await tx.execute(
         sql`SELECT pg_advisory_xact_lock(hashtext(${DEMO_RESET_ADVISORY_LOCK_KEY}))`,
       );

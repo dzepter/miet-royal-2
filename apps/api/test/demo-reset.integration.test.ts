@@ -25,7 +25,9 @@ import {
   DemoResetService,
   DEMO_BUSINESS_TABLES_DELETE_ORDER,
   DEMO_RESET_STORAGE_DELETE_CONCURRENCY,
+  DEMO_RESET_WIPE_LOCK_TIMEOUT_MS,
   deleteStorageObjectsInBatches,
+  errorClassOf,
   isForeignKeyViolation,
   retryOnceOnForeignKeyViolation,
 } from '../src/demo/reset-service.ts';
@@ -809,6 +811,55 @@ describe('Phase 14 – Demo-Reset', () => {
       expect((await second.reset.reset({ actorId: adminId, now })).ok).toBe(true);
       expect(secondReachedPhaseB).toBe(true);
       expect(await demo.dataset.resetInProgress()).toBe(false);
+    },
+    RESET_TIMEOUT_MS,
+  );
+
+  it(
+    'RF3-3. (Phase 14 Final, Härtung) fremde Tabellensperre während Phase B: lock_timeout der Wipe-Transaktion (Default 30 s, Dep wipeLockTimeoutMs) lässt den Reset mit SQLSTATE 55P03 scheitern statt zu hängen – markInterrupted (Flag bleibt, resetStale) + Audit demo.reset_failed mit errorClass SQLSTATE_55P03; nach Freigabe der Sperre gelingt ein erneuter Reset',
+    async () => {
+      expect(DEMO_RESET_WIPE_LOCK_TIMEOUT_MS).toBe(30_000);
+      const guarded = demoServicesFor(ctx, { wipeLockTimeoutMs: 1000 });
+      const before = (await ctx.db.select().from(staffSecurityEvents)).length;
+      const holder = await ctx.pool.connect();
+      try {
+        await holder.query('BEGIN');
+        await holder.query('LOCK TABLE customers IN ACCESS EXCLUSIVE MODE');
+        const startedAt = Date.now();
+        let failure: unknown = null;
+        // Echte Uhr (wie RB-T1): markInterrupted datiert den Beginn um genau die Stale-Spanne
+        // zurück; `resetStale` verlangt eine ECHT größere Differenz.
+        await guarded.reset.reset({ actorId: adminId, now: new Date() }).catch((error: unknown) => {
+          failure = error;
+        });
+        expect(failure).not.toBeNull();
+        expect(errorClassOf(failure)).toBe('SQLSTATE_55P03');
+        expect(Date.now() - startedAt).toBeLessThan(20_000); // kein Hänger (1 s lock_timeout)
+        const state = await demo.dataset.state();
+        expect(state.resetInProgress).toBe(true); // Gate bleibt fail-closed …
+        expect(state.resetStale).toBe(true); // … sofort erneut zurücksetzbar
+        const events = (
+          await ctx.db.select().from(staffSecurityEvents).orderBy(staffSecurityEvents.createdAt)
+        )
+          .slice(before)
+          .filter((event) => event.type.startsWith('demo.'));
+        expect(events.map((event) => event.type)).toEqual([
+          'demo.reset_started',
+          'demo.reset_failed',
+        ]);
+        expect(events[1]!.details).toMatchObject({
+          status: 'failed',
+          errorClass: 'SQLSTATE_55P03',
+        });
+      } finally {
+        await holder.query('ROLLBACK');
+        holder.release();
+      }
+      // Echte Uhr auch hier: das gerundete `now` läge vor dem zurückdatierten Beginn + Stale-Spanne.
+      const result = await guarded.reset.reset({ actorId: adminId, now: new Date() });
+      expect(result.ok).toBe(true);
+      expect(await demo.dataset.resetInProgress()).toBe(false);
+      expect(await count('customers')).toBeGreaterThan(0);
     },
     RESET_TIMEOUT_MS,
   );

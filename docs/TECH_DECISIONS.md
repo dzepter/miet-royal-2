@@ -4372,9 +4372,22 @@ Vom Auftraggeber bestätigt (2026-10-31, Phase 13 Final §6) – nicht mehr offe
   nach dem Gate-Hook)**: Request → Reset-Gate (Cache 1 s) → Shared-Lock ohne
   Warten (`null` ⇒ 503 DEMO_RESET) → `reset_in_progress` DIREKT und UNCACHED
   auf der Lock-Verbindung prüfen (`true` ⇒ Lock sofort frei, 503 DEMO_RESET,
-  keine Mutation) → Fachrequest → Freigabe (idempotent) in `onResponse`,
-  `onError`, `onRequestAbort`, `onTimeout` plus `reply.raw.once('close')` als
-  Backstop. Korrektheit: liest die Zweitprüfung `false`, wurde der Shared-Lock
+  keine Mutation) → Fachrequest → Freigabe (idempotent) gebunden an den
+  **Handler-Abschluss**: `onSend` (läuft nach dem Handler bzw. nach der
+  Fehlerbehandlung, auch wenn der Client die Verbindung bereits abgebrochen
+  hat; synchroner Callback-Hook, Unlock wird sofort abgesetzt, Payload
+  unverändert), dazu `onError` und `onResponse` (idempotent; `onResponse`
+  läuft bei abgebrochenem Client nicht). **Client-Abbruch hält den Lock bis
+  zum Handlerende** (Review 14f F1): Fastify bricht einen laufenden Handler
+  nicht ab, die Mutation läuft weiter – `onRequestAbort`, `onTimeout` und das
+  `close`-Ereignis des Sockets geben deshalb NICHT frei (nur Debug-Log; der
+  frühere Socket-Backstop gab den Lock zu früh frei, und der Reset konnte
+  Phase B beginnen, während der Handler noch schrieb). `onRequestAbort` ist
+  für JSON-Mutationen ohnehin wirkungslos: Fastify ruft ihn nur, wenn der
+  Abbruch VOR dem vollständig gelesenen Body erfolgt. Ein Handler, der nie
+  endet, hält den Lock bis zum Prozessende – diesen Fall deckt der Barrier-
+  Timeout des Resets (409 `DEMO_RESET_BARRIER_TIMEOUT`, fail-closed) ab.
+  Korrektheit: liest die Zweitprüfung `false`, wurde der Shared-Lock
   VOR dem Commit der Phase A und damit vor dem Exclusive-Antrag erworben –
   der Reset wartet; liest sie `true`, bricht der Request ab. Lücke: keine.
   Regel und Ausnahmen sind exakt die des Gates (`isDemoGatedRequest`:
@@ -4383,6 +4396,32 @@ Vom Auftraggeber bestätigt (2026-10-31, Phase 13 Final §6) – nicht mehr offe
   keine neue Ausnahme). Scheitert der Lock-Erwerb selbst (Lock-Pool/DB), antwortet
   der Hook fail-closed 503 `DATABASE_UNAVAILABLE` – eine Mutation läuft nie
   ohne Barrier.
+- **Lock-Pool nicht verfügbar (Review 14f F3)**: kann die Barrier keine
+  Lock-Verbindung entleihen (Pool erschöpft ⇒ Connect-Timeout 30 s, DB nicht
+  erreichbar, Pool geschlossen), wirft sie
+  `DemoError('CONFLICT','DEMO_RESET_BARRIER_UNAVAILABLE')` – ebenso der
+  Lauf-Lock des Resets. Die Reset-Route antwortet damit 409 mit sprechendem
+  `demoCode` statt generischem 500; scheitert erst der Exclusive-Erwerb nach
+  Phase A, bleibt das Flag gesetzt (`resetStale`), und das Audit
+  `demo.reset_failed` trägt `errorClass: 'DEMO_RESET_BARRIER_UNAVAILABLE'`.
+  API-Hook (503 `DATABASE_UNAVAILABLE`) und Job-Guard (Defer ohne Attempt)
+  behandeln jeden Erwerbsfehler unverändert gleich.
+- **Phase B mit `lock_timeout` (Härtung, Review 14f RB7-Hypothese)**: die
+  Wipe-Transaktion setzt `SET LOCAL lock_timeout`
+  (`DEMO_RESET_WIPE_LOCK_TIMEOUT_MS` = 30 s, Dep `wipeLockTimeoutMs`, 0 = kein
+  Limit). Hält eine fremde Sitzung eine Tabellensperre (lange DDL, `LOCK
+  TABLE`, hängende Transaktion), scheitert der Reset nach 30 s mit SQLSTATE
+  55P03 über den bestehenden Fehlerpfad (`markInterrupted`, Audit
+  `demo.reset_failed` mit `errorClass: 'SQLSTATE_55P03'`, Status `resetStale`
+  ⇒ sofort erneuter Reset) statt unbegrenzt zu hängen. Die Barrier-Wartezeit
+  (Exclusive) ist davon unabhängig (`barrierTimeoutMs`).
+- **Shutdown-Reihenfolge**: avvio führt `onClose`-Hooks LIFO aus; den Server-
+  Close-Hook registriert Fastify erst bei `preReady` (nach dem Barrier-Hook
+  aus `buildApp`) ⇒ er läuft ZUERST, nimmt keine neuen Verbindungen an und
+  wartet auf das Ende laufender Requests; erst danach schließt die Barrier
+  ihren Lock-Pool (`server.ts`: danach `pool.end()`). Laufende Mutationen
+  werden beim Deploy-Shutdown also nie mit 503 `DATABASE_UNAVAILABLE`
+  abgewiesen; der Worker schließt die Barrier nach `runner.stop()`.
 - **Jobs (Order §4, `JobRunner.setExecutionGuard` in
   `packages/integrations/src/jobs/runner.ts`, `createDemoJobExecutionGuard` in
   `apps/api/src/jobs/demo.ts`)**: Claim → bestehender `beforeRun`-Guard
@@ -4418,12 +4457,27 @@ Vom Auftraggeber bestätigt (2026-10-31, Phase 13 Final §6) – nicht mehr offe
   `DemoResetService` eine eigene erzeugen und ruft `reset.shutdown()`).
   Konfiguration ausschließlich über Code-Defaults/Deps – keine neue
   Umgebungsvariable.
+- **Katalogausfall im Offline-Sync (Review 14f F2)**: `TrainingGateUnavailableError`
+  wird in `routes/offline.ts` (`handleOfflineError`) wie in `requireTrainingGate`
+  als 503 `TRAINING_CATALOG_UNAVAILABLE` beantwortet (gemeinsame Funktion
+  `sendTrainingGateUnavailable` in `training/gate-http.ts`, ohne Interna) –
+  die Mutation bleibt unangewendet; ihre Reservierung bleibt wie bei jedem
+  Infrastrukturfehler `processing` (sofortiger Retry ⇒ 503 `SYNC_IN_PROGRESS`,
+  nach `PROCESSING_STALE_MS` = 2 min reguläre Bewertung; keine dauerhafte
+  Ablehnung, kein 500).
 - **Tests**: Unit `apps/api/test/demo-reset-barrier.test.ts` (Hook-Reihenfolge,
-  alle Release-Pfade, fail-closed, Execution-Guard mit Fake-Barrier),
+  alle Release-Pfade inkl. Client-Abbruch ohne Freigabe/Freigabe in `onSend`,
+  fail-closed, Execution-Guard mit Fake-Barrier),
   `packages/integrations/test/runner-defer.test.ts` RB-U1…U5 (Runner-Guard),
   Integration `apps/api/test/demo-reset-barrier.integration.test.ts` RB1–RB18
   (in-flight Request/Job > 1,2 s, echter `mail.send`, zwei Apps, App + Worker-
   Runner, Lock-/Pool-Leaks über `pg_locks` und Pool-Zähler, Pool max = 1,
-  Reset-Route ohne Shared-Lock, alter processing-Job). Bestandstest RF4 prüft
+  Reset-Route ohne Shared-Lock, alter processing-Job), RB-A1 (echter TCP-
+  Client-Abbruch während des Handlers: Lock bleibt, Reset wartet, Mutation
+  nicht im neuen Datensatz), RF3-1 (Lock-Pool erschöpft ⇒
+  `DEMO_RESET_BARRIER_UNAVAILABLE`, Audit, API weiter 503), RF3-3
+  (`demo-reset.integration.test.ts`: fremde Tabellensperre ⇒ SQLSTATE 55P03
+  statt Hänger), FC2 (`training-gates.integration.test.ts`: Offline-Sync bei
+  Katalogausfall 503). Bestandstest RF4 prüft
   jetzt, dass Phase B unabhängig von jeder Zeitspanne auf das Ende eines
   Shared-Inhabers wartet.

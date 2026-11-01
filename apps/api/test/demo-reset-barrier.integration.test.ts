@@ -1,9 +1,11 @@
 import { randomUUID } from 'node:crypto';
+import http from 'node:http';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { customers, demoDatasetState, integrationJobs, mailDeliveries } from '@mietroyal/database';
 import { JobRunner, PostgresJobQueue } from '@mietroyal/integrations';
 import { eq } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
+import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createCommunicationContext } from '../src/communication/context.ts';
 import { mailSendJobKey } from '../src/communication/mail/outbox.ts';
@@ -33,6 +35,7 @@ import {
 } from './auth-helpers.ts';
 import { createTestCustomer } from './crm-helpers.ts';
 import { demoServicesFor, demoTestNow, freshDemoDatabase } from './demo-helpers.ts';
+import { createEnvApp } from './env-app-helpers.ts';
 
 /**
  * Phase 14 Final (Order §1–§6, Design E): verteilte Reset-Barrier – Pflicht-
@@ -280,6 +283,37 @@ function startSlowRequest(app: FastifyInstance, name: string) {
     payload: { name },
   });
   return { gate: slowGate, response };
+}
+
+/**
+ * RB-A1: echter HTTP-Request über ein TCP-Socket (nicht `inject`), damit ein
+ * Client-Abbruch wie im Browser wirkt; `abort()` zerstört die Verbindung clientseitig.
+ */
+function rawPost(baseUrl: string, path: string, body: unknown, cookie: string) {
+  const url = new URL(path, baseUrl);
+  const payload = JSON.stringify(body);
+  const req = http.request({
+    host: url.hostname,
+    port: url.port,
+    method: 'POST',
+    path: url.pathname,
+    headers: {
+      'content-type': 'application/json',
+      'content-length': Buffer.byteLength(payload),
+      cookie,
+      'user-agent': 'barrier-test',
+    },
+  });
+  const done = new Promise<{ status: number | null; error: Error | null }>((resolve) => {
+    req.on('response', (res) => {
+      res.resume();
+      res.on('end', () => resolve({ status: res.statusCode ?? null, error: null }));
+    });
+    req.on('error', (error) => resolve({ status: null, error }));
+    req.on('close', () => resolve({ status: null, error: null }));
+  });
+  req.end(payload);
+  return { done, abort: () => req.destroy() };
 }
 
 function resetViaRoute(app: FastifyInstance, cookie: string) {
@@ -889,6 +923,147 @@ describe('Phase 14 Final – Demo-Reset-Barrier (RB1–RB18)', () => {
         lastError: DEMO_DATASET_CHANGED_REASON,
       });
       await expectNoLeak();
+    },
+    RESET_TIMEOUT_MS,
+  );
+
+  it(
+    'RB-A1. (Review F1) Client bricht die TCP-Verbindung ab, während der Handler einer Business-Mutation noch läuft: der Shared-Lock bleibt bis zum Handlerende gehalten (keine Freigabe am Socket), der Reset wartet (Exclusive beantragt, kein Wipe); nach dem Handlerende läuft der Reset durch, und die Mutation liegt NICHT im neuen Datensatz; kein Lock-Leak',
+    async () => {
+      const baseUrl = await ctx.app.listen({ port: 0, host: '127.0.0.1' });
+      slowGate = gate();
+      slowRequestEndedAt = 0;
+      const { done, abort } = rawPost(baseUrl, SLOW_ROUTE, { name: 'RB-A1' }, adminCookie);
+      await slowGate.entered;
+      expect(await sharedHeld()).toBe(1);
+      // Client weg (Socket zerstört) – der Handler hängt weiterhin am Gate.
+      abort();
+      await done;
+      await sleep(300);
+      expect(slowRequestEndedAt).toBe(0);
+      expect(await sharedHeld()).toBe(1); // Lease bleibt bis zum Handlerende
+      expect(await barrierLocks()).toEqual([{ mode: 'ShareLock', granted: true }]);
+
+      // Reset währenddessen: wartet am Exclusive, Phase B beginnt nicht.
+      const { reset, observed } = observingReset({ barrierTimeoutMs: 30_000 });
+      const run = reset.reset({ actorId: adminId, now: new Date() });
+      await withDiag(
+        'RB-A1 exclusive wartet',
+        waitFor(async () => (await exclusiveWaiting()) === 1, 10_000),
+      );
+      await sleep(500);
+      expect(observed.wipeAt).toBe(0);
+      expect(await resetInProgress()).toBe(true);
+      expect(slowRequestEndedAt).toBe(0);
+
+      // Handler freigeben: er schreibt noch in den ALTEN Datensatz, onSend gibt die Lease frei,
+      // erst danach erhält der Reset den Exclusive und löscht (auch) diesen Kunden.
+      slowGate.release();
+      const result = await withDiag('RB-A1 reset', run);
+      expect(result.ok).toBe(true);
+      expect(slowRequestEndedAt).toBeGreaterThan(0);
+      expect(observed.wipeAt).toBeGreaterThanOrEqual(slowRequestEndedAt);
+      expect(await customerExists('RB-A1')).toBe(false);
+      expect(await resetInProgress()).toBe(false);
+      await expectNoLeak();
+    },
+    RESET_TIMEOUT_MS,
+  );
+
+  it(
+    'RF3-1. (Review F3) Lock-Pool erschöpft (max 2, zwei Shared-Inhaber): ein dritter Shared-Erwerb scheitert nach dem Connect-Timeout mit DEMO_RESET_BARRIER_UNAVAILABLE statt zu hängen; der API-Hook antwortet weiter 503 DATABASE_UNAVAILABLE; ein Reset ohne Lauf-Lock-Verbindung scheitert VOR Phase A mit demselben Code (Flag false, kein Wipe); scheitert erst der Exclusive-Erwerb nach Phase A, bleibt das Flag gesetzt (resetStale) und das Audit trägt errorClass DEMO_RESET_BARRIER_UNAVAILABLE; nach Freigabe gelingt ein erneuter Reset',
+    async () => {
+      const lockPool = new pg.Pool({
+        connectionString: ctx.config.databaseUrl,
+        max: 2,
+        connectionTimeoutMillis: 800,
+      });
+      const barrier = new DemoResetBarrier({ databaseUrl: ctx.config.databaseUrl, lockPool });
+      const demoApp = await createEnvApp(ctx, 'demo', { app: { demoBarrier: barrier } });
+      try {
+        const a = (await barrier.tryAcquireShared()) as BarrierLease;
+        const b = (await barrier.tryAcquireShared()) as BarrierLease;
+        expect(a).not.toBeNull();
+        expect(b).not.toBeNull();
+        const t0 = Date.now();
+        await expect(barrier.tryAcquireShared()).rejects.toMatchObject({
+          name: 'DemoError',
+          code: 'CONFLICT',
+          demoCode: 'DEMO_RESET_BARRIER_UNAVAILABLE',
+          message: DEMO_MESSAGES.DEMO_RESET_BARRIER_UNAVAILABLE,
+        });
+        expect(Date.now() - t0).toBeLessThan(10_000);
+        await expect(barrier.acquireExclusive({ timeoutMs: 500 })).rejects.toMatchObject({
+          demoCode: 'DEMO_RESET_BARRIER_UNAVAILABLE',
+        });
+
+        // API-Hook-Pfad bleibt fail-closed 503 DATABASE_UNAVAILABLE (keine Mutation).
+        const blocked = await postCustomer(demoApp, adminCookie, 'RF3-1-API');
+        expect(blocked.statusCode).toBe(503);
+        expect(blocked.json().error.code).toBe('DATABASE_UNAVAILABLE');
+        expect(blocked.headers['retry-after']).toBe('5');
+        expect(await customerExists('RF3-1-API')).toBe(false);
+
+        // Reset mit Lauf-Lock auf dem erschöpften Lock-Pool: scheitert vor Phase A.
+        const first = observingReset({ barrier });
+        await expect(
+          first.reset.reset({ actorId: adminId, now: new Date() }),
+        ).rejects.toMatchObject({ demoCode: 'DEMO_RESET_BARRIER_UNAVAILABLE' });
+        expect(first.observed.wipeAt).toBe(0);
+        expect(await resetInProgress()).toBe(false);
+
+        // Lauf-Lock vom Fach-Pool, Exclusive vom erschöpften Lock-Pool: scheitert nach Phase A.
+        const demo = demoServicesFor(ctx);
+        const observed = { wipeAt: 0 };
+        const second = new DemoResetService({
+          db: ctx.db,
+          config: ctx.config,
+          storage: ctx.storage,
+          queue: ctx.queue,
+          mailGateway: ctx.mailGateway,
+          dataset: demo.dataset,
+          registry: demo.registry,
+          seed: demo.seed,
+          barrier,
+          pool: ctx.pool,
+          fkRetryDelayMs: 0,
+          hooks: {
+            beforeBusinessWipe: async () => {
+              observed.wipeAt = Date.now();
+            },
+          },
+        });
+        await expect(second.reset({ actorId: adminId, now: new Date() })).rejects.toMatchObject({
+          demoCode: 'DEMO_RESET_BARRIER_UNAVAILABLE',
+        });
+        expect(observed.wipeAt).toBe(0);
+        const state = await demo.dataset.state();
+        expect(state.resetInProgress).toBe(true); // Flag bleibt (fail-closed) …
+        expect(state.resetStale).toBe(true); // … sofort erneut zurücksetzbar
+        const events = await ctx.pool.query<{ type: string; details: Record<string, unknown> }>(
+          `SELECT type, details FROM staff_security_events ORDER BY created_at DESC, id DESC LIMIT 2`,
+        );
+        expect(events.rows.map((r) => r.type).sort()).toEqual([
+          'demo.reset_failed',
+          'demo.reset_started',
+        ]);
+        expect(events.rows.find((r) => r.type === 'demo.reset_failed')!.details).toMatchObject({
+          status: 'failed',
+          errorClass: 'DEMO_RESET_BARRIER_UNAVAILABLE',
+        });
+
+        // Nach Freigabe der Lock-Verbindungen gelingt der Reset (über dieselbe Barrier).
+        await a.release();
+        await b.release();
+        const retry = await first.reset.reset({ actorId: adminId, now: new Date() });
+        expect(retry.ok).toBe(true);
+        expect(await resetInProgress()).toBe(false);
+        await expectNoLeak(barrier);
+        await expectNoLeak();
+      } finally {
+        await demoApp.close(); // schließt die injizierte Barrier (onClose)
+        await barrier.shutdown(); // idempotent
+      }
     },
     RESET_TIMEOUT_MS,
   );

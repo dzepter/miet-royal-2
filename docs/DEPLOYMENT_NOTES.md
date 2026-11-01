@@ -363,7 +363,20 @@ Release `pnpm check:env-isolation <prod.env> <demo.env>`):
   einplanen: je Prozess bis zu 10 + 20 Verbindungen. Bleibt ein Lock nach einem
   harten Prozessabbruch stehen, gibt PostgreSQL ihn mit der Verbindung frei;
   ein manueller Eingriff ist nicht nötig. Ein festes Schutz-Zeitfenster gibt es
-  nicht mehr.
+  nicht mehr. Der Lock einer Mutation wird erst mit dem Ende ihres Handlers
+  freigegeben (`onSend`/`onError`/`onResponse`) – bricht ein Browser die
+  Verbindung ab (Netzwechsel, Tab geschlossen), läuft die Mutation serverseitig
+  zu Ende und hält den Lock bis dahin; der Reset wartet entsprechend (im
+  Grenzfall bis zum Barrier-Timeout). Sind alle Lock-Verbindungen belegt oder
+  ist die Datenbank nicht erreichbar, antwortet die Reset-Route 409
+  `DEMO_RESET_BARRIER_UNAVAILABLE` (Business-Mutationen 503
+  `DATABASE_UNAVAILABLE`, Jobs werden zurückgelegt) – einfach später erneut
+  auslösen. Hält eine fremde Datenbanksitzung während des Löschens (Phase B)
+  eine Tabellensperre (z. B. lange DDL), bricht der Reset nach **30 s**
+  (`DEMO_RESET_WIPE_LOCK_TIMEOUT_MS`, Code-Default) fail-closed ab (Audit
+  `demo.reset_failed`, Status „Letzter Reset unterbrochen“) statt zu hängen.
+  Beim Shutdown (SIGTERM) schließt die API zuerst den HTTP-Server (laufende
+  Requests enden regulär) und erst danach den Lock-Pool der Barrier.
 - **Nach dem Reset (Phase 14 RESET):** Der Demo-Worker beendet Business-Jobs, die
   vor dem Reset-Beginn eingereiht wurden, als `dead`/`DEMO_DATASET_CHANGED`
   (erwartet, kein Fehler). Storage-Objekte, die beim Reset nicht gelöscht werden

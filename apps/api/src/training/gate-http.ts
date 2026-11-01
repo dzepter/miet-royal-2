@@ -28,6 +28,31 @@ export function sendTrainingGateError(
 }
 
 /**
+ * Phase 14 Final §13 (Review F2): Katalog nicht verfügbar ⇒ Fachaktion bleibt
+ * blockiert (fail-closed), Antwort 503 `TRAINING_CATALOG_UNAVAILABLE` ohne
+ * Interna (Log nur Feature-Key) – für Routen (`requireTrainingGate`) und den
+ * Offline-Sync (`routes/offline.ts`) identisch.
+ */
+export function sendTrainingGateUnavailable(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  error: TrainingGateUnavailableError,
+): void {
+  request.log.warn(
+    { featureKey: error.featureKey },
+    'Trainingskatalog nicht verfügbar – Live-Sperre blockiert die Aktion (fail-closed)',
+  );
+  void reply.status(503).send({
+    error: {
+      code: error.trainingCode,
+      message: error.message,
+      correlationId: request.id,
+      details: { featureKey: error.featureKey },
+    },
+  });
+}
+
+/**
  * Reihenfolge in den Routen (§64): requireAuth → requirePermission(s) →
  * requireTrainingGate → Fachaufruf. Antwortet selbst mit 403 und gibt dann
  * false zurück; andere Fehler laufen weiter.
@@ -50,18 +75,7 @@ export async function requireTrainingGate(
     // Phase 14 Final §13: Katalog nicht verfügbar ⇒ Fachaktion bleibt blockiert (fail-closed),
     // Antwort wie die Trainingsrouten (503, ohne Interna – Log nur Feature-Key).
     if (error instanceof TrainingGateUnavailableError) {
-      request.log.warn(
-        { featureKey: error.featureKey },
-        'Trainingskatalog nicht verfügbar – Live-Sperre blockiert die Aktion (fail-closed)',
-      );
-      void reply.status(503).send({
-        error: {
-          code: error.trainingCode,
-          message: error.message,
-          correlationId: request.id,
-          details: { featureKey: error.featureKey },
-        },
-      });
+      sendTrainingGateUnavailable(request, reply, error);
       return false;
     }
     throw error;

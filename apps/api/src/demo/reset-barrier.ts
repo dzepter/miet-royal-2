@@ -133,11 +133,36 @@ export class DemoResetBarrier {
   }
 
   /**
+   * Review F3: Lock-Verbindung entleihen. Scheitert der Connect (Pool erschöpft
+   * ⇒ Connect-Timeout, DB nicht erreichbar, Pool bereits geschlossen), wird der
+   * Infrastrukturfehler auf `DemoError('CONFLICT','DEMO_RESET_BARRIER_UNAVAILABLE')`
+   * abgebildet: die Reset-Route antwortet 409 mit sprechendem Code, das Audit
+   * trägt `errorClass: 'DEMO_RESET_BARRIER_UNAVAILABLE'`; API-Hook (503
+   * DATABASE_UNAVAILABLE) und Job-Guard (Defer) behandeln jeden Fehler gleich.
+   * Log nur Fehlerklasse/-code (nie Verbindungsdaten).
+   */
+  private async connect(): Promise<pg.PoolClient> {
+    try {
+      return await this.pool.connect();
+    } catch (error) {
+      this.logger?.warn(
+        errorContext(error),
+        'Demo-Reset-Barrier: keine Lock-Verbindung verfügbar (Lock-Pool/DB)',
+      );
+      throw new DemoError(
+        'CONFLICT',
+        'DEMO_RESET_BARRIER_UNAVAILABLE',
+        DEMO_MESSAGES.DEMO_RESET_BARRIER_UNAVAILABLE,
+      );
+    }
+  }
+
+  /**
    * Shared-Lock OHNE Warten: `null`, wenn der Reset den Exclusive hält oder
    * darauf wartet (Business-Mutation ⇒ 503 bzw. Job-Defer).
    */
   async tryAcquireShared(): Promise<BarrierLease | null> {
-    const client = await this.pool.connect();
+    const client = await this.connect();
     let locked: boolean;
     try {
       const result = await client.query<{ locked: boolean }>(
@@ -161,7 +186,7 @@ export class DemoResetBarrier {
    * Aufrufer, die lieber auf das Ende eines Resets warten als abzubrechen.
    */
   async acquireShared(): Promise<BarrierLease> {
-    const client = await this.pool.connect();
+    const client = await this.connect();
     try {
       await client.query('SELECT pg_advisory_lock_shared(hashtext($1))', [
         DEMO_RESET_BARRIER_LOCK_KEY,
@@ -182,7 +207,7 @@ export class DemoResetBarrier {
    */
   async acquireExclusive(options: { timeoutMs?: number | undefined } = {}): Promise<BarrierLease> {
     const timeoutMs = Math.max(0, Math.floor(options.timeoutMs ?? DEMO_RESET_BARRIER_TIMEOUT_MS));
-    const client = await this.pool.connect();
+    const client = await this.connect();
     try {
       await client.query('BEGIN');
       try {
