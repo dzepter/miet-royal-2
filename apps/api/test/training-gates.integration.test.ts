@@ -13,6 +13,7 @@ import type { FastifyInstance } from 'fastify';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { staffTrainingClearances, tours } from '@mietroyal/database';
 import { eq } from 'drizzle-orm';
+import type { TrainingCatalog } from '../src/training/catalog.ts';
 import { TrainingCatalogService } from '../src/training/catalog-sync.ts';
 import { TRAINING_FEATURE_KEYS } from '../src/training/features.ts';
 import {
@@ -728,5 +729,152 @@ describe('T117–T118: direkter API-Aufruf umgeht das Gate nicht', () => {
     expect(message).toMatch(/^Für diese Funktion ist zuerst das Training ‚.+‘ erforderlich\.$/);
     expect(message).not.toMatch(/TRAINING_|403|FORBIDDEN|inventory\./);
     expect(result.body.error.details.title).toBe(await definitionTitle(ctx.db, DEFINITION));
+  });
+});
+
+// ── Phase 14 Final (Agent RULES): §7 Gate-Verhalten, §13 Katalog fail-closed ──
+
+describe('Phase 14 Final §7/§13: verified_demo unbefristet im Gate, Katalog nie fail-open (VD6, VD7, FC1)', () => {
+  it('VD6. Abgelaufener Override blockiert wieder – eine daneben bestehende verified_demo bleibt davon unberührt', async () => {
+    const { admin, cookie } = await adminSession();
+    const staff = await approver(admin.id);
+    const first = await pendingStocktake(admin.id, 0);
+    const second = await pendingStocktake(admin.id, 1);
+    await setRequirement(ctx.db, FEATURE, DEFINITION, true);
+    const override = await grantClearance(cookie, {
+      userId: staff.user.id,
+      definitionKey: DEFINITION,
+      source: 'override',
+      reason: 'Befristet bis Schulung',
+      validUntil: new Date(Date.now() + 3_600_000).toISOString(),
+    });
+    expect(override.status).toBe(201);
+    expect((await apiOn(prod, staff.cookie)('POST', approveUrl(first))).status).toBe(200);
+    await ctx.db
+      .update(staffTrainingClearances)
+      .set({
+        validFrom: new Date(Date.now() - 2 * 3_600_000),
+        validUntil: new Date(Date.now() - 3_600_000),
+      })
+      .where(eq(staffTrainingClearances.id, override.body.clearance.id));
+    expectTrainingRequired(
+      await apiOn(prod, staff.cookie)('POST', approveUrl(second)),
+      FEATURE,
+      await definitionTitle(ctx.db, DEFINITION),
+    );
+    // Bestätigte Demo-Übung daneben: wieder offen, Anzeige bevorzugt die unbefristete Demo-Bestätigung.
+    const verified = await grantClearance(cookie, {
+      userId: staff.user.id,
+      definitionKey: DEFINITION,
+      source: 'verified_demo',
+    });
+    expect(verified.status).toBe(201);
+    expect((await apiOn(prod, staff.cookie)('POST', approveUrl(second))).status).toBe(200);
+    const me = await apiOn(prod, staff.cookie)('GET', '/staff/training/me');
+    expect(me.status).toBe(200);
+    const gate = me.body.gates.find((g: { featureKey: string }) => g.featureKey === FEATURE);
+    expect(gate).toMatchObject({
+      cleared: true,
+      clearance: { source: 'verified_demo', validUntil: null },
+    });
+  });
+
+  it('VD7. verified_demo gilt ohne Ablauf (auch Jahre nach Erteilung) – bis zum bewussten Widerruf; danach sofort gesperrt', async () => {
+    const { admin, cookie } = await adminSession();
+    const staff = await approver(admin.id);
+    const first = await pendingStocktake(admin.id, 0);
+    const second = await pendingStocktake(admin.id, 1);
+    await setRequirement(ctx.db, FEATURE, DEFINITION, true);
+    const verified = await grantClearance(cookie, {
+      userId: staff.user.id,
+      definitionKey: DEFINITION,
+      source: 'verified_demo',
+    });
+    expect(verified.status).toBe(201);
+    // Erteilung liegt (simuliert) drei Jahre zurück – kein Ablauf.
+    await ctx.db
+      .update(staffTrainingClearances)
+      .set({
+        validFrom: new Date(Date.now() - 3 * 365 * 86_400_000),
+        grantedAt: new Date(Date.now() - 3 * 365 * 86_400_000),
+      })
+      .where(eq(staffTrainingClearances.id, verified.body.clearance.id));
+    expect((await apiOn(prod, staff.cookie)('POST', approveUrl(first))).status).toBe(200);
+    const list = await apiOn(prod, cookie)(
+      'GET',
+      `/staff/training/admin/clearances?userId=${staff.user.id}`,
+    );
+    expect(list.body.clearances[0]).toMatchObject({ active: true, validUntil: null });
+    const revoked = await apiOn(prod, cookie)(
+      'POST',
+      `/staff/training/admin/clearances/${verified.body.clearance.id}/revoke`,
+    );
+    expect(revoked.status).toBe(200);
+    expectTrainingRequired(
+      await apiOn(prod, staff.cookie)('POST', approveUrl(second)),
+      FEATURE,
+      await definitionTitle(ctx.db, DEFINITION),
+    );
+    expect(await securityEventsOfType(ctx.db, 'training.demo_verification_revoked')).toHaveLength(
+      1,
+    );
+  });
+
+  it('FC1. Katalog-Sync scheitert ⇒ production-Gate blockiert die Fachaktion fail-closed (503 TRAINING_CATALOG_UNAVAILABLE, keine Fachwirkung, keine Interna); nach erfolgreichem Sync wieder erlaubt', async () => {
+    const { admin, cookie } = await adminSession();
+    const staff = await approver(admin.id);
+    const stocktakeId = await pendingStocktake(admin.id);
+    await setRequirement(ctx.db, FEATURE, DEFINITION, true);
+    expect(
+      (
+        await grantClearance(cookie, {
+          userId: staff.user.id,
+          definitionKey: DEFINITION,
+          source: 'verified_demo',
+        })
+      ).status,
+    ).toBe(201);
+    /** Start-Sync und der erste nachgeholte Sync scheitern (Datenbank beim Start nicht erreichbar). */
+    class FlakyCatalogSync extends TrainingCatalogService {
+      calls = 0;
+      failures = 2;
+
+      override async sync(catalog?: TrainingCatalog, now?: Date) {
+        this.calls += 1;
+        if (this.failures > 0) {
+          this.failures -= 1;
+          const error = new Error('connect ECONNREFUSED 127.0.0.1:59999');
+          error.name = 'AggregateError';
+          throw error;
+        }
+        return super.sync(catalog, now);
+      }
+    }
+    const flaky = new FlakyCatalogSync(ctx.db);
+    const brokenProd = await createEnvApp(ctx, 'production', { app: { trainingCatalog: flaky } });
+    try {
+      expect(flaky.calls).toBe(1); // Start fail-soft
+      const blocked = await apiOn(brokenProd, staff.cookie)('POST', approveUrl(stocktakeId));
+      expect(blocked.status).toBe(503);
+      expect(blocked.body.error).toMatchObject({
+        code: 'TRAINING_CATALOG_UNAVAILABLE',
+        message: 'Der Trainingskatalog ist vorübergehend nicht verfügbar.',
+        details: { featureKey: FEATURE },
+      });
+      expect(JSON.stringify(blocked.body)).not.toMatch(
+        /ECONNREFUSED|59999|AggregateError|\n\s+at /,
+      );
+      expect(flaky.calls).toBe(2);
+      const [stocktake] = await ctx.pool
+        .query('SELECT status FROM inventory_stocktakes WHERE id = $1', [stocktakeId])
+        .then((result) => result.rows as { status: string }[]);
+      expect(stocktake).toMatchObject({ status: 'pending_approval' });
+      // Nächster Zugriff: Sync gelingt ⇒ Freigabe greift, Aktion erlaubt.
+      const allowed = await apiOn(brokenProd, staff.cookie)('POST', approveUrl(stocktakeId));
+      expect(allowed.status, JSON.stringify(allowed.body)).toBe(200);
+      expect(flaky.calls).toBe(3);
+    } finally {
+      await brokenProd.close();
+    }
   });
 });

@@ -137,10 +137,15 @@ export interface TrainingMe {
 
 /* ── Admin (training.manage) ───────────────────────────────────────────── */
 
+/** Kontostatus eines Mitarbeiters (Phase 14 Final §9: `disabled` = deaktiviert, nur lesend). */
+export type TrainingUserStatus = 'active' | 'locked' | 'disabled';
+
 export interface TrainingUserRef {
   id: string;
   firstName: string;
   lastName: string;
+  /** Optional (Auswahllisten ohne Status liefern ihn nicht); Server-Trainingsantworten tragen ihn immer. */
+  status?: TrainingUserStatus;
 }
 
 export interface AdminLastAttempt {
@@ -242,7 +247,7 @@ export interface ClearanceView {
   id: string;
   userId: string;
   /** null, wenn der Mitarbeiter nicht mehr auflösbar ist. */
-  user: { firstName: string; lastName: string } | null;
+  user: { firstName: string; lastName: string; status?: TrainingUserStatus } | null;
   definitionKey: string;
   definitionTitle: string | null;
   source: TrainingClearanceSource;
@@ -359,6 +364,11 @@ export const TRAINING_PERMISSION_MISSING_TEXT =
 export const TRAINING_CHECK_PASSED_TEXT = 'Übung bestanden.';
 export const TRAINING_RESET_HISTORY_HINT =
   'Historische Versuche bleiben erhalten; eine neue Runde beginnt.';
+/** Phase 14 Final §9: Servertext bei Zuweisung/Freigabe/Override an einen deaktivierten Mitarbeiter (409 TRAINING_USER_INACTIVE). */
+export const TRAINING_USER_INACTIVE_TEXT = 'Der Mitarbeiter ist deaktiviert.';
+/** Phase 14 Final §7: eine bestätigte Demo-Übung ist unbefristet (kein Ablaufdatum). */
+export const TRAINING_VERIFIED_DEMO_PERMANENT_HINT =
+  'Eine bestätigte Demo-Übung ist unbefristet – sie gilt bis zu einem bewussten Widerruf.';
 export const TRAINING_OVERRIDE_REASON_REQUIRED =
   'Für einen Override ist eine Begründung erforderlich.';
 /** Fallback für 403 TRAINING_REQUIRED ohne Servertext (der Servertext nennt die Übung, §66). */

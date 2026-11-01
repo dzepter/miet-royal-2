@@ -21,7 +21,11 @@ import type { RoutingGateway } from '../routing/types.ts';
 import { DEMO_DATASET_VERSION, DEMO_RESET_STALE_MS, DemoDatasetService } from './dataset.ts';
 import { DEMO_BUSINESS_JOB_TYPES } from './job-types.ts';
 import { DemoSeedRegistry } from './registry.ts';
-import { DEMO_RESET_GATE_CACHE_TTL_MS } from './reset-gate.ts';
+import {
+  DEMO_RESET_BARRIER_TIMEOUT_MS,
+  DemoResetBarrier,
+  type BarrierLease,
+} from './reset-barrier.ts';
 import { DemoSeedService } from './seed/seed-service.ts';
 import { DEMO_MESSAGES, DemoError, type DemoResetResult, type DemoResetRunner } from './types.ts';
 
@@ -31,17 +35,26 @@ import { DEMO_MESSAGES, DemoError, type DemoResetResult, type DemoResetRunner } 
  *
  * - Lauf-Lock (Review-Fix F1, Order §20 „global serialisiert“): Session-
  *   Advisory-Lock `pg_try_advisory_lock(hashtext('demo-reset-run'))` auf einer
- *   dedizierten Pool-Verbindung VOR Phase A, Freigabe erst im `finally` nach
- *   Phase D (auch bei Fehlern) – belegt ⇒ sofort 409 DEMO_RESET_RUNNING. Deckt
- *   damit auch Schutzfenster, Phase C und D ab; stirbt der Prozess, gibt
- *   PostgreSQL den Lock mit der Verbindung frei.
+ *   dedizierten Verbindung (Default: Lock-Pool der Barrier) VOR Phase A,
+ *   Freigabe erst im `finally` nach Phase D (auch bei Fehlern) – belegt ⇒
+ *   sofort 409 DEMO_RESET_RUNNING. Deckt damit auch Barrier-Wartezeit, Phase C
+ *   und D ab; stirbt der Prozess, gibt PostgreSQL den Lock mit der Verbindung
+ *   frei.
  * - Phase A (kurze Tx): Singleton-Zeile sperren, Xact-Advisory-Lock probieren,
  *   laufenden Reset erkennen (409 DEMO_RESET_RUNNING; stale > 10 min
  *   (`DEMO_RESET_STALE_MS`) darf neu starten), `reset_in_progress` setzen ⇒ ab
- *   jetzt greift das 503-Gate.
- * - Schutzfenster (Review F4): `settleDelayMs` (Default Gate-Cache-TTL + 200 ms)
- *   warten, damit API-/Worker-Caches ablaufen und bereits angenommene
- *   Anfragen committen, bevor gelöscht wird.
+ *   jetzt greift das 503-Gate, neue Jobs werden zurückgelegt.
+ * - Reset-Barrier (Phase 14 Final, Order §5, Design D): EXCLUSIVE Session-
+ *   Advisory-Lock `demo-business-reset-barrier` (`DemoResetBarrier.
+ *   acquireExclusive`) – wartet ehrlich, bis ALLE laufenden Business-
+ *   Mutationen (API-Requests, Jobhandler – jeder hält einen Shared-Lock über
+ *   seine gesamte Laufzeit, prozess- und replikatübergreifend) beendet sind.
+ *   Erst DANACH beginnt Phase B. Läuft die Wartezeit ab
+ *   (`barrierTimeoutMs`, Default `DEMO_RESET_BARRIER_TIMEOUT_MS` = 120 s),
+ *   bricht der Reset fail-closed ab (`markInterrupted`, Audit
+ *   `demo.reset_failed` mit `errorClass: 'DEMO_RESET_BARRIER_TIMEOUT'`) – nie
+ *   Phase B trotz laufender Mutation. Es gibt KEIN Zeitfenster/Settle-Delay
+ *   mehr: die Race-Sicherheit beruht ausschließlich auf der Barrier.
  * - Phase B (eine Tx, Xact-Advisory-Lock blockierend): Hook für Trainings-
  *   versuche (`beforeBusinessWipe`, Order §94 – verdrahtet in app.ts/CLI),
  *   Business-Tabellen in expliziter FK-sicherer
@@ -77,8 +90,6 @@ export const DEMO_RESET_ADVISORY_LOCK_KEY = 'demo-reset';
 /** Review-Fix F1: Session-Lock über die gesamte Laufzeit eines Resets (eigene Verbindung). */
 export const DEMO_RESET_RUN_LOCK_KEY = 'demo-reset-run';
 
-/** Review F4: Schutzfenster zwischen Phase A und Phase B (Gate-/Worker-Cache-TTL + Reserve). */
-export const DEMO_RESET_SETTLE_DELAY_MS = DEMO_RESET_GATE_CACHE_TTL_MS + 200;
 /** Review F4: kurze Pause vor der einen Wiederholung von Phase B nach SQLSTATE 23503. */
 export const DEMO_RESET_FK_RETRY_DELAY_MS = 500;
 /** Review F7: gleichzeitige Storage-Löschungen je Batch. */
@@ -224,8 +235,20 @@ export interface DemoResetServiceDeps {
   config: AppConfig;
   storage: StorageProvider;
   queue: JobQueue;
-  /** Review-Fix F1: Pool der dedizierten Lock-Verbindung (Default: Pool hinter `db`, `$client`). */
+  /**
+   * Review-Fix F1: Pool der dedizierten Lauf-Lock-Verbindung. Phase 14 Final:
+   * Default ist der Lock-Pool der Barrier (getrennt vom Fach-Pool – ein
+   * Fach-Pool mit `max = 1` kann so nie deadlocken), sonst der Pool hinter `db`.
+   */
   pool?: pg.Pool | undefined;
+  /**
+   * Phase 14 Final (Reset-Barrier): Barrier des Prozesses (dieselbe Instanz wie
+   * API-Hooks/Job-Guard). Ohne Angabe erzeugt der Service eine eigene (CLI) –
+   * dann `shutdown()` aufrufen, damit der Lock-Pool den Prozess nicht offen hält.
+   */
+  barrier?: DemoResetBarrier | undefined;
+  /** Phase 14 Final: maximale Wartezeit auf laufende Mutationen (Default 120 s; 0 = unbegrenzt). */
+  barrierTimeoutMs?: number | undefined;
   logger?: JobRunnerLogger | undefined;
   seed?: DemoSeedService | undefined;
   dataset?: DemoDatasetService | undefined;
@@ -234,8 +257,6 @@ export interface DemoResetServiceDeps {
   /** Test-Injection für den Seed (FakeMailGateway / Routing-Fake). */
   mailGateway?: OutboundMailGateway | undefined;
   routingGateway?: RoutingGateway | undefined;
-  /** Review F4: Schutzfenster zwischen Phase A und B (Default `DEMO_RESET_SETTLE_DELAY_MS`; Tests 0). */
-  settleDelayMs?: number | undefined;
   /** Review F4: Pause vor der einen Wiederholung von Phase B nach SQLSTATE 23503 (Tests 0). */
   fkRetryDelayMs?: number | undefined;
   /** Review F7: gleichzeitige Storage-Löschungen (Default `DEMO_RESET_STORAGE_DELETE_CONCURRENCY`). */
@@ -316,6 +337,10 @@ export async function deleteStorageObjectsInBatches(
 
 /** Phase 14 (reset, Order §31): technische Fehlerklasse fürs Audit – Name bzw. SQLSTATE, nie die Meldung. */
 export function errorClassOf(error: unknown): string {
+  // Phase 14 Final: fachliche Demo-Fehler (z. B. DEMO_RESET_BARRIER_TIMEOUT) mit ihrem stabilen Code.
+  const demoCode = (error as { demoCode?: unknown } | null | undefined)?.demoCode;
+  if (error instanceof DemoError && typeof demoCode === 'string' && demoCode !== '')
+    return demoCode;
   const code = (error as { code?: unknown } | null | undefined)?.code;
   const causeCode = (error as { cause?: { code?: unknown } } | null | undefined)?.cause?.code;
   for (const candidate of [code, causeCode]) {
@@ -338,12 +363,20 @@ export class DemoResetService implements DemoResetRunner {
   private readonly registry: DemoSeedRegistry;
   private readonly seed: DemoSeedService;
   private readonly logger: JobRunnerLogger | undefined;
-  private readonly settleDelayMs: number;
   private readonly fkRetryDelayMs: number;
   private readonly pool: pg.Pool;
+  private readonly barrier: DemoResetBarrier;
+  /** true, wenn der Service die Barrier selbst erzeugt hat (CLI) – `shutdown()` schließt sie. */
+  private readonly ownsBarrier: boolean;
+  private readonly barrierTimeoutMs: number;
 
   constructor(private readonly deps: DemoResetServiceDeps) {
-    this.pool = deps.pool ?? poolOf(deps.db);
+    this.ownsBarrier = deps.barrier === undefined;
+    this.barrier =
+      deps.barrier ??
+      new DemoResetBarrier({ databaseUrl: deps.config.databaseUrl, logger: deps.logger });
+    this.barrierTimeoutMs = Math.max(0, deps.barrierTimeoutMs ?? DEMO_RESET_BARRIER_TIMEOUT_MS);
+    this.pool = deps.pool ?? this.barrier.lockPool;
     this.dataset = deps.dataset ?? new DemoDatasetService(deps.db);
     this.registry = deps.registry ?? new DemoSeedRegistry(deps.db);
     this.seed =
@@ -360,8 +393,12 @@ export class DemoResetService implements DemoResetRunner {
         routingGateway: deps.routingGateway,
       });
     this.logger = deps.logger;
-    this.settleDelayMs = Math.max(0, deps.settleDelayMs ?? DEMO_RESET_SETTLE_DELAY_MS);
     this.fkRetryDelayMs = Math.max(0, deps.fkRetryDelayMs ?? DEMO_RESET_FK_RETRY_DELAY_MS);
+  }
+
+  /** Phase 14 Final: eigene Barrier (CLI) schließen; eine übergebene bleibt unberührt. Idempotent. */
+  async shutdown(): Promise<void> {
+    if (this.ownsBarrier) await this.barrier.shutdown();
   }
 
   async reset(input: {
@@ -414,11 +451,16 @@ export class DemoResetService implements DemoResetRunner {
     await this.begin(input.actorId, now); // Phase A
     let deleted: Record<string, number>;
     let seeded: Record<string, number>;
+    let barrierWaitMs: number;
+    let exclusive: BarrierLease | null = null;
     try {
       await audit('started');
-      // Review F4: Schutzfenster – Gate-/Worker-Caches (TTL 1 s) laufen ab und
-      // bereits angenommene Anfragen committen, bevor Phase B löscht.
-      if (this.settleDelayMs > 0) await sleep(this.settleDelayMs);
+      // Phase 14 Final (Order §5): Exclusive-Barrier – wartet, bis alle laufenden
+      // Business-Mutationen (Shared-Locks, alle Prozesse) beendet sind; Ablauf der
+      // Wartezeit ⇒ DemoError DEMO_RESET_BARRIER_TIMEOUT (Abbruch, nie Phase B).
+      const barrierStartedAt = Date.now();
+      exclusive = await this.barrier.acquireExclusive({ timeoutMs: this.barrierTimeoutMs });
+      barrierWaitMs = Date.now() - barrierStartedAt;
       const wiped = await retryOnceOnForeignKeyViolation(() => this.wipe(now), {
         delayMs: this.fkRetryDelayMs,
         logger: this.logger,
@@ -452,12 +494,15 @@ export class DemoResetService implements DemoResetRunner {
         'Demo-Reset unterbrochen – Flag bleibt gesetzt, erneuter Reset möglich',
       );
       throw error;
+    } finally {
+      // Exclusive-Barrier erst nach Phase D freigeben (neue Mutationen starten dann auf dem neuen Datensatz).
+      if (exclusive !== null) await exclusive.release();
     }
     const durationMs = Date.now() - startedAt;
     const deletedRows = Object.values(deleted).reduce((sum, value) => sum + value, 0);
     await audit('completed');
     this.logger?.info(
-      { resetRunId, durationMs, deletedRows, ...prefixKeys('seeded', seeded) },
+      { resetRunId, durationMs, barrierWaitMs, deletedRows, ...prefixKeys('seeded', seeded) },
       'Demo-Reset abgeschlossen',
     );
     return {
@@ -467,6 +512,7 @@ export class DemoResetService implements DemoResetRunner {
       durationMs,
       deleted,
       seeded,
+      barrierWaitMs,
     };
   }
 
@@ -723,19 +769,6 @@ export class DemoResetService implements DemoResetRunner {
 
 function toError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
-}
-
-/**
- * Review-Fix F1: Pool hinter einer drizzle-Datenbank – `drizzle(pool)` setzt
- * `$client` zur Laufzeit (nicht Teil des Typs `NodePgDatabase`); fehlt er
- * (Mock), muss `deps.pool` gesetzt sein.
- */
-function poolOf(db: Database): pg.Pool {
-  const client = (db as { $client?: unknown }).$client;
-  if (typeof (client as { connect?: unknown } | undefined)?.connect === 'function') {
-    return client as pg.Pool;
-  }
-  throw new Error('DemoResetService: kein Pool für den Lauf-Lock (deps.pool setzen)');
 }
 
 function prefixKeys(prefix: string, counts: Record<string, number>): Record<string, number> {

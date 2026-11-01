@@ -320,7 +320,7 @@ Release `pnpm check:env-isolation <prod.env> <demo.env>`):
 | Prozess | Pflichtwerte zusätzlich zu den üblichen Variablen |
 | --- | --- |
 | API (demo) | `APP_ENV=demo`, optional `STAFF_LIVE_URL=https://app.<domain>` (Button „Live öffnen“); **kein** `STAFF_DEMO_URL`, kein Lexware-/WhatsApp-/GraphHopper-Key (Konfigurationsfehler); `MAIL_DEMO_WHITELIST` bei `MAIL_ENABLED=true` – für Mail-Übungen (Kundeninformation, Kommunikationsantwort) eine Sink-Domain mit Mail-Senke whitelisten, z. B. `MAIL_DEMO_WHITELIST=@demo.test`, plus `MAIL_PUBLIC_WEB_BASE_URL` (docs/ENVIRONMENTS.md „Demo-Mail“) |
-| Worker (demo) | dieselben Variablen wie die Demo-API (`APP_ENV=demo`); legt Business-Jobs während eines Demo-Resets automatisch um 15 s zurück |
+| Worker (demo) | dieselben Variablen wie die Demo-API (`APP_ENV=demo`); legt Business-Jobs während eines Demo-Resets automatisch um 15 s zurück und hält je laufendem Handler einen Shared-Barrier-Lock (Phase 14 Final, siehe „Reset-Barrier“ unten) |
 | Staff (demo) | wie bisher (`STAFF_API_ORIGIN` auf die Demo-API, `STAFF_OFFLINE_LEASE_VERIFICATION_KEY` der Demo-API); Badge/Titel „DEMO“ kommen aus der API, keine eigene Variable |
 | Web (demo) | `WEB_API_ORIGIN` auf die Demo-API **und `WEB_APP_ENV=demo`** (fester Banner „DEMO – keine echten Kundendaten“ auf allen öffentlichen Seiten). Zusätzlich (Review F6) erscheint der Banner, wenn die konfigurierte API über `GET /health` `environment: 'demo'` meldet; `WEB_APP_ENV` bleibt Pflicht (Release-Ablauf 6b) |
 | API (production) | optional `STAFF_DEMO_URL=https://demo.<domain>` (Button „Demo öffnen“); **kein** `STAFF_LIVE_URL` |
@@ -346,6 +346,24 @@ Release `pnpm check:env-isolation <prod.env> <demo.env>`):
   --force` überspringen (nur CLI, siehe Seed-/Reset-Kommandos).
 - Die Demo-Routen `/staff/demo/*` existieren ausschließlich in `APP_ENV=demo`
   (sonst 404) – es gibt keinen Reset-Endpunkt in production/staging/development.
+- **Reset-Barrier (Phase 14 Final):** Der Reset wartet ehrlich, bis ALLE
+  laufenden Business-Mutationen (API-Requests, Jobhandler – in jedem Demo-API-
+  und Demo-Worker-Prozess) beendet sind: jede Mutation hält einen Shared-
+  Advisory-Lock, der Reset den Exclusive (PostgreSQL, DB-weit). Die Reset-
+  Dauer verlängert sich damit um die längste laufende Mutation (meist
+  Sekunden). Neue Mutationen erhalten währenddessen sofort `503 DEMO_RESET`,
+  neue Jobs werden zurückgelegt. Enden laufende Vorgänge nicht binnen
+  **120 s** (`DEMO_RESET_BARRIER_TIMEOUT_MS`, Code-Default, keine
+  Umgebungsvariable), bricht der Reset fail-closed ab: Antwort 409
+  `DEMO_RESET_BARRIER_TIMEOUT`, Audit `demo.reset_failed`, Einstellungen → Demo
+  zeigt „Letzter Reset unterbrochen – erneut zurücksetzen“ – einfach erneut
+  auslösen. Jeder Demo-API-/Worker-Prozess hält dafür einen kleinen
+  **zusätzlichen Verbindungs-Pool nur für Locks** (Default 20 Verbindungen,
+  getrennt vom Fach-Pool mit 10) – bei `max_connections` der Demo-Datenbank
+  einplanen: je Prozess bis zu 10 + 20 Verbindungen. Bleibt ein Lock nach einem
+  harten Prozessabbruch stehen, gibt PostgreSQL ihn mit der Verbindung frei;
+  ein manueller Eingriff ist nicht nötig. Ein festes Schutz-Zeitfenster gibt es
+  nicht mehr.
 - **Nach dem Reset (Phase 14 RESET):** Der Demo-Worker beendet Business-Jobs, die
   vor dem Reset-Beginn eingereiht wurden, als `dead`/`DEMO_DATASET_CHANGED`
   (erwartet, kein Fehler). Storage-Objekte, die beim Reset nicht gelöscht werden

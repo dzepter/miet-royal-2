@@ -89,7 +89,7 @@ export interface DemoTestServices {
 export function demoServicesFor(
   ctx: TestContext,
   overrides: Partial<Pick<DemoSeedServiceDeps, 'config' | 'scenarios'>> &
-    Partial<Pick<DemoResetServiceDeps, 'hooks' | 'settleDelayMs' | 'fkRetryDelayMs'>> = {},
+    Partial<Pick<DemoResetServiceDeps, 'hooks' | 'fkRetryDelayMs' | 'barrierTimeoutMs'>> = {},
 ): DemoTestServices {
   const config = overrides.config ?? ctx.config;
   const base = {
@@ -114,8 +114,12 @@ export function demoServicesFor(
     dataset,
     registry,
     seed,
-    // Review F4: Schutzfenster/Retry-Pause in Tests 0 (Zeit); produktiv greifen die Defaults.
-    settleDelayMs: overrides.settleDelayMs ?? 0,
+    // Phase 14 Final (Reset-Barrier): dieselbe Barrier wie App/Test-Runner des Kontexts.
+    ...(ctx.demoBarrier === null ? {} : { barrier: ctx.demoBarrier }),
+    ...(overrides.barrierTimeoutMs === undefined
+      ? {}
+      : { barrierTimeoutMs: overrides.barrierTimeoutMs }),
+    // Review F4: Retry-Pause in Tests 0 (Zeit); produktiv greift der Default.
     fkRetryDelayMs: overrides.fkRetryDelayMs ?? 0,
     ...(overrides.hooks === undefined ? {} : { hooks: overrides.hooks }),
   });

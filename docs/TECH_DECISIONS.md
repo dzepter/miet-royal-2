@@ -3863,9 +3863,10 @@ Vom Auftraggeber bestätigt (2026-10-31, Phase 13 Final §6) – nicht mehr offe
   Singleton-Zeile `FOR UPDATE`, `pg_try_advisory_xact_lock(hashtext('demo-
   reset'))`, laufender Reset jünger als `DEMO_RESET_STALE_MS` = 10 min
   (Review F8, vorher 30 min) ⇒ `CONFLICT/DEMO_RESET_RUNNING`, sonst
-  `reset_in_progress` setzen), Schutzfenster (Review F4: `settleDelayMs`,
-  Default Gate-Cache-TTL 1 s + 200 ms, damit API-/Worker-Caches ablaufen und
-  bereits angenommene Anfragen committen; Tests setzen 0), Phase B (eine Tx
+  `reset_in_progress` setzen), **Reset-Barrier** (Phase 14 Final, ersetzt das
+  frühere Schutzfenster `settleDelayMs`: Exclusive-Advisory-Lock, der auf das
+  Ende ALLER laufenden Business-Mutationen wartet – Abschnitt „Phase 14
+  Final: Reset-Barrier“ unten), Phase B (eine Tx
   unter blockierendem Advisory-Lock: Hook `beforeBusinessWipe(tx)` –
   verdrahtet in app.ts und CLI, unterbricht laufende Trainingsversuche (Order
   §94) –, 73 Business-Tabellen (69 FK-gebundene + 4 FK-freie,
@@ -4173,6 +4174,71 @@ Vom Auftraggeber bestätigt (2026-10-31, Phase 13 Final §6) – nicht mehr offe
   Dokument- oder Trainingsansicht (§99); keine Sperrkonfiguration in der Demo;
   kein Caching von Freigaben; keine neuen Rechte (§86).
 
+## Phase 14 Final: Trainingsregeln – verified_demo unbefristet, subject_ref, deaktivierte Mitarbeiter, Katalog/Gate (2026-11-01, RULES)
+
+- **`verified_demo` ist unbefristet (§7):** `source = verified_demo` ⇒
+  `valid_until` MUSS NULL sein; nur `override` darf ein Ablaufdatum tragen
+  (optional, Zukunft). Drei Ebenen: API (`gate-admin-service.grantClearance`:
+  `verified_demo` + `validUntil` ⇒ 400 `VALIDATION` „Eine bestätigte Demo-Übung
+  läuft nicht ab – kein Ablaufdatum möglich.“), Datenbank (Migration 0031:
+  bestehende `verified_demo.valid_until` auf NULL gesetzt, dann CHECK
+  `staff_training_clearances_verified_demo_permanent_check`
+  `source <> 'verified_demo' OR valid_until IS NULL` – SQLSTATE 23514 bei
+  INSERT und UPDATE) und UI (Formular „Demo-Training bestätigen“ ohne Datum,
+  Hinweis „… unbefristet – sie gilt bis zu einem bewussten Widerruf.“). Gate:
+  eine Demo-Bestätigung bleibt gültig, bis sie bewusst widerrufen wird (VD7);
+  ein abgelaufener Override blockiert wieder, eine daneben bestehende
+  Demo-Bestätigung bleibt unberührt (VD6). Tests VD1–VD7.
+- **`subject_ref` bleibt (§8):** internes Evaluator-Metadatum in
+  `training_attempt_events` – ausschließlich die serverseitig ermittelte UUID
+  des Fachobjekts (Angebot, Buchung, Tour, Inventur …) für „derselbe Vorgang“-
+  Regeln (`sameSubject`); nie Namen, Nummern, Kontakte, Texte, Preise, GPS,
+  Snapshots; nie Client-Eingabe (Nicht-UUID wird verworfen). Es erscheint in
+  keiner API-Antwort (Versuchs-, Admin-, Übersichtsrouten liefern Ereignisse
+  nur als eventKey/stepKey/result/errorCode/occurredAt), in keinem
+  Security-Audit-Detail und in keiner UI; statisch geprüft (SR1: Routen,
+  Gate-Admin-Service, Gate-Service, Audit-Katalog kennen das Feld nicht). Kein
+  Schema-Umbau.
+- **Deaktivierte Mitarbeiter (§9):** `staff_users.status` ∈ active | locked |
+  disabled. Neue Zuweisung (`POST /staff/training/admin/assignments`), neue
+  Demo-Bestätigung und neuer Override (`POST /staff/training/admin/clearances`,
+  beide Quellen) an ein Konto mit `status = disabled` ⇒ 409
+  `TRAINING_USER_INACTIVE` „Der Mitarbeiter ist deaktiviert.“ (keine Zeile,
+  kein Audit). `locked` (gesperrt, vorübergehend) bleibt zulässig – bewusst
+  konservativ nur „deaktiviert“ ausgeschlossen. Historie (Zuweisungen,
+  Versuche, Ereignisse, Freigaben) bleibt unverändert und über alle Lese-/
+  Historienrouten lesbar; Widerruf und Training-Reset bleiben möglich; nichts
+  wird automatisch gelöscht oder widerrufen. Nach Reaktivierung gelten nicht
+  widerrufene Freigaben sofort wieder im production-Gate (IU5). Die
+  Admin-Übersicht (`listOverview`) führt aktive und gesperrte Konten sowie
+  deaktivierte Konten MIT Historie (nur lesend, `user.status = disabled`);
+  deaktivierte ohne Historie werden nicht gelistet. `TrainingUserRef` und
+  `ClearanceView.user` tragen jetzt `status`; die Staff-UI blendet
+  deaktivierte Konten aus den Auswahllisten (Zuweisung, Training-Reset,
+  Freigabe, Override) aus und markiert sie in Übersicht/Freigabeliste mit
+  „deaktiviert“; der Servertext wird im Formular angezeigt. Tests IU1–IU6.
+- **Gate-Wechsel-Audit (§10):** Wechsel der Übung bei aktiver Sperre bleibt
+  `training.gate_enabled` mit `previousDefinitionKey`/`previousEnabled` – kein
+  eigener Ereignistyp (T126).
+- **Tour-Training (§11):** keine Sonderrechte; `tour_complete` verlangt die
+  normalen Fachrechte der Tourenplanung/-fahrt, fehlende Rechte zeigen den
+  bestehenden Hinweis `TRAINING_PERMISSION_MISSING` – keine Rechteerhöhung.
+- **Settlement-Training / Demo-Mail (§12):** bestehende Umsetzung akzeptiert
+  (Übung endet vor der Buchhaltungsübertragung; Kundeninformation nur an die
+  `MAIL_DEMO_WHITELIST`-Senke, Deployment-Voraussetzung; Variante „Nicht
+  berechnen“ erlaubt). Keine Umgehung der Mailrestriktion, kein weiterer
+  Sonderweg.
+- **Katalog fail-soft, Gate nie fail-open (§13):** Start-Sync fail-soft,
+  Trainingsrouten ohne Katalog 503 `TRAINING_CATALOG_UNAVAILABLE` (RF14-6).
+  Das production-Gate ruft vor jeder Auswertung `ensureSynced()`; scheitert
+  der Sync, wirft `gate-service.ts` `TrainingGateUnavailableError` (kein
+  `TrainingGateError`, damit der Offline-Sync nicht dauerhaft ablehnt) und
+  `requireTrainingGate` antwortet 503 `TRAINING_CATALOG_UNAVAILABLE` mit
+  `details.featureKey` ohne Interna – die Fachaktion findet nicht statt
+  (fail-closed, FC1); der nächste Zugriff versucht den Sync erneut. Offline-
+  Sync: der Fehler bricht den Sync-Request ab (kein Apply, kein dauerhaftes
+  `rejected`). Bestehende Tests (T116, RF14-H1, RF14-6) bleiben.
+
 ## Phase 14: Training (W2) – Katalog, Übungen, Recorder, Evaluatoren (2026-10-31)
 
 - **Katalog ist Code, Sync beim Start** (`apps/api/src/training/catalog.ts`,
@@ -4273,3 +4339,91 @@ Vom Auftraggeber bestätigt (2026-10-31, Phase 13 Final §6) – nicht mehr offe
 - **Bewusst nicht gebaut**: keine Noten, keine Rangliste, kein Tracking von
   Maus/Seiten/Verweildauer, keine Demo↔Live-Synchronisierung, keine
   Löschfristen (§83), keine Rule Engine (§34).
+
+## Phase 14 Final: Reset-Barrier (2026-11-01, BARRIER)
+
+- **Befund (Order §1)**: `reset_in_progress` + festes Warten (1,2 s) + Gate
+  vor dem Handler schützten nur NEUE Anfragen. Ein bereits laufender Request
+  (z. B. Übergabe mit Fotos) oder ein geclaimter Jobhandler (`mail.send`
+  mitten im SMTP-Versand) lief weiter und konnte NACH Wipe/Neuseed schreiben
+  oder senden. Ein Zeitfenster ist keine Korrektheitsgarantie.
+- **Entscheidung (Order §2–§5)**: PostgreSQL-basierte, pro Demo-DB globale
+  Barrier `DemoResetBarrier` (`apps/api/src/demo/reset-barrier.ts`, Schlüssel
+  `hashtext('demo-business-reset-barrier')`). Jede Business-Mutation hält über
+  ihre GESAMTE Laufzeit einen **Shared** Session-Advisory-Lock, der Reset
+  zwischen Phase A und dem Ende von Phase D den **Exclusive**. Session-Locks
+  wirken über alle API-/Worker-Prozesse und Replikate; stirbt ein Prozess,
+  gibt PostgreSQL sie mit der Verbindung frei. **Die Race-Sicherheit beruht
+  ausschließlich auf der Barrier – es gibt kein Zeitfenster mehr**
+  (`settleDelayMs`/`DEMO_RESET_SETTLE_DELAY_MS` entfernt).
+- **Eigener Lock-Pool**: die Barrier hält einen kleinen `pg.Pool` NUR für
+  Advisory-Locks (Default 20 Verbindungen, `DEMO_RESET_BARRIER_POOL_MAX`,
+  Wartezeit auf eine freie Lock-Verbindung 30 s), getrennt vom Fach-Pool. Eine
+  Mutation blockiert so nie eine Fachverbindung nur für den Lock, und ein
+  Fach-Pool mit `max = 1` kann nicht deadlocken (RB15). Keine DB-Transaktion
+  über die Handlerlaufzeit – nur die reservierte Lock-Verbindung. Auch der
+  Lauf-Lock des Resets (`demo-reset-run`) liegt jetzt auf dem Lock-Pool.
+- **Warum `pg_try_advisory_lock_shared` statt blockierend**: PostgreSQL meldet
+  „nicht verfügbar“, sobald der Exclusive gehalten wird ODER ein Exclusive-
+  Antrag wartet (Konflikt mit der Warteschlange, `waitMask`). Neue Mutationen
+  erhalten damit sofort 503/Defer statt den gesamten Reset lang zu hängen, und
+  der Reset kann nicht durch Nachzügler verhungern.
+- **API-Reihenfolge (Order §3.1, `demo/barrier-hooks.ts`, Root-Instanz direkt
+  nach dem Gate-Hook)**: Request → Reset-Gate (Cache 1 s) → Shared-Lock ohne
+  Warten (`null` ⇒ 503 DEMO_RESET) → `reset_in_progress` DIREKT und UNCACHED
+  auf der Lock-Verbindung prüfen (`true` ⇒ Lock sofort frei, 503 DEMO_RESET,
+  keine Mutation) → Fachrequest → Freigabe (idempotent) in `onResponse`,
+  `onError`, `onRequestAbort`, `onTimeout` plus `reply.raw.once('close')` als
+  Backstop. Korrektheit: liest die Zweitprüfung `false`, wurde der Shared-Lock
+  VOR dem Commit der Phase A und damit vor dem Exclusive-Antrag erworben –
+  der Reset wartet; liest sie `true`, bricht der Request ab. Lücke: keine.
+  Regel und Ausnahmen sind exakt die des Gates (`isDemoGatedRequest`:
+  `/auth/*`, `/staff/demo/*`, `/staff/push/*`, `/staff/offline/lease*` ohne
+  Barrier – die Reset-Route hält damit nie einen Shared-Lock, Order §3.2/RB16;
+  keine neue Ausnahme). Scheitert der Lock-Erwerb selbst (Lock-Pool/DB), antwortet
+  der Hook fail-closed 503 `DATABASE_UNAVAILABLE` – eine Mutation läuft nie
+  ohne Barrier.
+- **Jobs (Order §4, `JobRunner.setExecutionGuard` in
+  `packages/integrations/src/jobs/runner.ts`, `createDemoJobExecutionGuard` in
+  `apps/api/src/jobs/demo.ts`)**: Claim → bestehender `beforeRun`-Guard
+  (stale ⇒ skip/dead, Reset bekannt ⇒ defer) → Execution-Guard: Shared-Lock
+  ohne Warten (`null` ⇒ defer 15 s ohne Attempt-Verbrauch) → ungecachte
+  Zweitprüfung (`true` ⇒ Lock frei, defer) → Handler KOMPLETT unter dem Lock →
+  markSucceeded/markFailed wie bisher → `release()` im `finally` (auch bei
+  Handler-Exception oder markFailed-Fehler). Wirft `acquire` (Infrastruktur),
+  wird der Job fail-closed ohne Attempt-Verbrauch zurückgelegt
+  (`JOB_EXECUTION_GUARD_ERROR_DEFER_MS`). Gilt für ALLE Jobtypen außer
+  `system.heartbeat` – inkl. `demo.storage_cleanup`, `communication.scan_due`,
+  `mail.inbound_poll`, `communication.cleanup_retention` („alle außer reiner
+  Infrastruktur“, keine zweite Klassifikation). Verdrahtet über
+  `installDemoWorkerGuards` in `apps/worker/src/main.ts`, im API-Mock-Runner
+  (`app.ts`, `run-due-jobs`) und im Test-Runner (`test/auth-helpers.ts`).
+- **Reset (Order §5, `reset-service.ts`)**: Lauf-Lock → Phase A (Flag
+  committen, Audit `demo.reset_started`) → `barrier.acquireExclusive({
+  timeoutMs })` (wartet auf das Ende ALLER Shared-Inhaber; Default
+  `DEMO_RESET_BARRIER_TIMEOUT_MS` = 120 s, Dep `barrierTimeoutMs`, 0 =
+  unbegrenzt; umgesetzt über `SET LOCAL lock_timeout` in einer kurzen Tx auf
+  der Lock-Verbindung) → Phase B/Storage/C/D → Exclusive-Release im `finally`
+  → Lauf-Lock-Release im `finally`. **Timeout ⇒ Abbruch, fail-closed**:
+  `markInterrupted` (Flag bleibt, Gate fail-closed, Status `resetStale` ⇒
+  sofort erneuter Reset möglich) + Audit `demo.reset_failed` mit
+  `errorClass: 'DEMO_RESET_BARRIER_TIMEOUT'`; die Route antwortet 409 mit
+  `demoCode DEMO_RESET_BARRIER_TIMEOUT`. Niemals Phase B trotz laufender
+  Shared-Lease. Das Reset-Ergebnis trägt zusätzlich `barrierWaitMs` (Zähler).
+  Die Reset-Dauer hängt damit von der längsten laufenden Mutation ab (in der
+  Praxis Sekunden; Jobs mit externen Gateways bis zu deren Timeout).
+- **Lebenszyklus**: eine Barrier je Prozess (`createDemoModule` erzeugt sie in
+  der API, `buildApp` schließt sie in `onClose`; der Worker erzeugt sie in
+  `main.ts` und schließt sie beim Shutdown; die CLI `pnpm demo:reset` lässt den
+  `DemoResetService` eine eigene erzeugen und ruft `reset.shutdown()`).
+  Konfiguration ausschließlich über Code-Defaults/Deps – keine neue
+  Umgebungsvariable.
+- **Tests**: Unit `apps/api/test/demo-reset-barrier.test.ts` (Hook-Reihenfolge,
+  alle Release-Pfade, fail-closed, Execution-Guard mit Fake-Barrier),
+  `packages/integrations/test/runner-defer.test.ts` RB-U1…U5 (Runner-Guard),
+  Integration `apps/api/test/demo-reset-barrier.integration.test.ts` RB1–RB18
+  (in-flight Request/Job > 1,2 s, echter `mail.send`, zwei Apps, App + Worker-
+  Runner, Lock-/Pool-Leaks über `pg_locks` und Pool-Zähler, Pool max = 1,
+  Reset-Route ohne Shared-Lock, alter processing-Job). Bestandstest RF4 prüft
+  jetzt, dass Phase B unabhängig von jeder Zeitspanne auf das Ende eines
+  Shared-Inhabers wartet.

@@ -20,11 +20,10 @@ import {
   DEMO_RESET_STALE_MS,
   DemoDatasetService,
 } from '../src/demo/dataset.ts';
-import { DEMO_RESET_GATE_CACHE_TTL_MS } from '../src/demo/reset-gate.ts';
+import type { BarrierLease } from '../src/demo/reset-barrier.ts';
 import {
   DemoResetService,
   DEMO_BUSINESS_TABLES_DELETE_ORDER,
-  DEMO_RESET_SETTLE_DELAY_MS,
   DEMO_RESET_STORAGE_DELETE_CONCURRENCY,
   deleteStorageObjectsInBatches,
   isForeignKeyViolation,
@@ -363,6 +362,7 @@ describe('Phase 14 – Demo-Reset', () => {
       storage: ctx.storage,
       queue: ctx.queue,
       seed: demo.seed,
+      barrier: ctx.demoBarrier!, // Phase 14 Final (Reset-Barrier)
     });
     const error = await dev.reset({ actorId: adminId, now }).catch((e: unknown) => e);
     expect(error).toBeInstanceOf(DemoError);
@@ -518,9 +518,9 @@ describe('Phase 14 – Demo-Reset', () => {
   );
 
   it(
-    'RF4. Schutzfenster: Phase B beginnt erst settleDelayMs nach dem Flag-Commit (Default Gate-Cache-TTL + 200 ms; Tests laufen mit 0 weiter grün)',
+    'RF4. (Phase 14 Final) kein Schutzfenster mehr: Phase B beginnt erst, wenn der Reset den Exclusive-Barrier-Lock hält – ein laufender Shared-Inhaber (Business-Mutation) blockiert Phase B unabhängig von jeder Zeitspanne; settleDelayMs existiert nicht mehr',
     async () => {
-      expect(DEMO_RESET_SETTLE_DELAY_MS).toBe(DEMO_RESET_GATE_CACHE_TTL_MS + 200);
+      expect('settleDelayMs' in demo.reset).toBe(false);
       let flaggedAt = 0;
       let wipeAt = 0;
       class ObservingDataset extends DemoDatasetService {
@@ -541,7 +541,7 @@ describe('Phase 14 – Demo-Reset', () => {
         dataset: new ObservingDataset(ctx.db),
         registry: demo.registry,
         seed: demo.seed,
-        settleDelayMs: 150,
+        barrier: ctx.demoBarrier!,
         fkRetryDelayMs: 0,
         hooks: {
           beforeBusinessWipe: async () => {
@@ -549,10 +549,20 @@ describe('Phase 14 – Demo-Reset', () => {
           },
         },
       });
-      const result = await observing.reset({ actorId: adminId, now });
-      expect(result.ok).toBe(true);
+      // Eine „laufende Business-Mutation“: Shared-Lock, der erst nach 1,5 s endet.
+      const shared = (await ctx.demoBarrier!.tryAcquireShared()) as BarrierLease;
+      expect(shared).not.toBeNull();
+      const run = observing.reset({ actorId: adminId, now });
+      await sleep(1500); // weit über dem früheren Schutzfenster von 1,2 s
       expect(flaggedAt).toBeGreaterThan(0);
-      expect(wipeAt - flaggedAt).toBeGreaterThanOrEqual(150);
+      expect(wipeAt).toBe(0); // Phase B wartet auf das Ende der Mutation
+      expect(await demo.dataset.resetInProgress()).toBe(true);
+      const releasedAt = Date.now();
+      await shared.release();
+      const result = await run;
+      expect(result.ok).toBe(true);
+      expect(wipeAt).toBeGreaterThanOrEqual(releasedAt);
+      expect(result.barrierWaitMs).toBeGreaterThanOrEqual(1000);
       expect(await demo.dataset.resetInProgress()).toBe(false);
     },
     RESET_TIMEOUT_MS,
@@ -756,6 +766,7 @@ describe('Phase 14 – Demo-Reset', () => {
         storage: ctx.storage,
         queue: ctx.queue,
         seed: demo.seed,
+        barrier: ctx.demoBarrier!, // Phase 14 Final (Reset-Barrier)
       });
       await expect(dev.releaseStaleReset(now)).rejects.toMatchObject({ demoCode: 'DEMO_ONLY' });
     },
@@ -763,9 +774,12 @@ describe('Phase 14 – Demo-Reset', () => {
   );
 
   it(
-    'RF14-1. Lauf-Lock über die gesamte Laufzeit (Review-Fix F1, Order §20): während ein Reset läuft (Schutzfenster/Seed), meldet releaseStaleReset (--force) DEMO_RESET_RUNNING und ein zweiter reset() scheitert vor Phase A (nie Phase B); nach dem Ende ist der Lock frei',
+    'RF14-1. Lauf-Lock über die gesamte Laufzeit (Review-Fix F1, Order §20): während ein Reset läuft (Barrier-Wartezeit/Seed), meldet releaseStaleReset (--force) DEMO_RESET_RUNNING und ein zweiter reset() scheitert vor Phase A (nie Phase B); nach dem Ende ist der Lock frei',
     async () => {
-      const first = demoServicesFor(ctx, { settleDelayMs: 2500 });
+      const first = demoServicesFor(ctx);
+      // Phase 14 Final: der erste Reset wartet an der Barrier auf diesen Shared-Inhaber (statt Schutzfenster).
+      const holder = (await ctx.demoBarrier!.tryAcquireShared()) as BarrierLease;
+      expect(holder).not.toBeNull();
       let secondReachedPhaseB = false;
       const second = demoServicesFor(ctx, {
         hooks: {
@@ -775,7 +789,7 @@ describe('Phase 14 – Demo-Reset', () => {
         },
       });
       const firstRun = first.reset.reset({ actorId: adminId, now });
-      await sleep(500); // Phase A des ersten Resets ist committet, das Schutzfenster läuft
+      await sleep(500); // Phase A des ersten Resets ist committet, er wartet an der Barrier
       await expect(second.reset.releaseStaleReset(now)).rejects.toMatchObject({
         demoCode: 'DEMO_RESET_RUNNING',
       });
@@ -783,6 +797,7 @@ describe('Phase 14 – Demo-Reset', () => {
         demoCode: 'DEMO_RESET_RUNNING',
       });
       expect(secondReachedPhaseB).toBe(false);
+      await holder.release();
       // Der erste Reset läuft ungestört zu Ende (ein Lauf, Version aktuell, Flag frei).
       expect((await firstRun).ok).toBe(true);
       const state = await demo.dataset.state(now);

@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import type { ClaimedJob, JobQueue, ReclaimResult } from '../src/jobs/queue.ts';
-import { JobRunner } from '../src/jobs/runner.ts';
+import {
+  JOB_EXECUTION_GUARD_ERROR_DEFER_MS,
+  JobRunner,
+  type JobExecutionDecision,
+  type JobExecutionGuard,
+} from '../src/jobs/runner.ts';
 
 /**
  * Phase 14 (demo): `beforeRun`-Hook des JobRunners – ein vertagter Job wird
@@ -163,5 +168,161 @@ describe('JobRunner beforeRun/defer (Phase 14, demo)', () => {
     expect(handled).toBe(0);
     expect(queue.failed).toEqual(['x:DEMO_DATASET_CHANGED']);
     expect(queue.dead).toEqual([]);
+  });
+});
+
+/**
+ * Phase 14 Final (Reset-Barrier, Design C): Execution-Guard UM die gesamte
+ * Jobausführung – `acquire` liefert run/defer/skip; `release()` läuft im
+ * `finally` nach Handler + markSucceeded/markFailed, auch bei Exceptions.
+ */
+describe('JobRunner Execution-Guard (Phase 14 Final, Reset-Barrier)', () => {
+  /** Protokolliert die Reihenfolge acquire → handler → mark → release. */
+  function recordingGuard(
+    events: string[],
+    decide: (job: ClaimedJob) => JobExecutionDecision | Promise<JobExecutionDecision>,
+  ): JobExecutionGuard {
+    return {
+      async acquire(j) {
+        events.push(`acquire:${j.id}`);
+        const decision = await decide(j);
+        if (decision.action !== 'run') return decision;
+        return {
+          action: 'run',
+          release: async () => {
+            events.push(`release:${j.id}`);
+            await decision.release();
+          },
+        };
+      },
+    };
+  }
+
+  it('RB-U1. run ⇒ Handler läuft unter dem Guard, release() nach markSucceeded (Reihenfolge acquire → handler → succeeded → release)', async () => {
+    const events: string[] = [];
+    const queue = new RecordingQueue([job('a', 'mail.send')]);
+    queue.markSucceeded = async (j) => {
+      events.push(`succeeded:${j.id}`);
+    };
+    const runner = new JobRunner(queue, 'w');
+    runner.register('mail.send', async (j) => {
+      events.push(`handler:${j.id}`);
+    });
+    runner.setExecutionGuard(
+      recordingGuard(events, () => ({ action: 'run', release: async () => undefined })),
+    );
+    expect(await runner.runOnce()).toBe('processed');
+    expect(events).toEqual(['acquire:a', 'handler:a', 'succeeded:a', 'release:a']);
+  });
+
+  it('RB-U2. Handler-Exception ⇒ markFailed UND release() (Reihenfolge handler → failed → release); markFailed-Fehler verhindert release nicht', async () => {
+    const events: string[] = [];
+    const queue = new RecordingQueue([job('b', 'mail.send'), job('c', 'mail.send')]);
+    queue.markFailed = async (j, message) => {
+      events.push(`failed:${j.id}:${message}`);
+      if (j.id === 'c') throw new Error('markFailed kaputt');
+    };
+    const runner = new JobRunner(queue, 'w');
+    runner.register('mail.send', async (j) => {
+      events.push(`handler:${j.id}`);
+      throw new Error('Fachfehler');
+    });
+    runner.setExecutionGuard(
+      recordingGuard(events, () => ({ action: 'run', release: async () => undefined })),
+    );
+    expect(await runner.runOnce()).toBe('failed');
+    expect(events).toEqual(['acquire:b', 'handler:b', 'failed:b:Error: Fachfehler', 'release:b']);
+    events.length = 0;
+    await expect(runner.runOnce()).rejects.toThrow('markFailed kaputt');
+    expect(events).toEqual(['acquire:c', 'handler:c', 'failed:c:Error: Fachfehler', 'release:c']);
+  });
+
+  it('RB-U3. defer nach acquire ⇒ Job ohne Versuchsverbrauch zurückgelegt, Handler läuft nicht; skip ⇒ markDead; beforeRun läuft VOR dem Guard', async () => {
+    const events: string[] = [];
+    const queue = new RecordingQueue([
+      job('d', 'mail.send'),
+      job('s', 'push.send'),
+      job('pre', 'mail.send'),
+    ]);
+    const runner = new JobRunner(queue, 'w');
+    let handled = 0;
+    runner.register('mail.send', async () => {
+      handled += 1;
+    });
+    runner.register('push.send', async () => {
+      handled += 1;
+    });
+    runner.setBeforeRun(async (j) => {
+      events.push(`beforeRun:${j.id}`);
+      return j.id === 'pre' ? { defer: { delayMs: 100, reason: 'VORHER' } } : 'run';
+    });
+    runner.setExecutionGuard(
+      recordingGuard(events, (j) =>
+        j.id === 'd'
+          ? { action: 'defer', delayMs: 15_000, reason: 'DEMO_RESET' }
+          : { action: 'skip', reason: 'DEMO_DATASET_CHANGED' },
+      ),
+    );
+    const before = Date.now();
+    expect(await runner.runOnce()).toBe('deferred');
+    expect(await runner.runOnce()).toBe('skipped');
+    expect(await runner.runOnce()).toBe('deferred');
+    expect(handled).toBe(0);
+    expect(events).toEqual([
+      'beforeRun:d',
+      'acquire:d',
+      'beforeRun:s',
+      'acquire:s',
+      'beforeRun:pre',
+    ]);
+    expect(queue.deferred.map((d) => d.job.id)).toEqual(['d', 'pre']);
+    expect(queue.deferred[0]!.runAt.getTime()).toBeGreaterThanOrEqual(before + 15_000);
+    expect(queue.dead).toEqual([{ job: queue.dead[0]!.job, reason: 'DEMO_DATASET_CHANGED' }]);
+    expect(queue.dead[0]!.job.id).toBe('s');
+    expect(queue.failed).toEqual([]);
+    expect(queue.succeeded).toEqual([]);
+  });
+
+  it('RB-U4. wirft acquire (Infrastruktur), läuft KEIN Handler (fail-closed): Job wird ohne Versuchsverbrauch zurückgelegt', async () => {
+    const queue = new RecordingQueue([job('e', 'mail.send')]);
+    const runner = new JobRunner(queue, 'w');
+    let handled = 0;
+    runner.register('mail.send', async () => {
+      handled += 1;
+    });
+    runner.setExecutionGuard({
+      acquire: async () => {
+        throw new Error('Lock-Pool nicht erreichbar');
+      },
+    });
+    const before = Date.now();
+    expect(await runner.runOnce()).toBe('deferred');
+    expect(handled).toBe(0);
+    expect(queue.failed).toEqual([]);
+    expect(queue.deferred).toHaveLength(1);
+    expect(queue.deferred[0]!.runAt.getTime()).toBeGreaterThanOrEqual(
+      before + JOB_EXECUTION_GUARD_ERROR_DEFER_MS,
+    );
+  });
+
+  it('RB-U5. setExecutionGuard verlangt eine Queue mit defer(); null entfernt den Guard', async () => {
+    expect(() =>
+      new JobRunner(new LegacyQueue([]), 'w').setExecutionGuard({
+        acquire: async () => ({ action: 'run', release: async () => undefined }),
+      }),
+    ).toThrow('unterstützt kein defer');
+    const queue = new RecordingQueue([job('f', 'mail.send')]);
+    const runner = new JobRunner(queue, 'w');
+    let acquired = 0;
+    runner.register('mail.send', async () => undefined);
+    runner.setExecutionGuard({
+      acquire: async () => {
+        acquired += 1;
+        return { action: 'run', release: async () => undefined };
+      },
+    });
+    runner.setExecutionGuard(null);
+    expect(await runner.runOnce()).toBe('processed');
+    expect(acquired).toBe(0);
   });
 });

@@ -107,6 +107,9 @@ import { registerTourLiveRoutes } from './routes/tours-live.ts';
 import { createDemoModule } from './demo/module.ts';
 import { DemoResetService } from './demo/reset-service.ts';
 import type { DemoResetRunner } from './demo/types.ts';
+// Phase 14 Final (Reset-Barrier): Shared-Lock über jede Business-Mutation (Hooks nach dem Gate).
+import { createDemoBarrierHooks, registerDemoBarrierHooks } from './demo/barrier-hooks.ts';
+import type { DemoResetBarrier } from './demo/reset-barrier.ts';
 import { registerDemoRoutes } from './routes/demo.ts';
 // Phase 14 (training): Katalog-Sync beim Start (alle Umgebungen), Recorder nur in demo, Trainings-Routen.
 import { registerTrainingRoutes } from './routes/training.ts';
@@ -117,7 +120,7 @@ import { DEMO_RESET_INTERRUPTION_CODE, TrainingService } from './training/traini
 // Phase 14 (reset): Nachbereinigung alter Demo-Dateien (Job demo.storage_cleanup, Order §22).
 import {
   createDemoStorageCleanupHandler,
-  createDemoWorkerGuard,
+  installDemoWorkerGuards, // Phase 14 Final (Reset-Barrier): beforeRun + Execution-Guard
   DEMO_STORAGE_CLEANUP_JOB_TYPE,
 } from './jobs/demo.ts';
 // Phase 14 (training gate): Live-Trainingssperren (Order §56–§66) – erzwungen nur in production,
@@ -197,6 +200,8 @@ export interface AppOptions {
   tourLiveOptions?: { state?: DelayEvaluationState; locationMinIntervalMs?: number };
   /** Phase 14 (demo): Test-Injection des Reset-Runners (Default: DemoResetService bzw. Stub, nur in demo). */
   demoReset?: DemoResetRunner;
+  /** Phase 14 Final (Reset-Barrier): Test-Injection der Barrier (Default: eigene Instanz; `onClose` schließt sie). */
+  demoBarrier?: DemoResetBarrier;
   /** Phase 14 (reset fix F6): Test-Injection des Katalog-Syncs (Default: TrainingCatalogService auf db). */
   trainingCatalog?: TrainingCatalogService;
 }
@@ -234,6 +239,7 @@ export function buildApp({
   addressResolver,
   tourLiveOptions,
   demoReset,
+  demoBarrier, // Phase 14 Final (Reset-Barrier)
   trainingCatalog,
 }: AppOptions): FastifyInstance {
   // Phase 13 (routing): production startet nie mit Fake-/Mock-Routing (Order §5).
@@ -473,9 +479,18 @@ export function buildApp({
             auth: authService,
             logger: app.log,
             ...(demoReset === undefined ? {} : { reset: demoReset }),
+            ...(demoBarrier === undefined ? {} : { barrier: demoBarrier }), // Phase 14 Final
           })
         : null;
     if (demo !== null) app.addHook('onRequest', demo.gate.onRequest);
+    // Phase 14 Final (Reset-Barrier, Order §3): NACH dem Gate – Shared-Lock über die gesamte
+    // Mutation, ungecachte Zweitprüfung des Flags, Freigabe in allen Antwort-/Abbruchpfaden.
+    if (demo !== null) {
+      registerDemoBarrierHooks(app, createDemoBarrierHooks(demo.barrier, { logger: app.log }));
+      app.addHook('onClose', async () => {
+        await demo.barrier.shutdown();
+      });
+    }
     // Als Plugin NACH @fastify/rate-limit registrieren, damit dessen
     // onRoute-Hook die per-Route-Limits der Auth-Endpunkte wirklich anwendet.
     void app.register(async (instance) => {
@@ -714,8 +729,9 @@ export function buildApp({
       // Phase 14 (reset fix F2): derselbe Demo-Guard wie im Worker (Order §21) – während eines
       // Resets werden Jobs zurückgelegt, Jobs des alten Datensatzes ohne Ausführung als
       // dead/DEMO_DATASET_CHANGED beendet; nur in demo (run-due-jobs ist dort erreichbar).
-      if (config.appEnv === 'demo') {
-        financeRunner.setBeforeRun(createDemoWorkerGuard({ db, logger: app.log }));
+      // Phase 14 Final (Reset-Barrier): zusätzlich Shared-Lock über den ganzen Handler (Execution-Guard).
+      if (config.appEnv === 'demo' && demo !== null) {
+        installDemoWorkerGuards(financeRunner, { db, barrier: demo.barrier, logger: app.log });
       }
       registerFinanceJobHandlers(financeRunner, {
         db,
@@ -918,7 +934,8 @@ export function buildApp({
         if (demoReset === undefined) {
           demo.reset = new DemoResetService({
             db,
-            pool, // Phase 14 (reset fix F1): dedizierte Verbindung für den Lauf-Lock
+            // Phase 14 Final (Reset-Barrier): Lauf-Lock und Exclusive-Barrier auf dem Lock-Pool der Barrier.
+            barrier: demo.barrier,
             config,
             storage: storageProvider,
             queue,

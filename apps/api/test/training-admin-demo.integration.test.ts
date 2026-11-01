@@ -245,6 +245,7 @@ describe('Admin-Training in der Demo (T119–T123)', () => {
       id: user.user.id,
       firstName: 'Trainee',
       lastName: expect.any(String),
+      status: 'active', // Phase 14 Final §9
     });
     expect(detail.body.assignments[0].items[1]).toMatchObject({
       definition: { key: 'handover_complete' },
@@ -369,7 +370,7 @@ describe('Admin-Training in der Demo (T119–T123)', () => {
       'interruptedAttempts',
       'user',
     ]);
-    expect(Object.keys(overview.user).sort()).toEqual(['firstName', 'id', 'lastName']);
+    expect(Object.keys(overview.user).sort()).toEqual(['firstName', 'id', 'lastName', 'status']);
     expect(Object.keys(overview.assignments[0]).sort()).toEqual([
       'items',
       'pathKey',
@@ -404,5 +405,104 @@ describe('Admin-Training in der Demo (T119–T123)', () => {
       'steps',
       'supersededAt',
     ]);
+  });
+});
+
+// ── Phase 14 Final §9 (Agent RULES): deaktivierte Mitarbeiter in der Demo ───
+
+describe('Phase 14 Final §9: deaktivierte Mitarbeiter – Zuweisung, Historie, Übersicht (IU1, IU4, IU6)', () => {
+  it('IU1. Zuweisung an deaktivierten Mitarbeiter ⇒ 409 TRAINING_USER_INACTIVE „Der Mitarbeiter ist deaktiviert.“; keine Zeile, kein Audit; gesperrt (locked) bleibt zulässig', async () => {
+    const { admin, cookie } = await adminSession(demo);
+    const disabled = await trainee(demo, admin.id, HANDOVER_PERMISSIONS, 'Deaktiviert');
+    const locked = await trainee(demo, admin.id, HANDOVER_PERMISSIONS, 'Gesperrt');
+    await demo.admin.setUserStatus(admin.id, disabled.user.id, 'disabled');
+    await demo.admin.setUserStatus(admin.id, locked.user.id, 'locked');
+    const adminApi = apiFor(demo.app, cookie);
+    const denied = await assign(adminApi, disabled.user.id, 'rental_basics');
+    expect(denied.status).toBe(409);
+    expect(denied.body.error).toMatchObject({
+      code: TRAINING_ERROR_CODES.USER_INACTIVE,
+      message: 'Der Mitarbeiter ist deaktiviert.',
+      details: { userId: disabled.user.id },
+    });
+    expect(await demo.db.select().from(trainingAssignments)).toHaveLength(0);
+    expect(await auditEvents('training.assignment_created')).toHaveLength(0);
+    const lockedAssigned = await assign(adminApi, locked.user.id, 'rental_basics');
+    expect(lockedAssigned.status).toBe(201);
+    expect(await auditEvents('training.assignment_created')).toHaveLength(1);
+  });
+
+  it('IU4. Historie bleibt nach Deaktivierung: Zuweisungen, Versuche und Ereignisse bleiben über die Admin-Routen lesbar (status disabled); nichts wird gelöscht', async () => {
+    const { admin, cookie } = await adminSession(demo);
+    const user = await trainee(
+      demo,
+      admin.id,
+      [...HANDOVER_PERMISSIONS, 'offer.edit_draft', 'offer.send'],
+      'Historie',
+    );
+    const adminApi = apiFor(demo.app, cookie);
+    const api = apiFor(demo.app, user.cookie);
+    expect((await assign(adminApi, user.user.id, 'rental_basics')).status).toBe(201);
+    const handoverId = await startedAttemptId(api, 'handover_complete');
+    await demo.trainingRecorder.record({
+      actorUserId: user.user.id,
+      eventKey: 'handover.finalized',
+      subjectRef: randomUUID(),
+    });
+    const offerId = await startedAttemptId(api, 'offer_send');
+    await checkAttempt(api, offerId);
+    await demo.admin.setUserStatus(admin.id, user.user.id, 'disabled');
+
+    const detail = await adminApi('GET', `/staff/training/admin/users/${user.user.id}`);
+    expect(detail.status).toBe(200);
+    expect(detail.body.user).toMatchObject({ id: user.user.id, status: 'disabled' });
+    expect(detail.body.assignments).toHaveLength(1);
+    expect(detail.body.assignments[0].items[1]).toMatchObject({
+      definition: { key: 'handover_complete' },
+      state: 'passed',
+    });
+    expect(detail.body.attempts.map((a: { id: string }) => a.id).sort()).toEqual(
+      [handoverId, offerId].sort(),
+    );
+    const offerAttempt = detail.body.attempts.find((a: { id: string }) => a.id === offerId);
+    expect(offerAttempt.events).toHaveLength(1);
+    expect((await adminApi('GET', `/staff/training/attempts/${handoverId}`)).status).toBe(200);
+    // Datenbank: keine Zeile verschwunden, bestandener Versuch unverändert.
+    expect(await demo.db.select().from(trainingAssignments)).toHaveLength(1);
+    expect(await attemptsOfUser(demo, user.user.id)).toHaveLength(2);
+    expect((await attemptRow(demo, handoverId)).status).toBe('passed');
+    expect(await eventsOf(demo, handoverId)).toHaveLength(1);
+  });
+
+  it('IU6. Übersicht: deaktivierte Mitarbeiter MIT Historie bleiben lesend enthalten (status disabled); deaktivierte ohne Historie nicht; gesperrte wie bisher', async () => {
+    const { admin, cookie } = await adminSession(demo);
+    const withHistory = await trainee(demo, admin.id, HANDOVER_PERMISSIONS, 'Mithistorie');
+    const withAttemptOnly = await trainee(demo, admin.id, HANDOVER_PERMISSIONS, 'Nurversuch');
+    const withoutHistory = await trainee(demo, admin.id, HANDOVER_PERMISSIONS, 'Ohnehistorie');
+    const locked = await trainee(demo, admin.id, HANDOVER_PERMISSIONS, 'Gesperrt');
+    const adminApi = apiFor(demo.app, cookie);
+    expect((await assign(adminApi, withHistory.user.id, 'rental_basics')).status).toBe(201);
+    await startedAttemptId(apiFor(demo.app, withAttemptOnly.cookie), 'handover_complete');
+    for (const id of [withHistory.user.id, withAttemptOnly.user.id, withoutHistory.user.id]) {
+      await demo.admin.setUserStatus(admin.id, id, 'disabled');
+    }
+    await demo.admin.setUserStatus(admin.id, locked.user.id, 'locked');
+    const overview = await adminApi('GET', '/staff/training/admin/overview');
+    expect(overview.status).toBe(200);
+    const users = overview.body.users as {
+      user: { id: string; status: string };
+      assignments: unknown[];
+    }[];
+    expect(users.map((entry) => entry.user.id).sort()).toEqual(
+      [admin.id, withHistory.user.id, withAttemptOnly.user.id, locked.user.id].sort(),
+    );
+    expect(users.find((entry) => entry.user.id === withHistory.user.id)!.user.status).toBe(
+      'disabled',
+    );
+    expect(users.find((entry) => entry.user.id === withHistory.user.id)!.assignments).toHaveLength(
+      1,
+    );
+    expect(users.find((entry) => entry.user.id === locked.user.id)!.user.status).toBe('locked');
+    expect(users.find((entry) => entry.user.id === admin.id)!.user.status).toBe('active');
   });
 });

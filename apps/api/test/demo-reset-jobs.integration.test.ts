@@ -477,7 +477,7 @@ describe('Phase 14 – Demo-Reset: Jobs, Outbox, Storage, Audit, Tokens (RESET)'
         dataset: demo.dataset,
         registry: demo.registry,
         seed: demo.seed,
-        settleDelayMs: 0,
+        barrier: ctx.demoBarrier!, // Phase 14 Final (Reset-Barrier)
         fkRetryDelayMs: 0,
       });
       const eventsBefore = await count('staff_security_events');
@@ -710,7 +710,7 @@ describe('Phase 14 – Demo-Reset: Jobs, Outbox, Storage, Audit, Tokens (RESET)'
         dataset: demo.dataset,
         registry: demo.registry,
         seed: demo.seed,
-        settleDelayMs: 0,
+        barrier: ctx.demoBarrier!, // Phase 14 Final (Reset-Barrier)
       });
       await expect(service.reset({ actorId: adminId })).rejects.toMatchObject({
         demoCode: 'DEMO_ONLY',

@@ -1,0 +1,3 @@
+-- Phase 14 Final §7.2: bestehende verified_demo-Freigaben verlieren ein etwaiges Ablaufdatum (Historie bleibt), bevor der CHECK greift.
+UPDATE "staff_training_clearances" SET "valid_until" = NULL WHERE "source" = 'verified_demo' AND "valid_until" IS NOT NULL;--> statement-breakpoint
+ALTER TABLE "staff_training_clearances" ADD CONSTRAINT "staff_training_clearances_verified_demo_permanent_check" CHECK ("source" <> 'verified_demo' OR "valid_until" IS NULL);

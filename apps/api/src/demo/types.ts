@@ -23,6 +23,9 @@ export const DEMO_MESSAGES = {
   DEMO_RESET:
     'Die Demo-Umgebung wird gerade zurückgesetzt. Bitte in einer Minute erneut versuchen.',
   DEMO_OUTDATED: 'Demo-Datenstand ist veraltet – Zurücksetzen empfohlen.',
+  /** Phase 14 Final (Reset-Barrier): laufende Vorgänge endeten nicht innerhalb der Wartezeit – Reset abgebrochen. */
+  DEMO_RESET_BARRIER_TIMEOUT:
+    'Der Demo-Reset wurde abgebrochen: laufende Vorgänge wurden nicht rechtzeitig beendet. Bitte erneut zurücksetzen.',
   RESET_CONFIRMATION: 'DEMO ZURÜCKSETZEN',
 } as const;
 
@@ -44,6 +47,8 @@ export interface DemoResetResult {
   durationMs: number;
   deleted: Record<string, number>;
   seeded: Record<string, number>;
+  /** Phase 14 Final (Reset-Barrier): Wartezeit auf laufende Mutationen vor Phase B (nur Zähler). */
+  barrierWaitMs?: number;
 }
 
 /**

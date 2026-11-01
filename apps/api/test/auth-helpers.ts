@@ -73,7 +73,10 @@ import { createTrainingMailSentListener } from '../src/training/listeners.ts';
 import {
   createDemoStorageCleanupHandler,
   DEMO_STORAGE_CLEANUP_JOB_TYPE,
+  installDemoWorkerGuards, // Phase 14 Final (Reset-Barrier)
 } from '../src/jobs/demo.ts';
+// Phase 14 Final (Reset-Barrier): eine Barrier je Testkontext (App-Hooks, API-Runner, Test-Runner, Reset-Service).
+import { DemoResetBarrier } from '../src/demo/reset-barrier.ts';
 
 // Phase 14 (demo): feste Test-Schlüssel der Demo-Konfiguration (nur Tests; nie echte Werte).
 // APP_ENV=demo kennt keine Defaults – Storage/Schlüssel müssen explizit gesetzt sein.
@@ -132,6 +135,11 @@ export interface TestContext {
   scan: ScanModule;
   /** Phase 14 (training): Recorder des Test-Runners (demo: `DemoTrainingEventRecorder`, sonst Noop). */
   trainingRecorder: TrainingEventRecorder;
+  /**
+   * Phase 14 Final (Reset-Barrier): Barrier des Kontexts (nur `appEnv: 'demo'`, sonst null) –
+   * dieselbe Instanz in App-Hooks, API-Mock-Runner und `jobs` (Test-Runner mit beiden Guards).
+   */
+  demoBarrier: DemoResetBarrier | null;
 }
 
 export async function createTestContext(
@@ -168,6 +176,11 @@ export async function createTestContext(
      * dort ebenfalls angewendet.
      */
     databaseUrl?: string;
+    /**
+     * Phase 14 Final (Reset-Barrier): Hook VOR `app.ready()` – z. B. zusätzliche Testrouten
+     * auf der Root-Instanz (unterliegen Gate und Barrier wie Fachrouten).
+     */
+    beforeReady?: (app: FastifyInstance) => void;
   } = {},
 ): Promise<TestContext> {
   const lexwareOptions =
@@ -261,6 +274,9 @@ export async function createTestContext(
   const push = new FakePushGateway(); // Phase 12 (push)
   const whatsapp = new FakeWhatsAppGateway(); // Phase 12 (inbound)
   const inboundMail = new FakeInboundMailSource(config.mail.imap?.folder ?? 'INBOX');
+  // Phase 14 Final (Reset-Barrier): eigener Lock-Pool je Kontext (App schließt ihn bei app.close()).
+  const demoBarrier =
+    config.appEnv === 'demo' ? new DemoResetBarrier({ databaseUrl: config.databaseUrl }) : null;
   const app = buildApp({
     config,
     pool,
@@ -277,7 +293,9 @@ export async function createTestContext(
     inboundMailSource: inboundMail,
     ...(options.logDestination === undefined ? {} : { logDestination: options.logDestination }),
     ...(options.demoReset === undefined ? {} : { demoReset: options.demoReset }), // Phase 14 (demo)
+    ...(demoBarrier === null ? {} : { demoBarrier }), // Phase 14 Final (Reset-Barrier)
   });
+  options.beforeReady?.(app); // Phase 14 Final (Reset-Barrier)
   await app.ready();
   const auth = new StaffAuthService(db, config, mail);
   const admin = new StaffAdminService(auth);
@@ -385,6 +403,10 @@ export async function createTestContext(
   if (config.appEnv === 'demo') {
     jobs.register(DEMO_STORAGE_CLEANUP_JOB_TYPE, createDemoStorageCleanupHandler(storage));
   }
+  // Phase 14 Final (Reset-Barrier): Test-Runner mit beiden Demo-Guards wie der Worker (Cache 0 für Tests).
+  if (demoBarrier !== null) {
+    installDemoWorkerGuards(jobs, { db, barrier: demoBarrier, cacheTtlMs: 0 });
+  }
   return {
     pool,
     db,
@@ -414,11 +436,13 @@ export async function createTestContext(
         : null,
     scan,
     trainingRecorder, // Phase 14 (training)
+    demoBarrier, // Phase 14 Final (Reset-Barrier)
   };
 }
 
 export async function destroyTestContext(context: TestContext): Promise<void> {
   await context.app.close();
+  if (context.demoBarrier !== null) await context.demoBarrier.shutdown(); // Phase 14 Final (idempotent)
   await context.pool.end();
   if (context.lexwareFake !== null) await context.lexwareFake.stop();
 }

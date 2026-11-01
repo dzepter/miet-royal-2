@@ -1,6 +1,10 @@
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import type { TrainingFeatureKey } from './features.ts';
-import { TrainingGateError, type TrainingGate } from './gate-service.ts';
+import {
+  TrainingGateError,
+  TrainingGateUnavailableError,
+  type TrainingGate,
+} from './gate-service.ts';
 
 /**
  * Phase 14 (Design §4.5): HTTP-Anbindung der Live-Trainingssperre. Antwort
@@ -41,6 +45,23 @@ export async function requireTrainingGate(
   } catch (error) {
     if (error instanceof TrainingGateError) {
       sendTrainingGateError(request, reply, error);
+      return false;
+    }
+    // Phase 14 Final §13: Katalog nicht verfügbar ⇒ Fachaktion bleibt blockiert (fail-closed),
+    // Antwort wie die Trainingsrouten (503, ohne Interna – Log nur Feature-Key).
+    if (error instanceof TrainingGateUnavailableError) {
+      request.log.warn(
+        { featureKey: error.featureKey },
+        'Trainingskatalog nicht verfügbar – Live-Sperre blockiert die Aktion (fail-closed)',
+      );
+      void reply.status(503).send({
+        error: {
+          code: error.trainingCode,
+          message: error.message,
+          correlationId: request.id,
+          details: { featureKey: error.featureKey },
+        },
+      });
       return false;
     }
     throw error;

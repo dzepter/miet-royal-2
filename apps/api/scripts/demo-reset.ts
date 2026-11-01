@@ -71,10 +71,11 @@ if (autoConfirm) {
 }
 
 const pool = createPool(config.databaseUrl);
+let reset: DemoResetService | undefined;
 try {
   const db = createDb(pool);
   const actorId = await requireSystemAdmin(db);
-  const reset = new DemoResetService({
+  reset = new DemoResetService({
     db,
     config,
     storage: createStorageProvider(config.storage),
@@ -116,5 +117,6 @@ try {
   }
   process.exitCode = 1;
 } finally {
+  await reset?.shutdown(); // Phase 14 Final (Reset-Barrier): eigenen Lock-Pool schließen
   await pool.end();
 }

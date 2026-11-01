@@ -382,9 +382,19 @@ nur außerhalb der Demo. Kein gemeinsamer Store, keine Synchronisierung.
   `STEP_NOT_COMPLETED`, `PREREQUISITE_MISSING`), `subject_ref` (serverseitig
   ermittelte UUID des Fachobjekts – nur für „derselbe Vorgang“-Regeln, nie nach
   außen), `occurred_at`. Ausschließlich Metadaten: keine Kontakte, Preise,
-  Texte, Fotos, GPS.
+  Texte, Fotos, GPS. Phase 14 Final §8 (bestätigt): `subject_ref` ist ein
+  internes Evaluator-Metadatum – ausschließlich serverseitige UUID (Nicht-UUID
+  wird verworfen), nie Client-Eingabe, erscheint in keiner API-Antwort, keinem
+  Security-Audit und keiner UI (Test SR1). Kein Schema-Umbau.
 - `training_feature_requirements` / `staff_training_clearances`: Live-Sperren
   und Freigaben (Abschnitt „Training Gate“ in PERMISSIONS.md).
+  `staff_training_clearances` CHECKs: `reason_check` (Override braucht
+  Begründung), `valid_check` (`valid_until` > `valid_from`) und seit Migration
+  0031 (Phase 14 Final §7) `staff_training_clearances_verified_demo_permanent_check`
+  (`source <> 'verified_demo' OR valid_until IS NULL` – eine bestätigte
+  Demo-Übung ist unbefristet; die Migration setzt zuvor bestehende
+  `verified_demo.valid_until` auf NULL, löscht nichts). Zeilen zu deaktivierten
+  Mitarbeitern bleiben Historie (Phase 14 Final §9).
 - Demo-Reset: alle Trainingstabellen bleiben unangetastet; laufende Versuche
   werden vor dem Löschen der Geschäftsdaten `interrupted`/`DEMO_DATA_RESET`.
 

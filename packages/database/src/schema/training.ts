@@ -293,6 +293,11 @@ export const staffTrainingClearances = pgTable(
       'staff_training_clearances_valid_check',
       sql`"valid_until" IS NULL OR "valid_until" > "valid_from"`,
     ),
+    /** Phase 14 Final §7: eine bestätigte Demo-Übung läuft nie automatisch ab. */
+    check(
+      'staff_training_clearances_verified_demo_permanent_check',
+      sql`"source" <> 'verified_demo' OR "valid_until" IS NULL`,
+    ),
   ],
 );
 

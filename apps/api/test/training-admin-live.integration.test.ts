@@ -435,3 +435,258 @@ describe('T128–T130: Override, Widerruf, Audit', () => {
     expect(JSON.stringify(view.body)).not.toContain('Geheime');
   });
 });
+
+// ── Phase 14 Final (Agent RULES) ─────────────────────────────────────────────
+
+const VERIFIED_DEMO_PERMANENT_TEXT =
+  'Eine bestätigte Demo-Übung läuft nicht ab – kein Ablaufdatum möglich.';
+const USER_INACTIVE_TEXT = 'Der Mitarbeiter ist deaktiviert.';
+
+async function loginTrainee(suffix: string) {
+  return login(ctx.app, `mia.${suffix.toLowerCase()}@test.example`, `mia-passwort-${suffix}-12345`);
+}
+
+describe('Phase 14 Final §7: verified_demo ist unbefristet (VD1–VD5)', () => {
+  it('VD1. verified_demo ohne validUntil ⇒ 201, validUntil null, aktiv, Sperre offen', async () => {
+    const { admin, api } = await adminSession();
+    const staff = await trainee(admin.id, 'Vd1');
+    expect((await api('PUT', GATES_URL, { definitionKey: DEFINITION, enabled: true })).status).toBe(
+      200,
+    );
+    const stocktakeId = await pendingStocktake(admin.id);
+    const granted = await api('POST', CLEARANCES_URL, {
+      userId: staff.user.id,
+      definitionKey: DEFINITION,
+      source: 'verified_demo',
+    });
+    expect(granted.status).toBe(201);
+    expect(granted.body.clearance).toMatchObject({
+      source: 'verified_demo',
+      validUntil: null,
+      active: true,
+    });
+    const [row] = await clearanceRows(ctx.db, staff.user.id);
+    expect(row!.validUntil).toBeNull();
+    expect((await apiOn(prod, staff.cookie)('POST', approveUrl(stocktakeId))).status).toBe(200);
+  });
+
+  it('VD2. verified_demo mit validUntil ⇒ 400 VALIDATION mit festem Text; keine Zeile, kein Audit (auch null/Vergangenheit/Zukunft)', async () => {
+    const { admin, api } = await adminSession();
+    const staff = await trainee(admin.id, 'Vd2');
+    for (const validUntil of [
+      new Date(Date.now() + 7 * 86_400_000).toISOString(),
+      new Date(Date.now() - 60_000).toISOString(),
+    ]) {
+      const denied = await api('POST', CLEARANCES_URL, {
+        userId: staff.user.id,
+        definitionKey: DEFINITION,
+        source: 'verified_demo',
+        validUntil,
+      });
+      expect(denied.status).toBe(400);
+      expect(denied.body.error.code).toBe('VALIDATION');
+      expect(denied.body.error.message).toBe(VERIFIED_DEMO_PERMANENT_TEXT);
+    }
+    // `validUntil: null` ist ausdrücklich „unbefristet“ und bleibt erlaubt.
+    const allowed = await api('POST', CLEARANCES_URL, {
+      userId: staff.user.id,
+      definitionKey: DEFINITION,
+      source: 'verified_demo',
+      validUntil: null,
+    });
+    expect(allowed.status).toBe(201);
+    expect(allowed.body.clearance.validUntil).toBeNull();
+    expect(await clearanceRows(ctx.db, staff.user.id)).toHaveLength(1);
+    expect(await securityEventsOfType(ctx.db, 'training.demo_verified')).toHaveLength(1);
+  });
+
+  it('VD3. Direkter DB-Insert verified_demo mit valid_until ⇒ CHECK staff_training_clearances_verified_demo_permanent_check (23514)', async () => {
+    const { admin } = await adminSession();
+    const staff = await trainee(admin.id, 'Vd3');
+    await expect(
+      ctx.db.insert(staffTrainingClearances).values({
+        userId: staff.user.id,
+        definitionKey: DEFINITION,
+        source: 'verified_demo',
+        reason: null,
+        validUntil: new Date(Date.now() + 86_400_000),
+      }),
+    ).rejects.toMatchObject({
+      cause: {
+        code: '23514',
+        constraint: 'staff_training_clearances_verified_demo_permanent_check',
+      },
+    });
+    // Nachträgliches Befristen per UPDATE ist ebenso unmöglich.
+    const [inserted] = await ctx.db
+      .insert(staffTrainingClearances)
+      .values({ userId: staff.user.id, definitionKey: DEFINITION, source: 'verified_demo' })
+      .returning();
+    await expect(
+      ctx.db
+        .update(staffTrainingClearances)
+        .set({ validUntil: new Date(Date.now() + 86_400_000) })
+        .where(eq(staffTrainingClearances.id, inserted!.id)),
+    ).rejects.toMatchObject({ cause: { code: '23514' } });
+    expect(await clearanceRows(ctx.db, staff.user.id)).toHaveLength(1);
+  });
+
+  it('VD4. Override ohne validUntil ⇒ 201 unbefristet und aktiv', async () => {
+    const { admin, api } = await adminSession();
+    const staff = await trainee(admin.id, 'Vd4');
+    const granted = await api('POST', CLEARANCES_URL, {
+      userId: staff.user.id,
+      definitionKey: DEFINITION,
+      source: 'override',
+      reason: 'Unbefristete Ausnahme',
+    });
+    expect(granted.status).toBe(201);
+    expect(granted.body.clearance).toMatchObject({
+      source: 'override',
+      validUntil: null,
+      active: true,
+    });
+  });
+
+  it('VD5. Override mit Zukunftsdatum ⇒ 201, validUntil übernommen, aktiv; Vergangenheit ⇒ 400', async () => {
+    const { admin, api } = await adminSession();
+    const staff = await trainee(admin.id, 'Vd5');
+    const until = new Date(Date.now() + 30 * 86_400_000).toISOString();
+    const granted = await api('POST', CLEARANCES_URL, {
+      userId: staff.user.id,
+      definitionKey: DEFINITION,
+      source: 'override',
+      reason: 'Befristet bis zur Schulung',
+      validUntil: until,
+    });
+    expect(granted.status).toBe(201);
+    expect(granted.body.clearance).toMatchObject({
+      source: 'override',
+      validUntil: until,
+      active: true,
+    });
+    const past = await api('POST', CLEARANCES_URL, {
+      userId: staff.user.id,
+      definitionKey: 'machine_clean_complete',
+      source: 'override',
+      reason: 'Befristet',
+      validUntil: new Date(Date.now() - 60_000).toISOString(),
+    });
+    expect(past.status).toBe(400);
+    expect(past.body.error.message).toBe('Das Ablaufdatum muss in der Zukunft liegen.');
+  });
+});
+
+describe('Phase 14 Final §9: deaktivierte Mitarbeiter – Live-Freigaben (IU2–IU5)', () => {
+  it('IU2. verified_demo an deaktivierten Mitarbeiter ⇒ 409 TRAINING_USER_INACTIVE „Der Mitarbeiter ist deaktiviert.“; keine Zeile, kein Audit; gesperrt (locked) bleibt zulässig', async () => {
+    const { admin, api } = await adminSession();
+    const disabled = await trainee(admin.id, 'Iu2a');
+    const locked = await trainee(admin.id, 'Iu2b');
+    await ctx.admin.setUserStatus(admin.id, disabled.user.id, 'disabled');
+    await ctx.admin.setUserStatus(admin.id, locked.user.id, 'locked');
+    const denied = await api('POST', CLEARANCES_URL, {
+      userId: disabled.user.id,
+      definitionKey: DEFINITION,
+      source: 'verified_demo',
+    });
+    expect(denied.status).toBe(409);
+    expect(denied.body.error).toMatchObject({
+      code: 'TRAINING_USER_INACTIVE',
+      message: USER_INACTIVE_TEXT,
+      details: { userId: disabled.user.id, definitionKey: DEFINITION, source: 'verified_demo' },
+    });
+    expect(await clearanceRows(ctx.db, disabled.user.id)).toHaveLength(0);
+    expect(await securityEventsOfType(ctx.db, 'training.demo_verified')).toHaveLength(0);
+    const lockedGranted = await api('POST', CLEARANCES_URL, {
+      userId: locked.user.id,
+      definitionKey: DEFINITION,
+      source: 'verified_demo',
+    });
+    expect(lockedGranted.status).toBe(201);
+    expect(lockedGranted.body.clearance.user).toMatchObject({ lastName: 'Iu2b', status: 'locked' });
+  });
+
+  it('IU3. Override an deaktivierten Mitarbeiter ⇒ 409 TRAINING_USER_INACTIVE; keine Zeile, kein Audit', async () => {
+    const { admin, api } = await adminSession();
+    const staff = await trainee(admin.id, 'Iu3');
+    await ctx.admin.setUserStatus(admin.id, staff.user.id, 'disabled');
+    const denied = await api('POST', CLEARANCES_URL, {
+      userId: staff.user.id,
+      definitionKey: DEFINITION,
+      source: 'override',
+      reason: 'Trotzdem',
+      validUntil: new Date(Date.now() + 86_400_000).toISOString(),
+    });
+    expect(denied.status).toBe(409);
+    expect(denied.body.error.code).toBe('TRAINING_USER_INACTIVE');
+    expect(denied.body.error.message).toBe(USER_INACTIVE_TEXT);
+    expect(await clearanceRows(ctx.db, staff.user.id)).toHaveLength(0);
+    expect(await securityEventsOfType(ctx.db, 'training.override_granted')).toHaveLength(0);
+  });
+
+  it('IU4. Historie bleibt: Freigaben eines deaktivierten Mitarbeiters bleiben lesbar (Liste, status disabled), Widerruf bleibt möglich – nichts wird gelöscht', async () => {
+    const { admin, api } = await adminSession();
+    const staff = await trainee(admin.id, 'Iu4');
+    const verified = await api('POST', CLEARANCES_URL, {
+      userId: staff.user.id,
+      definitionKey: DEFINITION,
+      source: 'verified_demo',
+    });
+    const override = await api('POST', CLEARANCES_URL, {
+      userId: staff.user.id,
+      definitionKey: 'machine_clean_complete',
+      source: 'override',
+      reason: 'Vor der Deaktivierung',
+    });
+    expect(verified.status).toBe(201);
+    expect(override.status).toBe(201);
+    await ctx.admin.setUserStatus(admin.id, staff.user.id, 'disabled');
+    const list = await api('GET', `${CLEARANCES_URL}?userId=${staff.user.id}`);
+    expect(list.status).toBe(200);
+    expect(list.body.clearances).toHaveLength(2);
+    for (const clearance of list.body.clearances) {
+      expect(clearance.user).toMatchObject({ lastName: 'Iu4', status: 'disabled' });
+      expect(clearance.revokedAt).toBeNull();
+    }
+    const all = await api('GET', CLEARANCES_URL);
+    expect(all.body.clearances.map((c: { id: string }) => c.id).sort()).toEqual(
+      [verified.body.clearance.id, override.body.clearance.id].sort(),
+    );
+    const revoked = await api('POST', `${CLEARANCES_URL}/${override.body.clearance.id}/revoke`);
+    expect(revoked.status).toBe(200);
+    expect(revoked.body.revoked).toBe(true);
+    expect(await clearanceRows(ctx.db, staff.user.id)).toHaveLength(2);
+  });
+
+  it('IU5. Reaktivierung: nicht widerrufene verified_demo gilt wieder im production-Gate; nach bewusstem Widerruf gesperrt', async () => {
+    const { admin, api } = await adminSession();
+    const staff = await trainee(admin.id, 'Iu5');
+    expect((await api('PUT', GATES_URL, { definitionKey: DEFINITION, enabled: true })).status).toBe(
+      200,
+    );
+    const verified = await api('POST', CLEARANCES_URL, {
+      userId: staff.user.id,
+      definitionKey: DEFINITION,
+      source: 'verified_demo',
+    });
+    expect(verified.status).toBe(201);
+    await ctx.admin.setUserStatus(admin.id, staff.user.id, 'disabled');
+    // Deaktiviert: Sessions widerrufen – die Fachaktion ist schon an der Anmeldung zu Ende.
+    const first = await pendingStocktake(admin.id, 0);
+    expect((await apiOn(prod, staff.cookie)('POST', approveUrl(first))).status).toBe(401);
+    expect((await loginTrainee('Iu5')).statusCode).not.toBe(200);
+    await ctx.admin.setUserStatus(admin.id, staff.user.id, 'active');
+    const session = await loginTrainee('Iu5');
+    expect(session.statusCode).toBe(200);
+    expect((await apiOn(prod, session.cookie)('POST', approveUrl(first))).status).toBe(200);
+    expect(
+      (await api('POST', `${CLEARANCES_URL}/${verified.body.clearance.id}/revoke`)).status,
+    ).toBe(200);
+    const second = await pendingStocktake(admin.id, 1);
+    expectTrainingRequired(
+      await apiOn(prod, session.cookie)('POST', approveUrl(second)),
+      FEATURE,
+      await definitionTitle(ctx.db, DEFINITION),
+    );
+  });
+});

@@ -198,10 +198,19 @@ Serverseitige Umsetzung (Phase 14, W2, Order §55–§66, §97–§100):
   aber keine automatische Freigabe – sie geben sich bewusst einen Override
   über denselben auditierten Weg.
 - Freigaben (`staff_training_clearances`): `verified_demo` (Admin bestätigt
-  bewusst ein in der Demo bestandenes Training je Mitarbeiter + Übungs-Key)
-  oder `override` (Begründung Pflicht, `validUntil` optional). Gültig = nicht
-  widerrufen, begonnen, nicht abgelaufen; jede Anfrage prüft frisch gegen die
-  Datenbank (kein Cache, nichts im Session-Cookie), Widerruf wirkt sofort (§65).
+  bewusst ein in der Demo bestandenes Training je Mitarbeiter + Übungs-Key;
+  Phase 14 Final §7: UNBEFRISTET – `validUntil` ⇒ 400 `VALIDATION`, CHECK
+  `staff_training_clearances_verified_demo_permanent_check`, gilt bis zum
+  bewussten Widerruf) oder `override` (Begründung Pflicht, `validUntil`
+  optional, Zukunft). Gültig = nicht widerrufen, begonnen, nicht abgelaufen;
+  jede Anfrage prüft frisch gegen die Datenbank (kein Cache, nichts im
+  Session-Cookie), Widerruf wirkt sofort (§65).
+- Deaktivierte Mitarbeiter (Phase 14 Final §9): neue Freigaben und Overrides
+  an Konten mit `status = disabled` ⇒ 409 `TRAINING_USER_INACTIVE` „Der
+  Mitarbeiter ist deaktiviert.“ (gesperrt = `locked` bleibt zulässig);
+  bestehende Freigaben bleiben Historie, lesbar und widerrufbar; nach
+  Reaktivierung gelten nicht widerrufene Freigaben wieder. `ClearanceView.user`
+  trägt `status`; die UI führt deaktivierte Konten nicht in den Auswahllisten.
 - Antwort bei Sperre: 403 `TRAINING_REQUIRED` („Für diese Funktion ist zuerst
   das Training ‚<Titel>‘ erforderlich.“, `details.featureKey`,
   `details.requiredTrainingKey`, `details.title`); inkonsistente Sperre (aktiv,
@@ -225,6 +234,9 @@ Serverseitige Umsetzung (Phase 14, W2, Order §55–§66, §97–§100):
   Zustandswechsel), `training.demo_verified`, `training.override_granted`,
   `training.override_revoked`, `training.demo_verification_revoked` – Details
   nur Keys/IDs/Zeitstempel, nie der Begründungstext.
+- Katalog nicht verfügbar (Phase 14 Final §13): Trainingsrouten 503
+  `TRAINING_CATALOG_UNAVAILABLE`; eine aktive production-Sperre blockiert die
+  Fachaktion dann ebenfalls mit 503 (fail-closed, nie fail-open).
 
 ## Offline (Phase 8)
 
@@ -416,9 +428,11 @@ Serverseitige Umsetzung (Phase 14, W2, Order §55–§66, §97–§100):
   der Demo beschränkt; geprüft wird jeweils in der Umgebung, in der die Route
   existiert (L11).
 - Reichweite von `training.manage` in der Demo (Phase 14, W2, Order §53/§68/§85):
-  `GET /staff/training/admin/overview` (alle aktiven Mitarbeiter mit
-  Zuweisungen, Fortschritt, letztem Versuch, Fehlversuchen, unterbrochenen
-  Versuchen), `GET …/admin/users/:userId` (Zuweisungen + alle Versuche mit
+  `GET /staff/training/admin/overview` (alle aktiven und gesperrten
+  Mitarbeiter sowie deaktivierte mit Trainingshistorie – nur lesend,
+  `user.status` – mit Zuweisungen, Fortschritt, letztem Versuch, Fehlversuchen,
+  unterbrochenen Versuchen; Phase 14 Final §9: Zuweisung an deaktivierte
+  Konten ⇒ 409 `TRAINING_USER_INACTIVE`, Historie bleibt), `GET …/admin/users/:userId` (Zuweisungen + alle Versuche mit
   Ereignissen – nur Meta: Zeitpunkt, Übung, Schritt, neutraler Code),
   `GET …/admin/paths` (Katalog), `POST …/admin/assignments` (Pfad zuweisen,
   Audit `training.assignment_created`), `POST …/admin/reset` (Mitarbeiter /

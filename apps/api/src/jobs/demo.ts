@@ -5,8 +5,10 @@ import {
   SYSTEM_HEARTBEAT_JOB_TYPE,
   type ClaimedJob,
   type JobBeforeRunHook,
+  type JobExecutionGuard,
   type JobHandler,
   type JobQueue,
+  type JobRunner,
   type JobRunnerLogger,
   type StorageProvider,
 } from '@mietroyal/integrations';
@@ -17,6 +19,15 @@ import {
   DEMO_STORAGE_CLEANUP_JOB_TYPE,
   isDemoDatasetBoundJob,
 } from '../demo/job-types.ts';
+// Phase 14 Final (Reset-Barrier): Shared-Lock über die gesamte Handlerlaufzeit.
+import {
+  DEMO_RESET_BARRIER_LOCK_KEY,
+  DEMO_RESET_BARRIER_POOL_MAX,
+  DEMO_RESET_BARRIER_TIMEOUT_MS,
+  DemoResetBarrier,
+  type BarrierLease,
+  type DemoResetBarrierLogger,
+} from '../demo/reset-barrier.ts';
 import {
   createDemoResetGate,
   DEMO_RESET_GATE_CACHE_TTL_MS,
@@ -46,8 +57,17 @@ export const DEMO_RESET_EXEMPT_JOB_TYPES: ReadonlySet<string> = new Set([
   SYSTEM_HEARTBEAT_JOB_TYPE,
 ]);
 
-export { createDemoResetGate, DemoDatasetService, DEMO_STORAGE_CLEANUP_JOB_TYPE };
-export type { DemoResetGate };
+export {
+  createDemoResetGate,
+  DemoDatasetService,
+  DEMO_STORAGE_CLEANUP_JOB_TYPE,
+  // Phase 14 Final (Reset-Barrier) – für den Worker (`@mietroyal/api/jobs/demo`).
+  DemoResetBarrier,
+  DEMO_RESET_BARRIER_LOCK_KEY,
+  DEMO_RESET_BARRIER_POOL_MAX,
+  DEMO_RESET_BARRIER_TIMEOUT_MS,
+};
+export type { DemoResetGate, BarrierLease };
 
 /** Quelle des Reset-Beginns (Worker: Cache mit derselben TTL wie das Gate). */
 export interface DemoDatasetChangeSource {
@@ -118,6 +138,89 @@ export function createDemoWorkerGuard(deps: {
     ...(deps.logger === undefined ? {} : { logger: deps.logger }),
   });
   return createDemoJobGuard(gate, { datasetChange: createDemoDatasetChangeSource(dataset) });
+}
+
+// ── Phase 14 Final (Order §4, Design C): Shared-Barrier-Lock über den ganzen Handler ──
+
+/**
+ * Execution-Guard des Demo-Runners: NACH dem `beforeRun`-Guard (stale ⇒ skip,
+ * Reset bekannt ⇒ defer) erwirbt er für ALLE Jobtypen außer `system.heartbeat`
+ * (inkl. `demo.storage_cleanup`, `communication.scan_due`, `mail.inbound_poll`,
+ * `communication.cleanup_retention`) einen Shared-Barrier-Lock OHNE Warten:
+ * `null` (Reset hält/beantragt den Exclusive) ⇒ defer 15 s ohne Attempt-
+ * Verbrauch; sonst `reset_in_progress` DIREKT (ungecacht) prüfen ⇒ `true`:
+ * Lock sofort freigeben, defer; `false`: Handler läuft, der Runner gibt den
+ * Lock im `finally` frei (Erfolg, Fachfehler, Exception). Zwischen Lock und
+ * Prüfung gibt es kein Zeitfenster (siehe `reset-barrier.ts`).
+ */
+export function createDemoJobExecutionGuard(
+  barrier: Pick<DemoResetBarrier, 'tryAcquireShared'>,
+  options: { deferMs?: number; exemptJobTypes?: ReadonlySet<string> } = {},
+): JobExecutionGuard {
+  const deferMs = options.deferMs ?? DEMO_JOB_DEFER_MS;
+  const exempt = options.exemptJobTypes ?? DEMO_RESET_EXEMPT_JOB_TYPES;
+  return {
+    async acquire(job) {
+      if (exempt.has(job.type)) return { action: 'run', release: async () => undefined };
+      const lease = await barrier.tryAcquireShared();
+      if (lease === null) return { action: 'defer', delayMs: deferMs, reason: 'DEMO_RESET' };
+      let inProgress: boolean;
+      try {
+        inProgress = await lease.isResetInProgressUncached();
+      } catch (error) {
+        await lease.release();
+        throw error;
+      }
+      if (inProgress) {
+        await lease.release();
+        return { action: 'defer', delayMs: deferMs, reason: 'DEMO_RESET' };
+      }
+      return { action: 'run', release: () => lease.release() };
+    },
+  };
+}
+
+export interface DemoWorkerGuards {
+  beforeRun: JobBeforeRunHook;
+  execution: JobExecutionGuard;
+}
+
+/**
+ * Beide Guards des Demo-Runners (Worker, API-Mock-Runner, Test-Runner):
+ * `beforeRun` (Gate-Cache + Zeitstempel-Skip, wie bisher) und der
+ * Execution-Guard auf der übergebenen Barrier (eine Barrier je Prozess).
+ */
+export function createDemoWorkerGuards(deps: {
+  db: Database;
+  barrier: Pick<DemoResetBarrier, 'tryAcquireShared'>;
+  logger?: DemoResetGateLogger & DemoResetBarrierLogger;
+  /** Nur Tests: Cache-TTL des Gates (Default `DEMO_RESET_GATE_CACHE_TTL_MS`). */
+  cacheTtlMs?: number;
+}): DemoWorkerGuards {
+  const dataset = new DemoDatasetService(deps.db);
+  const cacheTtlMs = deps.cacheTtlMs ?? DEMO_RESET_GATE_CACHE_TTL_MS;
+  const gate = createDemoResetGate({
+    dataset,
+    cacheTtlMs,
+    ...(deps.logger === undefined ? {} : { logger: deps.logger }),
+  });
+  return {
+    beforeRun: createDemoJobGuard(gate, {
+      datasetChange: createDemoDatasetChangeSource(dataset, { cacheTtlMs }),
+    }),
+    execution: createDemoJobExecutionGuard(deps.barrier),
+  };
+}
+
+/** Guards am Runner verdrahten (`setBeforeRun` + `setExecutionGuard`). */
+export function installDemoWorkerGuards(
+  runner: Pick<JobRunner, 'setBeforeRun' | 'setExecutionGuard'>,
+  deps: Parameters<typeof createDemoWorkerGuards>[0],
+): DemoWorkerGuards {
+  const guards = createDemoWorkerGuards(deps);
+  runner.setBeforeRun(guards.beforeRun);
+  runner.setExecutionGuard(guards.execution);
+  return guards;
 }
 
 // ── Phase 14 (reset, Order §22): Nachbereinigung des Demo-Storage ────────────
