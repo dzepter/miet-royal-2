@@ -135,3 +135,126 @@ bewusst nicht erzwungen). Das Flag ist kein Geheimnis (keine Redaction, keine
 Isolationsprüfung) und hat in production keinen automatischen Default – es
 dokumentiert die bewusste Entscheidung nach Vertragsprüfung
 (`docs/OPEN_ITEMS.md` → „GO-LIVE-BLOCKER Routing“).
+
+## Demo-Umgebung (Phase 14)
+
+### Live↔Demo-Wechsel: `STAFF_DEMO_URL` / `STAFF_LIVE_URL`
+
+| Variable | Wo | Bedeutung |
+| --- | --- | --- |
+| `STAFF_DEMO_URL` | API in production/staging/development | fester Origin der **Demo**-Staff-App, z. B. `https://demo.<domain>`; in `demo` ein Konfigurationsfehler |
+| `STAFF_LIVE_URL` | API in demo | fester Origin der **Live**-Staff-App, z. B. `https://app.<domain>`; in `production` ein Konfigurationsfehler |
+
+Regeln (`packages/config`, `config.environmentLinks.counterpart`): nur eine
+absolute URL mit Schema `https` (`http` nur in development), ausschließlich der
+Origin – kein Pfad, keine Query, kein Fragment, keine Zugangsdaten (alles
+andere ⇒ `ConfigError`); nie beide Variablen gleichzeitig. Die Werte sind
+keine Secrets. `GET /auth/me` liefert `counterpart: { kind: 'demo' | 'live',
+url } | null`; die Staff-App zeigt nur dann „Demo öffnen“ / „Live öffnen“,
+öffnet nach bewusster Bestätigung `<Origin>/login` in einem neuen Tab und
+überträgt dabei nichts (keine Session, keine IDs, keine aktuelle URL). Ohne
+Variable gibt es keinen Button.
+
+**Isolations-Check (erweitert):** Kollision, wenn beide Umgebungen auf dieselbe
+Ziel-URL verlinken (`STAFF_DEMO_URL` der Live-Konfiguration ==
+`STAFF_LIVE_URL` der Demo-Konfiguration) oder eine Umgebung ihre eigene
+`MAIL_PUBLIC_WEB_BASE_URL` als Gegen-URL nennt. Diese Meldungen dürfen die
+URLs nennen (keine Secrets).
+
+### Web-Instanz: `WEB_APP_ENV`
+
+`WEB_APP_ENV` gilt **nur für den Web-Server** (`apps/web`, `next start`), nicht
+für API/Worker und nicht in `packages/config`. Werte wie `APP_ENV`, Default
+`development`. Die Web-Instanz der Demo-Umgebung **MUSS** `WEB_APP_ENV=demo`
+setzen: dann zeigt sie auf allen Seiten (Angebots-, Kontakt- und
+Dokumentlinks) den festen Banner „DEMO – keine echten Kundendaten“ – dieser
+Banner lässt sich durch nichts ausblenden. Der Wert wird zur Laufzeit des
+Servers gelesen (nicht beim Build); ein unbekannter Wert wird einmal im
+Serverlog gemeldet und wie `development` behandelt.
+
+**Zweite Quelle (Review F6, Härtung):** zusätzlich fragt das Root-Layout je
+Seitenaufruf serverseitig `GET <WEB_API_ORIGIN>/health` ab (Timeout 1 s,
+`cache: 'no-store'`). Meldet die konfigurierte API `environment: 'demo'`,
+erscheint der Banner ebenfalls (ODER-Logik, `apps/web/lib/environment.ts`,
+`resolveDemoBanner`). Fehler oder Timeout der Abfrage ⇒ nur `WEB_APP_ENV`
+zählt. Eine Demo-Web-Instanz mit vergessener Variable, aber korrektem
+`WEB_API_ORIGIN` auf die Demo-API, bleibt dadurch gekennzeichnet.
+
+**Pflicht außerhalb development:** fehlt `WEB_APP_ENV` bei `NODE_ENV`
+≠ `development` (`next start`), loggt der Web-Server einmal einen Fehler
+(`WEB_APP_ENV fehlt – …`) und läuft weiter – bewusst **kein Startabbruch**,
+damit die Web-App nicht ausfällt; die Demo-Kennzeichnung hängt dann allein an
+`/health`. Die Deploy-Checkliste (docs/DEPLOYMENT_NOTES.md, Release-Ablauf
+6b) verlangt den Wert für jede Web-Instanz (`demo` bzw. `production`/
+`staging`); der Isolation-Check kann ihn nicht prüfen.
+
+### Demo-Mail: Senke, Whitelist und Demo-Testadressen des Seeds
+
+Die Demo versendet E-Mails ausschließlich an `MAIL_DEMO_WHITELIST` (Phase 12:
+vollständige Adressen oder `@domain`-Einträge; Betreff immer „[DEMO] …“;
+Prüfung beim Einreihen und vor dem Versand). Damit Mail-Übungen in der Demo
+tatsächlich zustellbar sind (Kundeninformation der Abrechnung bei berechneter
+Belastung, Kommunikationsantworten – beide gelten erst mit bestätigtem Versand
+als erledigt), sollte das Demo-Deployment eine **Sink-Domain** whitelisten,
+z. B. `MAIL_DEMO_WHITELIST=@demo.test` (reservierte TLD, nie real), und den
+SMTP-Weg (`MAIL_ENABLED=true`, `MAIL_SMTP_*`) auf eine Mail-Senke
+(Catch-all-Postfach/Test-SMTP) zeigen lassen; Mails mit Links (Angebote,
+Aktionen) brauchen außerdem `MAIL_PUBLIC_WEB_BASE_URL` (Config-Pflicht bei
+`MAIL_ENABLED=true`, sonst bleiben sie `blocked`/`PUBLIC_WEB_BASE_URL_MISSING`).
+
+Der Demo-Seed (Phase 14, Order §9 „konfigurierte Demo-Testadresse“) vergibt an
+die Kunden der Mail-Übungsszenarien (`process.settlement.review`,
+`process.return.damage`, `process.return.missing_part`, `conversation.email.*`)
+Adressen `<lokalteil>@<erste Whitelist-Domain>` (z. B. `einkauf@demo.test`,
+`lena.beispiel@demo.test`); ohne `@domain`-Eintrag bleiben alle Seed-Adressen
+unter example.com / example.invalid und jede Kundenmail `blocked`
+(DEMO_NOT_WHITELISTED). Vollständige Adressen der Whitelist (`tester@…`) werden
+nie an Seed-Kunden vergeben; alle übrigen Seed-Kunden behalten die
+Beispieldomain. Die Whitelist-Domain wirkt erst mit dem nächsten
+`pnpm demo:seed`/`demo:reset`; bestehende Kunden behalten ihre Adresse. Details:
+docs/TECH_DECISIONS.md („Demo-Testadressen im Seed“).
+
+### Demo-Kennzeichnung der Staff-App
+
+Die Staff-App kennt ihre Umgebung über `GET /auth/me` (`environment`, auch im
+gesperrten Zustand), offline über die gespeicherte Identität und auf Seiten
+ohne Anmeldung (Login, Passwort vergessen/zurücksetzen) über `GET /api/health`.
+Bei `demo` zeigt sie dauerhaft das Badge „DEMO – keine echten Kundendaten“ im
+Header und Sperrbildschirm sowie den Titel-Präfix „DEMO · “. Dafür ist keine
+zusätzliche Staff-Variable nötig.
+
+### Demo-Reset-Gate
+
+In `APP_ENV=demo` weist die API während eines laufenden Demo-Resets
+(`demo_dataset_state.reset_in_progress`) alle Business-Mutationen
+(`POST/PUT/PATCH/DELETE` unter `/staff/*`, `/public/*`, `/webhooks/*`) mit
+`503 DEMO_RESET` und `retry-after: 15` ab; ausgenommen sind `/auth/*`,
+`/staff/demo/*`, `/staff/push/*` und `/staff/offline/lease*`. Der Worker legt
+Business-Jobs (alle außer `system.heartbeat`) in dieser Zeit um 15 s zurück,
+ohne einen Versuch zu verbrauchen. In allen anderen Umgebungen existieren
+weder Gate noch Demo-Routen (`/staff/demo/*` ⇒ 404).
+
+### Reset-Folgen für Jobs, Storage und Offline (Phase 14, RESET)
+
+- **Jobs:** Business-Jobs, die vor dem Beginn des letzten Resets eingereiht
+  wurden (`demo_dataset_state.last_reset_started_at`, DB-Uhr), führt der
+  Demo-Worker nie aus – er beendet sie als `dead` mit `last_error =
+  DEMO_DATASET_CHANGED`. Infrastruktur-Jobs (Heartbeat, Scanner, IMAP-Poll,
+  Retention-Backstop, `demo.storage_cleanup`) sind davon ausgenommen.
+- **Storage:** Objekte des alten Datensatzes, die beim Reset nicht gelöscht
+  werden konnten, räumt der Job `demo.storage_cleanup` nach (nur im Demo-
+  Storage – der Demo-Worker kennt keine andere Konfiguration). Offene oder
+  dauerhaft gescheiterte Nachbereinigungen zeigt `GET /staff/demo/status`
+  (`storageCleanup`) bzw. Einstellungen → Demo.
+- **Offline-Epoch:** Nur in `APP_ENV=demo` liefern Lease (`POST
+  /staff/offline/lease`), Arbeitspaket (`POST /staff/offline/package`) und
+  Status (`GET /staff/offline/status`) ein Feld `datasetEpoch` (UUID der
+  Datensatz-Generation); jeder Reset erzeugt eine neue. Der Sync (`POST
+  /staff/offline/sync`) verlangt in demo die aktuelle Epoch (`datasetEpoch`) und
+  antwortet sonst `409 DEMO_DATASET_CHANGED`, ohne etwas zu schreiben. In
+  development/staging/production ist `datasetEpoch` immer `null`, und das Feld
+  der Sync-Anfrage wird ignoriert – kein Verhaltensunterschied.
+- **PDFs:** In demo tragen Angebot, Auftragsbestätigung, Lieferschein und die
+  Protokolle die Zeile „DEMO – keine echten Kundendaten“ (jede Seite) und den
+  Titelpräfix „DEMO · “; keine Staff-/Web-Variable nötig (Quelle `APP_ENV`).
+

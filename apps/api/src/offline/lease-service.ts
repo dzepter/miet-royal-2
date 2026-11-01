@@ -87,19 +87,62 @@ export class OfflineEnvironmentMismatchError extends Error {
   }
 }
 
+/**
+ * Phase 14 (offline epoch, Order §91/§92): Die Mutation gehört zu einer
+ * früheren Generation des Demo-Datensatzes (vor einem Demo-Reset) – sie wird
+ * nie auf den neuen Seed angewendet; die Route antwortet 409 DEMO_DATASET_CHANGED.
+ */
+export class OfflineDatasetChangedError extends Error {
+  constructor() {
+    super(
+      'Die Demo-Daten wurden zurückgesetzt. Offline erfasste Änderungen gehören zum alten Datenstand und können nicht mehr übernommen werden.',
+    );
+    this.name = 'OfflineDatasetChangedError';
+  }
+}
+
 export type SecurityAudit = (event: SecurityEventInput) => Promise<void>;
+
+/** Phase 14 (offline epoch): Quelle der Dataset-Epoch – nur in APP_ENV=demo gesetzt (Demo-Modul). */
+export type DatasetEpochProvider = () => Promise<string | null>;
 
 export class OfflineLeaseService {
   private readonly audit: SecurityAudit;
   private readonly signer: OfflineLeaseSigner;
+  private readonly datasetEpochProvider: DatasetEpochProvider | null;
 
   constructor(
     private readonly db: Database,
     private readonly config: AppConfig,
     audit?: SecurityAudit,
+    /** Phase 14 (offline epoch): ohne Provider (alle Umgebungen außer demo) sind alle Epoch-Felder null. */
+    datasetEpochProvider?: DatasetEpochProvider | undefined,
   ) {
     this.audit = audit ?? ((event) => recordSecurityEvent(db, event));
     this.signer = new OfflineLeaseSigner(config.auth.secretKey);
+    this.datasetEpochProvider = datasetEpochProvider ?? null;
+  }
+
+  /**
+   * Phase 14 (offline epoch): aktuelle Generation des Demo-Datensatzes für
+   * Lease, Paket und Status; außerhalb der Demo (kein Provider) immer null.
+   */
+  async currentDatasetEpoch(): Promise<string | null> {
+    if (this.datasetEpochProvider === null) return null;
+    return this.datasetEpochProvider();
+  }
+
+  /**
+   * Phase 14 (offline epoch, Order §92): In der Demo muss jede Sync-Anfrage die
+   * aktuelle Epoch tragen – fehlt sie oder weicht sie ab (Paket/Mutation von vor
+   * einem Reset), wird sie hart abgewiesen, bevor irgendetwas geschrieben wird.
+   * Außerhalb der Demo wird das Feld ignoriert (Production unverändert).
+   */
+  async assertDatasetEpoch(datasetEpoch: string | null | undefined): Promise<void> {
+    if (this.datasetEpochProvider === null) return;
+    const current = await this.datasetEpochProvider();
+    if (current === null) return;
+    if (datasetEpoch !== current) throw new OfflineDatasetChangedError();
   }
 
   /** Öffentlicher Verifikationsschlüssel (Base64url, 32 Byte) – nur dieser verlässt den Server. */
@@ -205,6 +248,7 @@ export class OfflineLeaseService {
       leaseId: lease.id,
       userId: context.user.id,
       environment: this.config.appEnv,
+      datasetEpoch: await this.currentDatasetEpoch(), // Phase 14 (offline epoch)
       deviceId,
       issuedAt: lease.issuedAt.toISOString(),
       expiresAt: lease.expiresAt.toISOString(),

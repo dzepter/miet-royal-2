@@ -30,6 +30,7 @@ import {
 import {
   renderDeliveryNotePdf,
   renderHandoverProtocolPdf,
+  type PdfRenderOptions,
   SignatureImageError,
 } from '@mietroyal/documents';
 import { CANISTER_SLUG, CANISTERS_PER_CONTAINER_LIMIT, handoverBlockers } from '@mietroyal/domain';
@@ -252,6 +253,16 @@ function sortedTuples<T extends readonly unknown[]>(tuples: readonly T[]): T[] {
   return [...tuples].sort((a, b) => String(a[0]).localeCompare(String(b[0])));
 }
 
+/**
+ * Phase 14 (training, Design §4.3): Ergebnis der Finalisierung – zusätzlich
+ * `finalized` (true nur, wenn DIESER Aufruf abgeschlossen hat; false bei der
+ * idempotenten Wiederholung), damit Nachläufe wie der Trainings-Recorder
+ * genau einmal reagieren.
+ */
+export interface HandoverFinalizeResult extends HandoverDetailView {
+  finalized: boolean;
+}
+
 export function finalizationFingerprint(view: HandoverDetailView): string {
   return JSON.stringify({
     slots: sortedTuples(
@@ -322,6 +333,8 @@ export class HandoverService {
     private readonly damages: ExistingDamageProvider = NO_EXISTING_DAMAGES,
     /** Phase 12 (Order §11): Protokollmail nach Finalisierung (ohne Mailer bleibt das Paket `ready`). */
     private readonly packetMailer: DeliveryPacketMailer | null = null,
+    /** Phase 14 (reset, Order §89): Umgebungskennzeichnung der PDFs („DEMO – …“), nur in demo gesetzt. */
+    private readonly documentEnvironmentLabel: string | undefined = undefined,
   ) {}
 
   // ── Laden / Anlegen (Order §18: Entwurf automatisch) ────────────────────
@@ -1465,35 +1478,45 @@ export class HandoverService {
               ? ''
               : ` – ${berlin(new Date(view.handover.appointment.endAt))}`
           }`;
-    return renderDeliveryNotePdf({
-      processNumber: view.booking.processNumber,
-      customerName: view.booking.customerName,
-      customerAddressLines: [
-        String(customer.billingStreet ?? '') || null,
-        [customer.billingPostalCode, customer.billingCity].filter(Boolean).join(' ') || null,
-      ].filter((line): line is string => line !== null),
-      eventDateLabel: view.booking.eventDate ?? '–',
-      eventTimeLabel: view.booking.eventTimeLabel,
-      fulfillmentLabel: view.booking.fulfillment === 'pickup' ? 'Selbstabholung' : 'Lieferung',
-      deliveryAddressLines: view.booking.deliveryAddressLines.map((line, index) =>
-        index === 0 ? `Lieferadresse: ${line}` : line,
-      ),
-      scheduleLabel,
-      machines: view.slots.map((slot) => ({
-        machineCode: slot.machine?.machineCode ?? '– (nicht zugewiesen)',
-        typeName: slot.productName,
-      })),
-      items: view.deliveryNote.items
-        .filter((item) => item.actualQuantity > 0)
-        .map((item) => ({
-          description: item.description,
-          quantity: item.actualQuantity,
-          unit: item.unit,
-          kindLabel: item.kindLabel,
+    return renderDeliveryNotePdf(
+      {
+        processNumber: view.booking.processNumber,
+        customerName: view.booking.customerName,
+        customerAddressLines: [
+          String(customer.billingStreet ?? '') || null,
+          [customer.billingPostalCode, customer.billingCity].filter(Boolean).join(' ') || null,
+        ].filter((line): line is string => line !== null),
+        eventDateLabel: view.booking.eventDate ?? '–',
+        eventTimeLabel: view.booking.eventTimeLabel,
+        fulfillmentLabel: view.booking.fulfillment === 'pickup' ? 'Selbstabholung' : 'Lieferung',
+        deliveryAddressLines: view.booking.deliveryAddressLines.map((line, index) =>
+          index === 0 ? `Lieferadresse: ${line}` : line,
+        ),
+        scheduleLabel,
+        machines: view.slots.map((slot) => ({
+          machineCode: slot.machine?.machineCode ?? '– (nicht zugewiesen)',
+          typeName: slot.productName,
         })),
-      createdAtLabel: now.toLocaleDateString('de-DE', { timeZone: 'Europe/Berlin' }),
-      isFinal,
-    });
+        items: view.deliveryNote.items
+          .filter((item) => item.actualQuantity > 0)
+          .map((item) => ({
+            description: item.description,
+            quantity: item.actualQuantity,
+            unit: item.unit,
+            kindLabel: item.kindLabel,
+          })),
+        createdAtLabel: now.toLocaleDateString('de-DE', { timeZone: 'Europe/Berlin' }),
+        isFinal,
+      },
+      this.pdfOptions(),
+    ); // Phase 14 (reset)
+  }
+
+  /** Phase 14 (reset, Order §89): Render-Optionen der Kundendokumente (Demo-Kennzeichnung). */
+  private pdfOptions(): PdfRenderOptions {
+    return this.documentEnvironmentLabel === undefined
+      ? {}
+      : { environmentLabel: this.documentEnvironmentLabel };
   }
 
   async renderDeliveryNotePreview(bookingId: string, now = new Date()): Promise<Buffer> {
@@ -1518,7 +1541,7 @@ export class HandoverService {
     bookingId: string,
     options: { actualIssueAt?: Date | null } = {},
     now = new Date(),
-  ): Promise<HandoverDetailView> {
+  ): Promise<HandoverFinalizeResult> {
     return this.finalizeMutex.run(`finalize:${bookingId}`, () =>
       this.finalizeExclusive(actorId, bookingId, options, now),
     );
@@ -1529,9 +1552,10 @@ export class HandoverService {
     bookingId: string,
     options: { actualIssueAt?: Date | null },
     now: Date,
-  ): Promise<HandoverDetailView> {
+  ): Promise<HandoverFinalizeResult> {
     const view = await this.detail(bookingId, now);
-    if (view.handover.status === 'finalized') return view;
+    // Phase 14 (training): `finalized: false` = bereits abgeschlossen (idempotente Wiederholung).
+    if (view.handover.status === 'finalized') return { ...view, finalized: false };
     if (view.blockers.length > 0) {
       throw new AuthError(
         'CONFLICT',
@@ -1581,32 +1605,35 @@ export class HandoverService {
     const finalizedAt = now;
     let protocolPdf: Buffer;
     try {
-      protocolPdf = await renderHandoverProtocolPdf({
-        processNumber: view.booking.processNumber,
-        customerName: view.booking.customerName,
-        recipientLabel: `${view.handover.recipientName ?? ''} (${RECIPIENT_KIND_LABELS[view.handover.recipientKind ?? 'customer']})`,
-        eventDateLabel: view.booking.eventDate ?? '–',
-        fulfillmentLabel: view.booking.fulfillment === 'pickup' ? 'Selbstabholung' : 'Lieferung',
-        machines: machineSections,
-        itemLines: view.deliveryNote.items
-          .filter((item) => item.actualQuantity > 0)
-          .map(
-            (item) =>
-              `${item.description}: ${item.actualQuantity} ${item.unit} (${item.kindLabel})`,
-          ),
-        customerSignature: {
-          png: customerPng,
-          name: customerSig.signerName,
-          signedAtLabel: berlin(customerSig.signedAt),
+      protocolPdf = await renderHandoverProtocolPdf(
+        {
+          processNumber: view.booking.processNumber,
+          customerName: view.booking.customerName,
+          recipientLabel: `${view.handover.recipientName ?? ''} (${RECIPIENT_KIND_LABELS[view.handover.recipientKind ?? 'customer']})`,
+          eventDateLabel: view.booking.eventDate ?? '–',
+          fulfillmentLabel: view.booking.fulfillment === 'pickup' ? 'Selbstabholung' : 'Lieferung',
+          machines: machineSections,
+          itemLines: view.deliveryNote.items
+            .filter((item) => item.actualQuantity > 0)
+            .map(
+              (item) =>
+                `${item.description}: ${item.actualQuantity} ${item.unit} (${item.kindLabel})`,
+            ),
+          customerSignature: {
+            png: customerPng,
+            name: customerSig.signerName,
+            signedAtLabel: berlin(customerSig.signedAt),
+          },
+          staffSignature: {
+            png: staffPng,
+            name: staffSig.signerName,
+            signedAtLabel: berlin(staffSig.signedAt),
+          },
+          finalizedAtLabel: berlin(finalizedAt),
+          documentReference: handover.id,
         },
-        staffSignature: {
-          png: staffPng,
-          name: staffSig.signerName,
-          signedAtLabel: berlin(staffSig.signedAt),
-        },
-        finalizedAtLabel: berlin(finalizedAt),
-        documentReference: handover.id,
-      });
+        this.pdfOptions(),
+      ); // Phase 14 (reset)
     } catch (error) {
       if (error instanceof SignatureImageError) {
         throw new AuthError('VALIDATION', `${error.message} Bitte erneut unterschreiben.`);
@@ -1625,6 +1652,8 @@ export class HandoverService {
 
     // Phase 2: fachlich atomare Transaktion.
     let enqueuedMail: EnqueuedMail | null = null;
+    // Phase 14 (training): true nur, wenn DIESE Transaktion finalisiert hat (nicht bei paralleler Wiederholung).
+    let finalizedByThisCall = false;
     await this.db.transaction(async (tx) => {
       await tx.execute(
         sql`SELECT pg_advisory_xact_lock(hashtext(${'handover-finalize:' + handover.id}))`,
@@ -1857,11 +1886,12 @@ export class HandoverService {
           ],
         });
       }
+      finalizedByThisCall = true; // Phase 14 (training)
     });
     // Mailfehler rollen die Übergabe nie zurück: Job-Planung außerhalb der Transaktion.
     await this.packetMailer?.afterCommit(enqueuedMail);
     await this.assignments.refreshRiskIncidents(now);
-    return this.detail(bookingId, now);
+    return { ...(await this.detail(bookingId, now)), finalized: finalizedByThisCall };
   }
 
   // ── Ausgabe-Ansicht (Order §12) ─────────────────────────────────────────

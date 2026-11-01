@@ -14,6 +14,10 @@
 
 export const APP_LOCKED_EVENT = 'mr-app-locked';
 export const UNAUTHENTICATED_EVENT = 'mr-unauthenticated';
+/** Phase 14 (demo): 503 während eines Demo-Resets – kein Sitzungsproblem, nur Wartezeit. */
+export const DEMO_RESET_ERROR_CODE = 'DEMO_RESET';
+export const DEMO_RESET_MESSAGE =
+  'Die Demo-Umgebung wird gerade zurückgesetzt. Bitte in einer Minute erneut versuchen.';
 
 export interface ApiResult<T> {
   ok: boolean;
@@ -84,14 +88,25 @@ export async function apiFetch<T = unknown>(
     window.dispatchEvent(new Event(UNAUTHENTICATED_EVENT));
   }
 
+  // Phase 14 (demo): 503 DEMO_RESET einheitlich lesbar (kein Logout, keine Sperre).
+  const errorMessage =
+    response.status === 503 && errorCode === DEMO_RESET_ERROR_CODE
+      ? DEMO_RESET_MESSAGE
+      : (errorBody?.error?.message ?? null);
+
   return {
     ok: response.ok,
     status: response.status,
     data: response.ok ? (payload as T) : null,
     errorCode,
-    errorMessage: errorBody?.error?.message ?? null,
+    errorMessage,
     errorDetails: errorBody?.error?.details,
   };
+}
+
+/** Phase 14 (demo): Antwort des 503-Reset-Gates (für gezielte Hinweise in Formularen). */
+export function isDemoResetError(result: ApiResult<unknown>): boolean {
+  return result.status === 503 && result.errorCode === DEMO_RESET_ERROR_CODE;
 }
 
 export interface Me {
@@ -107,6 +122,8 @@ export interface Me {
   permissions?: string[];
   /** APP_ENV des Servers (Phase 8: Offline-Namespace). */
   environment?: 'development' | 'staging' | 'demo' | 'production';
+  /** Phase 14 (demo): feste Gegen-Umgebung für den Live↔Demo-Wechsel (nur Origin); null/fehlend ⇒ kein Button. */
+  counterpart?: { kind: 'demo' | 'live'; url: string } | null;
 }
 
 export function hasPermission(me: Me | null, key: string): boolean {

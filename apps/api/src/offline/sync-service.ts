@@ -49,6 +49,15 @@ import type { ReturnDetailView, ReturnService } from '../returns/return-service.
 import type { SchedulingService } from '../scheduling/scheduling-service.ts';
 import { MACHINE_STATUS_LABELS, type MachineService } from '../warehouse/machine-service.ts';
 import type { OfflineLeaseService } from './lease-service.ts';
+// Phase 14 (training gate): Live-Sperre auch beim Offline-Sync (Design §4.5) – nach der Rechteprüfung.
+import { OFFLINE_MUTATION_FEATURES } from '../training/features.ts';
+import {
+  TrainingGateError,
+  createNoopTrainingGate,
+  type TrainingGate,
+} from '../training/gate-service.ts';
+// Phase 14 (training): Trainingsereignisse NACH dem Fachcommit (Akteur = Sync-User, Order §41/§42).
+import { createNoopTrainingRecorder, type TrainingEventRecorder } from '../training/recorder.ts';
 
 /**
  * Sync-Orchestrator (Phase-8-Order §§28, 61–67, 73–76): jede Offline-
@@ -88,6 +97,10 @@ export interface OfflineSyncDeps {
   scheduling: SchedulingService;
   machines: MachineService;
   leases: OfflineLeaseService;
+  /** Phase 14 (training gate): Live-Trainingssperre für handover.finalize/return.finalize/machine.clean_complete (Default: Noop). */
+  trainingGate?: TrainingGate | undefined;
+  /** Phase 14 (training): Recorder für handover.finalized/return.finalized/machine.cleaning_completed (demo), Default Noop. */
+  trainingRecorder?: TrainingEventRecorder | undefined;
 }
 
 type ResultRef = Record<string, string>;
@@ -249,8 +262,15 @@ function defaultDetails(
 
 export class OfflineSyncService {
   private readonly mutex = new KeyedMutex();
+  // Phase 14 (training gate)
+  private readonly trainingGate: TrainingGate;
+  // Phase 14 (training)
+  private readonly trainingRecorder: TrainingEventRecorder;
 
-  constructor(private readonly deps: OfflineSyncDeps) {}
+  constructor(private readonly deps: OfflineSyncDeps) {
+    this.trainingGate = deps.trainingGate ?? createNoopTrainingGate();
+    this.trainingRecorder = deps.trainingRecorder ?? createNoopTrainingRecorder();
+  }
 
   async process(
     context: AuthenticatedContext,
@@ -258,6 +278,9 @@ export class OfflineSyncService {
     now = new Date(),
   ): Promise<SyncOutcomeResponse> {
     this.deps.leases.assertEnvironment(input.environment);
+    // Phase 14 (offline epoch, Order §92): in demo nur Mutationen der aktuellen
+    // Datensatz-Generation – alles andere ⇒ 409 DEMO_DATASET_CHANGED, keine Quittung.
+    await this.deps.leases.assertDatasetEpoch(input.datasetEpoch);
     const { mutation } = input;
     // Je Kontext (Vorgang/Maschine) UND je Mutations-ID serialisieren: zwei Geräte,
     // die denselben Vorgang gleichzeitig abschließen, laufen nacheinander – das
@@ -519,6 +542,24 @@ export class OfflineSyncService {
           'PERMISSION_REVOKED',
           'Dafür fehlt dir (inzwischen) die erforderliche Berechtigung.',
         );
+      }
+    }
+
+    // Phase 14 (training gate): Live-Sperre NACH der Rechteprüfung und vor jeder Fachwirkung
+    // (Order §64/§65, §117) – nur in production erzwungen; Ablehnung dauerhaft, Text wie online.
+    const gatedFeature = OFFLINE_MUTATION_FEATURES[type];
+    if (gatedFeature !== undefined) {
+      try {
+        await this.trainingGate.assert({ userId: context.user.id, featureKey: gatedFeature, now });
+      } catch (error) {
+        if (error instanceof TrainingGateError) {
+          throw new SyncRejected(error.trainingCode, error.message, {
+            offline: offlineLabel(type),
+            server: error.message,
+            action: 'Freigabe über die Trainingsverwaltung klären.',
+          });
+        }
+        throw error;
       }
     }
 
@@ -995,6 +1036,14 @@ export class OfflineSyncService {
           { actualIssueAt: new Date(p.capturedAt) },
           now,
         );
+        // Phase 14 (training): nur wenn DIESER Sync finalisiert hat (nach Commit).
+        if (view.finalized) {
+          await this.trainingRecorder.record({
+            actorUserId: actorId,
+            eventKey: 'handover.finalized',
+            subjectRef: bookingId,
+          });
+        }
         const ref: ResultRef = { bookingId, handoverId: view.handover.id };
         if (view.handover.protocolDocumentId !== null) {
           ref.protocolDocumentId = view.handover.protocolDocumentId;
@@ -1279,6 +1328,14 @@ export class OfflineSyncService {
           );
         }
         const view = await this.deps.returns.finalize(actorId, bookingId, now);
+        // Phase 14 (training): nur wenn DIESER Sync finalisiert hat (nach Commit).
+        if (view.finalized) {
+          await this.trainingRecorder.record({
+            actorUserId: actorId,
+            eventKey: 'return.finalized',
+            subjectRef: bookingId,
+          });
+        }
         const ref: ResultRef = { bookingId, returnId: view.return.id };
         if (view.return.protocolDocumentId !== null) {
           ref.protocolDocumentId = view.return.protocolDocumentId;
@@ -1600,6 +1657,12 @@ export class OfflineSyncService {
     // Reinigungszyklus ist ausschließlich der Reinigungsbeginn.
     void base;
     const updated = await this.deps.returns.completeCleaning(actorId, machineId, now);
+    // Phase 14 (training): Abschluss nur aus „Reinigung“ heraus möglich ⇒ dieser Sync hat ihn vollbracht.
+    await this.trainingRecorder.record({
+      actorUserId: actorId,
+      eventKey: 'machine.cleaning_completed',
+      subjectRef: updated.id,
+    });
     return { machineId: updated.id, status: updated.status };
   }
 }

@@ -17,6 +17,7 @@ import { createInboundPollHandler } from '../communication/inbound/poll-job.ts';
 import { InboundMailProcessor } from '../communication/inbound/processor.ts';
 import { createInboundMailSource } from '../communication/inbound/sources.ts';
 import type { InboundMailSource, WhatsAppGateway } from '../communication/types.ts';
+import type { TrainingEventRecorder } from '../training/recorder.ts'; // Phase 14 (training)
 import {
   MAIL_INBOUND_POLL_JOB_TYPE,
   WHATSAPP_MEDIA_FETCH_JOB_TYPE,
@@ -38,6 +39,8 @@ export interface InboundJobDeps {
   /** Default: aus config.whatsapp.mode. */
   whatsappGateway?: WhatsAppGateway;
   logger?: JobRunnerLogger;
+  /** Phase 14 (training): Recorder für bestätigte WhatsApp-Antworten (demo); Default: nichts. */
+  trainingRecorder?: TrainingEventRecorder;
 }
 
 export { createInboundMailSource, createWhatsAppGateway };
@@ -76,6 +79,7 @@ export function registerInboundJobHandlers(runner: JobRunner, deps: InboundJobDe
     storage: deps.storage,
     gateway,
     ...(logger === undefined ? {} : { logger }),
+    ...(deps.trainingRecorder === undefined ? {} : { trainingRecorder: deps.trainingRecorder }), // Phase 14 (training)
   };
   runner.register(WHATSAPP_SEND_JOB_TYPE, createWhatsAppSendHandler(whatsappDeps));
   runner.register(WHATSAPP_MEDIA_FETCH_JOB_TYPE, createWhatsAppMediaFetchHandler(whatsappDeps));

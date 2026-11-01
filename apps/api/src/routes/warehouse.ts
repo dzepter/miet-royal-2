@@ -4,6 +4,11 @@ import type { StorageProvider } from '@mietroyal/integrations';
 import { parseOrThrow, z } from '@mietroyal/validation';
 import type { FastifyInstance } from 'fastify';
 import { requireAuth, requirePermission, sendAuthError, sendError } from '../auth/http.ts';
+// Phase 14 (training gate): Live-Trainingssperre (Order §56–§66) – nach Rechten, vor der Fachaktion.
+import { requireTrainingGate } from '../training/gate-http.ts';
+import { createNoopTrainingGate, type TrainingGate } from '../training/gate-service.ts';
+// Phase 14 (training): Inventur-Ereignisse NACH erfolgreichem Fachcommit (Order §41/§42).
+import { createNoopTrainingRecorder, type TrainingEventRecorder } from '../training/recorder.ts';
 import type { StaffAuthService } from '../auth/service.ts';
 import { getStaffAppBaseUrl, setStaffAppBaseUrl } from '../crm/settings-service.ts';
 import { MachineAvailabilityService } from '../warehouse/availability.ts';
@@ -109,6 +114,10 @@ interface WarehouseRouteOptions {
   storage: StorageProvider;
   /** Phase 11: Reinigungsende ⇒ Gutschein-Prüfjob (Trigger B) – verdrahtet in app.ts. */
   cleaningEndedListener?: CleaningEndedListener;
+  /** Phase 14 (training gate): Live-Trainingssperre `inventory.stocktake_approve` (Default: Noop). */
+  trainingGate?: TrainingGate;
+  /** Phase 14 (training): Recorder für `inventory.stocktake_created|approved` (demo), Default Noop. */
+  trainingRecorder?: TrainingEventRecorder;
 }
 
 /**
@@ -149,6 +158,8 @@ export function registerWarehouseRoutes(
   options: WarehouseRouteOptions,
 ): void {
   const { db, auth, config, storage, cleaningEndedListener } = options;
+  const trainingGate = options.trainingGate ?? createNoopTrainingGate(); // Phase 14 (training gate)
+  const trainingRecorder = options.trainingRecorder ?? createNoopTrainingRecorder(); // Phase 14 (training)
   const machineService = new MachineService(db, storage, cleaningEndedListener);
   // Risikohinweise (Phase 6) entstehen sofort bei Status-/Sperränderungen.
   const assignments = new AssignmentService(db, machineService, storage);
@@ -584,7 +595,16 @@ export function registerWarehouseRoutes(
     if (!(await requirePermission(request, reply, auth, context, 'inventory.count'))) return;
     const body = parseOrThrow(stocktakeBody, request.body);
     try {
-      return { stocktake: await inventory.createStocktake(context.user.id, body.entries) };
+      const stocktake = await inventory.createStocktake(context.user.id, body.entries);
+      // Phase 14 (training): nur eine Zählung mit Differenz (Freigabe erforderlich) ist der erste Schritt.
+      if (stocktake.status === 'pending_approval') {
+        await trainingRecorder.record({
+          actorUserId: context.user.id,
+          eventKey: 'inventory.stocktake_created',
+          subjectRef: stocktake.id,
+        });
+      }
+      return { stocktake };
     } catch (error) {
       if (sendAuthError(request, reply, error)) return;
       throw error;
@@ -637,8 +657,26 @@ export function registerWarehouseRoutes(
     if (!(await requirePermission(request, reply, auth, context, 'inventory.approve_adjustment')))
       return;
     const params = parseOrThrow(idParams, request.params, 'params');
+    // Phase 14 (training gate)
+    if (
+      !(await requireTrainingGate(
+        request,
+        reply,
+        trainingGate,
+        context.user.id,
+        'inventory.stocktake_approve',
+      ))
+    )
+      return;
     try {
-      return { stocktake: await inventory.approveStocktake(context.user.id, params.id) };
+      const stocktake = await inventory.approveStocktake(context.user.id, params.id);
+      // Phase 14 (training): Freigabe nur aus `pending_approval` ⇒ dieser Aufruf hat sie vollbracht.
+      await trainingRecorder.record({
+        actorUserId: context.user.id,
+        eventKey: 'inventory.stocktake_approved',
+        subjectRef: stocktake.id,
+      });
+      return { stocktake };
     } catch (error) {
       if (sendAuthError(request, reply, error)) return;
       throw error;

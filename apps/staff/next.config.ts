@@ -10,6 +10,10 @@ const apiOrigin = process.env.STAFF_API_ORIGIN ?? 'http://127.0.0.1:3001';
 const nextConfig: NextConfig = {
   reactStrictMode: true,
   poweredByHeader: false,
+  // Phase 14 (E2E-Fix): optional eigenes Build-/Dev-Verzeichnis je Instanz (z. B. `.next/demo`
+  // für die Demo-Staff-Instanz der E2E-Suite). `next dev` sperrt sein distDir – zwei Dev-Server
+  // desselben Projekts brauchen daher getrennte Verzeichnisse. Ohne Variable bleibt `.next`.
+  ...(process.env.STAFF_DIST_DIR === undefined ? {} : { distDir: process.env.STAFF_DIST_DIR }),
   // Phase 8: Offline-Kern und Fachregeln als Workspace-Pakete (reines TS) bündeln.
   transpilePackages: ['@mietroyal/offline', '@mietroyal/domain'],
   allowedDevOrigins: ['127.0.0.1'],

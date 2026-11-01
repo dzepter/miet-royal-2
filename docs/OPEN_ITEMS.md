@@ -196,3 +196,56 @@ Tourfahrer (`calendar.view`) und der GraphHopper-Go-live-Schalter (siehe
   (späterer Retention-/Go-live-Punkt, nicht in Phase 13 Final gebaut).
 - Kundenstatus „Unterwegs“ ist nur als Grenze vorbereitet
   (`getCustomerTravelStatus`), ohne Endpunkt (Kundenportal spätere Phase).
+
+## Phase 14 – offene Entscheidungen (vor Abnahme zu klären)
+
+Die Demo-Umgebung, der kanonische Seed und der Reset (Auftrag §0–§20) sind
+umgesetzt. Folgende Punkte sind keine technischen Details, sondern
+Geschäftsentscheidungen des Auftraggebers und bleiben bis zur Entscheidung
+bewusst unentschieden (keine erfundene Defaultregel im Produktivcode):
+
+- **Trainings-Metaebene (Auftrag ab §21 fehlt):** Felder und Regeln für
+  Definitionen, Pfade, Zuweisungen, Versuche, Prüfkriterien, Fortschritt,
+  Live-Sperren, Admin-Bestätigung und Override; Pflichttests, E2E, Gate und
+  Berichtsform. Bis dahin existiert kein Trainingsschema; der Reset hält den
+  Hook `beforeBusinessWipe` für „laufende Versuche ⇒ interrupted
+  (DEMO_DATA_RESET)“ bereit.
+- **W1 Lexware-Mock in der Demo – GESCHLOSSEN (Auftrag Teil 2, W1/§29/§30):**
+  Mock in demo abgeschaltet; Gateway in demo immer `disabled`, Abrechnung
+  endet bei „Bereit zur Buchhaltung“ („Buchhaltungsübertragung ist in der
+  Demo nicht verfügbar.“, kein Fehlerzustand), `voucher.situation` als
+  Seed-Fixture (W1.1). Details: TECH_DECISIONS „Phase 14: W1 Lexware/
+  Accounting in der Demo“ und INTEGRATIONS (Lexware, Phase 14).
+- **W2 Weg eines bestandenen Demo-Trainings nach Live – GESCHLOSSEN (Auftrag
+  Teil 2, W2/§56–§66):** Übungen, Pfade, Zuweisungen und Versuche nur in der
+  Demo-DB; Live kennt ausschließlich Katalog-Keys, Live-Sperren
+  (`training_feature_requirements`), manuell bestätigte Freigaben
+  (`verified_demo`), Overrides (Begründung Pflicht, optional befristet) und das
+  Audit – keine ID-Kopplung, keine Synchronisierung, kein Cross-DB-Zugriff.
+  Damit geschlossen: L3 (fester Feature-Katalog mit acht Live-Mutationen, kein
+  Systemadmin-Bypass, Gate auch im Offline-Sync), L4 (Override: Begründung
+  Pflicht, `validUntil` optional, Audit, idempotenter Widerruf), L5
+  (Admin-Bestätigung `verified_demo`). Details: TECH_DECISIONS „Phase 14:
+  Training Gates & Freigaben (W2)“, PERMISSIONS „Training Gate“.
+- **Training Gates – verbleibende Fachfragen (keine Blocker):** (1) Darf eine
+  Demo-Bestätigung (`verified_demo`) befristet sein? API und Schema erlauben
+  `validUntil` für beide Quellen, die UI bietet es nur beim Override an. (2)
+  Dürfen Freigaben für eine inaktive Übung erteilt werden? Heute erlaubt
+  (unkritisch: inaktive Übungen können kein Sperrziel sein). (3) Soll der
+  Wechsel der Übung bei aktiver Sperre ein eigener Audit-Typ sein? Heute
+  `training.gate_enabled` mit `previousDefinitionKey`.
+- **Reichweite von `training.manage` gegenüber `demo.manage` – GESCHLOSSEN
+  (L11):** `training.manage` = Trainingsverwaltung (Demo: Zuweisungen,
+  Fortschritt, Training-Reset; Live: Sperren, Freigaben, Overrides);
+  `demo.manage` = Status, Seed-Registry, Reset in der Demo. Geprüft wird in der
+  Umgebung, in der die Route existiert (Live-Gate-Routen nur außerhalb demo,
+  Demo-Routen nur in demo).
+- **DEMO-Vermerk auf PDFs/Dokumenten** der Demo (L9): geschlossen (Auftrag Teil 2
+  §89, Phase 14 RESET) – in `APP_ENV=demo` tragen alle Kundendokumente die Zeile
+  „DEMO – keine echten Kundendaten“ und den Titelpräfix „DEMO · “
+  (`packages/documents` `PdfRenderOptions`, `apps/api/src/documents/environment-label.ts`).
+- **Mietbedingungen in der Demo:** Versand von Angeboten braucht eine aktive
+  Version; der Seed legt nur dann einen klar markierten Platzhalter an, wenn
+  keine existiert.
+- **Simulation eingehender WhatsApp-Nachrichten** in der Demo (Webhook ist in
+  demo 404; nur der Service-Einstieg existiert).

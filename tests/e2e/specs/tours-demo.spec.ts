@@ -15,6 +15,10 @@
  *
  * Reine API-Tests (Node-fetch mit Session-Cookie, Muster communication-demo.spec.ts);
  * Buchung/Termin über apps/api/scripts/e2e-tours-seed.ts gegen die Demo-Datenbank.
+ *
+ * Zeit (Phase 14): Das Fenster liegt HEUTE relativ zu jetzt (`todayWindow`, helpers/
+ * tours.ts: auf den Berliner Tag geklemmt, ≥ 15 min, bei knappem Resttag gestaucht).
+ * Sperrfenster: Lauf NICHT zwischen 23:38 und 00:02 Uhr Berlin starten („Resttag zu kurz“).
  */
 import { expect, test } from '@playwright/test';
 import {
@@ -24,7 +28,7 @@ import {
   DEMO_DATABASE_URL,
 } from '../helpers/demo-env.ts';
 import { resetRoutingFake, routingRequests } from '../helpers/routing.ts';
-import { seedTours, todayPlusMinutes, type ToursSeedResult } from '../helpers/tours.ts';
+import { seedTours, todayWindow, type ToursSeedResult } from '../helpers/tours.ts';
 
 test.describe.configure({ mode: 'serial' });
 
@@ -69,6 +73,7 @@ test.beforeAll(async () => {
   const match = /(__Host-)?mr_staff_session=([^;]+)/.exec(setCookie);
   expect(match, 'Demo-Session-Cookie').not.toBeNull();
   cookie = `${match![1] ?? ''}mr_staff_session=${match![2]}`;
+  const o1Window = todayWindow(90, 150);
   seed = seedTours(
     {
       adminEmail: DEMO_ADMIN_EMAIL,
@@ -78,8 +83,8 @@ test.beforeAll(async () => {
           key: 'o1',
           customer: { firstName: 'Olga', lastName: 'Ortsmuster' },
           outbound: {
-            startAt: todayPlusMinutes(90).toISOString(),
-            endAt: todayPlusMinutes(150).toISOString(),
+            startAt: o1Window.startAt.toISOString(),
+            endAt: o1Window.endAt.toISOString(),
           },
         },
       ],

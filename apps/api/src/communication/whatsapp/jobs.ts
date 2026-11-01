@@ -44,12 +44,16 @@ import { isTerminalProcessStatus } from '../retention/terminal.ts'; // Phase 12 
 import type { WhatsAppGateway } from '../types.ts';
 import { WHATSAPP_OUTCOME_UNKNOWN } from './gateways.ts';
 import { WHATSAPP_MEDIA_FETCH_JOB_TYPE, WHATSAPP_SEND_JOB_TYPE } from '../types.ts';
+// Phase 14 (training): Staff-Antwort zählt erst mit bestätigtem Versand (Order §42/§78).
+import type { TrainingEventRecorder } from '../../training/recorder.ts';
 
 export interface WhatsAppJobDeps {
   db: Database;
   storage: StorageProvider;
   gateway: WhatsAppGateway;
   logger?: JobRunnerLogger;
+  /** Phase 14 (training): Recorder für `communication.reply_sent` (demo), Default: nichts. */
+  trainingRecorder?: TrainingEventRecorder;
 }
 
 export function whatsappSendIdempotencyKey(conversationMessageId: string): string {
@@ -115,7 +119,7 @@ export function createWhatsAppSendHandler(deps: WhatsAppJobDeps): JobHandler {
       replyToProviderMessageId: message.replyToProviderMessageId,
     });
     if (outcome.outcome === 'accepted') {
-      await deps.db
+      const sentRows = await deps.db
         .update(conversationMessages)
         .set({
           deliveryState: 'sent',
@@ -127,8 +131,21 @@ export function createWhatsAppSendHandler(deps: WhatsAppJobDeps): JobHandler {
             eq(conversationMessages.id, message.id),
             eq(conversationMessages.deliveryState, 'queued'),
           ),
-        );
+        )
+        .returning({ id: conversationMessages.id });
       await recordSendResult(deps, message.id, 'processed', 'ACCEPTED');
+      // Phase 14 (training): nur wenn DIESER Lauf den Zustand `sent` gesetzt hat (nach Commit).
+      if (
+        deps.trainingRecorder !== undefined &&
+        sentRows.length === 1 &&
+        message.createdByStaffId !== null
+      ) {
+        await deps.trainingRecorder.record({
+          actorUserId: message.createdByStaffId,
+          eventKey: 'communication.reply_sent',
+          subjectRef: message.id,
+        });
+      }
       deps.logger?.info(
         { jobId: job.id, conversationMessageId: message.id, outcome: 'sent' },
         'whatsapp.send verarbeitet',

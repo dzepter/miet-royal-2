@@ -137,7 +137,13 @@ export function offlineHelpers(ctx: () => TestContext) {
   async function sync(
     cookie: string,
     input: MutationInput,
-    options: { deviceId?: string; environment?: string; clientTime?: string } = {},
+    options: {
+      deviceId?: string;
+      environment?: string;
+      clientTime?: string;
+      /** Phase 14 (offline epoch): Dataset-Epoch der Anfrage (Demo); undefined = Feld weglassen. */
+      datasetEpoch?: string | null;
+    } = {},
   ) {
     const body = mutation(input);
     const response = await ctx().app.inject({
@@ -148,6 +154,7 @@ export function offlineHelpers(ctx: () => TestContext) {
         deviceId: options.deviceId ?? DEVICE,
         environment: options.environment ?? 'development',
         clientTime: options.clientTime ?? new Date().toISOString(),
+        ...(options.datasetEpoch === undefined ? {} : { datasetEpoch: options.datasetEpoch }), // Phase 14 (offline epoch)
         mutation: body,
       },
     });

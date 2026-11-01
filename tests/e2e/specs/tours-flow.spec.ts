@@ -13,7 +13,8 @@
  *   Reassignment-Bestätigung)
  * E Tour starten (manuell, aktive Tour, nächster Stopp, Navigation)
  * F GPS (Berechtigung/simulierte Position, serverseitig genau eine Zeile)
- * G Verspätungsrisiko (Fake-Position Frankfurt ⇒ Risk, genau ein Push je
+ * G Verspätungsrisiko (simulierte Position Richtung Frankfurt, Entfernung aus
+ *   den Deadlines berechnet ⇒ Risk für genau einen Stopp, genau ein Push je
  *   Empfänger, keine Kundenkommunikation, kein Spam)
  * H Recovery (Provider aus ⇒ „Route konnte gerade nicht berechnet werden.“,
  *   Tour bedienbar, externer Kartenlink ohne Key/Kundenname)
@@ -29,10 +30,23 @@
  *
  * Daten: Basis-Seed + apps/api/scripts/e2e-tours-seed.ts (bestehende API-
  * Test-Helfer: echter Annahmepfad, Terminplanung, Mitarbeiter mit Rechten).
- * Alle Termine liegen HEUTE (Europe/Berlin) relativ zu „jetzt“. Ausschließlich
- * synthetische Testdaten; Adressen sind die bekannten Fake-Adressen
- * („Lieferweg 12, 55129 Mainz“, Depot „Robert-Koch-Straße 1, 55129 Mainz“,
- * mehrdeutig „Am Markt 1, 55116 Mainz“).
+ * Ausschließlich synthetische Testdaten; Adressen sind die bekannten Fake-
+ * Adressen („Lieferweg 12, 55129 Mainz“, Depot „Robert-Koch-Straße 1, 55129
+ * Mainz“, mehrdeutig „Am Markt 1, 55116 Mainz“).
+ *
+ * Zeit (Phase 14): Alle Termine liegen HEUTE (Europe/Berlin) relativ zu „jetzt“
+ * – je Tour ein Tagesplan über `fitTodayTimeline`/`todayWindow` (helpers/
+ * tours.ts): auf den Berliner Tag geklemmt (spätestens 23:58), Fenster ≥ 15 min,
+ * Beginn ≥ jetzt + 5 min; bei knappem Resttag werden die Abstände proportional
+ * gestaucht, nie unter die Fahrzeit-/Puffer-Ketten des Routing-Fakes (`minGap`,
+ * Rechnung im beforeAll). c1 (Szenario C) bleibt bewusst in der Vergangenheit.
+ * Die „weite“ Position in G wird aus den tatsächlichen Deadlines berechnet
+ * (e1 sicher verfehlt, e2 noch erreichbar).
+ * Verbleibendes Sperrfenster: Der minimale Plan der Tour T1 (E–N) braucht
+ * 75 min Resttag ⇒ Lauf NICHT zwischen 22:43 und 00:02 Uhr Berlin starten (der
+ * Seed bricht dann vor dem Anlegen mit „Resttag zu kurz“ ab; empfohlen:
+ * spätestens 22:30 starten, Laufzeit ≈ 4 min). Zwischen ≈ 18:00 und 22:43 ist
+ * der Plan gestaucht (Faktor im Playwright-Log „Touren-Zeitplan“).
  */
 import { expect, test, type BrowserContext, type Locator, type Page } from '@playwright/test';
 import { ROUTING_FAKE_API_KEY } from '../fakes/constants.ts';
@@ -54,17 +68,21 @@ import {
 import { ADMIN_EMAIL, ADMIN_PASSWORD, resetE2eDatabase } from '../helpers/seed.ts';
 import { queryTestDb } from '../helpers/voucher.ts';
 import {
+  LIEFERWEG_POINT,
   appointmentRow,
   berlinClock,
   completeAppointmentViaSeed,
   delayIncidents,
+  fakeDrivingMinutes,
+  fitTodayTimeline,
   liveLocations,
   loginStaff,
+  pointAtFakeEta,
   pushDeliveriesOfKind,
   seedTours,
   stopOf,
   tableCount,
-  todayPlusMinutes,
+  todayWindow,
   tourRow,
   tourViaApi,
   travelStatusViaSeed,
@@ -78,11 +96,12 @@ const PAUL = { email: 'paul.planer@e2e.example', password: 'e2e-paul-passwort-1'
 const FRITZ = { email: 'fritz.fahrer@e2e.example', password: 'e2e-fritz-passwort-1' };
 const ZOE = { email: 'zoe.zweite@e2e.example', password: 'e2e-zoe-passwort-1' };
 
-/** Bekannte Fake-Koordinaten (routing/testing/fake-server.ts). */
+/** Bekannte Fake-Koordinaten nahe „Lieferweg 12“ (≈ 3,6 bzw. 6 min Fake-Fahrzeit). */
 const MAINZ_NEAR = { latitude: 49.96, longitude: 8.27, accuracy: 20 };
 const MAINZ_MOVED = { latitude: 49.975, longitude: 8.3, accuracy: 20 };
-const FRANKFURT = { latitude: 50.11, longitude: 8.68, accuracy: 25 };
-const FRANKFURT_MOVED = { latitude: 50.12, longitude: 8.7, accuracy: 25 };
+/** Richtung der „weiten“ Position in G (Frankfurt ≈ 66 min Fake-Fahrzeit bis zum Lieferweg). */
+const FRANKFURT = { latitude: 50.11, longitude: 8.68 };
+const FAR_ACCURACY = 25;
 /** Client-Drossel (lib/tours.ts): nie öfter als alle 15 s; Server: 1 Update je 10 s. */
 const LOCATION_GAP_MS = 16_000;
 
@@ -124,8 +143,54 @@ test.beforeAll(async ({ browser }) => {
   resetE2eDatabase();
   await resetRoutingFake();
   await clearPushRequests();
-  // Termine HEUTE relativ zu jetzt (auf den Berliner Kalendertag geklemmt).
-  const t = (delta: number) => iso(todayPlusMinutes(delta));
+  // Termine HEUTE relativ zu jetzt – je Tour ein Tagesplan (helpers/tours.ts fitTodayTimeline):
+  // bei knappem Resttag proportional gestaucht, nie unter die Fahrzeit-/Puffer-Ketten des
+  // Routing-Fakes (Depot→Lieferweg ≈ 5 min, Lieferweg→Am Markt ≈ 6 min, Lieferweg→Lieferweg
+  // 0 min, Puffer 15 min je Stopp, in A 20 min am ersten) plus Luft für die Testlaufzeit.
+  const now = new Date();
+  // A (Bewertung ab Depot, Reihenfolge a1-Lieferung [Puffer 20] → a2-Lieferung → a1-Rückgabe):
+  // Ankunft a1 ≈ jetzt + 5 ≤ a1-Ende, Abfahrt + 20 ≤ a2-Ende, + 15 ≤ Rückgabe (exakt).
+  const planA = fitTodayTimeline(
+    {
+      a1Start: { at: 120 },
+      a1End: { at: 180, minGap: 15 },
+      a2Start: { at: 200 },
+      a2End: { at: 260, minGap: 15 },
+      a1Return: { at: 360, minGap: 15 },
+    },
+    now,
+  );
+  // B (Vorschlag ab Depot, nächster Nachbar): b1 (+5 Fahrt, +15 Puffer) → b2 (+15) → b3
+  // „Am Markt“ (+6 Fahrt) ⇒ exakter Termin b3 ≥ Fensterbeginn + 45; Fensterenden danach.
+  const planB = fitTodayTimeline(
+    { bStart: { at: 60 }, b3: { at: 150, minGap: 45 }, b1End: { at: 180 }, b2End: { at: 240 } },
+    now,
+  );
+  // C: c1 ist bereits verstrichen (bleibt in der Vergangenheit); c2 nach c1-Puffer erreichbar.
+  const planC = fitTodayTimeline(
+    { c1: { at: -45 }, c2Start: { at: 300 }, c2End: { at: 360, minGap: 30 } },
+    now,
+  );
+  const d1 = todayWindow(240, 300, now);
+  // Tour T1 (E–L, N): e1 knapp (F/I erreichen es von Mainz aus, G verfehlt es von weit weg),
+  // e2 exakt ≥ e1-Ende + 35 (Puffer 15 + Spielraum ±10 für die ETA-Wahl in G), e3 nach e2 + Puffer.
+  const planE = fitTodayTimeline(
+    {
+      e1Start: { at: 10 },
+      e1End: { at: 50, minGap: 15 },
+      e2: { at: 90, minGap: 35 },
+      e3Start: { at: 120, minGap: 5 },
+      e3End: { at: 180, minGap: 15 },
+    },
+    now,
+  );
+  // Tour T2 (M): ein Fenster.
+  const m1 = todayWindow(30, 90, now);
+  console.log(
+    `Touren-Zeitplan ${berlinClock(now)} Uhr Berlin, ${planE.availableMinutes} min Resttag – ` +
+      `Stauchung A ${planA.factor.toFixed(2)}, B ${planB.factor.toFixed(2)}, ` +
+      `C ${planC.factor.toFixed(2)}, T1 ${planE.factor.toFixed(2)}`,
+  );
   seed = seedTours({
     adminEmail: ADMIN_EMAIL,
     depotAddress: 'Robert-Koch-Straße 1, 55129 Mainz',
@@ -189,70 +254,70 @@ test.beforeAll(async ({ browser }) => {
       {
         key: 'a1',
         customer: { firstName: 'Anna', lastName: 'Anlieferung' },
-        outbound: { startAt: t(120), endAt: t(180) },
-        inbound: { startAt: t(360) },
+        outbound: { startAt: planA.iso.a1Start, endAt: planA.iso.a1End },
+        inbound: { startAt: planA.iso.a1Return },
       },
       {
         key: 'a2',
         customer: { firstName: 'Arno', lastName: 'Abend' },
-        outbound: { startAt: t(200), endAt: t(260) },
+        outbound: { startAt: planA.iso.a2Start, endAt: planA.iso.a2End },
       },
       // B: zwei Fenster + ein exakter Termin an der mehrdeutigen Adresse
       {
         key: 'b1',
         customer: { firstName: 'Bea', lastName: 'Bunt' },
-        outbound: { startAt: t(60), endAt: t(180) },
+        outbound: { startAt: planB.iso.bStart, endAt: planB.iso.b1End },
       },
       {
         key: 'b2',
         customer: { firstName: 'Ben', lastName: 'Blau' },
-        outbound: { startAt: t(60), endAt: t(240) },
+        outbound: { startAt: planB.iso.bStart, endAt: planB.iso.b2End },
       },
       {
         key: 'b3',
         customer: { firstName: 'Bo', lastName: 'Markt' },
         address: { street: 'Am Markt 1', postalCode: '55116', city: 'Mainz' },
-        outbound: { startAt: t(150) },
+        outbound: { startAt: planB.iso.b3 },
       },
       // C: exakter Termin bereits verstrichen ⇒ nicht rechtzeitig erreichbar
       {
         key: 'c1',
         customer: { firstName: 'Cora', lastName: 'Chaos' },
-        outbound: { startAt: t(-45) },
+        outbound: { startAt: planC.iso.c1 },
       },
       {
         key: 'c2',
         customer: { firstName: 'Carl', lastName: 'Cool' },
-        outbound: { startAt: t(300), endAt: t(360) },
+        outbound: { startAt: planC.iso.c2Start, endAt: planC.iso.c2End },
       },
       // D: Termin ist Zoe zugewiesen
       {
         key: 'd1',
         customer: { firstName: 'Dora', lastName: 'Dritte' },
-        outbound: { startAt: t(240), endAt: t(300) },
+        outbound: { startAt: iso(d1.startAt), endAt: iso(d1.endAt) },
         assignTo: 'zoe',
       },
       // E–L, N: aktive Tour T1 (e1 knappes Fenster für das Verspätungsrisiko)
       {
         key: 'e1',
         customer: { firstName: 'Emil', lastName: 'Erste' },
-        outbound: { startAt: t(10), endAt: t(50) },
+        outbound: { startAt: planE.iso.e1Start, endAt: planE.iso.e1End },
       },
       {
         key: 'e2',
         customer: { firstName: 'Ella', lastName: 'Exakt' },
-        outbound: { startAt: t(90) },
+        outbound: { startAt: planE.iso.e2 },
       },
       {
         key: 'e3',
         customer: { firstName: 'Erik', lastName: 'Ende' },
-        outbound: { startAt: t(120), endAt: t(180) },
+        outbound: { startAt: planE.iso.e3Start, endAt: planE.iso.e3End },
       },
       // M: Offline-Tour T2 (Übergabe offline)
       {
         key: 'm1',
         customer: { firstName: 'Mia', lastName: 'Mobil' },
-        outbound: { startAt: t(30), endAt: t(90) },
+        outbound: { startAt: iso(m1.startAt), endAt: iso(m1.endAt) },
       },
     ],
   });
@@ -750,9 +815,27 @@ test('G Verspätungsrisiko: Fake-ETA zu spät ⇒ Risk, genau ein Push je Empfä
   messagesBefore = tableCount('conversation_messages');
   expect(pushDeliveriesOfKind('tour_delay_risk')).toHaveLength(0);
 
-  // Position „Frankfurt“ (≈ 45 km ⇒ ≈ 1,5 h Fahrzeit im Fake) bei knappem Fenster von e1.
+  // Position „weit weg“ Richtung Frankfurt: Entfernung so gewählt, dass die Fake-ETA das
+  // Fensterende von e1 sicher verfehlt, e2 (exakt) nach dem e1-Puffer aber noch erreichbar
+  // bleibt ⇒ genau EIN verspäteter Stopp (e1) – unabhängig von Uhrzeit und Stauchung.
+  const t1 = await tourViaApi(paul, tourT1);
+  const e1Planned = stopOf(t1, b('e1').outbound.id);
+  const e2Planned = stopOf(t1, b('e2').outbound.id);
+  const minutesUntil = (at: string) => (new Date(at).getTime() - Date.now()) / 60_000;
+  const etaTooLate = minutesUntil(e1Planned.appointment.endAt!);
+  const etaStillOk = minutesUntil(e2Planned.appointment.startAt!) - e1Planned.bufferMinutes;
+  expect(etaStillOk - etaTooLate, 'Spielraum für die ETA-Wahl').toBeGreaterThanOrEqual(10);
+  const farEta = (etaTooLate + etaStillOk) / 2;
+  const far = { ...pointAtFakeEta(LIEFERWEG_POINT, FRANKFURT, farEta), accuracy: FAR_ACCURACY };
+  expect(fakeDrivingMinutes(far, LIEFERWEG_POINT)).toBeGreaterThan(etaTooLate);
+  expect(fakeDrivingMinutes(far, LIEFERWEG_POINT)).toBeLessThan(etaStillOk);
+  // Zweite Position: ≈ 1 km näher (> 500 m ⇒ neue Bewertung), weiterhin zu spät für e1.
+  const farMoved = {
+    ...pointAtFakeEta(LIEFERWEG_POINT, FRANKFURT, farEta - 2),
+    accuracy: FAR_ACCURACY,
+  };
   await fritz.waitForTimeout(LOCATION_GAP_MS);
-  await fritzContext.setGeolocation(FRANKFURT);
+  await fritzContext.setGeolocation(far);
   await expect
     .poll(() => delayIncidents(tourT1).filter((row) => row.resolved_at === null).length, {
       timeout: 60_000,
@@ -810,10 +893,10 @@ test('G Verspätungsrisiko: Fake-ETA zu spät ⇒ Risk, genau ein Push je Empfä
   await fritz.getByTestId('location-enable').click();
   await expect(fritz.getByTestId('location-active')).toBeVisible({ timeout: 30_000 });
   await fritz.waitForTimeout(LOCATION_GAP_MS);
-  await fritzContext.setGeolocation(FRANKFURT_MOVED);
+  await fritzContext.setGeolocation(farMoved);
   await expect
     .poll(() => liveLocations(tourT1)[0]?.latitude ?? 0, { timeout: 30_000 })
-    .toBeCloseTo(FRANKFURT_MOVED.latitude, 3);
+    .toBeCloseTo(farMoved.latitude, 3);
   await expect.poll(() => delayIncidents(tourT1).length, { timeout: 30_000 }).toBe(1);
   expect(delayIncidents(tourT1)[0]!.id).toBe(evaluatedBefore.id);
   await runDueJobsViaApi(erika);
@@ -862,8 +945,8 @@ test('I Reschedule: Termin während der Tour verschoben ⇒ Route veraltet ⇒ n
   test.setTimeout(120_000);
   const e3 = appointmentRow(b('e3').outbound.id);
   const e2Before = appointmentRow(b('e2').outbound.id);
-  const newStart = todayPlusMinutes(130);
-  const newEnd = todayPlusMinutes(190);
+  // Neues Fenster heute (geklemmt/gestaucht, ≥ 15 min): liegt nach e2 + Puffer ⇒ weiter machbar.
+  const { startAt: newStart, endAt: newEnd } = todayWindow(130, 190);
   const response = await erika.request.patch(`/api/staff/appointments/${e3.id}/schedule`, {
     data: { startAt: iso(newStart), endAt: iso(newEnd), expectedVersion: e3.version },
   });
@@ -874,8 +957,11 @@ test('I Reschedule: Termin während der Tour verschoben ⇒ Route veraltet ⇒ n
   // Incident wird aufgelöst, kein weiterer Push (Order §55).
   await fritzContext.setGeolocation(MAINZ_NEAR);
   await fritz.reload();
+  // Phase 14 (§112): dieselbe robuste Wartezeit wie die übrigen fachlichen Polls (30 s) –
+  // die Warnung erscheint erst, wenn die Seite den Serverstand „veraltet“ nachgeladen hat.
   await expect(fritz.getByTestId('active-tour-warnings')).toContainText(
     'Route veraltet – neu berechnen',
+    { timeout: 30_000 },
   );
   // Server-Rate-Limit (1 Update je 10 s je Tour) abwarten, sonst zählt der Client ein 429 als gesendet.
   await fritz.waitForTimeout(LOCATION_GAP_MS);

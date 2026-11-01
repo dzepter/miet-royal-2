@@ -138,6 +138,8 @@ export interface CancellationPreview {
   blockers: string[];
   externalRefundReviewRequired: boolean;
   accountingConfigured: boolean;
+  /** Phase 14 (accounting), Order W1/§30: in der Demo ist die Übertragung bewusst nicht verfügbar (kein Fehler). */
+  accountingBlocker: 'not_configured' | 'demo_unavailable' | null;
 }
 
 export interface CancellationTransferView {
@@ -174,7 +176,8 @@ export interface CancellationView {
   paymentStatusLabel: string | null;
   transferredAt: string | null;
   lastTransferErrorCode: string | null;
-  accountingBlocker: 'not_configured' | null;
+  /** `demo_unavailable` (Phase 14, Order W1/§30): Demo – keine externe Übertragung, kein Fehlerzustand. */
+  accountingBlocker: 'not_configured' | 'demo_unavailable' | null;
   /** Phase 10 (Vertrag §6): Provider, Blocker, Rechnungsdaten, Retry-Freigabe. */
   accounting: AccountingBlockView;
   /** Phase 10: Rechnungsversand – 'pending' bis Phase 12 versendet; nie automatisch 'sent'. */
@@ -305,9 +308,12 @@ export class CancellationService {
   private readonly confirmations: CancellationConfirmationMailer | null;
   private readonly logger: CancellationLogger;
   private readonly vouchers: VoucherService;
+  /** Phase 14 (accounting): Umgebung für den Demo-Blocker `demo_unavailable`. */
+  private readonly appEnv: AppConfig['appEnv'];
 
   constructor(deps: CancellationServiceDeps) {
     this.db = deps.db;
+    this.appEnv = deps.config.appEnv;
     this.transfers = deps.transfers;
     this.assignments = deps.assignments;
     this.scheduling = deps.scheduling;
@@ -511,7 +517,13 @@ export class CancellationService {
       externalRefundReviewRequired:
         booking === null ? false : await this.externalRefundReviewRequired(this.db, booking.id),
       accountingConfigured: this.transfers.isConfigured(),
+      accountingBlocker: this.transfers.isConfigured() ? null : this.unconfiguredBlocker(),
     };
+  }
+
+  /** Blocker ohne Buchhaltungsanbindung: in der Demo bewusst „nicht verfügbar“ (Phase 14, Order W1). */
+  private unconfiguredBlocker(): 'not_configured' | 'demo_unavailable' {
+    return this.appEnv === 'demo' ? 'demo_unavailable' : 'not_configured';
   }
 
   // ── Storno (Order §§54–§58, §83) ────────────────────────────────────────
@@ -1131,7 +1143,7 @@ export class CancellationService {
         (pending && transfer !== null && transfer.status !== 'pending'
           ? (transfer.attentionCode ?? transfer.lastErrorCode ?? 'LEXWARE_OUTCOME_UNKNOWN')
           : null),
-      accountingBlocker: pending && !configured ? 'not_configured' : null,
+      accountingBlocker: pending && !configured ? this.unconfiguredBlocker() : null,
       accounting,
       invoiceDeliveryStatus: row.invoiceDeliveryStatus,
       customerId: process.customerId,

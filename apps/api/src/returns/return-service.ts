@@ -265,6 +265,15 @@ function sortedTuples<T extends readonly unknown[]>(tuples: readonly T[]): T[] {
   return [...tuples].sort((a, b) => String(a[0]).localeCompare(String(b[0])));
 }
 
+/**
+ * Phase 14 (training, Design §4.3): Ergebnis der Finalisierung – zusätzlich
+ * `finalized` (true nur, wenn DIESER Aufruf abgeschlossen hat; false bei der
+ * idempotenten Wiederholung).
+ */
+export interface ReturnFinalizeResult extends ReturnDetailView {
+  finalized: boolean;
+}
+
 export function finalizationFingerprint(view: ReturnDetailView): string {
   return JSON.stringify({
     returner: [view.return.returnerKind, view.return.returnerName],
@@ -338,6 +347,8 @@ export class ReturnService {
     private readonly listeners: readonly ReturnFinalizedListener[] = [],
     /** Phase 12 (Order §11): Rückgabeprotokoll-Mail nach Finalisierung (ohne Mailer bleibt das Paket `ready`). */
     private readonly packetMailer: DeliveryPacketMailer | null = null,
+    /** Phase 14 (reset, Order §89): Umgebungskennzeichnung der PDFs („DEMO – …“), nur in demo gesetzt. */
+    private readonly documentEnvironmentLabel: string | undefined = undefined,
   ) {}
 
   // ── Laden / Starten (Order §§3/4/6) ──────────────────────────────────────
@@ -1464,7 +1475,11 @@ export class ReturnService {
 
   // ── Finalisierung (Order §§47–49) ────────────────────────────────────────
 
-  async finalize(actorId: string, bookingId: string, now = new Date()): Promise<ReturnDetailView> {
+  async finalize(
+    actorId: string,
+    bookingId: string,
+    now = new Date(),
+  ): Promise<ReturnFinalizeResult> {
     return this.finalizeMutex.run(`return-finalize:${bookingId}`, () =>
       this.finalizeExclusive(actorId, bookingId, now),
     );
@@ -1474,9 +1489,10 @@ export class ReturnService {
     actorId: string,
     bookingId: string,
     now: Date,
-  ): Promise<ReturnDetailView> {
+  ): Promise<ReturnFinalizeResult> {
     const view = await this.detail(bookingId, now);
-    if (view.return.status === 'finalized') return view;
+    // Phase 14 (training): `finalized: false` = bereits abgeschlossen (idempotente Wiederholung).
+    if (view.return.status === 'finalized') return { ...view, finalized: false };
     if (view.blockers.length > 0) {
       throw new AuthError(
         'CONFLICT',
@@ -1545,35 +1561,40 @@ export class ReturnService {
     }
     let protocolPdf: Buffer;
     try {
-      protocolPdf = await renderReturnProtocolPdf({
-        processNumber: view.booking.processNumber,
-        customerName: view.booking.customerName,
-        returnerLabel: `${view.return.returnerName ?? ''} (${RETURNER_KIND_LABELS[view.return.returnerKind ?? 'customer']})`,
-        actualReturnAtLabel: berlin(actualReturnAt),
-        machines: machineSections,
-        commissionLines: view.items.map((item) => ({
-          description: item.description,
-          unit: item.unit,
-          issued: item.issuedQuantity,
-          returnedUnopened: item.returnedUnopenedQuantity,
-          chargeable: item.chargeableQuantity,
-          kindLabel: item.kind === 'commission' ? 'Kommission' : 'inklusive',
-        })),
-        withoutComplaint: view.summary.withoutComplaint,
-        summaryLines: view.summary.lines,
-        customerSignature: {
-          png: customerPng,
-          name: customerSig.signerName,
-          signedAtLabel: berlin(customerSig.signedAt),
+      protocolPdf = await renderReturnProtocolPdf(
+        {
+          processNumber: view.booking.processNumber,
+          customerName: view.booking.customerName,
+          returnerLabel: `${view.return.returnerName ?? ''} (${RETURNER_KIND_LABELS[view.return.returnerKind ?? 'customer']})`,
+          actualReturnAtLabel: berlin(actualReturnAt),
+          machines: machineSections,
+          commissionLines: view.items.map((item) => ({
+            description: item.description,
+            unit: item.unit,
+            issued: item.issuedQuantity,
+            returnedUnopened: item.returnedUnopenedQuantity,
+            chargeable: item.chargeableQuantity,
+            kindLabel: item.kind === 'commission' ? 'Kommission' : 'inklusive',
+          })),
+          withoutComplaint: view.summary.withoutComplaint,
+          summaryLines: view.summary.lines,
+          customerSignature: {
+            png: customerPng,
+            name: customerSig.signerName,
+            signedAtLabel: berlin(customerSig.signedAt),
+          },
+          staffSignature: {
+            png: staffPng,
+            name: staffSig.signerName,
+            signedAtLabel: berlin(staffSig.signedAt),
+          },
+          finalizedAtLabel: berlin(finalizedAt),
+          documentReference: ret.id,
         },
-        staffSignature: {
-          png: staffPng,
-          name: staffSig.signerName,
-          signedAtLabel: berlin(staffSig.signedAt),
-        },
-        finalizedAtLabel: berlin(finalizedAt),
-        documentReference: ret.id,
-      });
+        this.documentEnvironmentLabel === undefined
+          ? {}
+          : { environmentLabel: this.documentEnvironmentLabel },
+      ); // Phase 14 (reset)
     } catch (error) {
       if (error instanceof SignatureImageError) {
         throw new AuthError('VALIDATION', `${error.message} Bitte erneut unterschreiben.`);
@@ -1844,7 +1865,8 @@ export class ReturnService {
         // bewusst: Finalisierung ist abgeschlossen; Nachlauf ist idempotent nachholbar (settlement:ensure)
       }
     }
-    return this.detail(bookingId, now);
+    // Phase 14 (training): `registered` ist nur gesetzt, wenn DIESE Transaktion finalisiert hat.
+    return { ...(await this.detail(bookingId, now)), finalized: registered };
   }
 
   // ── Dokumente / Pakete ───────────────────────────────────────────────────

@@ -138,6 +138,12 @@ export interface MutationRecord {
   lastErrorCode: string | null;
   /** Nur Vorgangsnummer/Aktion/technisches Detail – keine Kundendaten. */
   summary: MutationSummary;
+  /**
+   * Phase 14 (offline epoch): Dataset-Epoch (Meta-Wert) beim Einreihen – nur in
+   * der Demo gesetzt; der Transport sendet sie je Sync-Anfrage. Ältere lokale
+   * Datensätze ohne Feld gelten als „ohne Epoch“ (Meta-Wert beim Senden).
+   */
+  datasetEpoch?: string | null;
   /** Verschlüsselt: fachliche Payload (MUTATION_PAYLOAD_SCHEMAS). */
   payload: EncryptedBlob;
 }

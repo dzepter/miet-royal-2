@@ -60,6 +60,26 @@ import { GeocodingService } from '../src/routing/geocoding-service.ts';
 import { getDepotAddress, resolveOperativeAddress } from '../src/routing/address-resolver.ts';
 import { TourService } from '../src/tours/tour-service.ts';
 import { createTourLiveModule } from '../src/tours/live/module.ts';
+// Phase 14 (demo)
+import type { DemoResetRunner } from '../src/demo/types.ts';
+// Phase 14 (training): Recorder im Test-Runner (demo: echt, sonst Noop) für Mail-Listener/WhatsApp-Handler.
+import {
+  DemoTrainingEventRecorder,
+  createNoopTrainingRecorder,
+  type TrainingEventRecorder,
+} from '../src/training/recorder.ts';
+import { createTrainingMailSentListener } from '../src/training/listeners.ts';
+// Phase 14 (reset): Storage-Nachbereinigung (demo.storage_cleanup) im Test-Runner wie im Worker.
+import {
+  createDemoStorageCleanupHandler,
+  DEMO_STORAGE_CLEANUP_JOB_TYPE,
+} from '../src/jobs/demo.ts';
+
+// Phase 14 (demo): feste Test-Schlüssel der Demo-Konfiguration (nur Tests; nie echte Werte).
+// APP_ENV=demo kennt keine Defaults – Storage/Schlüssel müssen explizit gesetzt sein.
+export const DEMO_TEST_AUTH_SECRET_KEY = 'test-demo-only-auth-secret-key-0000000000000001';
+export const DEMO_TEST_COMMUNICATION_PAYLOAD_KEY =
+  'test-demo-only-communication-payload-key-00000000001';
 
 // Phase 12 (inbound): feste Test-Geheimnisse (nur Tests; nie echte Werte).
 const WHATSAPP_TEST_ACCESS_TOKEN = 'test-whatsapp-access-token-never-real';
@@ -79,7 +99,7 @@ export interface TestContext {
   auth: StaffAuthService;
   admin: StaffAdminService;
   storage: FilesystemStorageProvider;
-  /** Phase 9: Mock-Buchhaltung (Aufrufe/Fehlersimulation abfragbar). */
+  /** Phase 9: Mock-Buchhaltung (Aufrufe/Fehlersimulation abfragbar). Phase 14: in `appEnv: 'demo'` NICHT injiziert (Instanz ohne Wirkung; aktiv ist `gateway` = Disabled). */
   accounting: MockAccountingGateway;
   /** Phase 12 (transactional): fachliche Mail-Auslöser des Test-Runners (Angebot/AB-Gateway, Mailer, Dokument-Links). */
   transactional: TransactionalMailModule;
@@ -110,6 +130,8 @@ export interface TestContext {
   whatsappSecrets: { appSecret: string; verifyToken: string } | null;
   /** Phase 12 (scan): Erinnerungen, Aktionslinks, Retention, Scan-Lauf (`scan.runOnce(now)`) des Test-Runners. */
   scan: ScanModule;
+  /** Phase 14 (training): Recorder des Test-Runners (demo: `DemoTrainingEventRecorder`, sonst Noop). */
+  trainingRecorder: TrainingEventRecorder;
 }
 
 export async function createTestContext(
@@ -132,6 +154,20 @@ export async function createTestContext(
     env?: Record<string, string>;
     /** Phase 12 (inbound): WhatsApp als `live` konfigurieren (Webhook-Signatur/Verify prüfbar; Gateway bleibt der Fake). */
     whatsapp?: boolean;
+    /**
+     * Phase 14 (demo): Umgebung der App (Default development). `demo` lädt eine
+     * vollständige Demo-Konfiguration (eigene Test-Schlüssel, fs-Storage, kein
+     * Lexware/WhatsApp/GraphHopper) – Demo-Routen und Reset-Gate existieren nur dann.
+     */
+    appEnv?: 'development' | 'demo';
+    /** Phase 14 (demo): Test-Injection des Reset-Runners (Default: Stub bzw. Reset-Service). */
+    demoReset?: DemoResetRunner;
+    /**
+     * Phase 14 (reset): abweichende Datenbank für einen ZWEITEN Kontext („andere
+     * Umgebung“, Cross-Env-Tests; Default TEST_DATABASE_URL). Migrationen werden
+     * dort ebenfalls angewendet.
+     */
+    databaseUrl?: string;
   } = {},
 ): Promise<TestContext> {
   const lexwareOptions =
@@ -151,10 +187,22 @@ export async function createTestContext(
             : { smallBusiness: lexwareOptions.smallBusiness }),
         });
   const lexwareBaseUrl = lexwareFake === null ? null : await lexwareFake.start();
+  // Isolierter FS-Storage je Testkontext (PDF-/Dokumententests); Phase 14: derselbe
+  // Pfad dient der Demo-Konfiguration als STORAGE_FS_ROOT.
+  const storageRoot = mkdtempSync(join(tmpdir(), 'mietroyal-test-'));
   const config = loadConfig({
-    APP_ENV: 'development',
-    DATABASE_URL: TEST_DATABASE_URL,
+    APP_ENV: options.appEnv ?? 'development',
+    DATABASE_URL: options.databaseUrl ?? TEST_DATABASE_URL, // Phase 14 (reset): zweite DB möglich
     LOG_LEVEL: options.logLevel ?? 'error',
+    // Phase 14 (demo): Pflichtwerte außerhalb von development (keine Defaults).
+    ...(options.appEnv === 'demo'
+      ? {
+          STORAGE_DRIVER: 'fs',
+          STORAGE_FS_ROOT: storageRoot,
+          AUTH_SECRET_KEY: DEMO_TEST_AUTH_SECRET_KEY,
+          COMMUNICATION_PAYLOAD_KEY: DEMO_TEST_COMMUNICATION_PAYLOAD_KEY,
+        }
+      : {}),
     ...(lexwareFake === null || lexwareBaseUrl === null
       ? {}
       : {
@@ -188,8 +236,7 @@ export async function createTestContext(
   const db = createDb(pool);
   await runMigrations(db);
   const mail = new InMemoryMailAdapter();
-  // Isolierter FS-Storage je Testkontext (PDF-/Dokumententests).
-  const storage = new FilesystemStorageProvider(mkdtempSync(join(tmpdir(), 'mietroyal-test-')));
+  const storage = new FilesystemStorageProvider(storageRoot);
   const accounting = new MockAccountingGateway();
   const queue = new PostgresJobQueue(pool);
   const testLogger = {
@@ -203,7 +250,12 @@ export async function createTestContext(
     testLogger,
     lexwareOptions?.throttle === 'postgres' ? {} : { throttle: new NoopLexwareThrottle() },
   );
-  const gateway = lexwareFake === null ? accounting : createAccountingGatewayFor(config, lexware);
+  // Phase 14 (accounting): in demo wird kein Mock injiziert – die Fabrik liefert Disabled
+  // (Order W1/§29); development-Tests behalten den Mock, Lexware-Tests den Fake-Provider.
+  const gateway =
+    lexwareFake === null && config.appEnv !== 'demo'
+      ? accounting
+      : createAccountingGatewayFor(config, lexware);
   const lexwareConnection = new LexwareConnectionService(lexware);
   const mailGateway = new FakeMailGateway();
   const push = new FakePushGateway(); // Phase 12 (push)
@@ -224,6 +276,7 @@ export async function createTestContext(
     whatsappGateway: whatsapp,
     inboundMailSource: inboundMail,
     ...(options.logDestination === undefined ? {} : { logDestination: options.logDestination }),
+    ...(options.demoReset === undefined ? {} : { demoReset: options.demoReset }), // Phase 14 (demo)
   });
   await app.ready();
   const auth = new StaffAuthService(db, config, mail);
@@ -253,6 +306,11 @@ export async function createTestContext(
     gateway: push,
   });
   // Phase 12 (inbound): mail.inbound_poll / whatsapp.* im Test-Runner mit denselben Fakes wie die App.
+  // Phase 14 (training): derselbe Recorder wie der Worker in demo (Noop außerhalb).
+  const trainingRecorder =
+    config.appEnv === 'demo'
+      ? new DemoTrainingEventRecorder(db, { logger: testLogger })
+      : createNoopTrainingRecorder();
   registerInboundJobHandlers(jobs, {
     db,
     config,
@@ -260,9 +318,11 @@ export async function createTestContext(
     storage,
     inboundMailSource: inboundMail,
     whatsappGateway: whatsapp,
+    trainingRecorder, // Phase 14 (training)
   });
   const conversationListeners = createConversationDeliveryListeners(db, storage);
   communication.addMailSentListener(conversationListeners.sent);
+  communication.addMailSentListener(createTrainingMailSentListener(trainingRecorder)); // Phase 14 (training)
   communication.addMailFailedListener(conversationListeners.failed);
   // Phase 12 (scan): communication.scan_due / cleanup_retention im Test-Runner
   // (Push-Regeln über ein eigenes Push-Modul mit demselben Fake-Gateway).
@@ -321,6 +381,10 @@ export async function createTestContext(
     logger: testLogger,
   });
   registerTransactionalJobHandlers(jobs, { communication, db, config, logger: testLogger });
+  // Phase 14 (reset): demo.storage_cleanup im Test-Runner (nur demo, wie Worker/API-Runner).
+  if (config.appEnv === 'demo') {
+    jobs.register(DEMO_STORAGE_CLEANUP_JOB_TYPE, createDemoStorageCleanupHandler(storage));
+  }
   return {
     pool,
     db,
@@ -349,6 +413,7 @@ export async function createTestContext(
         ? { appSecret: WHATSAPP_TEST_APP_SECRET, verifyToken: WHATSAPP_TEST_VERIFY_TOKEN }
         : null,
     scan,
+    trainingRecorder, // Phase 14 (training)
   };
 }
 

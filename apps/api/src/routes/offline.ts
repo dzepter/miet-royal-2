@@ -18,9 +18,17 @@ import { ProductService } from '../commerce/product-service.ts';
 import { ProcessService } from '../crm/process-service.ts';
 import { AssignmentService } from '../handover/assignment-service.ts';
 import { HandoverService } from '../handover/handover-service.ts';
-import { OfflineEnvironmentMismatchError, OfflineLeaseService } from '../offline/lease-service.ts';
+import { pdfEnvironmentLabel } from '../documents/environment-label.ts'; // Phase 14 (reset)
+import {
+  OfflineDatasetChangedError,
+  OfflineEnvironmentMismatchError,
+  OfflineLeaseService,
+  type DatasetEpochProvider,
+} from '../offline/lease-service.ts';
 import { OfflineLeaseRequiredError, OfflinePackageService } from '../offline/package-service.ts';
 import { OfflineSyncService, SyncInProgressError } from '../offline/sync-service.ts';
+import type { TrainingGate } from '../training/gate-service.ts'; // Phase 14 (training gate)
+import type { TrainingEventRecorder } from '../training/recorder.ts'; // Phase 14 (training)
 import { DamageService } from '../returns/damage-service.ts';
 import { ReturnService, type ReturnFinalizedListener } from '../returns/return-service.ts';
 import { SchedulingService } from '../scheduling/scheduling-service.ts';
@@ -51,6 +59,12 @@ interface OfflineRouteOptions {
   packetMailer?: DeliveryPacketMailer;
   /** Phase 13 (tours-live, Order §46): eigene aktive Tour im Offline-Paket. */
   tourSnapshots?: OfflineTourSnapshotSource | undefined;
+  /** Phase 14 (training gate): Live-Trainingssperre beim Sync von handover.finalize/return.finalize/machine.clean_complete (Default: Noop). */
+  trainingGate?: TrainingGate | undefined;
+  /** Phase 14 (training): Recorder für Finalisierungen/Reinigungsabschluss per Sync (demo), Default Noop. */
+  trainingRecorder?: TrainingEventRecorder | undefined;
+  /** Phase 14 (offline epoch): Dataset-Epoch des Demo-Moduls – nur in APP_ENV=demo gesetzt (sonst null in Lease/Paket/Status). */
+  datasetEpochProvider?: DatasetEpochProvider | undefined;
 }
 
 /**
@@ -78,6 +92,7 @@ export function registerOfflineRoutes(app: FastifyInstance, options: OfflineRout
     scheduling,
     damages,
     options.packetMailer ?? null,
+    pdfEnvironmentLabel(config), // Phase 14 (reset): Demo-Kennzeichnung der PDFs
   );
   const returns = new ReturnService(
     db,
@@ -90,9 +105,10 @@ export function registerOfflineRoutes(app: FastifyInstance, options: OfflineRout
     assignments,
     options.finalizedListeners ?? [],
     options.packetMailer ?? null,
+    pdfEnvironmentLabel(config), // Phase 14 (reset): Demo-Kennzeichnung der PDFs
   );
   const processes = new ProcessService(db);
-  const leases = new OfflineLeaseService(db, config);
+  const leases = new OfflineLeaseService(db, config, undefined, options.datasetEpochProvider); // Phase 14 (offline epoch)
   const packages = new OfflinePackageService({
     db,
     auth,
@@ -119,6 +135,8 @@ export function registerOfflineRoutes(app: FastifyInstance, options: OfflineRout
     scheduling,
     machines: machineService,
     leases,
+    trainingGate: options.trainingGate, // Phase 14 (training gate)
+    trainingRecorder: options.trainingRecorder, // Phase 14 (training)
   });
 
   const handleOfflineError = async (
@@ -143,6 +161,11 @@ export function registerOfflineRoutes(app: FastifyInstance, options: OfflineRout
     }
     if (error instanceof OfflineLeaseRequiredError) {
       sendError(request, reply, 409, 'OFFLINE_LEASE_REQUIRED', error.message);
+      return true;
+    }
+    if (error instanceof OfflineDatasetChangedError) {
+      // Phase 14 (offline epoch, Order §92): alter Datenstand – nichts wurde geschrieben.
+      sendError(request, reply, 409, 'DEMO_DATASET_CHANGED', error.message);
       return true;
     }
     if (error instanceof SyncInProgressError) {
@@ -170,6 +193,7 @@ export function registerOfflineRoutes(app: FastifyInstance, options: OfflineRout
       appLocked: context.appLocked,
       serverTime: new Date().toISOString(),
       environment: config.appEnv,
+      datasetEpoch: await leases.currentDatasetEpoch(), // Phase 14 (offline epoch)
     };
     return response;
   });

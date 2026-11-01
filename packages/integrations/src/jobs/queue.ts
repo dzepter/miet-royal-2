@@ -44,6 +44,13 @@ export interface ClaimedJob {
    * wurde, kann den neuen Claim nicht mehr beeinflussen.
    */
   claimedBy: string;
+  /**
+   * Phase 14 (reset): Einreihungszeitpunkt (`integration_jobs.created_at`, DB-Uhr).
+   * Der Demo-Worker-Guard neutralisiert Business-Jobs, die vor dem letzten
+   * Demo-Reset eingereiht wurden. Optional, damit bestehende Queue-Fakes
+   * unverändert bleiben (ohne Wert gilt der Job als „unbekannt“ ⇒ läuft).
+   */
+  createdAt?: Date;
 }
 
 export interface ReclaimResult {
@@ -73,4 +80,18 @@ export interface JobQueue {
    * Versuchen gehen auf dead. Mehrfach/parallel aufrufbar.
    */
   reclaimExpired(): Promise<ReclaimResult>;
+  /**
+   * Phase 14 (demo): legt einen beanspruchten Job OHNE Attempt-Verbrauch auf
+   * `runAt` zurück (Lease freigeben, Status pending). Wird vom JobRunner
+   * genutzt, wenn ein `beforeRun`-Hook die Ausführung vertagt (z. B. während
+   * eines Demo-Resets). Optional, damit bestehende Queue-Fakes unverändert bleiben.
+   */
+  defer?(job: ClaimedJob, runAt: Date): Promise<void>;
+  /**
+   * Phase 14 (reset): beanspruchten Job OHNE Ausführung dauerhaft als `dead`
+   * markieren (`last_error` = Grund, z. B. DEMO_DATASET_CHANGED – ein Job des
+   * alten Demo-Datensatzes darf nie auf den neuen Seed wirken). Optional wie
+   * `defer`; fehlt die Methode, fällt der JobRunner auf `markFailed` zurück.
+   */
+  markDead?(job: ClaimedJob, reason: string): Promise<void>;
 }

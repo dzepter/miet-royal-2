@@ -14,6 +14,12 @@
  *     gelesen; `activeTour: null` ⇒ keine Tour; danach kanonische Form wieder Konflikt.
  * M17 Offline keine Tourmutation (kein Angekommen/Beenden/Neuberechnen/Standort).
  *
+ * Zeit (Phase 14): Beide Fenster liegen HEUTE relativ zu jetzt (`todayWindow`,
+ * helpers/tours.ts: auf den Berliner Tag geklemmt, ≥ 15 min, bei knappem Resttag
+ * gestaucht). Sperrfenster: Lauf NICHT zwischen 23:38 und 00:02 Uhr Berlin
+ * starten (der Seed bricht mit „Resttag zu kurz“ ab; Touren müssen am Tourtag
+ * gestartet werden).
+ *
  * Hinweis zu M16: Das Paket liegt AES-GCM-verschlüsselt (DEK nur im Seitenspeicher)
  * in IndexedDB – ein direktes Umschreiben des Stores ist aus dem Test nicht
  * möglich. Stattdessen wird die Serverantwort von POST /api/staff/offline/package
@@ -30,7 +36,7 @@ import {
   loginStaff,
   seedTours,
   stopOf,
-  todayPlusMinutes,
+  todayWindow,
   tourRow,
   tourViaApi,
   type SeededBooking,
@@ -73,7 +79,11 @@ const iso = (date: Date) => date.toISOString();
 test.beforeAll(async ({ browser }) => {
   resetE2eDatabase();
   await resetRoutingFake();
-  const t = (delta: number) => iso(todayPlusMinutes(delta));
+  // Fenster HEUTE relativ zu jetzt (geklemmt/gestaucht, ≥ 15 min; helpers/tours.ts todayWindow).
+  const window = (start: number, end: number) => {
+    const { startAt, endAt } = todayWindow(start, end);
+    return { startAt: iso(startAt), endAt: iso(endAt) };
+  };
   seed = seedTours({
     adminEmail: ADMIN_EMAIL,
     depotAddress: 'Robert-Koch-Straße 1, 55129 Mainz',
@@ -115,14 +125,14 @@ test.beforeAll(async ({ browser }) => {
       {
         key: 'o1',
         customer: { firstName: 'Olga', lastName: 'Offline' },
-        outbound: { startAt: t(60), endAt: t(120) },
+        outbound: window(60, 120),
       },
       // Tour B (Zoe): Lieferung „Am Markt“ – anderer Navigationslink als Tour A
       {
         key: 'o2',
         customer: { firstName: 'Otto', lastName: 'Ortswechsel' },
         address: { street: 'Am Markt 1', postalCode: '55116', city: 'Mainz' },
-        outbound: { startAt: t(90), endAt: t(150) },
+        outbound: window(90, 150),
       },
     ],
   });

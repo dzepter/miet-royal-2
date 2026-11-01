@@ -13,6 +13,8 @@ export {
   summarizeJobError,
   type JobHandler,
   type JobRunnerLogger,
+  type JobBeforeRunDecision,
+  type JobBeforeRunHook,
 } from './jobs/runner.ts';
 export { SYSTEM_HEARTBEAT_JOB_TYPE, systemHeartbeatHandler } from './jobs/system-heartbeat.ts';
 

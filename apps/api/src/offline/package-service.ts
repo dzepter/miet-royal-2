@@ -287,6 +287,8 @@ export class OfflinePackageService {
     return {
       packageId: randomUUID(),
       environment: this.deps.config.appEnv,
+      // Phase 14 (offline epoch, Order §91): Paket an die Generation binden (demo), sonst null.
+      datasetEpoch: await this.deps.leases.currentDatasetEpoch(),
       serverTime: now.toISOString(),
       horizonFrom,
       horizonTo,

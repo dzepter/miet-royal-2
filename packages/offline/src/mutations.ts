@@ -332,6 +332,13 @@ export const syncRequestSchema = z.strictObject({
   environment: offlineEnvironmentSchema,
   /** Gerätezeit beim Senden (UTC) – Uhrzeit-Plausibilität (§69). */
   clientTime: isoDateTimeSchema,
+  /**
+   * Phase 14 (offline epoch, Order §92): Dataset-Epoch, unter der die Mutation
+   * erfasst wurde (Wert der Mutation, sonst des Pakets). In APP_ENV=demo
+   * Pflicht und muss der aktuellen Epoch entsprechen (sonst 409
+   * DEMO_DATASET_CHANGED, nichts wird geschrieben); außerhalb der Demo ignoriert.
+   */
+  datasetEpoch: z.string().uuid().nullable().optional(),
   mutation: syncMutationSchema,
 });
 export type SyncRequestInput = z.infer<typeof syncRequestSchema>;
@@ -373,6 +380,17 @@ export const CONFLICT_CODES = [
 ] as const;
 export type ConflictCode = (typeof CONFLICT_CODES)[number];
 
+/**
+ * Phase 14 (training gate): dauerhafte Ablehnungen durch Live-Trainingssperren
+ * (Order §64/§97) – nur in APP_ENV=production. Der Client zeigt die Servermeldung
+ * (`message`/`details.server`) wie bei PERMISSION_REVOKED; kein automatischer Retry.
+ */
+export const TRAINING_REJECTION_CODES = [
+  'TRAINING_REQUIRED',
+  'TRAINING_CONFIGURATION_INVALID',
+] as const;
+export type TrainingRejectionCode = (typeof TRAINING_REJECTION_CODES)[number];
+
 export const CONFLICT_LABELS: Record<ConflictCode, string> = {
   PROCESS_CANCELLED: 'Vorgang wurde zwischenzeitlich storniert.',
   PROCESS_COMPLETED: 'Vorgang wurde zwischenzeitlich abgeschlossen.',
@@ -401,7 +419,7 @@ export type SyncOutcomeStatus = 'applied' | 'conflict' | 'rejected';
 export interface SyncOutcomeResponse {
   status: SyncOutcomeStatus;
   resultRef: Record<string, string> | null;
-  /** Konflikt-/Ablehnungscode (CONFLICT_CODES bzw. PERMISSION_REVOKED, VALIDATION, …). */
+  /** Konflikt-/Ablehnungscode (CONFLICT_CODES bzw. PERMISSION_REVOKED, VALIDATION, TRAINING_REJECTION_CODES, …). */
   code: string | null;
   message: string | null;
   /**

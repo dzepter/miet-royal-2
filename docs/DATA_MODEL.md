@@ -344,8 +344,81 @@ Hash vom Passwortschritt bis zum Abschluss (TOTP/Recovery/Ersteinrichtung).
 ### Substitution
 Ursprung, Vertreter, von/bis.
 
-### TrainingDefinition / Path / Assignment / Attempt
-Demo-Trainings-Metaebene.
+### TrainingDefinition / Path / Assignment / Attempt (Phase 14, W2)
+Trainings-Metaebene (Migration 0030, `packages/database/src/schema/training.ts`).
+Katalogtabellen existieren in JEDER Umgebung (Spiegel des Code-Katalogs
+`apps/api/src/training/catalog.ts`, idempotenter Upsert beim Start, Referenz nur
+über stabile `key`s); Übungsdaten entstehen nur in der Demo; Sperren/Freigaben
+nur außerhalb der Demo. Kein gemeinsamer Store, keine Synchronisierung.
+
+- `training_definitions`: `key` (unique, stabil, nie umbenannt – neues Training
+  = neuer Key), `version` (informativ; eine Erhöhung setzt bestandene Versuche
+  NIE zurück), `title`, `objective`, `instructions`, `evaluator_key` (fester
+  Server-Katalog `TRAINING_EVALUATORS`, kein Scripting), `active` (statt
+  Löschen), `demo_path` (sicherer Staff-Pfad, beginnt mit `/`), `seed_key`
+  (stabiler Seed-Schlüssel, zur Laufzeit über die Demo-Registry aufgelöst).
+- `training_paths` (`key`, `title`, `description`, `active`) und
+  `training_path_items` (`path_id`, `definition_id`, `sequence`, `required`;
+  unique je Pfad: Sequenz und Übung). Der Sync resequenziert zweistufig
+  (bestehende Sequenzen zuerst in einen kollisionsfreien Bereich, dann Soll),
+  nicht mehr im Code enthaltene Elemente wandern ans Ende – nie gelöscht.
+- `training_assignments`: Zuweisung Pfad → Mitarbeiter (`user_id`, `path_id`
+  unique), `assigned_by`, `assigned_at`, `due_at`, `status`
+  (`assigned`/`in_progress`/`completed`), `completed_at`, `round` (Fortschritts-
+  runde; ein bewusster Training-Reset erhöht sie), `last_reset_at/_by`.
+- `training_attempts`: Versuch (`user_id`, `definition_id`, optional
+  `assignment_id` + `assignment_round`, `definition_version` beim Start),
+  `status` (`in_progress`/`passed`/`interrupted`), `started_at`,
+  `completed_at`, `interrupted_at` + `interruption_code`
+  (`DEMO_DATA_RESET`, `TRAINING_RESET`), `failed_check_count`,
+  `last_failed_check_at`, `superseded_at/_by` (Training-Reset: zählt nicht mehr
+  als bestanden, bleibt Historie). Partieller Unique-Index: höchstens ein
+  `in_progress`-Versuch je Mitarbeiter und Übung (Doppelklick idempotent).
+  Versuche werden nie gelöscht.
+- `training_attempt_events`: `attempt_id`, `event_key` (fachliches Ereignis
+  wie `handover.finalized`, oder `training.check`/`training.interrupted`),
+  `step_key`, `result` (`accepted`/`duplicate`/`rejected`/`check_passed`/
+  `check_failed`/`interrupted`), `error_code` (neutral, z. B.
+  `STEP_NOT_COMPLETED`, `PREREQUISITE_MISSING`), `subject_ref` (serverseitig
+  ermittelte UUID des Fachobjekts – nur für „derselbe Vorgang“-Regeln, nie nach
+  außen), `occurred_at`. Ausschließlich Metadaten: keine Kontakte, Preise,
+  Texte, Fotos, GPS.
+- `training_feature_requirements` / `staff_training_clearances`: Live-Sperren
+  und Freigaben (Abschnitt „Training Gate“ in PERMISSIONS.md).
+- Demo-Reset: alle Trainingstabellen bleiben unangetastet; laufende Versuche
+  werden vor dem Löschen der Geschäftsdaten `interrupted`/`DEMO_DATA_RESET`.
+
+### DemoDatasetState (Phase 14, `demo_dataset_state`)
+Singleton-Zeile (`id` = 1, Check-Constraint) mit dem Zustand des kanonischen
+Demo-Datensatzes: `dataset_version` (Stand in der Datenbank; erwartete Version
+`DEMO_DATASET_VERSION` im Code – ein älterer Stand wird NIE automatisch
+zurückgesetzt, nur als „veraltet“ gemeldet), `seeded_at`, `seeded_by`
+(Staff, `ON DELETE SET NULL`), `last_reset_at`, `last_reset_by`,
+`reset_in_progress` (während eines Resets ⇒ 503-Gate für Business-Mutationen,
+Worker legt Business-Jobs zurück), `reset_started_at` (Beginn des laufenden
+Resets; älter als 10 min (`DEMO_RESET_STALE_MS`, Review F8) ⇒ „hängen
+geblieben“, erneuter Reset erlaubt (`pnpm demo:reset --force` früher); ein
+abgebrochener Reset wird um diese Spanne zurückdatiert und ist damit sofort
+erneut startbar), `dataset_epoch` (UUID, Phase 14 RESET/Order §91: Generation
+des Demo-Datensatzes; jeder Reset erzeugt in Phase D eine neue – Offline-Lease,
+-Paket und -Status tragen sie in demo, der Sync verlangt sie; alte Mutationen ⇒
+409 DEMO_DATASET_CHANGED), `last_reset_started_at` (Beginn des LETZTEN Resets
+mit der DB-Uhr `now()`, bleibt nach Abschluss stehen; Business-Jobs mit
+`integration_jobs.created_at` davor werden vom Demo-Worker nie ausgeführt,
+sondern als `dead`/DEMO_DATASET_CHANGED beendet – Order §21),
+`updated_at`. Existiert nur fachlich in der Demo-Datenbank;
+die Tabelle ist in jeder Umgebung vorhanden (eine Migration für alle), bleibt
+außerhalb der Demo aber leer.
+
+### DemoSeedEntity (Phase 14, `demo_seed_entities`)
+Registry stabiler Seed-Schlüssel: `seed_key` (unique, Form
+`<bereich>.<szenario>[.<variante>]`, z. B. `process.return.overdue`,
+`tour.today.multi_stop`), `entity_type` (customer, process, appointment,
+tour, machine, settlement, conversation_message, inventory_*), `entity_id`
+(UUID OHNE Fremdschlüssel – Business-Tabellen tragen keine Demo-Sonderfelder;
+Reset leert Business-Daten und Registry gemeinsam), `dataset_version`,
+`created_at`. Training und Admin-UI referenzieren Demo-Szenarien ausschließlich
+über `seed_key`, nie über Business-UUIDs.
 
 ### Tour (Phase 13)
 Tagesplan einer Fahrt: `tour_date` (Berliner Kalendertag), `status`

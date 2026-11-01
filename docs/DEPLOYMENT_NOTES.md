@@ -47,6 +47,14 @@ gewünscht ist, wird das als eigene Entscheidung in TECH_DECISIONS.md ergänzt.
 6a. Staging/Production-Checkliste Offline: `STAFF_OFFLINE_LEASE_VERIFICATION_KEY`
    beim Staff-Server gesetzt und identisch mit `pnpm offline:lease-key` der
    zugehörigen API-Umgebung (Production ≠ Demo); sonst keine Offline-Lease.
+6b. Checkliste Web-Instanzen (Phase 14, Review F6): `WEB_APP_ENV` ist bei
+   jedem Web-Server außerhalb development **Pflicht** – `demo` für die
+   Demo-Web-Instanz, `production`/`staging` sonst – und `WEB_API_ORIGIN` zeigt
+   auf die API derselben Umgebung. Fehlt `WEB_APP_ENV`, startet der Server
+   trotzdem (kein Ausfall), loggt einmal `WEB_APP_ENV fehlt – …` und zeigt den
+   Demo-Banner nur, wenn die konfigurierte API über `GET /health`
+   `environment: 'demo'` meldet (docs/ENVIRONMENTS.md). Das Serverlog nach dem
+   Start auf diese Meldung prüfen.
 7. Prozesse neu starten, dann Smoke Test: `/health` muss 200 liefern,
    `/ready` muss 200 liefern (prüft die Datenbankverbindung).
 8. Bei Fehlern: Rollback auf vorherigen Stand + Backup-Restore-Pfad.
@@ -302,3 +310,79 @@ Claude Code deployt niemals eigenmächtig auf Produktion.
   (GraphHopper GmbH, Hetzner DE; Geocoding-Subprozessoren laut Notiz).
 - **Attribution:** Die Staff-UI zeigt bei Routenwerten den
   OpenStreetMap-Hinweis (ODbL).
+
+## Demo-Instanzen (Phase 14)
+
+Die Demo-Umgebung besteht aus eigenen Prozessen mit **eigener** Datenbank,
+eigenem Storage und eigenen Secrets (nie mit production geteilt; vor jedem
+Release `pnpm check:env-isolation <prod.env> <demo.env>`):
+
+| Prozess | Pflichtwerte zusätzlich zu den üblichen Variablen |
+| --- | --- |
+| API (demo) | `APP_ENV=demo`, optional `STAFF_LIVE_URL=https://app.<domain>` (Button „Live öffnen“); **kein** `STAFF_DEMO_URL`, kein Lexware-/WhatsApp-/GraphHopper-Key (Konfigurationsfehler); `MAIL_DEMO_WHITELIST` bei `MAIL_ENABLED=true` – für Mail-Übungen (Kundeninformation, Kommunikationsantwort) eine Sink-Domain mit Mail-Senke whitelisten, z. B. `MAIL_DEMO_WHITELIST=@demo.test`, plus `MAIL_PUBLIC_WEB_BASE_URL` (docs/ENVIRONMENTS.md „Demo-Mail“) |
+| Worker (demo) | dieselben Variablen wie die Demo-API (`APP_ENV=demo`); legt Business-Jobs während eines Demo-Resets automatisch um 15 s zurück |
+| Staff (demo) | wie bisher (`STAFF_API_ORIGIN` auf die Demo-API, `STAFF_OFFLINE_LEASE_VERIFICATION_KEY` der Demo-API); Badge/Titel „DEMO“ kommen aus der API, keine eigene Variable |
+| Web (demo) | `WEB_API_ORIGIN` auf die Demo-API **und `WEB_APP_ENV=demo`** (fester Banner „DEMO – keine echten Kundendaten“ auf allen öffentlichen Seiten). Zusätzlich (Review F6) erscheint der Banner, wenn die konfigurierte API über `GET /health` `environment: 'demo'` meldet; `WEB_APP_ENV` bleibt Pflicht (Release-Ablauf 6b) |
+| API (production) | optional `STAFF_DEMO_URL=https://demo.<domain>` (Button „Demo öffnen“); **kein** `STAFF_LIVE_URL` |
+
+- **Seed/Reset laufen nur explizit** – nie beim Start, Deployment, bei
+  Migration oder Update (Order §7). Den kanonischen Demo-Datensatz legt
+  `pnpm demo:seed` an, den Reset lösen `pnpm demo:reset` oder Einstellungen →
+  Demo („Demo-Geschäftsdaten zurücksetzen“, Bestätigungstext „DEMO
+  ZURÜCKSETZEN“, Recht `demo.manage`) aus; Details zu Ablauf, Umfang und
+  Kommandos: docs/TECH_DECISIONS.md (Phase 14, Seed/Reset).
+- Ein älterer Datenstand (`dataset_version` kleiner als im Code) wird nach
+  einem Update **nicht** automatisch zurückgesetzt, sondern Admins als
+  „Demo-Datenstand ist veraltet – Zurücksetzen empfohlen.“ angezeigt
+  (Einstellungen → Demo und dezent auf „Heute“).
+- Während eines Resets antwortet die Demo-API auf Business-Mutationen mit
+  `503 DEMO_RESET` (`retry-after: 15`); Offline-Sync behandelt das als
+  vorübergehend (späterer Retry), die Staff-App zeigt einen lesbaren Hinweis
+  statt einer Abmeldung. Bleibt ein Reset hängen (Flag älter als 10 min,
+  `DEMO_RESET_STALE_MS`; Review F8), zeigt Einstellungen → Demo „Letzter Reset
+  unterbrochen – erneut zurücksetzen“; der Reset-Endpunkt ist vom Gate
+  ausgenommen. Nach einem harten Prozessabbruch (Deploy/OOM während der
+  ≈ 10 s eines Resets) kann ein Systemadmin die Wartezeit mit `pnpm demo:reset
+  --force` überspringen (nur CLI, siehe Seed-/Reset-Kommandos).
+- Die Demo-Routen `/staff/demo/*` existieren ausschließlich in `APP_ENV=demo`
+  (sonst 404) – es gibt keinen Reset-Endpunkt in production/staging/development.
+- **Nach dem Reset (Phase 14 RESET):** Der Demo-Worker beendet Business-Jobs, die
+  vor dem Reset-Beginn eingereiht wurden, als `dead`/`DEMO_DATASET_CHANGED`
+  (erwartet, kein Fehler). Storage-Objekte, die beim Reset nicht gelöscht werden
+  konnten, räumt der Job `demo.storage_cleanup` nach – er läuft nur im Demo-Worker
+  (demo-Konfiguration, eigener Storage); „Bereinigung alter Demo-Dateien
+  fehlgeschlagen“ in Einstellungen → Demo bedeutet einen dauerhaft `dead`
+  gegangenen Cleanup-Job (Storage-Zugang/Logs prüfen; der Datensatz selbst ist
+  konsistent). Offline-Geräte, die vor dem Reset ein Arbeitspaket hatten, erhalten
+  beim nächsten Onlinekontakt den Hinweis „Demo-Daten zurückgesetzt“ und laden
+  nach Bestätigung ein neues Paket (Dataset-Epoch); alte Offline-Erfassungen
+  werden mit `409 DEMO_DATASET_CHANGED` abgewiesen und nie auf den neuen Seed
+  angewendet. Production/Staging kennen keine Epoch – kein Unterschied dort.
+
+
+### Seed-/Reset-Kommandos (Phase 14, SEED)
+
+| Kommando | Wirkung |
+| --- | --- |
+| `pnpm demo:seed` | legt den kanonischen Demo-Datensatz auf LEEREM Demo-Geschäftsbestand an; bei vorhandenen Daten Abbruch „Demo-Daten existieren bereits – demo:reset verwenden.“ (Exit 1) |
+| `pnpm demo:reset` | löscht ALLE Demo-Geschäftsdaten und seedet neu; verlangt interaktiv genau `DEMO ZURÜCKSETZEN` oder `--yes` (nur Automatisierung; ohne Terminal und ohne `--yes` Abbruch, Exit 2) |
+| `pnpm demo:reset --force` | wie `demo:reset` (Bestätigung bleibt Pflicht), setzt aber vorher einen **hängenden** Reset zurück (Flag `reset_in_progress` gesetzt, aber kein Prozess hält mehr den Advisory-Lock – z. B. nach Deploy/OOM während eines Resets) und startet sofort neu, statt die Stale-Spanne von 10 min abzuwarten. Läuft tatsächlich ein Reset (Lauf-Lock belegt – gilt für die gesamte Laufzeit von Phase A bis D, Review-Fix F1), bricht das Kommando mit `DEMO_RESET_RUNNING` ab. Nur benutzen, wenn sicher kein Reset-Prozess mehr läuft; nur CLI, nur `APP_ENV=demo` |
+
+Beide Kommandos laufen mit den Umgebungsvariablen der Demo-API (`APP_ENV=demo`,
+`DATABASE_URL`, `STORAGE_*`, `AUTH_SECRET_KEY`, `COMMUNICATION_PAYLOAD_KEY`,
+optional `MAIL_*`), brechen in jeder anderen Umgebung mit „Nur in APP_ENV=demo
+erlaubt.“ (Exit 2) ab und brauchen einen bestehenden aktiven Systemadmin
+(sonst Hinweis auf `pnpm staff:bootstrap-admin`, Exit 2). Migrationen werden
+nicht angewendet (`pnpm db:migrate` bleibt ein eigener Schritt). Protokolliert
+werden nur Datenbankname und Zähler. Nach einem Reset beginnen die
+Vorgangsnummern wieder bei `MR-<Jahr>-0001`; Staff-Konten, Rollen, Rechte,
+Geräte, Audit, Einstellungen und Stammdaten bleiben erhalten. Ohne
+`MAIL_ENABLED`/Whitelist landen alle Kundenmails des Seeds als `blocked` in der
+Outbox – gewollt, nichts verlässt die Demo. Mit einem `@domain`-Eintrag in
+`MAIL_DEMO_WHITELIST` (empfohlen: Sink-Domain `@demo.test` mit Mail-Senke)
+erhalten die Kunden der Mail-Übungsszenarien (`process.settlement.review`,
+`process.return.damage`/`.missing_part`, `conversation.email.*`) Adressen unter
+dieser Domain (z. B. `einkauf@demo.test`), damit Kundeninformationen und
+Kommunikationsantworten in der Demo tatsächlich zugestellt werden (Order §9);
+die Adressen gelten ab dem nächsten Seed/Reset, alle anderen Seed-Kunden
+bleiben unter example.com / example.invalid.

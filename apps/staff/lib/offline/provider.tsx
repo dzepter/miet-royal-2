@@ -1,7 +1,9 @@
 'use client';
 
+import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from 'react';
+import { datasetChangedMessage } from '@mietroyal/offline';
 import { APP_LOCKED_EVENT, UNAUTHENTICATED_EVENT, setOfflineRouter } from '../api';
 import { prefetchPages } from '../../components/pwa-register';
 import type { OfflineIdentity } from './device';
@@ -23,6 +25,11 @@ export interface OfflineContextValue {
   inCapture: boolean;
   syncNow: () => Promise<void>;
   refreshPackage: () => Promise<boolean>;
+  /**
+   * Phase 14 (offline epoch, Order §92): alten Demo-Datenstand bewusst verwerfen
+   * (Mutationen, Medien, Konflikte, Pakete) und ein neues Arbeitspaket laden.
+   */
+  discardDataset: () => Promise<boolean>;
 }
 
 const OfflineContext = createContext<OfflineContextValue | null>(null);
@@ -128,13 +135,33 @@ export function OfflineProvider({
     await runtime.sync(true);
   }, [runtime]);
   const refreshPackage = useCallback(() => runtime.refreshPackage(), [runtime]);
+  const discardDataset = useCallback(() => runtime.discardDatasetAndReload(), [runtime]);
 
   return (
     <OfflineContext.Provider
-      value={{ state, runtime, offlineSession, inCapture, syncNow, refreshPackage }}
+      value={{ state, runtime, offlineSession, inCapture, syncNow, refreshPackage, discardDataset }}
     >
+      {state.datasetChangedPending && pathname !== '/sync' && (
+        <DatasetChangedBanner pending={state.pending + state.conflicts} />
+      )}
       {children}
     </OfflineContext.Provider>
+  );
+}
+
+/**
+ * Phase 14 (offline epoch, Order §92): Hinweis in allen Offline-Bereichen, solange
+ * der alte Demo-Datenstand noch nicht bewusst verworfen wurde (kein Sync bis dahin).
+ * „Prüfen“ führt zur Sync-Seite mit dem Bestätigungsdialog.
+ */
+function DatasetChangedBanner({ pending }: { pending: number }) {
+  return (
+    <div className="conflict-box" role="status" data-testid="dataset-changed-banner">
+      <strong>Demo-Daten zurückgesetzt.</strong> {datasetChangedMessage(pending)}{' '}
+      <Link href="/sync" className="button-like" data-testid="dataset-changed-check">
+        Prüfen
+      </Link>
+    </div>
   );
 }
 

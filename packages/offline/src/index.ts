@@ -22,3 +22,4 @@ export {
 export * from './lease-claim.ts';
 export * from './queue.ts';
 export * from './connectivity.ts';
+export * from './dataset-epoch.ts';

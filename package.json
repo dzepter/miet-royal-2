@@ -45,7 +45,9 @@
     "mail:smoke": "pnpm --filter @mietroyal/api mail:smoke",
     "whatsapp:smoke": "pnpm --filter @mietroyal/api whatsapp:smoke",
     "push:generate-vapid-keys": "pnpm --filter @mietroyal/api push:generate-vapid-keys",
-    "routing:smoke": "pnpm --filter @mietroyal/api routing:smoke"
+    "routing:smoke": "pnpm --filter @mietroyal/api routing:smoke",
+    "demo:seed": "pnpm --filter @mietroyal/api demo:seed",
+    "demo:reset": "pnpm --filter @mietroyal/api demo:reset"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",

@@ -332,7 +332,20 @@ export const ACCOUNTING_PROVIDER_LABELS = {
   disabled: 'Nicht konfiguriert',
 } as const satisfies Record<string, string>;
 
-export function accountingProviderLabel(provider: string | null | undefined): string {
+/** Phase 14 (W1): Provider-Badge der Demo – keine Buchhaltungsübertragung, kein Fehlerzustand. */
+export const ACCOUNTING_PROVIDER_LABEL_DEMO_UNAVAILABLE = 'Nicht verfügbar (Demo)';
+
+export function accountingProviderLabel(
+  provider: string | null | undefined,
+  options: { demoUnavailable?: boolean } = {},
+): string {
+  // Phase 14 (W1): in der Demo ist das Gateway `disabled` – Badge „Nicht verfügbar (Demo)“.
+  if (
+    options.demoUnavailable === true &&
+    (provider === undefined || provider === null || provider === 'disabled')
+  ) {
+    return ACCOUNTING_PROVIDER_LABEL_DEMO_UNAVAILABLE;
+  }
   if (provider === undefined || provider === null) return ACCOUNTING_PROVIDER_LABELS.disabled;
   return (
     (ACCOUNTING_PROVIDER_LABELS as Record<string, string>)[provider] ??

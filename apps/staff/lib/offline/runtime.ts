@@ -3,6 +3,8 @@
 import {
   ConnectivityEpoch,
   LeaseInvalidError,
+  META_DATASET_CHANGED_PENDING,
+  META_DATASET_EPOCH,
   OFFLINE_LEASE_MAX_MS,
   OFFLINE_MIGRATIONS,
   OFFLINE_SCHEMA_VERSION,
@@ -10,6 +12,7 @@ import {
   OfflineStore,
   OfflineWorkspace,
   SyncEngine,
+  datasetChanged,
   offlineDbName,
   openOfflineDatabase,
   sha256Hex,
@@ -66,6 +69,13 @@ export interface OfflineRuntimeState {
   storageWarning: string | null;
   /** Neue App-Version wartet (§72). */
   updateAvailable: boolean;
+  /**
+   * Phase 14 (offline epoch, Order §92): Die Demo wurde zurückgesetzt, der lokale
+   * Stand (Paket und/oder Erfassungen) gehört zur alten Generation. Kein Sync,
+   * bis der Mitarbeiter den alten Stand verwirft und ein neues Paket lädt.
+   * Außerhalb der Demo (Epoch null) nie gesetzt.
+   */
+  datasetChangedPending: boolean;
 }
 
 export interface PackagePayload {
@@ -136,6 +146,8 @@ function packageTourFields(
 export const PACKAGE_REFRESHED_EVENT = 'mr-package-refreshed';
 /** Session serverseitig ungültig/widerrufen (Provider → mr-unauthenticated → AuthGuard). */
 export const OFFLINE_SESSION_INVALID_EVENT = 'mr-offline-session-invalid';
+/** Phase 14 (offline epoch): Datensatzwechsel erkannt (Provider zeigt Banner/Dialog). */
+export const DATASET_CHANGED_EVENT = 'mr-dataset-changed';
 
 const STATUS_TIMEOUT_MS = 6_000;
 
@@ -314,6 +326,7 @@ export class OfflineRuntime {
     permissions: [],
     storageWarning: null,
     updateAvailable: false,
+    datasetChangedPending: false,
   };
 
   get snapshot(): OfflineRuntimeState {
@@ -433,7 +446,13 @@ export class OfflineRuntime {
     this.store = null;
     this.workspace = null;
     this.engine = null;
-    this.emit({ initialized: false, unlocked: false, lease: null, leaseExpiresAt: null });
+    this.emit({
+      initialized: false,
+      unlocked: false,
+      lease: null,
+      leaseExpiresAt: null,
+      datasetChangedPending: false,
+    });
   }
 
   // ── Konnektivität (§78) ─────────────────────────────────────────────────
@@ -513,10 +532,16 @@ export class OfflineRuntime {
       const online = response.status < 500;
       const unauthenticated = response.status === 401;
       let appLocked = false;
+      let serverEpoch: string | null = null;
       if (response.ok) {
-        const body = (await response.json()) as { appLocked?: boolean; serverTime?: string };
+        const body = (await response.json()) as {
+          appLocked?: boolean;
+          serverTime?: string;
+          datasetEpoch?: string | null;
+        };
         appLocked = body.appLocked === true;
         if (typeof body.serverTime === 'string') await this.noteClock(Date.parse(body.serverTime));
+        if (typeof body.datasetEpoch === 'string') serverEpoch = body.datasetEpoch;
       } else if (unauthenticated) {
         const body = (await response.json().catch(() => null)) as {
           error?: { code?: string };
@@ -536,8 +561,20 @@ export class OfflineRuntime {
           window.dispatchEvent(new Event(OFFLINE_SESSION_INVALID_EVENT));
         return { online, appLocked, unauthenticated: true };
       }
+      // Phase 14 (offline epoch, Order §92): Status-Epoch ≠ lokale Paket-Epoch (beide bekannt)
+      // ⇒ Datensatzwechsel merken, keinen Auto-Sync starten (erst bewusst verwerfen + neu laden).
+      if (online && serverEpoch !== null && this.store !== null) {
+        const localEpoch = await this.currentDatasetEpoch();
+        if (datasetChanged(localEpoch, serverEpoch)) await this.markDatasetChanged();
+      }
       // Verbindung wiederhergestellt (Event ODER 60-s-Prüfung): automatisch synchronisieren (§30/§42).
-      if (online && (triggerSync || previous !== 'online') && this.unlocked && !appLocked) {
+      if (
+        online &&
+        (triggerSync || previous !== 'online') &&
+        this.unlocked &&
+        !appLocked &&
+        !this.state.datasetChangedPending
+      ) {
         void this.sync(false);
       }
       return { online, appLocked, unauthenticated: false };
@@ -813,12 +850,57 @@ export class OfflineRuntime {
       null,
     );
     const record = await this.workspace?.record();
+    // Phase 14 (offline epoch): Flag aus den Klartext-Metadaten (überlebt Reload/Sperre).
+    const changedPending = (await this.store.getMeta(META_DATASET_CHANGED_PENDING)) === true;
     this.emit({
       pending: counts.pending + counts.syncing + counts.failed_retryable,
       conflicts: counts.conflict + counts.failed_permanent,
       lastPackageAt: latest ?? this.state.lastPackageAt,
       leaseExpiresAt: record?.lease?.expiresAt ?? this.state.leaseExpiresAt,
+      datasetChangedPending: changedPending,
     });
+  }
+
+  // ── Phase 14 (offline epoch, Order §91/§92): Generation des Demo-Datensatzes ──
+
+  /** Epoch des zuletzt übernommenen Pakets (Meta); null außerhalb der Demo oder ohne Paket. */
+  async currentDatasetEpoch(): Promise<string | null> {
+    if (this.store === null) return null;
+    const value = await this.store.getMeta(META_DATASET_EPOCH);
+    return typeof value === 'string' ? value : null;
+  }
+
+  /** Datensatzwechsel merken (Meta + Zustand + Ereignis) – idempotent. */
+  private async markDatasetChanged(): Promise<void> {
+    if (this.store === null) return;
+    const already = (await this.store.getMeta(META_DATASET_CHANGED_PENDING)) === true;
+    if (!already) {
+      try {
+        await this.store.setMeta(META_DATASET_CHANGED_PENDING, true, new Date().toISOString());
+      } catch {
+        // Nicht persistierbar: der Zustand gilt bis zum Neuladen.
+      }
+    }
+    if (!this.state.datasetChangedPending) this.emit({ datasetChangedPending: true });
+    if (!already && typeof window !== 'undefined') {
+      window.dispatchEvent(new Event(DATASET_CHANGED_EVENT));
+    }
+  }
+
+  /**
+   * Bewusste Bestätigung (Dialog „Alten Stand verwerfen und neues Arbeitspaket
+   * laden“): Mutationen, Medien, Konflikte, Quittungen, Pakete, Vorgänge,
+   * Maschinen, Dokumente und die Epoch-Metadaten löschen; danach neues Paket
+   * laden und Zähler aktualisieren. Nie automatisch.
+   */
+  async discardDatasetAndReload(): Promise<boolean> {
+    if (this.store === null || !this.unlocked) return false;
+    await this.store.discardDataset();
+    serviceWorkerPost({ type: 'CLEAR_PAGES' });
+    this.emit({ datasetChangedPending: false, pending: 0, conflicts: 0, lastPackageAt: null });
+    const refreshed = await this.refreshPackage();
+    await this.refreshCounts();
+    return refreshed;
   }
 
   // ── Arbeitspaket (§§9–12) ────────────────────────────────────────────────
@@ -861,7 +943,25 @@ export class OfflineRuntime {
     const pkg = (await response.json()) as OfflinePackage<HandoverDetail, ReturnDetail>;
     if (pkg.environment !== identity.environment) return false;
     await this.noteClock(Date.parse(pkg.serverTime));
+    // Phase 14 (offline epoch, Order §92): Paket einer neuen Generation (Demo-Reset).
+    const packageEpoch = typeof pkg.datasetEpoch === 'string' ? pkg.datasetEpoch : null;
+    if (datasetChanged(await this.currentDatasetEpoch(), packageEpoch)) {
+      if (await this.hasPendingWork()) {
+        // Offene/zu prüfende Erfassungen gehören zum alten Stand: NICHT ingestieren,
+        // erst nach bewusster Bestätigung verwerfen (Dialog auf /sync).
+        await this.markDatasetChanged();
+        return false;
+      }
+      // Nichts offen: alten Stand verwerfen, neues Paket übernehmen, Epoch wechseln.
+      await this.store.discardDataset();
+      serviceWorkerPost({ type: 'CLEAR_PAGES' });
+    }
     await this.ingest(pkg);
+    if (packageEpoch !== null) {
+      await this.store.setMeta(META_DATASET_EPOCH, packageEpoch, pkg.serverTime);
+      await this.store.deleteMeta(META_DATASET_CHANGED_PENDING);
+      if (this.state.datasetChangedPending) this.emit({ datasetChangedPending: false });
+    }
     await this.requestPersistence();
     await this.checkStorage();
     this.emit({
@@ -1065,6 +1165,8 @@ export class OfflineRuntime {
 
   async sync(force: boolean): Promise<void> {
     if (this.engine === null || !this.unlocked) return;
+    // Phase 14 (offline epoch, Order §92): kein Sync, bis der alte Stand bewusst verworfen wurde.
+    if (this.state.datasetChangedPending) return;
     if (this.state.syncing) {
       // Läuft bereits: nach dem Lauf erneut versuchen (neu eingereihte Mutationen, §30/§42).
       this.syncRequested = true;
@@ -1082,6 +1184,11 @@ export class OfflineRuntime {
         this.emit({ syncing: false });
         await this.refreshCounts();
         window.dispatchEvent(new Event(OFFLINE_SESSION_INVALID_EVENT));
+        return;
+      }
+      if (result.datasetChanged) {
+        // Phase 14 (offline epoch): 409 DEMO_DATASET_CHANGED – Lauf beendet, alles bleibt pending.
+        await this.markDatasetChanged();
         return;
       }
       if (result.applied > 0 || result.conflicts > 0 || result.rejected > 0) {
@@ -1202,6 +1309,7 @@ export class OfflineRuntime {
       dependsOn: input.dependsOn ?? [],
       mediaIds: input.mediaIds ?? [],
       baseVersion: input.baseVersion,
+      datasetEpoch: await this.currentDatasetEpoch(), // Phase 14 (offline epoch)
     });
     await this.refreshCounts();
     if (this.state.connectivity === 'online') void this.sync(false);
@@ -1299,6 +1407,7 @@ export class OfflineRuntime {
       leaseExpiresAt: null,
       permissions: [],
       lastPackageAt: null,
+      datasetChangedPending: false,
     });
   }
 

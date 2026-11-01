@@ -154,13 +154,24 @@ async function runSeed(ctx: TestContext, seed: Extract<SeedInput, { mode: 'seed'
     ];
     for (const [row, time] of times) {
       if (time === undefined) continue;
+      const startAt = time === null ? null : new Date(time.startAt);
+      const endAt =
+        time === null || time.endAt === undefined || time.endAt === null
+          ? null
+          : new Date(time.endAt);
+      // Phase 14: ungültige Fenster (z. B. beide Enden auf 23:59 geklemmt) klar benennen,
+      // statt mit der generischen Regelverletzung des SchedulingService zu scheitern.
+      if (startAt !== null && endAt !== null && endAt.getTime() <= startAt.getTime()) {
+        throw new Error(
+          `E2E-Touren-Seed: Zeitfenster von ${booking.key}/${row.kind} ist ungültig ` +
+            `(${startAt.toISOString()} – ${endAt.toISOString()}, Ende ≤ Beginn). Resttag zu kurz? ` +
+            'Termine über fitTodayTimeline/todayWindow (tests/e2e/helpers/tours.ts) anlegen.',
+        );
+      }
       const current = await appointmentById(ctx, row.id);
       await scheduling.reschedule(adminId, row.id, {
-        startAt: time === null ? null : new Date(time.startAt),
-        endAt:
-          time === null || time.endAt === undefined || time.endAt === null
-            ? null
-            : new Date(time.endAt),
+        startAt,
+        endAt,
         expectedVersion: current.version,
       });
     }

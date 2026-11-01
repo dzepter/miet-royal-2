@@ -38,6 +38,7 @@ import {
   normalizeVoucherCode,
 } from '@mietroyal/domain';
 import { renderOfferPdf, type PdfLineItem, type PdfVoucherBlock } from '@mietroyal/documents';
+import { pdfRenderOptions } from '../documents/environment-label.ts'; // Phase 14 (reset)
 import type { PermissionKey } from '@mietroyal/permissions';
 import { and, asc, eq, isNull, sql } from 'drizzle-orm';
 import { hashVoucherCode } from '../voucher/voucher-codes.ts';
@@ -1211,34 +1212,37 @@ export class OfferService {
     const commissionMax = lineItems
       .filter((item) => item.billingMode === 'commission')
       .reduce((sum, item) => sum + item.totalCents, 0);
-    const bytes = await renderOfferPdf({
-      processNumber,
-      versionNumber: version.versionNumber,
-      customerName: String(snapshot.displayName ?? ''),
-      customerAddressLines: [
-        String(snapshot.billingStreet ?? '') || null,
-        [snapshot.billingPostalCode, snapshot.billingCity].filter(Boolean).join(' ') || null,
-      ].filter((line): line is string => line !== null),
-      eventDateLabel: String(eventSnapshot.eventDate ?? '–'),
-      eventTimeLabel: eventTimeLabelFrom(eventSnapshot.eventStart, eventSnapshot.eventEnd),
-      fulfillmentLabel:
-        version.fulfillment === 'pickup' ? 'Selbstabholung' : 'Lieferung (individuell geprüft)',
-      lineItems: pdfItems,
-      machineSubtotalCents: version.machineSubtotalCents ?? 0,
-      discountCents: version.discountCents ?? 0,
-      // Der Rabattgrund ist INTERN (§18) und erscheint nie im Kundendokument.
-      discountLabel: null,
-      voucher: pdfVoucherFor(version),
-      fixedTotalCents: version.fixedTotalCents ?? 0,
-      commissionMaxCents: commissionMax,
-      validUntilLabel:
-        version.expiresAt === null
-          ? null
-          : version.expiresAt.toLocaleString('de-DE', { timeZone: 'Europe/Berlin' }),
-      termsLabel,
-      termsContent,
-      createdAtLabel: new Date().toLocaleDateString('de-DE', { timeZone: 'Europe/Berlin' }),
-    });
+    const bytes = await renderOfferPdf(
+      {
+        processNumber,
+        versionNumber: version.versionNumber,
+        customerName: String(snapshot.displayName ?? ''),
+        customerAddressLines: [
+          String(snapshot.billingStreet ?? '') || null,
+          [snapshot.billingPostalCode, snapshot.billingCity].filter(Boolean).join(' ') || null,
+        ].filter((line): line is string => line !== null),
+        eventDateLabel: String(eventSnapshot.eventDate ?? '–'),
+        eventTimeLabel: eventTimeLabelFrom(eventSnapshot.eventStart, eventSnapshot.eventEnd),
+        fulfillmentLabel:
+          version.fulfillment === 'pickup' ? 'Selbstabholung' : 'Lieferung (individuell geprüft)',
+        lineItems: pdfItems,
+        machineSubtotalCents: version.machineSubtotalCents ?? 0,
+        discountCents: version.discountCents ?? 0,
+        // Der Rabattgrund ist INTERN (§18) und erscheint nie im Kundendokument.
+        discountLabel: null,
+        voucher: pdfVoucherFor(version),
+        fixedTotalCents: version.fixedTotalCents ?? 0,
+        commissionMaxCents: commissionMax,
+        validUntilLabel:
+          version.expiresAt === null
+            ? null
+            : version.expiresAt.toLocaleString('de-DE', { timeZone: 'Europe/Berlin' }),
+        termsLabel,
+        termsContent,
+        createdAtLabel: new Date().toLocaleDateString('de-DE', { timeZone: 'Europe/Berlin' }),
+      },
+      pdfRenderOptions(this.config),
+    ); // Phase 14 (reset): Demo-Kennzeichnung
     await this.documentService.createFinalDocument({
       type: 'offer',
       processId,
@@ -1285,33 +1289,36 @@ export class OfferService {
       totalCents: item.totalCents,
       billingMode: item.billingMode,
     }));
-    return renderOfferPdf({
-      processNumber: `${process.processNumber} (VORSCHAU)`,
-      versionNumber: version.versionNumber,
-      customerName: customer === undefined ? '' : customerDisplayName(customer),
-      customerAddressLines: [],
-      eventDateLabel: inquiry?.eventDate ?? '–',
-      eventTimeLabel: eventTimeLabelFrom(
-        inquiry?.eventStart?.toISOString() ?? null,
-        inquiry?.eventEnd?.toISOString() ?? null,
-      ),
-      fulfillmentLabel:
-        version.fulfillment === 'pickup' ? 'Selbstabholung' : 'Lieferung (individuell geprüft)',
-      lineItems: pdfItems,
-      machineSubtotalCents: version.machineSubtotalCents ?? 0,
-      discountCents: version.discountCents ?? 0,
-      // Der Rabattgrund ist INTERN (§18) und erscheint nie im Kundendokument.
-      discountLabel: null,
-      voucher: pdfVoucherFor(version),
-      fixedTotalCents: version.fixedTotalCents ?? 0,
-      commissionMaxCents: lineItems
-        .filter((item) => item.billingMode === 'commission')
-        .reduce((sum, item) => sum + item.totalCents, 0),
-      validUntilLabel: null,
-      termsLabel: null,
-      termsContent: null,
-      createdAtLabel: new Date().toLocaleDateString('de-DE', { timeZone: 'Europe/Berlin' }),
-    });
+    return renderOfferPdf(
+      {
+        processNumber: `${process.processNumber} (VORSCHAU)`,
+        versionNumber: version.versionNumber,
+        customerName: customer === undefined ? '' : customerDisplayName(customer),
+        customerAddressLines: [],
+        eventDateLabel: inquiry?.eventDate ?? '–',
+        eventTimeLabel: eventTimeLabelFrom(
+          inquiry?.eventStart?.toISOString() ?? null,
+          inquiry?.eventEnd?.toISOString() ?? null,
+        ),
+        fulfillmentLabel:
+          version.fulfillment === 'pickup' ? 'Selbstabholung' : 'Lieferung (individuell geprüft)',
+        lineItems: pdfItems,
+        machineSubtotalCents: version.machineSubtotalCents ?? 0,
+        discountCents: version.discountCents ?? 0,
+        // Der Rabattgrund ist INTERN (§18) und erscheint nie im Kundendokument.
+        discountLabel: null,
+        voucher: pdfVoucherFor(version),
+        fixedTotalCents: version.fixedTotalCents ?? 0,
+        commissionMaxCents: lineItems
+          .filter((item) => item.billingMode === 'commission')
+          .reduce((sum, item) => sum + item.totalCents, 0),
+        validUntilLabel: null,
+        termsLabel: null,
+        termsContent: null,
+        createdAtLabel: new Date().toLocaleDateString('de-DE', { timeZone: 'Europe/Berlin' }),
+      },
+      pdfRenderOptions(this.config),
+    ); // Phase 14 (reset): Demo-Kennzeichnung
   }
 
   // ── Neue Version (§21) ──────────────────────────────────────────────────

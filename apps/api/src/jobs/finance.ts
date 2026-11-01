@@ -9,6 +9,7 @@ import type {
 import {
   CANCELLATION_ACCOUNTING_TRANSFER_JOB_TYPE,
   SETTLEMENT_ACCOUNTING_TRANSFER_JOB_TYPE,
+  assertAccountingGatewayAllowed,
   createAccountingGateway,
   type AccountingGateway,
 } from '../accounting/gateway.ts';
@@ -78,16 +79,24 @@ export function createVoucherTriggers(deps: {
 }
 export type { AccountingGateway, LexwareContext };
 export { createLexwareContext };
+// Phase 14 (accounting): Start-Guard „nie Mock in demo/production“ für Worker und Seed.
+export { assertAccountingGatewayAllowed };
 
-/** Gateway-Wahl inkl. Lexware (Order §4) – eine Stelle für API und Worker. */
+/**
+ * Gateway-Wahl inkl. Lexware (Order §4) – eine Stelle für API und Worker.
+ * Phase 14 (accounting), Order W1/§29: demo ⇒ immer Disabled (siehe
+ * `createAccountingGateway`); das Ergebnis wird zusätzlich fail-closed geprüft.
+ */
 export function createAccountingGatewayFor(
   config: AppConfig,
   lexware: LexwareContext,
 ): AccountingGateway {
-  return createAccountingGateway(config, {
+  const gateway = createAccountingGateway(config, {
     client: lexware.client,
     gateway: () => new LexwareAccountingGateway(lexware),
   });
+  assertAccountingGatewayAllowed(config.appEnv, gateway);
+  return gateway;
 }
 
 /** Transfer-Boundary inkl. Lexware-Zweiphasenpfad – eine Komposition für API, Worker und Tests. */

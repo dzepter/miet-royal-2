@@ -46,6 +46,23 @@ export interface AppConfig {
   push: PushConfig;
   /** Phase 13: Routing/Geocoding (GraphHopper Directions API, Mock oder deaktiviert). */
   routing: RoutingConfig;
+  /** Phase 14 (demo): feste Deployment-URL der jeweils anderen Umgebung (Live↔Demo-Wechsel). */
+  environmentLinks: EnvironmentLinksConfig;
+}
+
+/**
+ * Phase 14 (Order §6, Design §4): fester Live↔Demo-Wechsel der Staff-App.
+ * „Demo öffnen“ (live) bzw. „Live öffnen“ (demo) erscheint nur, wenn die
+ * Gegen-URL konfiguriert ist. Gespeichert wird ausschließlich der Origin
+ * (kein Pfad, keine Query, kein Fragment, keine Zugangsdaten); die UI hängt
+ * fest `/login` an und überträgt nie Session, IDs oder die aktuelle URL.
+ * - `STAFF_DEMO_URL` (Ziel: Demo-Staff) ist in demo ein Konfigurationsfehler.
+ * - `STAFF_LIVE_URL` (Ziel: Live-Staff) ist in production ein Konfigurationsfehler.
+ * - Beide gleichzeitig sind nie zulässig (genau eine Gegen-Umgebung).
+ * - https Pflicht; http nur in development. Kein Secret (keine Redaction).
+ */
+export interface EnvironmentLinksConfig {
+  counterpart: { kind: 'demo' | 'live'; url: string } | null;
 }
 
 export const ROUTING_PRODUCTION_BASE_URL = 'https://graphhopper.com/api/1';
@@ -357,6 +374,9 @@ const rawEnvSchema = z.object({
   ROUTING_REQUEST_TIMEOUT_MS: z.coerce.number().int().min(1000).max(120_000).optional(),
   // Phase 13 Final – Go-live-Schalter (kein Secret): Vertrag gegen implementierte Nutzung geprüft.
   ROUTING_PROVIDER_TERMS_CONFIRMED: z.enum(['true', 'false']).optional(),
+  // Phase 14 (demo) – Live↔Demo-Wechsel: feste Staff-URLs (nur Origin, kein Secret).
+  STAFF_DEMO_URL: z.string().max(2048).optional(),
+  STAFF_LIVE_URL: z.string().max(2048).optional(),
 });
 
 /**
@@ -501,6 +521,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   const whatsapp = buildWhatsAppConfig(raw, problems);
   const push = buildPushConfig(raw, problems);
   const routing = buildRoutingConfig(raw, problems);
+  const environmentLinks = buildEnvironmentLinks(raw, problems); // Phase 14 (demo)
 
   if (problems.length > 0) {
     throw new ConfigError(problems);
@@ -553,10 +574,78 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     whatsapp,
     push,
     routing,
+    environmentLinks,
   };
 }
 
 type RawEnv = z.infer<typeof rawEnvSchema>;
+
+/**
+ * Phase 14 (demo): liest eine feste Deployment-URL und reduziert sie auf den
+ * Origin. Leer/Whitespace gilt als nicht gesetzt. Jede Abweichung (relative
+ * URL, http außerhalb development, Zugangsdaten, Pfad, Query, Fragment) ist
+ * ein Konfigurationsfehler – die Gegen-URL ist nie frei editierbar.
+ */
+function parseStaffOriginVar(
+  value: string | undefined,
+  name: string,
+  appEnv: AppEnvironment,
+  problems: string[],
+): string | null {
+  const trimmed = value?.trim() ?? '';
+  if (trimmed === '') return null;
+  let url: URL;
+  try {
+    url = new URL(trimmed);
+  } catch {
+    problems.push(`${name}: muss eine absolute URL sein (nur Origin, z. B. https://demo.example)`);
+    return null;
+  }
+  const issues: string[] = [];
+  const httpAllowed = appEnv === 'development';
+  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && httpAllowed)) {
+    issues.push('nur https:// (http nur in development)');
+  }
+  if (url.username !== '' || url.password !== '') issues.push('keine Zugangsdaten');
+  if (url.pathname !== '/' && url.pathname !== '') issues.push('kein Pfad');
+  if (url.search !== '' || trimmed.includes('?')) issues.push('keine Query');
+  if (url.hash !== '' || trimmed.includes('#')) issues.push('kein Fragment');
+  if (issues.length > 0) {
+    problems.push(`${name}: nur der Origin ist zulässig – ${issues.join(', ')}`);
+    return null;
+  }
+  return url.origin;
+}
+
+/** Phase 14 (demo): Gegen-Umgebung je APP_ENV (Doc-Kommentar an `EnvironmentLinksConfig`). */
+function buildEnvironmentLinks(raw: RawEnv, problems: string[]): EnvironmentLinksConfig {
+  const demoSet = (raw.STAFF_DEMO_URL?.trim() ?? '') !== '';
+  const liveSet = (raw.STAFF_LIVE_URL?.trim() ?? '') !== '';
+  const demoUrl = parseStaffOriginVar(raw.STAFF_DEMO_URL, 'STAFF_DEMO_URL', raw.APP_ENV, problems);
+  const liveUrl = parseStaffOriginVar(raw.STAFF_LIVE_URL, 'STAFF_LIVE_URL', raw.APP_ENV, problems);
+  if (raw.APP_ENV === 'demo' && demoSet) {
+    problems.push(
+      'STAFF_DEMO_URL: in demo nicht zulässig (die Demo verlinkt nur nach Live – STAFF_LIVE_URL)',
+    );
+  }
+  if (raw.APP_ENV === 'production' && liveSet) {
+    problems.push(
+      'STAFF_LIVE_URL: in production nicht zulässig (Live verlinkt nur zur Demo – STAFF_DEMO_URL)',
+    );
+  }
+  if (demoSet && liveSet) {
+    problems.push(
+      'STAFF_DEMO_URL/STAFF_LIVE_URL: nur eine Gegen-URL je Umgebung (fester Wechsel in genau eine Richtung)',
+    );
+  }
+  if (demoUrl !== null && liveUrl === null && raw.APP_ENV !== 'demo') {
+    return { counterpart: { kind: 'demo', url: demoUrl } };
+  }
+  if (liveUrl !== null && demoUrl === null && raw.APP_ENV !== 'production') {
+    return { counterpart: { kind: 'live', url: liveUrl } };
+  }
+  return { counterpart: null };
+}
 
 /**
  * Phase 13: Routing je Umgebung (fail-closed, nie Mock in production, nie ein

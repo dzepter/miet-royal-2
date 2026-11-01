@@ -2,9 +2,9 @@
 
 import Link from 'next/link';
 import { useCallback, useEffect, useState } from 'react';
-import { AuthGuard } from '../../components/auth-guard';
+import { AuthGuard, useMe } from '../../components/auth-guard';
 import { ConfirmDialog } from '../../components/confirm-dialog';
-import { apiFetch } from '../../lib/api';
+import { apiFetch, hasPermission } from '../../lib/api';
 import { formatBerlin } from '../../lib/handover';
 import {
   checkConnection,
@@ -20,6 +20,7 @@ import {
 } from '../../lib/lexware';
 
 function SettingsView() {
+  const me = useMe(); // Phase 14 (demo)
   const [days, setDays] = useState<string>('');
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -65,6 +66,37 @@ function SettingsView() {
           </Link>
         </p>
       </div>
+      {/* Phase 14 (demo): Demo-Verwaltung nur in der Demo-Umgebung mit demo.manage (Order §§15/16). */}
+      {me?.environment === 'demo' && hasPermission(me, 'demo.manage') && (
+        <div className="card" data-testid="settings-demo-card">
+          <h2>Demo-Umgebung</h2>
+          <p className="muted">
+            Datenstand des Demo-Datensatzes, Seed-Szenarien und das Zurücksetzen der
+            Demo-Geschäftsdaten.
+          </p>
+          <p>
+            <Link href="/einstellungen/demo" data-testid="settings-link-demo">
+              <strong>Demo-Umgebung öffnen</strong>
+            </Link>
+          </p>
+        </div>
+      )}
+      {/* Phase 14 (training): Admin-Bereich in allen Umgebungen mit training.manage (Order §§67/68). */}
+      {hasPermission(me, 'training.manage') && (
+        <div className="card" data-testid="settings-training-card">
+          <h2>Training</h2>
+          <p className="muted">
+            {me?.environment === 'demo'
+              ? 'Mitarbeitertraining: Zuweisungen, Fortschritt, Katalog und Training-Reset.'
+              : 'Live-Sperren, bestätigte Demo-Trainings und Overrides.'}
+          </p>
+          <p>
+            <Link href="/einstellungen/training" data-testid="settings-link-training">
+              <strong>Training öffnen</strong>
+            </Link>
+          </p>
+        </div>
+      )}
       <div className="card">
         <h2>Sichtbarkeit abgeschlossener Vorgänge</h2>
         <p className="muted">

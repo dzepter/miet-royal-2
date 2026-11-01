@@ -137,7 +137,12 @@ function OfferView() {
         <Link href={`/vorgaenge/${params.id}`}>← Vorgang</Link>
       </p>
       <h1>Angebot</h1>
-      {error !== null && <p className="error">{error}</p>}
+      {/* Phase 14 (training): Servertext der Live-Sperre erscheint hier (E2E L). */}
+      {error !== null && (
+        <p className="error" data-testid="offer-error" role="alert">
+          {error}
+        </p>
+      )}
       {notice !== null && <p className="success">{notice}</p>}
       {publicPath !== null && (
         <div className="card">

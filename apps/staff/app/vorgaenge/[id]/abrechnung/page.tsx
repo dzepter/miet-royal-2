@@ -14,6 +14,7 @@ import type { ApiResult } from '../../../../lib/api';
 import { formatBerlin } from '../../../../lib/handover';
 import { RETRY_TRANSFER_LABEL_LEXWARE, TRANSFER_CHECK_TEXT } from '../../../../lib/lexware';
 import {
+  ACCOUNTING_DEMO_UNAVAILABLE_HINT,
   ACCOUNTING_NOT_CONFIGURED_HINT,
   addLine,
   approveAndSendNotice,
@@ -236,6 +237,8 @@ function SettlementPage() {
     },
   });
   const isLexware = accounting.provider === 'lexware';
+  // Phase 14 (W1): Demo – Serverblocker `demo_unavailable` ⇒ Hinweis statt Übertragung (kein Fehler).
+  const demoUnavailable = s.accountingBlocker === 'demo_unavailable';
   const showRetry =
     perms.canManualTransfer && (s.status === 'transfer_failed' || accounting.canRetry);
   const retryLabel =
@@ -570,12 +573,18 @@ function SettlementPage() {
         {s.accountingBlocker === 'not_configured' && (
           <p className="muted">{ACCOUNTING_NOT_CONFIGURED_HINT}</p>
         )}
+        {demoUnavailable && (
+          <p className="muted" data-testid="settlement-demo-unavailable">
+            {ACCOUNTING_DEMO_UNAVAILABLE_HINT}
+          </p>
+        )}
       </div>
 
       <AccountingBlockCard
         ids={SETTLEMENT_ACCOUNTING_IDS}
         data={accounting}
         customerId={s.customerId ?? null}
+        demoUnavailable={demoUnavailable}
       />
 
       <div className="card" aria-label="Nächste Aktion">
@@ -586,9 +595,9 @@ function SettlementPage() {
         {dominant.key !== 'wait' &&
           dominant.hint !== null &&
           dominant.hint !== '' &&
-          !['auto_planned', 'not_configured', 'locked'].includes(dominant.key) && (
-            <p className="muted">{dominant.hint}</p>
-          )}
+          !['auto_planned', 'not_configured', 'demo_unavailable', 'locked'].includes(
+            dominant.key,
+          ) && <p className="muted">{dominant.hint}</p>}
         {s.status === 'customer_waiting' && (
           <p data-testid="settlement-wait-hint">
             <strong>Kundenrückmeldung abwarten.</strong>{' '}

@@ -30,6 +30,11 @@ const AUTH_ERROR_STATUS: Record<AuthError['code'], number> = {
   VOUCHER_UNAVAILABLE: 409,
 };
 
+/** Phase 14 (demo): HTTP-Status zu einem AuthError-Code (Antworten mit Zusatzdetails). */
+export function authErrorStatus(code: AuthError['code']): number {
+  return AUTH_ERROR_STATUS[code];
+}
+
 /** Mappt AuthError auf eine strukturierte Antwort; andere Fehler laufen weiter. */
 export function sendAuthError(
   request: FastifyRequest,

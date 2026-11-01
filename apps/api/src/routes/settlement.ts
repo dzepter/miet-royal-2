@@ -7,6 +7,11 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { AccountingGateway } from '../accounting/gateway.ts';
 import type { AccountingTransferService } from '../accounting/transfer-service.ts';
 import { requireAuth, requirePermission, sendAuthError, sendError } from '../auth/http.ts';
+// Phase 14 (training gate): Live-Trainingssperre (Order §56–§66) – nach Rechten, vor der Fachaktion.
+import { requireTrainingGate } from '../training/gate-http.ts';
+import { createNoopTrainingGate, type TrainingGate } from '../training/gate-service.ts';
+// Phase 14 (training): `settlement.reviewed` NACH erfolgreichem Fachcommit (Order §41/§42, §79).
+import { createNoopTrainingRecorder, type TrainingEventRecorder } from '../training/recorder.ts';
 import { AuthError, type AuthenticatedContext, type StaffAuthService } from '../auth/service.ts';
 import { ProcessService } from '../crm/process-service.ts';
 import { LexwareApiError } from '../lexware/errors.ts';
@@ -82,6 +87,10 @@ export interface SettlementRouteOptions {
   transfers: AccountingTransferService;
   /** Phase 12 (Order §12): Kundeninformation über die Mail-Outbox. */
   notices: SettlementNoticeMailer;
+  /** Phase 14 (training gate): Live-Trainingssperre `settlement.release` (approve-and-send, customer-response, release, end-wait) (Default: Noop). */
+  trainingGate?: TrainingGate;
+  /** Phase 14 (training): Recorder für `settlement.reviewed` (demo), Default Noop. */
+  trainingRecorder?: TrainingEventRecorder;
 }
 
 /** SettlementError ⇒ Status + fachlicher Code (z. B. 409 SETTLEMENT_LOCKED); sonst sendAuthError. */
@@ -108,6 +117,8 @@ export function registerSettlementRoutes(
   options: SettlementRouteOptions,
 ): void {
   const { db, auth, config, transfers, notices, queue } = options;
+  const trainingGate = options.trainingGate ?? createNoopTrainingGate(); // Phase 14 (training gate)
+  const trainingRecorder = options.trainingRecorder ?? createNoopTrainingRecorder(); // Phase 14 (training)
   // Phase 12 (E2E-Agent 2, Retention Order §25): manueller Transfer schließt den Vorgang ab ⇒
   // Foto-Retention-Job sofort einreihen (wie CRM-Abschluss; Backstop bleibt).
   const processService = new ProcessService(db, [
@@ -186,6 +197,33 @@ export function registerSettlementRoutes(
   const viewFor = async (context: AuthenticatedContext, settlementId: string) =>
     service.view(settlementId, await effectiveFor(context));
 
+  /**
+   * Phase 14 (training, Order §79): die Übung „Abrechnung prüfen“ endet VOR der
+   * externen Übertragung – das Ereignis ist der ÜBERGANG nach `ready_for_accounting`
+   * durch eine erfolgreiche Prüf-/Klärungs-/Freigabeaktion: Status vor der Aktion
+   * (Zeile aus `visibleSettlement`, vor dem Fachaufruf geladen) ≠ `ready_for_accounting`
+   * und resultierende View `ready_for_accounting`. Eine beliebige Positionsänderung
+   * auf einer bereits bereiten Abrechnung ist keine Prüfung (Review-Fix F4).
+   */
+  const reviewedViewFor = async (
+    context: AuthenticatedContext,
+    settlementId: string,
+    statusBefore: SettlementRow['status'],
+  ) => {
+    const view = await viewFor(context, settlementId);
+    if (
+      view.settlement.status === 'ready_for_accounting' &&
+      statusBefore !== 'ready_for_accounting'
+    ) {
+      await trainingRecorder.record({
+        actorUserId: context.user.id,
+        eventKey: 'settlement.reviewed',
+        subjectRef: settlementId,
+      });
+    }
+    return view;
+  };
+
   // ── Ansicht / Ensure ─────────────────────────────────────────────────────
 
   app.get('/staff/processes/:processId/settlement', async (request, reply) => {
@@ -256,7 +294,8 @@ export function registerSettlementRoutes(
     if (settlement === null) return;
     try {
       await service.addManualLine(context.user.id, settlement.id, body);
-      return await viewFor(context, settlement.id);
+      // Phase 14 (training): Ereignis nur beim Übergang nach ready_for_accounting (Review-Fix F4).
+      return await reviewedViewFor(context, settlement.id, settlement.status);
     } catch (error) {
       if (sendSettlementError(request, reply, error)) return;
       throw error;
@@ -282,7 +321,8 @@ export function registerSettlementRoutes(
       if (!(await requirePermission(request, reply, auth, context, linePermission(line.type))))
         return;
       await service.updateLine(context.user.id, settlement.id, line.id, body);
-      return await viewFor(context, settlement.id);
+      // Phase 14 (training): Ereignis nur beim Übergang nach ready_for_accounting (Review-Fix F4).
+      return await reviewedViewFor(context, settlement.id, settlement.status);
     } catch (error) {
       if (sendSettlementError(request, reply, error)) return;
       throw error;
@@ -302,7 +342,8 @@ export function registerSettlementRoutes(
       if (!(await requirePermission(request, reply, auth, context, linePermission(line.type))))
         return;
       await service.removeLine(context.user.id, settlement.id, line.id, body.version);
-      return await viewFor(context, settlement.id);
+      // Phase 14 (training): Ereignis nur beim Übergang nach ready_for_accounting (Review-Fix F4).
+      return await reviewedViewFor(context, settlement.id, settlement.status);
     } catch (error) {
       if (sendSettlementError(request, reply, error)) return;
       throw error;
@@ -340,7 +381,8 @@ export function registerSettlementRoutes(
         }
         if (!(await requirePermission(request, reply, auth, context, permission))) return;
         await service.resolveClarification(context.user.id, settlement.id, clarification.id, body);
-        return await viewFor(context, settlement.id);
+        // Phase 14 (training): Ereignis nur beim Übergang nach ready_for_accounting (Review-Fix F4).
+        return await reviewedViewFor(context, settlement.id, settlement.status);
       } catch (error) {
         if (sendSettlementError(request, reply, error)) return;
         throw error;
@@ -379,9 +421,21 @@ export function registerSettlementRoutes(
       const body = parseOrThrow(schema, request.body ?? {});
       const settlement = await visibleSettlement(request, reply, context, params.id);
       if (settlement === null) return;
+      // Phase 14 (training gate): eine Sperre `settlement.release` für alle vier Freigabe-Routen.
+      if (
+        !(await requireTrainingGate(
+          request,
+          reply,
+          trainingGate,
+          context.user.id,
+          'settlement.release',
+        ))
+      )
+        return;
       try {
         await action(context.user.id, settlement.id, body.version);
-        return await viewFor(context, settlement.id);
+        // Phase 14 (training): Ereignis nur beim Übergang nach ready_for_accounting (Review-Fix F4).
+        return await reviewedViewFor(context, settlement.id, settlement.status);
       } catch (error) {
         if (sendSettlementError(request, reply, error)) return;
         throw error;
