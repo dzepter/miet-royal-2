@@ -25,7 +25,10 @@ import {
   DEMO_CUSTOMERS,
   DEMO_MACHINE_BLOCK_REASON,
   DEMO_MACHINES,
+  DEMO_MAIL_EXERCISE_CUSTOMERS,
   DEMO_SEED_KEYS,
+  demoCustomerEmail,
+  demoWhitelistDomain,
   REQUIRED_DEMO_SEED_KEYS,
 } from '../src/demo/seed/data.ts';
 import { berlinDayShift } from '../src/demo/seed/time.ts';
@@ -35,7 +38,15 @@ import {
   resolveDemoSeedActor,
 } from '../src/demo/seed/seed-service.ts';
 import { DemoError, DEMO_MESSAGES } from '../src/demo/types.ts';
-import { destroyTestContext, truncateAuthTables, type TestContext } from './auth-helpers.ts';
+import {
+  ADMIN_EMAIL,
+  ADMIN_PASSWORD,
+  createTestContext,
+  destroyTestContext,
+  login,
+  truncateAuthTables,
+  type TestContext,
+} from './auth-helpers.ts';
 import {
   createDemoTestContext,
   demoServicesFor,
@@ -43,6 +54,7 @@ import {
   freshDemoDatabase,
   type DemoTestServices,
 } from './demo-helpers.ts';
+import { openClarifications, post, settlementViewFor } from './settlement-helpers.ts';
 
 /**
  * Phase 14 (SEED, Order §§9–14): kanonischer Demo-Datensatz über echte
@@ -84,6 +96,25 @@ async function appointmentById(id: string) {
 async function machineByCode(code: string) {
   const rows = await ctx.db.select().from(machines).where(eq(machines.machineCode, code));
   return rows[0]!;
+}
+
+/** Kunde eines Seed-Schlüssels (Registry ⇒ customers). */
+async function customerByKey(context: TestContext, services: DemoTestServices, seedKey: string) {
+  const ref = await services.registry.resolve(seedKey);
+  if (ref === null) throw new Error(`Seed-Schlüssel ${seedKey} fehlt`);
+  const rows = await context.db.select().from(customers).where(eq(customers.id, ref.entityId));
+  return rows[0]!;
+}
+
+/** Alle fälligen Jobs des Test-Runners abarbeiten (ohne Obergrenze je Aufruf). */
+async function drainJobs(context: TestContext): Promise<number> {
+  let processed = 0;
+  for (;;) {
+    const outcome = await context.jobs.runOnce();
+    if (outcome === 'idle') return processed;
+    processed += 1;
+    if (processed > 500) throw new Error('Jobs laufen nicht leer');
+  }
 }
 
 describe('Phase 14 – Demo-Seed (kanonischer Datensatz)', () => {
@@ -144,7 +175,7 @@ describe('Phase 14 – Demo-Seed (kanonischer Datensatz)', () => {
     });
   });
 
-  it('D-S4. Alle E-Mail-Adressen des Datensatzes liegen unter example.com / example.invalid', async () => {
+  it('D-S4. Ohne Whitelist-Domain liegen alle E-Mail-Adressen des Datensatzes unter example.com / example.invalid (auch die Mail-Übungskunden)', async () => {
     const customerRows = await ctx.db.select({ email: customers.email }).from(customers);
     expect(customerRows.length).toBeGreaterThan(0);
     for (const row of customerRows) {
@@ -162,6 +193,25 @@ describe('Phase 14 – Demo-Seed (kanonischer Datensatz)', () => {
     for (const row of messages) {
       const email = (row.sender as { email?: string | null } | null)?.email ?? null;
       if (email !== null) expect(email).toMatch(SYNTHETIC_MAIL);
+    }
+    // Review-Fix F8 (Order §9): der Demo-Testkontext setzt KEINE MAIL_DEMO_WHITELIST ⇒ keine
+    // Demo-Testdomain ⇒ auch die Kunden der Mail-Übungsszenarien behalten ihre Beispieldomain.
+    expect(ctx.config.mail.demoWhitelist).toEqual([]);
+    expect(demoWhitelistDomain(ctx.config)).toBeNull();
+    expect(demoCustomerEmail(ctx.config, 'einkauf', 'example.invalid')).toBe(
+      'einkauf@example.invalid',
+    );
+    expect(DEMO_MAIL_EXERCISE_CUSTOMERS.map((spec) => spec.key)).toEqual([
+      DEMO_SEED_KEYS.customerPrivateBasic,
+      DEMO_SEED_KEYS.customerOrgBasic,
+      DEMO_CUSTOMERS.returnDamage.key,
+      DEMO_CUSTOMERS.returnMissing.key,
+      DEMO_CUSTOMERS.settlementReview.key,
+    ]);
+    for (const spec of DEMO_MAIL_EXERCISE_CUSTOMERS) {
+      const customer = await customerByKey(ctx, demo, spec.key);
+      expect(customer.email, spec.key).toBe(spec.email);
+      expect(customer.email, spec.key).toMatch(SYNTHETIC_MAIL);
     }
   });
 
@@ -431,4 +481,274 @@ describe('Phase 14 – Demo-Seed (kanonischer Datensatz)', () => {
     const staff = await ctx.pool.query('SELECT count(*)::int AS n FROM staff_users');
     expect(staff.rows[0].n).toBe(0);
   });
+});
+
+/**
+ * Review-Fix F8 (Order §9 „konfigurierte Demo-Testadresse“, §25, §78, §79):
+ * Demo-Konfiguration MIT `@domain`-Eintrag in MAIL_DEMO_WHITELIST – die Kunden
+ * der Mail-Übungsszenarien erhalten Adressen unter der ersten Whitelist-Domain,
+ * alle anderen bleiben auf example.com / example.invalid. Damit ist die
+ * Abrechnungs-Übung auch MIT berechneter Belastung bis „Bereit zur Buchhaltung“
+ * durchführbar (Kundeninformation wird tatsächlich `sent`), ohne Übertragung.
+ * Eigener Testkontext (gleiche DB, frisch geleert) – läuft nach den Tests oben.
+ */
+describe('Phase 14 – Demo-Seed mit konfigurierter Demo-Testadresse (Order §9/§25)', () => {
+  const WHITELIST_DOMAIN = 'demo.test';
+  const WHITELIST_ADDRESS = `senke@${WHITELIST_DOMAIN}`;
+  const REACHABLE_MAIL = new RegExp(`@${WHITELIST_DOMAIN.replace('.', '\\.')}$`);
+  let ctxWl: TestContext;
+  let demoWl: DemoTestServices;
+  let adminWlId: string;
+  let cookieWl = '';
+
+  beforeAll(async () => {
+    // Vollmatch-Adresse zuerst (wird nie vergeben), dann zwei Domains ⇒ die ERSTE Domain gilt.
+    // MAIL_PUBLIC_WEB_BASE_URL wie im Demo-Deployment (Mails mit Links, z. B. Angebote, brauchen sie).
+    ctxWl = await createTestContext({
+      appEnv: 'demo',
+      env: {
+        MAIL_DEMO_WHITELIST: `${WHITELIST_ADDRESS}, @${WHITELIST_DOMAIN}, @zweite.test`,
+        MAIL_PUBLIC_WEB_BASE_URL: 'https://web.demo.test',
+      },
+    });
+    demoWl = demoServicesFor(ctxWl);
+    ({ adminId: adminWlId } = await freshDemoDatabase(ctxWl));
+    await demoWl.seed.seed({ actorId: adminWlId, now });
+    const session = await login(ctxWl.app, ADMIN_EMAIL, ADMIN_PASSWORD);
+    if (session.statusCode !== 200) throw new Error(`Demo-Login: ${session.statusCode}`);
+    cookieWl = session.cookie;
+  }, SEED_TIMEOUT_MS);
+
+  afterAll(async () => {
+    await destroyTestContext(ctxWl);
+  });
+
+  it('D-S4b. Mit Whitelist-Domain tragen nur die Mail-Übungskunden `<lokalteil>@<erste Domain>`; alle anderen bleiben example.*; Vollmatch-Adresse nie vergeben; Mails an sie werden tatsächlich zugestellt', async () => {
+    expect(ctxWl.config.mail.demoWhitelist).toEqual([
+      WHITELIST_ADDRESS,
+      `@${WHITELIST_DOMAIN}`,
+      '@zweite.test',
+    ]);
+    expect(demoWhitelistDomain(ctxWl.config)).toBe(WHITELIST_DOMAIN);
+    expect(demoCustomerEmail(ctxWl.config, 'einkauf', 'example.invalid')).toBe(
+      `einkauf@${WHITELIST_DOMAIN}`,
+    );
+
+    // Betroffene Kunden: Lokalteil wie bisher, Domain = erste Whitelist-Domain.
+    const exerciseIds = new Set<string>();
+    for (const spec of DEMO_MAIL_EXERCISE_CUSTOMERS) {
+      const customer = await customerByKey(ctxWl, demoWl, spec.key);
+      exerciseIds.add(customer.id);
+      const localPart = spec.email.slice(0, spec.email.indexOf('@'));
+      expect(customer.email, spec.key).toBe(`${localPart}@${WHITELIST_DOMAIN}`);
+    }
+    const beispielWerke = await customerByKey(ctxWl, demoWl, DEMO_CUSTOMERS.settlementReview.key);
+    expect(beispielWerke.email).toBe(`einkauf@${WHITELIST_DOMAIN}`);
+    expect(beispielWerke.organizationName).toBe(DEMO_CUSTOMERS.settlementReview.organizationName);
+
+    // Alle übrigen Kunden unverändert synthetisch; keine Adresse doppelt; Vollmatch nie vergeben.
+    const customerRows = await ctxWl.db
+      .select({ id: customers.id, email: customers.email })
+      .from(customers);
+    expect(customerRows.length).toBeGreaterThanOrEqual(14);
+    const emails = customerRows.map((row) => row.email);
+    expect(new Set(emails).size).toBe(emails.length);
+    expect(emails).not.toContain(WHITELIST_ADDRESS);
+    for (const row of customerRows) {
+      expect(row.email).not.toBeNull();
+      if (exerciseIds.has(row.id)) expect(row.email).toMatch(REACHABLE_MAIL);
+      else expect(row.email, row.email ?? '').toMatch(SYNTHETIC_MAIL);
+      expect(row.email).not.toMatch(/@zweite\.test$/);
+    }
+    // `process.offer.sent` bleibt bewusst blockiert (sichtbares Whitelist-Beispiel).
+    const offerSent = await customerByKey(ctxWl, demoWl, DEMO_CUSTOMERS.offerSent.key);
+    expect(offerSent.email).toBe(DEMO_CUSTOMERS.offerSent.email);
+
+    // Outbox: Mails an die Demo-Testdomain sind eingereiht (pending), alle anderen blocked.
+    const deliveries = await ctxWl.db.select().from(mailDeliveries);
+    expect(deliveries.length).toBeGreaterThan(0);
+    const pending = deliveries.filter((row) => row.status === 'pending');
+    const blocked = deliveries.filter((row) => row.status === 'blocked');
+    expect(pending.length).toBeGreaterThan(0);
+    expect(blocked.length).toBeGreaterThan(0);
+    expect(pending.length + blocked.length).toBe(deliveries.length);
+    for (const row of pending) expect(row.recipientEmail).toMatch(REACHABLE_MAIL);
+    for (const row of blocked) {
+      expect(row.recipientEmail).toMatch(SYNTHETIC_MAIL);
+      expect(row.blockedReason).toBe('DEMO_NOT_WHITELISTED');
+    }
+    for (const row of deliveries) expect(row.subject).toMatch(/^\[DEMO\]/);
+    const sentOffer = await resolveWl(DEMO_SEED_KEYS.processOfferSent);
+    expect(deliveries.find((row) => row.processId === sentOffer)?.status).toBe('blocked');
+
+    // Konversation: Absender = Kundenadresse; die Seed-Antwort ist eingereiht (queued), nicht blocked.
+    const inbound = await messageWl(DEMO_SEED_KEYS.conversationEmailInbound);
+    expect((inbound.senderSnapshot as { email?: string }).email).toBe(`verein@${WHITELIST_DOMAIN}`);
+    const unanswered = await messageWl(DEMO_SEED_KEYS.conversationEmailUnanswered);
+    expect((unanswered.senderSnapshot as { email?: string }).email).toBe(
+      `lena.beispiel@${WHITELIST_DOMAIN}`,
+    );
+    const reply = await messageWl(DEMO_SEED_KEYS.conversationEmailReply);
+    expect(reply.deliveryState).toBe('queued');
+
+    // Test-Runner (wie der Demo-Worker): alle eingereihten Mails gehen über den Fake an die Senke –
+    // ausschließlich an die Whitelist-Domain, immer mit [DEMO]-Betreff (Order §25).
+    ctxWl.mailGateway.reset();
+    expect(await drainJobs(ctxWl)).toBeGreaterThanOrEqual(pending.length);
+    const after = await ctxWl.db.select().from(mailDeliveries);
+    expect(after.filter((row) => row.status === 'sent')).toHaveLength(pending.length);
+    expect(after.filter((row) => row.status === 'blocked')).toHaveLength(blocked.length);
+    expect(ctxWl.mailGateway.sent).toHaveLength(pending.length);
+    for (const message of ctxWl.mailGateway.sent) {
+      expect(message.to.email).toMatch(REACHABLE_MAIL);
+      expect(message.subject).toMatch(/^\[DEMO\]/);
+    }
+    expect((await messageWl(DEMO_SEED_KEYS.conversationEmailReply)).deliveryState).toBe('sent');
+  });
+
+  it('D-S14. Abrechnung mit Belastung ist in der Demo bis vor die Buchhaltung durchführbar (Belastung ⇒ Kundeninformation gesendet ⇒ Wartefenster ⇒ Bereit zur Buchhaltung; keine Übertragung; Übung settlement_review bestanden)', async () => {
+    const processId = await resolveWl(DEMO_SEED_KEYS.processSettlementReview);
+    const settlementId = await resolveWl(DEMO_SEED_KEYS.settlementReview);
+    // Übung bewusst starten (Order §39) – der Fachaktor ist hier zugleich Trainee.
+    const started = await ctxWl.app.inject({
+      method: 'POST',
+      url: '/staff/training/attempts',
+      headers: { cookie: cookieWl },
+      payload: { definitionKey: 'settlement_review' },
+    });
+    expect(started.statusCode).toBe(201);
+    const attemptId = (started.json() as { attempt: { id: string } }).attempt.id;
+
+    let view = await settlementViewFor(ctxWl.app, cookieWl, processId);
+    expect(view.settlement.id).toBe(settlementId);
+    expect(view.settlement.status).toBe('clarification_required');
+
+    // Belastungen festlegen: Schaden 50,00 €, Fehlteil 15,00 € ⇒ Kundeninformation erforderlich.
+    const damage = openClarifications(view, 'damage_cost')[0]!;
+    let result = await post(
+      ctxWl.app,
+      cookieWl,
+      `/staff/settlements/${settlementId}/clarifications/${damage.id}/resolve`,
+      { decision: 'charge', amountCents: 5000, version: view.settlement.version },
+    );
+    expect(result.status, JSON.stringify(result.body)).toBe(200);
+    view = await settlementViewFor(ctxWl.app, cookieWl, processId);
+    const missing = openClarifications(view, 'missing_item_cost')[0]!;
+    result = await post(
+      ctxWl.app,
+      cookieWl,
+      `/staff/settlements/${settlementId}/clarifications/${missing.id}/resolve`,
+      { decision: 'charge', amountCents: 1500, version: view.settlement.version },
+    );
+    expect(result.status, JSON.stringify(result.body)).toBe(200);
+    view = await settlementViewFor(ctxWl.app, cookieWl, processId);
+    // Kostenentscheide erledigt; offen bleibt nur die Klärung „Kundeninformation“ (§25).
+    expect(openClarifications(view).map((c) => c.type)).toEqual(['customer_notice']);
+    expect(view.settlement.status).toBe('customer_notice_required');
+    expect(view.settlement.noticeRequired).toBe(true);
+    expect(view.notice).toMatchObject({
+      status: 'prepared',
+      recipientEmail: `einkauf@${WHITELIST_DOMAIN}`,
+      totalCents: 6500,
+    });
+
+    // Freigeben und senden ⇒ Outbox pending (Whitelist-Domain), Frist beginnt erst mit Mailerfolg.
+    ctxWl.mailGateway.reset();
+    result = await post(
+      ctxWl.app,
+      cookieWl,
+      `/staff/settlements/${settlementId}/notice/approve-and-send`,
+      { version: view.settlement.version },
+    );
+    expect(result.status, JSON.stringify(result.body)).toBe(200);
+    view = await settlementViewFor(ctxWl.app, cookieWl, processId);
+    expect(view.settlement.status).toBe('customer_notice_required');
+    expect(view.settlement.noticeSentAt).toBeNull();
+    const queued = (
+      await ctxWl.db
+        .select()
+        .from(mailDeliveries)
+        .where(eq(mailDeliveries.kind, 'settlement_damage_missing_notice'))
+    ).filter((row) => row.processId === processId);
+    expect(queued).toHaveLength(1);
+    expect(queued[0]).toMatchObject({
+      status: 'pending',
+      recipientEmail: `einkauf@${WHITELIST_DOMAIN}`,
+      blockedReason: null,
+    });
+    expect(queued[0]!.subject).toMatch(/^\[DEMO\]/);
+
+    // Mail-Job über den Test-Runner (wie der Demo-Worker) ⇒ sent ⇒ Kundenrückmeldung abwarten.
+    await drainJobs(ctxWl);
+    const noticeMail = ctxWl.mailGateway.sent.find(
+      (m) => m.to.email === `einkauf@${WHITELIST_DOMAIN}`,
+    );
+    expect(noticeMail?.subject).toMatch(/^\[DEMO\] /);
+    view = await settlementViewFor(ctxWl.app, cookieWl, processId);
+    expect(view.settlement.status).toBe('customer_waiting');
+    expect(view.settlement.noticeSentAt).not.toBeNull();
+    expect(view.settlement.waitUntil).not.toBeNull();
+    expect(openClarifications(view)).toHaveLength(0);
+    // W1/§29: in der Demo plant der Versand KEINEN Auto-Transfer.
+    expect(view.settlement.autoTransferPlannedAt).toBeNull();
+
+    // Wartefenster beenden („Jetzt freigeben“) ⇒ Bereit zur Buchhaltung – ohne Übertragung.
+    result = await post(ctxWl.app, cookieWl, `/staff/settlements/${settlementId}/end-wait`, {
+      version: view.settlement.version,
+    });
+    expect(result.status, JSON.stringify(result.body)).toBe(200);
+    view = await settlementViewFor(ctxWl.app, cookieWl, processId);
+    expect(view.settlement.status).toBe('ready_for_accounting');
+    expect(openClarifications(view)).toHaveLength(0);
+    expect(view.settlement.accountingBlocker).toBe('demo_unavailable');
+    expect(view.settlement.accountingReference).toBeNull();
+    expect(view.transfer).toBeNull();
+    const settlementRow = (
+      await ctxWl.db.select().from(settlements).where(eq(settlements.id, settlementId))
+    )[0]!;
+    expect(settlementRow.status).toBe('ready_for_accounting');
+    expect(settlementRow.accountingTransferId).toBeNull();
+    await drainJobs(ctxWl);
+    const transferJobs = await ctxWl.pool.query(
+      `SELECT count(*)::int AS n FROM integration_jobs
+       WHERE type IN ('settlement.accounting_transfer', 'cancellation.accounting_transfer', 'lexware.event.process')`,
+    );
+    expect(transferJobs.rows[0].n).toBe(0);
+    const transfers = await ctxWl.pool.query(`SELECT count(*)::int AS n FROM accounting_transfers`);
+    expect(transfers.rows[0].n).toBe(0);
+    const processRow = (
+      await ctxWl.db.select().from(processes).where(eq(processes.id, processId))
+    )[0]!;
+    expect(processRow.mainStatus).not.toBe('completed');
+
+    // Übung `settlement_review`: Übergang nach ready_for_accounting ⇒ Ereignis ⇒ bestanden (Order §79).
+    const detail = await ctxWl.app.inject({
+      method: 'GET',
+      url: `/staff/training/attempts/${attemptId}`,
+      headers: { cookie: cookieWl },
+    });
+    expect(detail.statusCode).toBe(200);
+    const attemptDetail = detail.json() as {
+      attempt: { status: string };
+      events: { eventKey: string; result: string }[];
+    };
+    expect(attemptDetail.attempt.status).toBe('passed');
+    expect(attemptDetail.events).toContainEqual(
+      expect.objectContaining({ eventKey: 'settlement.reviewed', result: 'accepted' }),
+    );
+  });
+
+  async function resolveWl(seedKey: string): Promise<string> {
+    const ref = await demoWl.registry.resolve(seedKey);
+    if (ref === null) throw new Error(`Seed-Schlüssel ${seedKey} fehlt`);
+    return ref.entityId;
+  }
+
+  async function messageWl(seedKey: string) {
+    const rows = await ctxWl.db
+      .select()
+      .from(conversationMessages)
+      .where(eq(conversationMessages.id, await resolveWl(seedKey)));
+    return rows[0]!;
+  }
 });

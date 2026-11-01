@@ -761,4 +761,40 @@ describe('Phase 14 – Demo-Reset', () => {
     },
     RESET_TIMEOUT_MS,
   );
+
+  it(
+    'RF14-1. Lauf-Lock über die gesamte Laufzeit (Review-Fix F1, Order §20): während ein Reset läuft (Schutzfenster/Seed), meldet releaseStaleReset (--force) DEMO_RESET_RUNNING und ein zweiter reset() scheitert vor Phase A (nie Phase B); nach dem Ende ist der Lock frei',
+    async () => {
+      const first = demoServicesFor(ctx, { settleDelayMs: 2500 });
+      let secondReachedPhaseB = false;
+      const second = demoServicesFor(ctx, {
+        hooks: {
+          beforeBusinessWipe: async () => {
+            secondReachedPhaseB = true;
+          },
+        },
+      });
+      const firstRun = first.reset.reset({ actorId: adminId, now });
+      await sleep(500); // Phase A des ersten Resets ist committet, das Schutzfenster läuft
+      await expect(second.reset.releaseStaleReset(now)).rejects.toMatchObject({
+        demoCode: 'DEMO_RESET_RUNNING',
+      });
+      await expect(second.reset.reset({ actorId: adminId, now })).rejects.toMatchObject({
+        demoCode: 'DEMO_RESET_RUNNING',
+      });
+      expect(secondReachedPhaseB).toBe(false);
+      // Der erste Reset läuft ungestört zu Ende (ein Lauf, Version aktuell, Flag frei).
+      expect((await firstRun).ok).toBe(true);
+      const state = await demo.dataset.state(now);
+      expect(state.resetInProgress).toBe(false);
+      expect(state.resetStale).toBe(false);
+      expect(state.datasetVersion).toBe(DEMO_DATASET_VERSION);
+      // Lock frei: --force ohne hängendes Flag wirkungslos, ein weiterer Reset läuft (Phase B erreicht).
+      expect(await second.reset.releaseStaleReset(now)).toBe(false);
+      expect((await second.reset.reset({ actorId: adminId, now })).ok).toBe(true);
+      expect(secondReachedPhaseB).toBe(true);
+      expect(await demo.dataset.resetInProgress()).toBe(false);
+    },
+    RESET_TIMEOUT_MS,
+  );
 });

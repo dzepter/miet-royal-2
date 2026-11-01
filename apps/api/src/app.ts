@@ -115,7 +115,11 @@ import { createTrainingMailSentListener } from './training/listeners.ts';
 import { DemoTrainingEventRecorder, createNoopTrainingRecorder } from './training/recorder.ts';
 import { DEMO_RESET_INTERRUPTION_CODE, TrainingService } from './training/training-service.ts';
 // Phase 14 (reset): Nachbereinigung alter Demo-Dateien (Job demo.storage_cleanup, Order §22).
-import { createDemoStorageCleanupHandler, DEMO_STORAGE_CLEANUP_JOB_TYPE } from './jobs/demo.ts';
+import {
+  createDemoStorageCleanupHandler,
+  createDemoWorkerGuard,
+  DEMO_STORAGE_CLEANUP_JOB_TYPE,
+} from './jobs/demo.ts';
 // Phase 14 (training gate): Live-Trainingssperren (Order §56–§66) – erzwungen nur in production,
 // konfigurierbar außerhalb demo; Admin-Routen in demo nicht registriert (§68).
 import { TrainingGateService } from './training/gate-service.ts';
@@ -193,6 +197,8 @@ export interface AppOptions {
   tourLiveOptions?: { state?: DelayEvaluationState; locationMinIntervalMs?: number };
   /** Phase 14 (demo): Test-Injection des Reset-Runners (Default: DemoResetService bzw. Stub, nur in demo). */
   demoReset?: DemoResetRunner;
+  /** Phase 14 (reset fix F6): Test-Injection des Katalog-Syncs (Default: TrainingCatalogService auf db). */
+  trainingCatalog?: TrainingCatalogService;
 }
 
 /**
@@ -228,6 +234,7 @@ export function buildApp({
   addressResolver,
   tourLiveOptions,
   demoReset,
+  trainingCatalog,
 }: AppOptions): FastifyInstance {
   // Phase 13 (routing): production startet nie mit Fake-/Mock-Routing (Order §5).
   if (
@@ -480,10 +487,13 @@ export function buildApp({
       registerStaffAdminRoutes(instance, { auth: authService, admin: adminService, config });
       // Phase 14 (training gate): eine Gate-Instanz für Online-Routen und Offline-Sync – prüft
       // jede Anfrage frisch gegen die Datenbank (kein Cache, kein Systemadmin-Bypass, §59/§65).
-      const trainingGate = new TrainingGateService(db, config);
+      // Phase 14 (reset fix F6): Katalog-Sync fail-soft beim Start, Lazy Retry beim ersten
+      // Trainingszugriff (Routen und Gate) – die API startet auch ohne erreichbare Datenbank.
+      const catalogSync = trainingCatalog ?? new TrainingCatalogService(db, { logger: app.log });
+      const trainingGate = new TrainingGateService(db, config, { catalog: catalogSync });
       // Phase 14 (training): Recorder nur in demo (sonst Noop, Order §43); Service und
       // Katalog-Sync in ALLEN Umgebungen (stabile Keys, §69/§70) – der Sync läuft beim Start
-      // (`onReady`); ein Fehler bricht den Start ab (Log nur Fehlerklasse).
+      // (`onReady`) fail-soft (Review-Fix F6: Log nur Fehlerklasse, Retry beim ersten Zugriff).
       const trainingRecorder =
         config.appEnv === 'demo'
           ? new DemoTrainingEventRecorder(db, { logger: app.log })
@@ -493,16 +503,15 @@ export function buildApp({
         environment: config.appEnv,
         seedEntities: demo === null ? undefined : (seedKey) => demo.registry.resolve(seedKey),
       });
-      const trainingCatalog = new TrainingCatalogService(db, { logger: app.log });
       instance.addHook('onReady', async () => {
         try {
-          await trainingCatalog.sync();
+          await catalogSync.ensureSynced();
         } catch (error) {
-          app.log.error(
+          // Review-Fix F6: kein Startabbruch – /ready meldet die Datenbank wie bisher als 503.
+          app.log.warn(
             { errorName: error instanceof Error ? error.name : 'Error' },
-            'Trainingskatalog konnte nicht synchronisiert werden',
+            'Trainingskatalog beim Start nicht synchronisiert – erneuter Versuch beim ersten Zugriff',
           );
-          throw error;
         }
       });
       registerTrainingRoutes(instance, {
@@ -510,6 +519,7 @@ export function buildApp({
         auth: authService,
         config,
         training: trainingService,
+        catalog: catalogSync, // Phase 14 (reset fix F6)
         gateStatus: (userId) => trainingGate.statusForUser(userId),
       });
       const storageProvider = storage ?? createStorageProvider(config.storage);
@@ -701,6 +711,12 @@ export function buildApp({
       // der Mock-Steuerung (nicht in production); den Dauerbetrieb übernimmt
       // apps/worker mit denselben Handlern.
       const financeRunner = new JobRunner(queue, `api:${process.pid}`, app.log);
+      // Phase 14 (reset fix F2): derselbe Demo-Guard wie im Worker (Order §21) – während eines
+      // Resets werden Jobs zurückgelegt, Jobs des alten Datensatzes ohne Ausführung als
+      // dead/DEMO_DATASET_CHANGED beendet; nur in demo (run-due-jobs ist dort erreichbar).
+      if (config.appEnv === 'demo') {
+        financeRunner.setBeforeRun(createDemoWorkerGuard({ db, logger: app.log }));
+      }
       registerFinanceJobHandlers(financeRunner, {
         db,
         config,
@@ -902,6 +918,7 @@ export function buildApp({
         if (demoReset === undefined) {
           demo.reset = new DemoResetService({
             db,
+            pool, // Phase 14 (reset fix F1): dedizierte Verbindung für den Lauf-Lock
             config,
             storage: storageProvider,
             queue,
@@ -929,7 +946,13 @@ export function buildApp({
       // Phase 14 (training gate): Verwaltung der Live-Sperren/Freigaben (training.manage) –
       // nur außerhalb demo (§67/§68); diese Routen werden nie gegated (§98).
       if (config.appEnv !== 'demo') {
-        registerTrainingGateRoutes(instance, { db, auth: authService, config });
+        // Phase 14 (reset fix F6): Katalog vor den Gate-Verwaltungsrouten sicherstellen.
+        registerTrainingGateRoutes(instance, {
+          db,
+          auth: authService,
+          config,
+          catalog: catalogSync,
+        });
       }
     });
   }

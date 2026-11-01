@@ -1,5 +1,6 @@
 import {
   trainingDefinitions,
+  trainingFeatureRequirements,
   trainingPathItems,
   trainingPaths,
   type Database,
@@ -36,6 +37,13 @@ export interface TrainingCatalogSyncResult {
 
 export interface TrainingCatalogSyncLogger {
   info(context: Record<string, unknown>, message: string): void;
+  /** Review 14b (Härtung): Warnung je aktivierter Sperre auf eine inaktive/fehlende Übung. */
+  warn?(context: Record<string, unknown>, message: string): void;
+}
+
+/** Review-Fix F6: Katalogquelle für Routen und Gate – „liegt vor oder scheitert“, memoisiert. */
+export interface TrainingCatalogSource {
+  ensureSynced(): Promise<TrainingCatalogSyncResult>;
 }
 
 const KEY_PATTERN = /^[a-z][a-z0-9_]*$/;
@@ -91,11 +99,32 @@ export function validateTrainingCatalog(catalog: TrainingCatalog): void {
   }
 }
 
-export class TrainingCatalogService {
+export class TrainingCatalogService implements TrainingCatalogSource {
+  private synced: Promise<TrainingCatalogSyncResult> | null = null;
+
   constructor(
     private readonly db: Database,
     private readonly options: { logger?: TrainingCatalogSyncLogger | undefined } = {},
   ) {}
+
+  /**
+   * Review-Fix F6: genau ein erfolgreicher Sync je Instanz (memoisiertes
+   * Promise; parallele Aufrufer teilen den laufenden Lauf). Scheitert ein Lauf
+   * (z. B. Datenbank beim Start nicht erreichbar), wird der Merker verworfen –
+   * der nächste Aufruf synchronisiert erneut (Lazy Retry beim ersten Zugriff).
+   */
+  ensureSynced(catalog: TrainingCatalog = TRAINING_CATALOG): Promise<TrainingCatalogSyncResult> {
+    if (this.synced === null) {
+      const attempt: Promise<TrainingCatalogSyncResult> = this.sync(catalog).catch(
+        (error: unknown) => {
+          if (this.synced === attempt) this.synced = null;
+          throw error;
+        },
+      );
+      this.synced = attempt;
+    }
+    return this.synced;
+  }
 
   async sync(
     catalog: TrainingCatalog = TRAINING_CATALOG,
@@ -154,13 +183,38 @@ export class TrainingCatalogService {
       for (const path of catalog.paths) {
         items += await this.syncPath(tx, path, definitionIds, now);
       }
-      return { definitions: catalog.definitions.length, paths: catalog.paths.length, items };
+      // Review 14b (Härtung, nur Log): aktivierte Live-Sperren, deren Übung jetzt inaktiv
+      // oder unbekannt ist – das Gate blockiert dann fail-closed (§97,
+      // TRAINING_CONFIGURATION_INVALID). Der Sync deaktiviert nichts und bricht nicht ab
+      // (Admin-Entscheidung, §98); er macht den Zustand nur beim Start sichtbar.
+      const requirements = await tx
+        .select({
+          featureKey: trainingFeatureRequirements.featureKey,
+          definitionKey: trainingFeatureRequirements.definitionKey,
+          active: trainingDefinitions.active,
+        })
+        .from(trainingFeatureRequirements)
+        .leftJoin(
+          trainingDefinitions,
+          eq(trainingDefinitions.key, trainingFeatureRequirements.definitionKey),
+        )
+        .where(eq(trainingFeatureRequirements.enabled, true));
+      return {
+        definitions: catalog.definitions.length,
+        paths: catalog.paths.length,
+        items,
+        invalidRequirements: requirements.filter((row) => row.active !== true),
+      };
     });
-    this.options.logger?.info(
-      { definitions: result.definitions, paths: result.paths, items: result.items },
-      'Trainingskatalog synchronisiert',
-    );
-    return result;
+    for (const requirement of result.invalidRequirements) {
+      this.options.logger?.warn?.(
+        { featureKey: requirement.featureKey, definitionKey: requirement.definitionKey },
+        'Trainingskatalog: aktivierte Live-Sperre verweist auf eine inaktive oder fehlende Übung – die Funktion bleibt fail-closed gesperrt (TRAINING_CONFIGURATION_INVALID); Sperre prüfen oder deaktivieren',
+      );
+    }
+    const { definitions, paths, items } = result;
+    this.options.logger?.info({ definitions, paths, items }, 'Trainingskatalog synchronisiert');
+    return { definitions, paths, items };
   }
 
   private async syncPath(

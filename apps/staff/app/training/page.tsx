@@ -31,7 +31,9 @@ import {
  * Demo: zugewiesene Pfade mit Pflichtübungen, Zustand erledigt/offen/läuft,
  * laufender Versuch mit Schrittliste, „Übung starten“ / „Übung prüfen“ und
  * Link in den passenden Demo-Bereich; zusätzlich alle Katalog-Übungen ohne
- * Zuweisung („Weitere Übungen“). Außerhalb der Demo nur der Hinweis, dass
+ * Zuweisung („Weitere Übungen“ – Zustand aus `definitions[].state/passedAt/
+ * attempt` von `/staff/training/me`, Review-Fix F7: eine bestandene freie
+ * Übung bleibt nach Reload „erledigt“ ohne „Übung starten“). Außerhalb der Demo nur der Hinweis, dass
  * Übungen in der Demo absolviert werden, plus die eigenen Live-Sperren.
  * Offline nicht verfügbar (nur Hinweis). Keine rohen Codes, eine Hauptaktion
  * je Übung, Status immer als Text.
@@ -474,13 +476,15 @@ function TrainingView() {
             Diese Übungen sind dir nicht zugewiesen – du kannst sie trotzdem jederzeit üben.
           </p>
           {freeDefinitions.map((definition) => {
-            const attempt = activeByKey.get(definition.key) ?? null;
+            // Review-Fix F7: Serverzustand der Übung (`/me.definitions[]`) ist maßgeblich – ein
+            // laufender Versuch bzw. ein lokales „bestanden“ ergänzen ihn nur.
+            const attempt = activeByKey.get(definition.key) ?? definition.attempt;
             const state: TrainingExerciseState =
-              checkResults[definition.key]?.passed === true
+              definition.state === 'passed' || checkResults[definition.key]?.passed === true
                 ? 'passed'
-                : attempt !== null
+                : attempt !== null && attempt.status === 'in_progress'
                   ? 'in_progress'
-                  : 'open';
+                  : definition.state;
             return (
               <ExerciseCard
                 key={definition.key}
@@ -489,7 +493,7 @@ function TrainingView() {
                 attempt={attempt}
                 sequence={null}
                 required
-                passedAt={null}
+                passedAt={definition.passedAt}
                 busy={busyKey === definition.key}
                 error={errors[definition.key] ?? null}
                 checkResult={checkResults[definition.key] ?? null}

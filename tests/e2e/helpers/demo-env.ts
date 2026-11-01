@@ -45,9 +45,10 @@ export const DEMO_ADMIN_PASSWORD = 'e2e-demo-admin-passwort-1';
  * Phase 14 (E2E, Szenarien D1–D7 – demo-environment.spec.ts): zusätzliche
  * Demo-Instanzen des Projekts `demo-communication`.
  *
- * - Demo-Staff-Instanz: `next dev` gegen die Demo-API (wie die Lexware-Staff-
- *   Instanz), eigenes distDir `.next/demo`, weil `next dev` sein Verzeichnis
- *   sperrt und die Lexware-Instanz bereits `.next/dev` belegt.
+ * - Demo-Staff-Instanz: seit den Trainings-Szenarien (training-demo.spec.ts,
+ *   Szenario D Offline-Epoch) ein PRODUKTIONS-Build (`next build && next
+ *   start`, eigenes distDir `.next/demo` – der Build bäckt STAFF_API_ORIGIN
+ *   ein, der Hauptbuild in `.next` bleibt unberührt).
  * - Demo-Web-Instanz: `next dev` mit WEB_APP_ENV=demo (fester Banner).
  * - STAFF_LIVE_URL der Demo-API: fester Origin unter der reservierten Domain
  *   `example.invalid` – wird nie aufgelöst; die Spec fängt das neue Fenster

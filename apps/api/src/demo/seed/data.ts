@@ -3,7 +3,9 @@
  * des kanonischen Demo-Datensatzes.
  *
  * - Namen sind erfunden (keine realen Personen), E-Mails ausschließlich unter
- *   den reservierten Beispieldomains example.com / example.invalid, Telefon
+ *   den reservierten Beispieldomains example.com / example.invalid – oder, für
+ *   die Kunden der Mail-Übungsszenarien, unter der konfigurierten Demo-
+ *   Testdomain (`MAIL_DEMO_WHITELIST`, siehe `demoCustomerEmail`); Telefon
  *   nur dort, wo ein Fachflow sie zwingend verlangt (aktuell: nirgends).
  * - Adressen sind synthetisch; PLZ/Ort im Mainzer Umfeld, damit der Routing-
  *   Mock (Phase 13) deterministische Punkte liefert: „Robert-Koch“ ⇒ Depot,
@@ -12,6 +14,8 @@
  * - Seed-Schlüssel folgen der Konvention `<bereich>.<szenario>[.<variante>]`
  *   (Design §2); Training/Admin-UI referenzieren Szenarien nur darüber.
  */
+
+import type { AppConfig } from '@mietroyal/config';
 
 /** Depot/Abholadresse (Setting `pickup_exact_address`) – klar als SYNTHETISCH markiert. */
 export const DEMO_DEPOT_ADDRESS = 'Robert-Koch-Straße 1, 55129 Mainz (SYNTHETISCH)';
@@ -47,7 +51,11 @@ export interface DemoCustomerSpec {
   orderReference?: string;
 }
 
-/** Synthetische Kunden (alle E-Mails unter example.com / example.invalid; kein Telefon). */
+/**
+ * Synthetische Kunden (alle E-Mails unter example.com / example.invalid; kein
+ * Telefon). Die Kunden der Mail-Übungsszenarien erhalten im Seed über
+ * `withDemoTestAddress` ggf. die konfigurierte Demo-Testdomain (Order §9).
+ */
 export const DEMO_CUSTOMERS = {
   privateBasic: {
     key: 'customer.private.basic',
@@ -206,6 +214,72 @@ export const DEMO_CUSTOMERS = {
     billingCity: 'Mainz',
   },
 } as const satisfies Record<string, DemoCustomerSpec>;
+
+/**
+ * Phase 14 (Order §9 „konfigurierte Demo-Testadresse“, §25/§78/§79; Review-Fix
+ * F8): Kunden der Trainingsszenarien mit Mailabläufen – Kundeninformation der
+ * Abrechnung (Belastung ⇒ Versand ⇒ Wartefenster) und Kommunikationsantworten –
+ * brauchen in der Demo eine ERREICHBARE Adresse, sonst bleibt jede Mail
+ * `blocked` (DEMO_NOT_WHITELISTED) und die Übung endet in einer Sackgasse.
+ *
+ * Regel: Enthält `MAIL_DEMO_WHITELIST` der Demo-Konfiguration mindestens einen
+ * `@domain`-Eintrag, lautet die Adresse `<lokalteil>@<erste Whitelist-Domain>`
+ * (Lokalteil wie bisher, z. B. `einkauf`); sonst bleibt die reservierte
+ * Beispieldomain (example.com / example.invalid). Vollständige Whitelist-
+ * Adressen (`tester@…`) werden NIE vergeben (sie gehören einem echten
+ * Testpostfach und dürfen nicht mehrfach an Kunden gehen); andere reale
+ * Domains nie. Außerhalb von `APP_ENV=demo` ist die Whitelist leer – der Seed
+ * läuft dort ohnehin nicht.
+ */
+export function demoWhitelistDomain(config: Pick<AppConfig, 'appEnv' | 'mail'>): string | null {
+  if (config.appEnv !== 'demo') return null;
+  for (const entry of config.mail.demoWhitelist) {
+    const normalized = entry.trim().toLowerCase();
+    if (normalized.startsWith('@') && normalized.length > 1) return normalized.slice(1);
+  }
+  return null;
+}
+
+/** `<lokalteil>@<erste Whitelist-Domain>` oder `<lokalteil>@<fallbackDomain>` (Order §9). */
+export function demoCustomerEmail(
+  config: Pick<AppConfig, 'appEnv' | 'mail'>,
+  localPart: string,
+  fallbackDomain: string,
+): string {
+  return `${localPart}@${demoWhitelistDomain(config) ?? fallbackDomain}`;
+}
+
+/**
+ * Kundenspezifikation mit Demo-Testadresse – NUR für die Mail-Übungsszenarien
+ * (`DEMO_MAIL_EXERCISE_CUSTOMERS`); alle übrigen Kunden behalten ihre
+ * Beispieldomain, damit die Demo auch blockierte Zustellungen zeigt.
+ */
+export function withDemoTestAddress(
+  config: Pick<AppConfig, 'appEnv' | 'mail'>,
+  spec: DemoCustomerSpec,
+): DemoCustomerSpec {
+  const at = spec.email.lastIndexOf('@');
+  return {
+    ...spec,
+    email: demoCustomerEmail(config, spec.email.slice(0, at), spec.email.slice(at + 1)),
+  };
+}
+
+/**
+ * Kunden, deren Szenarien Mailabläufe üben (Order §78/§79): Lena Beispiel
+ * (`conversation.email.unanswered` zu `process.inquiry.new`), Musterverein
+ * (`conversation.email.inbound`/`.reply` zu `process.offer.draft`), Rückgabe mit
+ * Schaden / Fehlteil (Kundeninformation bei Belastung) und Beispiel-Werke GmbH
+ * (`process.settlement.review`). `process.offer.sent` bleibt bewusst auf der
+ * Beispieldomain (eine sichtbar blockierte Angebotsmail je Seed).
+ */
+export const DEMO_MAIL_EXERCISE_CUSTOMERS: readonly DemoCustomerSpec[] = [
+  DEMO_CUSTOMERS.privateBasic,
+  DEMO_CUSTOMERS.orgBasic,
+  DEMO_CUSTOMERS.returnDamage,
+  DEMO_CUSTOMERS.returnMissing,
+  DEMO_CUSTOMERS.settlementReview,
+];
 
 /** Stabile Seed-Schlüssel (Design §2) – Training/Admin-UI referenzieren nur diese. */
 export const DEMO_SEED_KEYS = {

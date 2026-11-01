@@ -199,12 +199,22 @@ export function registerSettlementRoutes(
 
   /**
    * Phase 14 (training, Order §79): die Übung „Abrechnung prüfen“ endet VOR der
-   * externen Übertragung – die resultierende View `ready_for_accounting` nach
-   * einer erfolgreichen Prüf-/Klärungs-/Freigabeaktion ist das Ereignis.
+   * externen Übertragung – das Ereignis ist der ÜBERGANG nach `ready_for_accounting`
+   * durch eine erfolgreiche Prüf-/Klärungs-/Freigabeaktion: Status vor der Aktion
+   * (Zeile aus `visibleSettlement`, vor dem Fachaufruf geladen) ≠ `ready_for_accounting`
+   * und resultierende View `ready_for_accounting`. Eine beliebige Positionsänderung
+   * auf einer bereits bereiten Abrechnung ist keine Prüfung (Review-Fix F4).
    */
-  const reviewedViewFor = async (context: AuthenticatedContext, settlementId: string) => {
+  const reviewedViewFor = async (
+    context: AuthenticatedContext,
+    settlementId: string,
+    statusBefore: SettlementRow['status'],
+  ) => {
     const view = await viewFor(context, settlementId);
-    if (view.settlement.status === 'ready_for_accounting') {
+    if (
+      view.settlement.status === 'ready_for_accounting' &&
+      statusBefore !== 'ready_for_accounting'
+    ) {
       await trainingRecorder.record({
         actorUserId: context.user.id,
         eventKey: 'settlement.reviewed',
@@ -284,7 +294,8 @@ export function registerSettlementRoutes(
     if (settlement === null) return;
     try {
       await service.addManualLine(context.user.id, settlement.id, body);
-      return await reviewedViewFor(context, settlement.id); // Phase 14 (training)
+      // Phase 14 (training): Ereignis nur beim Übergang nach ready_for_accounting (Review-Fix F4).
+      return await reviewedViewFor(context, settlement.id, settlement.status);
     } catch (error) {
       if (sendSettlementError(request, reply, error)) return;
       throw error;
@@ -310,7 +321,8 @@ export function registerSettlementRoutes(
       if (!(await requirePermission(request, reply, auth, context, linePermission(line.type))))
         return;
       await service.updateLine(context.user.id, settlement.id, line.id, body);
-      return await reviewedViewFor(context, settlement.id); // Phase 14 (training)
+      // Phase 14 (training): Ereignis nur beim Übergang nach ready_for_accounting (Review-Fix F4).
+      return await reviewedViewFor(context, settlement.id, settlement.status);
     } catch (error) {
       if (sendSettlementError(request, reply, error)) return;
       throw error;
@@ -330,7 +342,8 @@ export function registerSettlementRoutes(
       if (!(await requirePermission(request, reply, auth, context, linePermission(line.type))))
         return;
       await service.removeLine(context.user.id, settlement.id, line.id, body.version);
-      return await reviewedViewFor(context, settlement.id); // Phase 14 (training)
+      // Phase 14 (training): Ereignis nur beim Übergang nach ready_for_accounting (Review-Fix F4).
+      return await reviewedViewFor(context, settlement.id, settlement.status);
     } catch (error) {
       if (sendSettlementError(request, reply, error)) return;
       throw error;
@@ -368,7 +381,8 @@ export function registerSettlementRoutes(
         }
         if (!(await requirePermission(request, reply, auth, context, permission))) return;
         await service.resolveClarification(context.user.id, settlement.id, clarification.id, body);
-        return await reviewedViewFor(context, settlement.id); // Phase 14 (training)
+        // Phase 14 (training): Ereignis nur beim Übergang nach ready_for_accounting (Review-Fix F4).
+        return await reviewedViewFor(context, settlement.id, settlement.status);
       } catch (error) {
         if (sendSettlementError(request, reply, error)) return;
         throw error;
@@ -420,7 +434,8 @@ export function registerSettlementRoutes(
         return;
       try {
         await action(context.user.id, settlement.id, body.version);
-        return await reviewedViewFor(context, settlement.id); // Phase 14 (training)
+        // Phase 14 (training): Ereignis nur beim Übergang nach ready_for_accounting (Review-Fix F4).
+        return await reviewedViewFor(context, settlement.id, settlement.status);
       } catch (error) {
         if (sendSettlementError(request, reply, error)) return;
         throw error;

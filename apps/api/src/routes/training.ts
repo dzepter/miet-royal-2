@@ -4,6 +4,7 @@ import { parseOrThrow, z } from '@mietroyal/validation';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { authErrorStatus, requireAuth, requirePermission, sendAuthError } from '../auth/http.ts';
 import type { AuthenticatedContext, StaffAuthService } from '../auth/service.ts';
+import type { TrainingCatalogSource } from '../training/catalog-sync.ts';
 import { TrainingError } from '../training/errors.ts';
 import type { TrainingService } from '../training/training-service.ts';
 import { UUID_PATTERN } from './auth.ts';
@@ -53,6 +54,8 @@ export interface TrainingRouteDeps {
   config: AppConfig;
   training: TrainingService;
   gateStatus?: TrainingGateStatusProvider | undefined;
+  /** Review-Fix F6: Katalog-Sync (fail-soft beim Start) – wird vor jeder Route sichergestellt. */
+  catalog?: TrainingCatalogSource | undefined;
 }
 
 /** TrainingError ⇒ Status des AuthError-Codes + stabiler Trainings-Code (Muster `sendTourError`). */
@@ -75,9 +78,44 @@ export function sendTrainingError(
   return sendAuthError(request, reply, error);
 }
 
+export const TRAINING_CATALOG_UNAVAILABLE = {
+  code: 'TRAINING_CATALOG_UNAVAILABLE',
+  message: 'Der Trainingskatalog ist vorübergehend nicht verfügbar.',
+} as const;
+
+/**
+ * Review-Fix F6: der Katalog-Sync beim Start ist fail-soft (die API startet auch
+ * ohne erreichbare Datenbank); vor jeder Trainingsroute wird er bei Bedarf
+ * nachgeholt (`ensureSynced`, memoisiert – nach Erfolg kostenlos). Schlägt er
+ * erneut fehl ⇒ 503 ohne Interna (Log nur errorName). Ohne Quelle no-op.
+ */
+export async function requireTrainingCatalog(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  catalog: TrainingCatalogSource | undefined,
+): Promise<boolean> {
+  if (catalog === undefined) return true;
+  try {
+    await catalog.ensureSynced();
+    return true;
+  } catch (error) {
+    request.log.warn(
+      { errorName: error instanceof Error ? error.name : 'Error' },
+      'Trainingskatalog nicht verfügbar – Trainingsroute antwortet 503',
+    );
+    void reply
+      .status(503)
+      .send({ error: { ...TRAINING_CATALOG_UNAVAILABLE, correlationId: request.id } });
+    return false;
+  }
+}
+
 export function registerTrainingRoutes(app: FastifyInstance, deps: TrainingRouteDeps): void {
   const { auth, config, training } = deps;
   const demo = config.appEnv === 'demo';
+  // Review-Fix F6: Katalog muss vorliegen (Lazy Retry nach fehlgeschlagenem Start-Sync).
+  const catalogReady = (request: FastifyRequest, reply: FastifyReply) =>
+    requireTrainingCatalog(request, reply, deps.catalog);
 
   const effectiveFor = (context: AuthenticatedContext) =>
     auth.effectivePermissions(context.user.id);
@@ -87,6 +125,7 @@ export function registerTrainingRoutes(app: FastifyInstance, deps: TrainingRoute
   app.get('/staff/training/me', async (request, reply) => {
     const context = await requireAuth(request, reply, auth, config);
     if (context === null) return;
+    if (!(await catalogReady(request, reply))) return;
     const effective = await effectiveFor(context);
     const overview = await training.overviewForUser(context.user.id, effective);
     const gates =
@@ -97,6 +136,7 @@ export function registerTrainingRoutes(app: FastifyInstance, deps: TrainingRoute
   app.get('/staff/training/definitions', async (request, reply) => {
     const context = await requireAuth(request, reply, auth, config);
     if (context === null) return;
+    if (!(await catalogReady(request, reply))) return;
     const effective = await effectiveFor(context);
     return { definitions: await training.definitionsView(context.user.id, effective) };
   });
@@ -108,6 +148,7 @@ export function registerTrainingRoutes(app: FastifyInstance, deps: TrainingRoute
   app.post('/staff/training/attempts', async (request, reply) => {
     const context = await requireAuth(request, reply, auth, config);
     if (context === null) return;
+    if (!(await catalogReady(request, reply))) return;
     const body = parseOrThrow(startBody, request.body);
     try {
       const effective = await effectiveFor(context);
@@ -122,6 +163,7 @@ export function registerTrainingRoutes(app: FastifyInstance, deps: TrainingRoute
   app.get('/staff/training/attempts/:id', async (request, reply) => {
     const context = await requireAuth(request, reply, auth, config);
     if (context === null) return;
+    if (!(await catalogReady(request, reply))) return;
     const params = parseOrThrow(idParams, request.params, 'params');
     try {
       const effective = await effectiveFor(context);
@@ -138,6 +180,7 @@ export function registerTrainingRoutes(app: FastifyInstance, deps: TrainingRoute
   app.post('/staff/training/attempts/:id/check', async (request, reply) => {
     const context = await requireAuth(request, reply, auth, config);
     if (context === null) return;
+    if (!(await catalogReady(request, reply))) return;
     const params = parseOrThrow(idParams, request.params, 'params');
     try {
       return await training.checkAttempt(context.user.id, params.id);
@@ -156,6 +199,7 @@ export function registerTrainingRoutes(app: FastifyInstance, deps: TrainingRoute
     const context = await requireAuth(request, reply, auth, config);
     if (context === null) return null;
     if (!(await requirePermission(request, reply, auth, context, 'training.manage'))) return null;
+    if (!(await catalogReady(request, reply))) return null;
     return context;
   };
 

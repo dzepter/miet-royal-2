@@ -64,6 +64,18 @@ export interface AttemptView {
   assignmentId: string | null;
 }
 
+/**
+ * Katalog-Übung mit Fortschritt des angemeldeten Mitarbeiters (Server
+ * `definitionsView`, Review-Fix F7): Zustand/Bestehen auch für Übungen ohne
+ * Zuweisung – bestanden bleibt nach Reload bestanden.
+ */
+export interface DefinitionProgressView extends DefinitionView {
+  state: TrainingExerciseState;
+  passedAt: string | null;
+  /** Laufender Versuch, sonst der jüngste nicht supersedierte Versuch (auch unterbrochen). */
+  attempt: AttemptView | null;
+}
+
 export interface AttemptEventView {
   eventKey: string;
   stepKey: string | null;
@@ -117,8 +129,8 @@ export interface TrainingMe {
   /** true nur in der Demo – dort laufen Übungen. */
   exercisesAvailable: boolean;
   assignments: AssignmentView[];
-  /** Aktiver Katalog (freies Starten ohne Zuweisung). */
-  definitions: DefinitionView[];
+  /** Aktiver Katalog (freies Starten ohne Zuweisung) mit eigenem Zustand je Übung. */
+  definitions: DefinitionProgressView[];
   activeAttempts: AttemptView[];
   gates: GateStatusView[];
 }
@@ -251,7 +263,9 @@ export function fetchTrainingMe(): Promise<ApiResult<TrainingMe>> {
   return apiFetch<TrainingMe>('/staff/training/me');
 }
 
-export function fetchTrainingDefinitions(): Promise<ApiResult<{ definitions: DefinitionView[] }>> {
+export function fetchTrainingDefinitions(): Promise<
+  ApiResult<{ definitions: DefinitionProgressView[] }>
+> {
   return apiFetch('/staff/training/definitions');
 }
 

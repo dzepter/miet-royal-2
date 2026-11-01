@@ -42,6 +42,20 @@ import {
   DEMO_WEB_DIST_DIR,
   DEMO_WEB_PORT,
 } from './helpers/demo-env.ts';
+// Phase 14 (E2E, Training): Production-API/-Staff für die Live-Trainingssperren (Projekt `production-gates`).
+import {
+  PROD_ADMIN_EMAIL,
+  PROD_ADMIN_PASSWORD,
+  PROD_API_PORT,
+  PROD_DATABASE_URL,
+  PROD_MAIL_ENV,
+  PROD_STAFF_DIST_DIR,
+  PROD_STAFF_EMAIL,
+  PROD_STAFF_PASSWORD,
+  PROD_STAFF_PORT,
+  PROD_STORAGE_ROOT,
+  randomHexKey,
+} from './helpers/prod-env.ts';
 
 /**
  * E2E-Smokes und Fachszenarien: Web-Shell, API und Staff-App (Login →
@@ -124,6 +138,25 @@ import {
  *   gegen die Demo-API und eine Demo-WEB-Instanz (Port 3108, `WEB_APP_ENV=demo`,
  *   distDir `.next/demo`) für den festen Demo-Banner. Beide nur für das Projekt
  *   `demo-communication` (baseURL ⇒ Demo-Staff).
+ *
+ * Phase 14 (Training, Szenarien B/D–K/O/P in training-demo.spec.ts, L–N in
+ * training-gates.spec.ts):
+ * - Die Demo-STAFF-Instanz läuft jetzt als PRODUKTIONS-Build (`next build &&
+ *   next start`, eigenes distDir `.next/demo`, STAFF_API_ORIGIN zur Build-Zeit
+ *   eingebacken): Szenario D (Reset + Offline-Epoch) braucht die Offline-App-
+ *   Shell mit Service Worker, die ein Dev-Server nicht abbilden kann (s. o.).
+ * - NEU Projekt `production-gates`: eine VIERTE API-Instanz mit APP_ENV=
+ *   production (Port 3110, eigene Datenbank `mietroyal_test_prod`, frisch je
+ *   Lauf über scripts/e2e-prod-setup.ts inkl. Live-Admin + Mitarbeiterin,
+ *   fs-Storage im Temp-Verzeichnis, je Lauf zufällige 64-Hex-Schlüssel, KEIN
+ *   Lexware/WhatsApp/Routing – diese Gateways `disabled`; Mail nur als nie
+ *   angesprochener SMTP-Platzhalter `smtp.e2e.invalid`, weil production den
+ *   Angebotsversand ohne SMTP-Weg hart blockiert – der Versandjob läuft in
+ *   diesem Projekt nie, Outbox-Zeilen bleiben `pending`) und eine
+ *   Production-Staff-Instanz (Port 3111, Produktions-Build wie die Demo-Staff-
+ *   Instanz, distDir `.next/prod`). Nur dort werden die Live-Trainingssperren
+ *   erzwungen (Order §63). Secure-/`__Host-`-Cookies funktionieren im
+ *   Chromium auf http://127.0.0.1 (vertrauenswürdiger Loopback).
  *
  * In Umgebungen mit vorinstalliertem Chromium kann CHROMIUM_PATH auf die
  * Browser-Binärdatei zeigen; sonst nutzt Playwright seine eigene Installation
@@ -250,6 +283,10 @@ export default defineConfig({
         /communication-demo\.spec\.ts$/,
         // Phase 13 (E2E): Szenario O (Demo-Routing nur Mock) läuft nur gegen die Demo-API.
         /tours-demo\.spec\.ts$/,
+        // Phase 14 (E2E, Training): Demo-Übungen nur gegen die Demo-API, Live-Sperren nur
+        // gegen die Production-API (Projekt `production-gates`).
+        /training-demo\.spec\.ts$/,
+        /training-gates\.spec\.ts$/,
       ],
     },
     ...(WEBKIT_ENABLED
@@ -280,8 +317,20 @@ export default defineConfig({
         baseURL: `http://127.0.0.1:${DEMO_STAFF_PORT}`,
       },
       // Phase 13 (E2E): tours-demo.spec.ts (Szenario O) ebenfalls gegen die Demo-API.
-      // Phase 14 (E2E): demo-environment.spec.ts (D1–D7; der Live-Gegentest darin läuft in `chromium`).
-      testMatch: /(communication-demo|tours-demo|demo-environment)\.spec\.ts$/,
+      // Phase 14 (E2E): demo-environment.spec.ts (A/C/Q, D1–D7; der Live-Gegentest darin läuft in
+      // `chromium`) und training-demo.spec.ts (B, D–K, O, P).
+      testMatch: /(communication-demo|tours-demo|demo-environment|training-demo)\.spec\.ts$/,
+    },
+    {
+      // Phase 14 (E2E, Training): Szenarien L–N (Live-Trainingssperren) gegen die Production-
+      // API (APP_ENV=production, Port 3110) und die Production-Staff-Instanz (Port 3111).
+      name: 'production-gates',
+      use: {
+        ...devices['Desktop Chrome'],
+        ...chromiumLaunch,
+        baseURL: `http://127.0.0.1:${PROD_STAFF_PORT}`,
+      },
+      testMatch: /training-gates\.spec\.ts$/,
     },
   ],
   webServer: [
@@ -420,13 +469,15 @@ export default defineConfig({
       },
     },
     {
-      // Phase 14 (E2E): Demo-STAFF-Instanz gegen die Demo-API – Dev-Server wie die Lexware-
-      // Instanz (Build bäckt STAFF_API_ORIGIN ein), eigenes distDir, weil `next dev` sein
-      // Verzeichnis sperrt und `.next/dev` bereits der Lexware-Instanz gehört.
-      command: `pnpm --filter @mietroyal/staff exec next dev --port ${DEMO_STAFF_PORT}`,
+      // Phase 14 (E2E): Demo-STAFF-Instanz gegen die Demo-API – seit den Trainings-Szenarien
+      // als PRODUKTIONS-Build (Szenario D braucht die Offline-App-Shell mit Service Worker,
+      // s. Kopfkommentar Phase 8), eigenes distDir `.next/demo` (der Build bäckt
+      // STAFF_API_ORIGIN ein; der Hauptbuild in `.next` bleibt unberührt). Keep-Alive wie
+      // die Haupt-Instanz.
+      command: `pnpm --filter @mietroyal/staff exec sh -c "next build && next start --port ${DEMO_STAFF_PORT} --keepAliveTimeout 70000"`,
       url: `http://127.0.0.1:${DEMO_STAFF_PORT}/login`,
       reuseExistingServer: false,
-      timeout: 180_000,
+      timeout: 360_000,
       cwd: '../..',
       env: {
         STAFF_API_ORIGIN: `http://127.0.0.1:${DEMO_API_PORT}`,
@@ -445,6 +496,52 @@ export default defineConfig({
         WEB_API_ORIGIN: `http://127.0.0.1:${DEMO_API_PORT}`,
         WEB_APP_ENV: 'demo',
         WEB_DIST_DIR: DEMO_WEB_DIST_DIR,
+      },
+    },
+    {
+      // Phase 14 (E2E, Training): PRODUCTION-API (Szenarien L–N, Order §63) – APP_ENV=production,
+      // EIGENE Datenbank (frisch je Lauf: scripts/e2e-prod-setup.ts inkl. Live-Admin und
+      // Mitarbeiterin „E2E-Live“), fs-Storage im Temp-Verzeichnis, je Lauf zufällige
+      // 64-Hex-Schlüssel, KEIN Lexware/WhatsApp/Routing (Gateways `disabled` – Fakes/Mocks
+      // lehnt production beim Start ab). Mail: nie angesprochener SMTP-Platzhalter
+      // (helpers/prod-env.ts PROD_MAIL_ENV) – production blockiert den Angebotsversand ohne
+      // SMTP-Weg hart; der Job `mail.send` läuft hier nie (kein Worker, keine Mock-Steuerung
+      // in production). Rate-Limits sind aktiv (Logins sparsam).
+      command:
+        'pnpm --filter @mietroyal/api exec sh -c "tsx scripts/e2e-prod-setup.ts && tsx src/server.ts"',
+      url: `http://127.0.0.1:${PROD_API_PORT}/health`,
+      reuseExistingServer: false,
+      timeout: 120_000,
+      cwd: '../..',
+      stdout: 'pipe',
+      env: {
+        ...PROD_MAIL_ENV,
+        APP_ENV: 'production',
+        DATABASE_URL: PROD_DATABASE_URL,
+        API_PORT: String(PROD_API_PORT),
+        LOG_LEVEL: 'warn',
+        STORAGE_DRIVER: 'fs',
+        STORAGE_FS_ROOT: PROD_STORAGE_ROOT,
+        AUTH_SECRET_KEY: randomHexKey(),
+        COMMUNICATION_PAYLOAD_KEY: randomHexKey(),
+        E2E_PROD_ADMIN_EMAIL: PROD_ADMIN_EMAIL,
+        E2E_PROD_ADMIN_PASSWORD: PROD_ADMIN_PASSWORD,
+        E2E_PROD_STAFF_EMAIL: PROD_STAFF_EMAIL,
+        E2E_PROD_STAFF_PASSWORD: PROD_STAFF_PASSWORD,
+      },
+    },
+    {
+      // Phase 14 (E2E, Training): Production-STAFF-Instanz gegen die Production-API –
+      // Produktions-Build wie die Demo-Staff-Instanz (STAFF_API_ORIGIN eingebacken),
+      // eigenes distDir `.next/prod`. Kein Offline-Lease-Schlüssel nötig (L–N sind online).
+      command: `pnpm --filter @mietroyal/staff exec sh -c "next build && next start --port ${PROD_STAFF_PORT} --keepAliveTimeout 70000"`,
+      url: `http://127.0.0.1:${PROD_STAFF_PORT}/login`,
+      reuseExistingServer: false,
+      timeout: 360_000,
+      cwd: '../..',
+      env: {
+        STAFF_API_ORIGIN: `http://127.0.0.1:${PROD_API_PORT}`,
+        STAFF_DIST_DIR: PROD_STAFF_DIST_DIR,
       },
     },
   ],

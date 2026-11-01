@@ -1,19 +1,21 @@
 /**
- * Phase-14-E2E-Szenarien D1–D7 (PROVISORISCHE Benennung: die offiziellen
- * Szenario-Buchstaben des Auftrags fehlen noch, der Auftragstext endet bei §20)
- * – Demo-Umgebung (Order §§5, 6, 8, 14–18, 20; Design §§3–7):
+ * Phase-14-E2E-Szenarien der Demo-Umgebung (Order §109: A Demo Banner,
+ * C Demo Reset, Q Live↔Demo-Wechsel; Order §§5, 6, 8, 14–18, 20, §31;
+ * Design §§3–7). Die Teilszenarien D1–D7 stammen aus Phase-14-Teil 1 und
+ * bleiben als Feinbezeichnung erhalten; B/D–P liegen in training-demo.spec.ts:
  *
- * - D1 Demo-Kennzeichnung (Badge auf Login + in jedem Header genau einmal,
+ * - A/D1 Demo-Kennzeichnung (Badge auf Login + in jedem Header genau einmal,
  *   Dokumenttitel „DEMO · “, fester Banner der Demo-Web-Instanz)
- * - D2 Live↔Demo-Wechsel („Live öffnen“ nur mit STAFF_LIVE_URL, Dialog, neues
+ * - Q/D2 Live↔Demo-Wechsel („Live öffnen“ nur mit STAFF_LIVE_URL, Dialog, neues
  *   Fenster exakt `<origin>/login` ohne Session/IDs/Query, Abbrechen ⇒ nichts)
- * - D3 Einstellungen → Demo nur mit demo.manage; Status; „veraltet“-Hinweis
- * - D4 Reset-Dialog mit Pflichteingabe „DEMO ZURÜCKSETZEN“, Reset, Status,
- *   kanonischer Datensatz in der DB, Security-Events, Admin bleibt angemeldet
- * - D5 503-Gate während `reset_in_progress` (Mutation 503 DEMO_RESET, GET/auth ok)
- * - D6 Seed-Nützlichkeit (Registry, Heute/Touren/Kalender, nur Beispieldomains,
- *   keine Mail verlässt die Whitelist)
- * - D7 Reset löscht keine Staff-/Trainingsdaten (zweiter Mitarbeiter mit
+ * - C/D3 Einstellungen → Demo nur mit demo.manage; Status; „veraltet“-Hinweis
+ * - C/D4 Reset-Dialog mit Pflichteingabe „DEMO ZURÜCKSETZEN“, Reset, Status,
+ *   kanonischer Datensatz in der DB, Security-Events `demo.reset_started` +
+ *   `demo.reset_completed` (nur Meta-Details), Admin bleibt angemeldet
+ * - C/D5 503-Gate während `reset_in_progress` (Mutation 503 DEMO_RESET, GET/auth ok)
+ * - C/D6 Seed-Nützlichkeit (Registry inkl. `voucher.situation`, Heute/Touren/
+ *   Kalender, nur Beispieldomains, keine Mail verlässt die Whitelist)
+ * - C/D7 Reset löscht keine Staff-/Trainingsdaten (zweiter Mitarbeiter mit
  *   Rolle, Sessions, bekannte Geräte bleiben)
  *
  * Projekt `demo-communication` (playwright.config.ts): Demo-API (APP_ENV=demo,
@@ -64,8 +66,8 @@ const EXPECTED_DATASET_VERSION = 1;
 
 /**
  * Pflicht-Szenarien (Order §10) – Kopie von REQUIRED_DEMO_SEED_KEYS
- * (apps/api/src/demo/seed/data.ts). `voucher.situation` WARTET auf W1 und ist
- * bewusst nicht enthalten.
+ * (apps/api/src/demo/seed/data.ts) inkl. `voucher.situation` (seit W1.1 ein
+ * synthetischer Fixture-Gutschein des Wiedermieters ohne Buchhaltungstransfer).
  */
 const REQUIRED_SEED_KEYS = [
   'customer.private.basic',
@@ -102,6 +104,7 @@ const REQUIRED_SEED_KEYS = [
   'machine.rented',
   'machine.cleaning',
   'machine.blocked',
+  'voucher.situation',
 ] as const;
 
 const TRAINEE_PERMISSIONS = [
@@ -176,6 +179,8 @@ interface DemoStatus {
   resetStale: boolean;
   counts: { customers: number; processes: number; tours: number };
   seedEntities: number;
+  /** Phase 14 (reset, Order §22): Nachbereinigung alter Demo-Dateien (Jobs pending/dead). */
+  storageCleanup: { pendingJobs: number; deadJobs: number };
 }
 
 async function demoStatus(cookie: string): Promise<DemoStatus> {
@@ -299,7 +304,7 @@ test.describe('Demo-Umgebung (Projekt demo-communication)', () => {
     await traineeContext?.close();
   });
 
-  test('D1 Demo-Kennzeichnung: Badge „DEMO – keine echten Kundendaten“ auf der Login-Seite und genau einmal im Header (Heute/Vorgänge/Einstellungen), Dokumenttitel „DEMO · “, fester Banner der Demo-Web-Instanz', async ({
+  test('A/D1 Demo-Kennzeichnung: Badge „DEMO – keine echten Kundendaten“ auf der Login-Seite und genau einmal im Header (Heute/Vorgänge/Einstellungen), Dokumenttitel „DEMO · “, fester Banner der Demo-Web-Instanz', async ({
     page,
   }) => {
     await page.goto('/login');
@@ -332,7 +337,7 @@ test.describe('Demo-Umgebung (Projekt demo-communication)', () => {
     await expect(banner).toHaveAttribute('aria-label', BADGE_TEXT);
   });
 
-  test('D2 Live↔Demo-Wechsel: „Live öffnen“ nur mit STAFF_LIVE_URL; Dialog „Es wird nichts übertragen“; Abbrechen ⇒ nichts; Bestätigen ⇒ neues Fenster exakt <origin>/login ohne Cookie, Query, IDs oder Referer; kein Auto-Redirect', async ({
+  test('Q/D2 Live↔Demo-Wechsel: „Live öffnen“ nur mit STAFF_LIVE_URL; Dialog „Es wird nichts übertragen“; Abbrechen ⇒ nichts; Bestätigen ⇒ neues Fenster exakt <origin>/login ohne Cookie, Query, IDs oder Referer; kein Auto-Redirect', async ({
     page,
     context,
   }) => {
@@ -417,7 +422,7 @@ test.describe('Demo-Umgebung (Projekt demo-communication)', () => {
     await context.unroute(`${DEMO_LIVE_URL}/**`);
   });
 
-  test('D3 Einstellungen → Demo: nur mit demo.manage (Mitarbeiter ohne Recht: kein Link, Hinweis auf der Seite, API 403); Status mit Version/erwarteter Version/Zählern/Registry; „veraltet“-Hinweis bei dataset_version 0 (Einstellungen + Heute)', async ({
+  test('C/D3 Einstellungen → Demo: nur mit demo.manage (Mitarbeiter ohne Recht: kein Link, Hinweis auf der Seite, API 403); Status mit Version/erwarteter Version/Zählern/Registry/Storage-Bereinigung; „veraltet“-Hinweis bei dataset_version 0 (Einstellungen + Heute)', async ({
     browser,
     page,
   }) => {
@@ -500,6 +505,9 @@ test.describe('Demo-Umgebung (Projekt demo-communication)', () => {
     expect(apiStatus.datasetVersion).toBeNull();
     expect(apiStatus.seededAt).toBeNull();
     expect(apiStatus.seedEntities).toBe(0);
+    // Phase 14 (reset): keine ausstehende/fehlgeschlagene Storage-Bereinigung, kein UI-Hinweis.
+    expect(apiStatus.storageCleanup).toEqual({ pendingJobs: 0, deadJobs: 0 });
+    await expect(page.getByTestId('demo-storage-cleanup')).toHaveCount(0);
     await expect(page.getByTestId('demo-dataset-version')).toHaveText('–');
     await expect(status).toContainText(`(erwartet ${EXPECTED_DATASET_VERSION})`);
     await expect(page.getByTestId('demo-counts')).toHaveText(
@@ -536,7 +544,7 @@ test.describe('Demo-Umgebung (Projekt demo-communication)', () => {
     expect((await demoStatus(adminCookie)).datasetVersion).toBe(0);
   });
 
-  test('D4 Reset-Dialog: Bestätigen erst bei exakt „DEMO ZURÜCKSETZEN“; Reset läuft (busy), Ergebnis-Hinweis, Status aktualisiert; DB enthält danach genau den kanonischen Datensatz (MR-<Jahr>-0001 ff., Registry); Security-Events; Admin bleibt angemeldet', async ({
+  test('C/D4 Reset-Dialog: Bestätigen erst bei exakt „DEMO ZURÜCKSETZEN“; Reset läuft (busy), Ergebnis-Hinweis, Status aktualisiert; DB enthält danach genau den kanonischen Datensatz (MR-<Jahr>-0001 ff., Registry inkl. Fixture-Gutschein); Security-Events demo.reset_started/completed; Admin bleibt angemeldet', async ({
     page,
   }) => {
     test.setTimeout(240_000);
@@ -642,6 +650,8 @@ test.describe('Demo-Umgebung (Projekt demo-communication)', () => {
       tours: result.seeded['tours'],
     });
     expect(status.seedEntities).toBe(result.seeded['seedEntities']);
+    expect(status.storageCleanup).toEqual({ pendingJobs: 0, deadJobs: 0 });
+    await expect(page.getByTestId('demo-storage-cleanup')).toHaveCount(0);
     await expect(page.getByTestId('demo-counts')).toHaveText(
       `Kunden: ${status.counts.customers} · Vorgänge: ${status.counts.processes} · Touren: ${status.counts.tours} · Seed-Szenarien: ${status.seedEntities}`,
     );
@@ -681,6 +691,15 @@ test.describe('Demo-Umgebung (Projekt demo-communication)', () => {
     for (const row of registryKeys) expect(row.dataset_version).toBe(EXPECTED_DATASET_VERSION);
     const keys = new Set(registryKeys.map((row) => row.seed_key));
     for (const key of REQUIRED_SEED_KEYS) expect(keys.has(key), `Seed-Key ${key}`).toBe(true);
+    // W1.1: der Fixture-Gutschein des Wiedermieters ist der einzige Gutschein – ohne Transfer.
+    const vouchers = demoDb<{ id: string; status: string }>('SELECT id, status FROM vouchers');
+    expect(vouchers).toHaveLength(1);
+    expect(vouchers[0]!.status).toBe('active');
+    expect(
+      registryKeys.find((row) => row.seed_key === 'voucher.situation'),
+      'Registry-Eintrag voucher.situation',
+    ).toBeDefined();
+    expect(demoDb('SELECT id FROM accounting_transfers')).toHaveLength(0);
     const state = demoDb<{
       dataset_version: number;
       reset_in_progress: boolean;
@@ -697,21 +716,29 @@ test.describe('Demo-Umgebung (Projekt demo-communication)', () => {
       last_reset_by: adminId,
     });
 
-    // Security-Events: Anforderung und Abschluss mit dem Admin als Actor (nur Zähler in details).
+    // Security-Events (Order §31): Start und Abschluss desselben Laufs mit dem Admin als Actor,
+    // Details ausschließlich resetRunId/datasetVersion/status (kein Seed-Inhalt).
     const events = demoDb<{
       type: string;
       actor_user_id: string;
       details: Record<string, unknown>;
     }>(
       `SELECT type, actor_user_id, details FROM staff_security_events
-        WHERE type IN ('demo.reset_requested', 'demo.reset_completed') ORDER BY created_at`,
+        WHERE type IN ('demo.reset_started', 'demo.reset_completed', 'demo.reset_failed')
+        ORDER BY created_at`,
     );
     expect(events.map((event) => event.type)).toEqual([
-      'demo.reset_requested',
+      'demo.reset_started',
       'demo.reset_completed',
     ]);
-    for (const event of events) expect(event.actor_user_id).toBe(adminId);
-    expect(events[1]!.details).toMatchObject({ datasetVersion: EXPECTED_DATASET_VERSION });
+    for (const event of events) {
+      expect(event.actor_user_id).toBe(adminId);
+      expect(Object.keys(event.details).sort()).toEqual(['datasetVersion', 'resetRunId', 'status']);
+      expect(event.details).toMatchObject({ datasetVersion: EXPECTED_DATASET_VERSION });
+    }
+    expect(events[0]!.details['status']).toBe('started');
+    expect(events[1]!.details['status']).toBe('completed');
+    expect(events[0]!.details['resetRunId']).toEqual(events[1]!.details['resetRunId']);
     expect(JSON.stringify(events)).not.toMatch(/example\.com|Beispiel|@/);
 
     // Admin bleibt angemeldet: nächste Seiten laden, /auth/me ok, Vorgänge zeigen den Seed.
@@ -724,7 +751,7 @@ test.describe('Demo-Umgebung (Projekt demo-communication)', () => {
     expect((await demoApi('GET', '/auth/me', { cookie: adminCookie })).status).toBe(200);
   });
 
-  test('D5 503-Gate: während reset_in_progress liefert eine Business-Mutation (API und UI) 503 DEMO_RESET mit lesbarer Meldung, GET-Seiten laden weiter, /auth/me funktioniert; nach Rücksetzen des Flags geht es wieder', async ({
+  test('C/D5 503-Gate: während reset_in_progress liefert eine Business-Mutation (API und UI) 503 DEMO_RESET mit lesbarer Meldung, GET-Seiten laden weiter, /auth/me funktioniert; nach Rücksetzen des Flags geht es wieder', async ({
     page,
   }) => {
     test.setTimeout(180_000);
@@ -801,7 +828,7 @@ test.describe('Demo-Umgebung (Projekt demo-communication)', () => {
     );
   });
 
-  test('D6 Seed-Nützlichkeit: Registry enthält alle Pflicht-Szenarien; Heute zeigt heutige Termine, fällige und überfällige Rückgabe; Touren zeigen die heutige Tour (3 Stopps) und die Tour morgen; Kalender zeigt Termine; nur example.com/example.invalid; keine Mail verlässt die Whitelist', async ({
+  test('C/D6 Seed-Nützlichkeit: Registry enthält alle Pflicht-Szenarien (inkl. voucher.situation); Heute zeigt heutige Termine, fällige und überfällige Rückgabe; Touren zeigen die heutige Tour (3 Stopps) und die Tour morgen; Kalender zeigt Termine; nur example.com/example.invalid; keine Mail verlässt die Whitelist', async ({
     page,
   }) => {
     test.setTimeout(180_000);
@@ -899,7 +926,7 @@ test.describe('Demo-Umgebung (Projekt demo-communication)', () => {
     expect(await sinkMails(), 'SMTP-Senke seit Spec-Beginn').toEqual([]);
   });
 
-  test('D7 Reset löscht keine Staff-/Trainingsdaten: zweiter Mitarbeiter mit Rolle und Rechten, Sessions und bekannte Geräte bleiben erhalten (DB-Zähler vor/nach gleich), Security-Audit um genau die Reset-Events ergänzt', async () => {
+  test('C/D7 Reset löscht keine Staff-/Trainingsdaten: zweiter Mitarbeiter mit Rolle und Rechten, Sessions und bekannte Geräte bleiben erhalten (DB-Zähler vor/nach gleich), Security-Audit um genau die Reset-Events ergänzt', async () => {
     expect(staffBefore, 'Snapshot aus D4').not.toBeNull();
     const after = staffSnapshot();
     expect(after.userIds).toEqual(staffBefore!.userIds);
@@ -964,7 +991,7 @@ test.describe('Live-Gegentest (Projekt chromium, development ohne STAFF_DEMO_URL
     resetE2eDatabase();
   });
 
-  test('D1/D2/D3-Live: kein Badge, kein Titel-Präfix, kein Wechsel-Button ohne STAFF_DEMO_URL (counterpart null), keine Demo-Karte/-Routen (404), kein Web-Banner', async ({
+  test('A/Q-Live (D1/D2/D3-Live): kein Badge, kein Titel-Präfix, kein Wechsel-Button ohne STAFF_DEMO_URL (counterpart null), keine Demo-Karte/-Routen (404), kein Web-Banner', async ({
     page,
   }) => {
     await page.goto('/login');

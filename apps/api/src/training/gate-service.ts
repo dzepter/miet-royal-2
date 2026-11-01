@@ -8,6 +8,7 @@ import {
 } from '@mietroyal/database';
 import { and, eq, gt, isNull, lte, or } from 'drizzle-orm';
 import { AuthError } from '../auth/service.ts';
+import type { TrainingCatalogSource } from './catalog-sync.ts';
 import { TRAINING_FEATURE_KEYS, trainingFeatureSpec, type TrainingFeatureKey } from './features.ts';
 
 /**
@@ -142,6 +143,8 @@ export class TrainingGateService implements TrainingGate {
   constructor(
     private readonly db: Database,
     private readonly config: AppConfig,
+    /** Review-Fix F6: Katalog vor dem Laden eines Requirements sicherstellen (Lazy Retry nach fail-soft-Start). */
+    private readonly options: { catalog?: TrainingCatalogSource | undefined } = {},
   ) {}
 
   /** Erzwingung nur in production (§63). */
@@ -232,6 +235,9 @@ export class TrainingGateService implements TrainingGate {
   /** Frische Auswertung gegen die Datenbank (kein Cache, §65). */
   private async inspect(input: TrainingGateInput): Promise<GateEvaluation> {
     const now = input.now ?? new Date();
+    // Review-Fix F6: nach einem fehlgeschlagenen Start-Sync liegt der Katalog erst hier vor
+    // (memoisiert, danach kostenlos); scheitert er erneut, bleibt die Aktion blockiert (Fehler).
+    await this.options.catalog?.ensureSynced();
     const [requirement] = await this.db
       .select()
       .from(trainingFeatureRequirements)

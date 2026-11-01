@@ -4,11 +4,13 @@ import { parseOrThrow, z } from '@mietroyal/validation';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { authErrorStatus, requireAuth, requirePermission, sendAuthError } from '../auth/http.ts';
 import type { StaffAuthService } from '../auth/service.ts';
+import type { TrainingCatalogSource } from '../training/catalog-sync.ts';
 import {
   TrainingGateAdminError,
   TrainingGateAdminService,
 } from '../training/gate-admin-service.ts';
 import { UUID_PATTERN } from './auth.ts';
+import { requireTrainingCatalog } from './training.ts';
 
 /**
  * Phase 14 (Design §4.4 „Nur außerhalb demo“, Order §67/§68, §98): Admin-
@@ -44,6 +46,8 @@ export interface TrainingGateRouteOptions {
   config: AppConfig;
   /** Test-Injection; Default: Service auf `db`/`config`. */
   admin?: TrainingGateAdminService;
+  /** Review-Fix F6: Katalog-Sync (fail-soft beim Start) – wird vor jeder Route sichergestellt. */
+  catalog?: TrainingCatalogSource | undefined;
 }
 
 /** Admin-Fehler mit Fachcode (409 TRAINING_DEFINITION_INACTIVE) – sonst sendAuthError. */
@@ -79,6 +83,7 @@ export function registerTrainingGateRoutes(
     const context = await requireAuth(request, reply, auth, config);
     if (context === null) return;
     if (!(await requirePermission(request, reply, auth, context, 'training.manage'))) return;
+    if (!(await requireTrainingCatalog(request, reply, options.catalog))) return;
     return admin.listGates();
   });
 
@@ -86,6 +91,7 @@ export function registerTrainingGateRoutes(
     const context = await requireAuth(request, reply, auth, config);
     if (context === null) return;
     if (!(await requirePermission(request, reply, auth, context, 'training.manage'))) return;
+    if (!(await requireTrainingCatalog(request, reply, options.catalog))) return;
     const params = parseOrThrow(featureParams, request.params, 'params');
     const body = parseOrThrow(gateBody, request.body);
     try {
@@ -101,6 +107,7 @@ export function registerTrainingGateRoutes(
     const context = await requireAuth(request, reply, auth, config);
     if (context === null) return;
     if (!(await requirePermission(request, reply, auth, context, 'training.manage'))) return;
+    if (!(await requireTrainingCatalog(request, reply, options.catalog))) return;
     const query = parseOrThrow(clearanceQuery, request.query ?? {}, 'query');
     return { clearances: await admin.listClearances(query.userId) };
   });
@@ -109,6 +116,7 @@ export function registerTrainingGateRoutes(
     const context = await requireAuth(request, reply, auth, config);
     if (context === null) return;
     if (!(await requirePermission(request, reply, auth, context, 'training.manage'))) return;
+    if (!(await requireTrainingCatalog(request, reply, options.catalog))) return;
     const body = parseOrThrow(clearanceBody, request.body);
     try {
       const result = await admin.grantClearance(context.user.id, {
@@ -133,6 +141,7 @@ export function registerTrainingGateRoutes(
     const context = await requireAuth(request, reply, auth, config);
     if (context === null) return;
     if (!(await requirePermission(request, reply, auth, context, 'training.manage'))) return;
+    if (!(await requireTrainingCatalog(request, reply, options.catalog))) return;
     const params = parseOrThrow(idParams, request.params, 'params');
     try {
       const result = await admin.revokeClearance(context.user.id, params.id);

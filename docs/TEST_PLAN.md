@@ -222,9 +222,28 @@ Profiländerung verändert laufenden Booking-Snapshot nicht.
 - Demo-Testkontext: `createTestContext({ appEnv: 'demo' })` (vollständige
   Demo-Konfiguration mit Test-Schlüsseln); Demo-Routen existieren außerhalb
   demo nicht (404-Tests).
-- E2E: `tests/e2e/specs/demo-environment.spec.ts` (provisorisch D1–D7 im
-  Projekt `demo-communication` mit eigener Demo-Staff- und Demo-Web-Instanz,
-  Live-Gegentest im Projekt chromium).
+- Demo-Testadressen des Seeds (Order §9/§25, Review-Fix F8):
+  `demo-seed.integration.test.ts` D-S4 (Demo-Testkontext ohne
+  `MAIL_DEMO_WHITELIST` ⇒ alle Adressen example.com/example.invalid, auch die
+  fünf Mail-Übungskunden), D-S4b (zweiter Demo-Kontext mit
+  `MAIL_DEMO_WHITELIST=senke@demo.test,@demo.test,@zweite.test` und
+  `MAIL_PUBLIC_WEB_BASE_URL` ⇒ nur die Mail-Übungskunden tragen
+  `<lokalteil>@demo.test`, Vollmatch-Adresse nie vergeben, keine Adresse
+  doppelt, `process.offer.sent` bleibt blockiert, Outbox pending/blocked
+  passend, Test-Runner stellt alle eingereihten Mails mit „[DEMO]“ an die
+  Whitelist-Domain zu, Seed-Antwort `queued` ⇒ `sent`), D-S14 (Abrechnung
+  `process.settlement.review` mit Belastung: Kostenentscheide ⇒ Klärung
+  `customer_notice` ⇒ approve-and-send ⇒ `mail.send` über den Test-Runner ⇒
+  `customer_waiting` ohne Auto-Transfer ⇒ end-wait ⇒ `ready_for_accounting`,
+  Blocker `demo_unavailable`, keine Transfers/-Jobs, Vorgang offen, Übung
+  `settlement_review` bestanden mit Ereignis `settlement.reviewed`).
+- E2E: `tests/e2e/specs/demo-environment.spec.ts` (Order §109 A Demo Banner,
+  C Demo Reset, Q Live↔Demo-Wechsel – Teilszenarien D1–D7 – im Projekt
+  `demo-communication` mit eigener Demo-Staff- (Produktions-Build) und
+  Demo-Web-Instanz, Live-Gegentest im Projekt chromium; Audit `demo.reset_started`/
+  `demo.reset_completed` nur mit resetRunId/datasetVersion/status, Status-Feld
+  `storageCleanup`, Registry inkl. `voucher.situation`). Übersicht aller
+  E2E-Buchstaben A–Q: Abschnitt „E2E Phase 14 (Order §109)“.
 - Reset-Sicherheit wird reproduziert: paralleler Reset ⇒ 409, Percent-codierte
   Pfade ⇒ 503 während des Resets, Prozessabbruch ⇒ `resetStale` nach 10 min.
 - Kein automatischer Seed in Tests oder beim Start; `pnpm demo:seed` /
@@ -318,8 +337,9 @@ Profiländerung verändert laufenden Booking-Snapshot nicht.
     (STEP_NOT_COMPLETED, PREREQUISITE_MISSING, nur Meta-Schlüssel), T123 keine
     Businessinhalte (Kunden-/Vorgangs-/Kontaktdaten und Fachobjekt-IDs fehlen; Schlüssel-
     Whitelist der Antworten).
-- E2E (Agent E2E, Projekt `demo-communication`): E–K und O laufen gegen diese Routen –
-  Ablauf je Übung siehe Abschlussbericht TRAINING-CORE.
+- E2E (Projekt `demo-communication`, `tests/e2e/specs/training-demo.spec.ts`): B und
+  D–K, O, P über die Demo-Staff-UI mit eigenen Trainees je Übung – Details im Abschnitt
+  „E2E Phase 14 (Order §109)“.
 
 ## Live-Trainingssperren und Live-Verwaltung (Phase 14, W2)
 - `apps/api/test/training-gates.integration.test.ts` (T99–T118; Testkontext
@@ -350,8 +370,49 @@ Profiländerung verändert laufenden Booking-Snapshot nicht.
   nicht): commerce-offer, handover-finalization, return-finalization,
   return-cleaning, settlement-notice-wait/-security, tours-end/-security,
   warehouse-stocktake/-machines, offline-core.
-- E2E (Agent E2E, Projekt `production-gates`): L Production Gate blockiert,
-  M Verified Demo erlaubt, N Override/Widerruf.
+- E2E (Projekt `production-gates`, `tests/e2e/specs/training-gates.spec.ts`): L Production
+  Gate blockiert, M Verified Demo erlaubt, N Override/Widerruf – Details im Abschnitt
+  „E2E Phase 14 (Order §109)“.
+
+## E2E Phase 14 (Order §109, Szenarien A–Q)
+Alle Läufe über `pnpm test:e2e` (`tests/e2e/playwright.config.ts`); jedes Projekt startet
+sämtliche Server frisch (`reuseExistingServer: false`). Drei Staff-Instanzen werden als
+Produktions-Build gebaut (`.next` Haupt, `.next/demo` Demo, `.next/prod` Production – je
+≈ 3 min), weil `STAFF_API_ORIGIN` zur Build-Zeit eingebacken wird und Offline-Szenarien
+die App-Shell mit Service Worker brauchen.
+
+| Buchstabe | Spec (Projekt) | Inhalt |
+| --- | --- | --- |
+| A Demo Banner | `demo-environment.spec.ts` (demo-communication, „A/D1“) | Badge/Titel/Web-Banner |
+| B Demo Seed | `training-demo.spec.ts` (demo-communication) | Reset per API, Registry inkl. `voucher.situation` (ein aktiver Fixture-Gutschein ohne Transfer), Audit nur Meta, `storageCleanup` 0/0 |
+| C Demo Reset | `demo-environment.spec.ts` („C/D3–C/D7“) | Rechte, Dialog, 503-Gate, Datensatz, Staff-Daten bleiben |
+| D Reset + Offline Epoch | `training-demo.spec.ts` | Arbeitspaket mit Epoch, offline erfasste Übergabe-Prüfung, Admin-Reset per API, online ⇒ `dataset-changed-banner`/`-dialog`, „Später“ (keine Sync), Bestätigen ⇒ Pending 0, neue Epoch, neuer Seed ohne Prüfung/Fotos/Unterschriften |
+| E Offer Training | `training-demo.spec.ts` | Rabatt auf den Seed-Entwurf + Versand ⇒ bestanden; Prüfung vorher ⇒ offener Schritt |
+| F Handover Training | `training-demo.spec.ts` | Übergabe-Wizard vollständig ⇒ bestanden |
+| G Return Training | `training-demo.spec.ts` | Rückgabe-Wizard ohne Beanstandung ⇒ bestanden, Pfad abgeschlossen |
+| H Tour Training | `training-demo.spec.ts` | eigene Tour (Stopp heute via `e2e-tours-seed`) ⇒ bereit/starten/beenden ⇒ bestanden, Routing Mock ohne Provider-Request |
+| I Communication Training | `training-demo.spec.ts` | E-Mail-Antwort an `@demo.test` ⇒ queued zählt nicht ⇒ `run-due-jobs` ⇒ sent ⇒ bestanden |
+| J Settlement Training | `training-demo.spec.ts` | Klärungen „Nicht berechnen“ ⇒ „Bereit zur Buchhaltung“, Demo-Hinweis, kein Transfer (auch nach Jobs) |
+| K Admin Progress | `training-demo.spec.ts` | Zuweisung, Fortschritt 3/3, Fehlprüfung + Ereignis ohne Businessdaten, Training-Reset, Trainee startet neu |
+| L Production Gate blockiert | `training-gates.spec.ts` (production-gates) | Sperre `offer.send` ⇒ UI-Hinweis, Entwurf bleibt, API 403, `/training` „offen“ |
+| M Verified Demo erlaubt | `training-gates.spec.ts` | Freigabe `verified_demo` ⇒ Senden klappt, Zeile ohne Demo-Daten |
+| N Override / Revoke | `training-gates.spec.ts` | Widerruf sofort wirksam, Override ohne Grund = Formularfehler, mit Grund erlaubt, Widerruf, Audit ohne Begründung |
+| O Definition Update Stability | `training-demo.spec.ts` | `scripts/e2e-training-catalog-bump.ts` (Version +1, Titel) ⇒ bestanden bleibt, Katalog zeigt Version 2, danach `restore` |
+| P Demo Provider Isolation | `training-demo.spec.ts` | Accounting disabled/Webhook 404/Mock 409, WhatsApp `mock-…` ohne Graph-Request, Routing Mock ohne Fake-Request, Nicht-Whitelist-Mail blocked mit „[DEMO]“, keine Secrets |
+| Q Live↔Demo Wechsel | `demo-environment.spec.ts` („Q/D2“) | neues Fenster ohne Session/IDs/Token |
+
+- Projekt `production-gates`: API 3110 mit `APP_ENV=production`, Datenbank
+  `mietroyal_test_prod` (frisch je Lauf über `apps/api/scripts/e2e-prod-setup.ts`:
+  Live-Admin `admin.live@live.test`, Mitarbeiterin `mia.live@live.test` mit Rolle
+  „E2E-Live“, synthetische Nicht-Test-Mietbedingungen für den Angebotsversand), fs-Storage im
+  Temp-Verzeichnis, je Lauf zufällige 64-Hex-Schlüssel, kein Lexware/WhatsApp/Routing; Mail nur
+  als nie angesprochener SMTP-Platzhalter (`smtp.e2e.invalid`, HTTPS-Basis-URL), weil production
+  den Angebotsversand ohne SMTP-Weg hart blockiert – der Job `mail.send` läuft im Projekt nie,
+  Angebotsmails bleiben `pending`; Staff 3111 als Produktions-Build. Login im Browser
+  (Secure-/`__Host-`-Cookies auf http://127.0.0.1), genau zwei Logins je Lauf (Rate-Limits).
+- Sperrfenster (Berlin): `training-demo.spec.ts` (H) und `tours-demo.spec.ts` nicht zwischen
+  23:38 und 00:02 starten, `tours-flow.spec.ts` nicht zwischen 22:43 und 00:02 (Resttag zu
+  kurz, siehe Kopfkommentare).
 
 ## Definition of Done
 Fachregel korrekt, Rechte serverseitig, Validierung, Fehlerfall,

@@ -12,6 +12,7 @@ import {
 } from '@mietroyal/database';
 import type { JobQueue, JobRunnerLogger, StorageProvider } from '@mietroyal/integrations';
 import { eq, inArray, sql } from 'drizzle-orm';
+import type pg from 'pg';
 import { recordSecurityEvent } from '../auth/audit.ts';
 import { COMMUNICATION_CLEANUP_RETENTION_JOB_TYPE } from '../communication/types.ts';
 import type { OutboundMailGateway } from '../communication/types.ts';
@@ -28,15 +29,22 @@ import { DEMO_MESSAGES, DemoError, type DemoResetResult, type DemoResetRunner } 
  * Phase 14 (Order §15–§20, Design §6): Demo-Reset – setzt ALLE Demo-
  * Geschäftsdaten auf den kanonischen Datensatz zurück. Mechanik:
  *
- * - Phase A (kurze Tx): Singleton-Zeile sperren, Advisory-Lock probieren,
+ * - Lauf-Lock (Review-Fix F1, Order §20 „global serialisiert“): Session-
+ *   Advisory-Lock `pg_try_advisory_lock(hashtext('demo-reset-run'))` auf einer
+ *   dedizierten Pool-Verbindung VOR Phase A, Freigabe erst im `finally` nach
+ *   Phase D (auch bei Fehlern) – belegt ⇒ sofort 409 DEMO_RESET_RUNNING. Deckt
+ *   damit auch Schutzfenster, Phase C und D ab; stirbt der Prozess, gibt
+ *   PostgreSQL den Lock mit der Verbindung frei.
+ * - Phase A (kurze Tx): Singleton-Zeile sperren, Xact-Advisory-Lock probieren,
  *   laufenden Reset erkennen (409 DEMO_RESET_RUNNING; stale > 10 min
  *   (`DEMO_RESET_STALE_MS`) darf neu starten), `reset_in_progress` setzen ⇒ ab
  *   jetzt greift das 503-Gate.
  * - Schutzfenster (Review F4): `settleDelayMs` (Default Gate-Cache-TTL + 200 ms)
  *   warten, damit API-/Worker-Caches ablaufen und bereits angenommene
  *   Anfragen committen, bevor gelöscht wird.
- * - Phase B (eine Tx, Advisory-Lock blockierend): Hook für Trainingsversuche
- *   (WARTET Trainingsschema), Business-Tabellen in expliziter FK-sicherer
+ * - Phase B (eine Tx, Xact-Advisory-Lock blockierend): Hook für Trainings-
+ *   versuche (`beforeBusinessWipe`, Order §94 – verdrahtet in app.ts/CLI),
+ *   Business-Tabellen in expliziter FK-sicherer
  *   Reihenfolge löschen (kein CASCADE – Staff/Auth/Audit/Settings/Stammdaten
  *   bleiben unangetastet), Business-Jobs und vorgangsgebundene Retention-Jobs
  *   entfernen (Review F3), Maschinen/Lager per UPDATE auf den Stammzustand,
@@ -62,9 +70,12 @@ import { DEMO_MESSAGES, DemoError, type DemoResetResult, type DemoResetRunner } 
  * markieren den Lauf aber sofort als abgelaufen (`resetStale`), damit ein
  * erneuter Reset ohne Wartezeit möglich ist. Nach einem Prozessabbruch
  * (Deploy/OOM) läuft das Flag nach `DEMO_RESET_STALE_MS` ab; früher löst nur
- * `pnpm demo:reset --force` (`releaseStaleReset`, Review F8) auf.
+ * `pnpm demo:reset --force` (`releaseStaleReset`, Review F8) auf – das aber nur,
+ * wenn der Lauf-Lock frei ist (ein laufender Reset ist in jeder Phase erkennbar).
  */
 export const DEMO_RESET_ADVISORY_LOCK_KEY = 'demo-reset';
+/** Review-Fix F1: Session-Lock über die gesamte Laufzeit eines Resets (eigene Verbindung). */
+export const DEMO_RESET_RUN_LOCK_KEY = 'demo-reset-run';
 
 /** Review F4: Schutzfenster zwischen Phase A und Phase B (Gate-/Worker-Cache-TTL + Reserve). */
 export const DEMO_RESET_SETTLE_DELAY_MS = DEMO_RESET_GATE_CACHE_TTL_MS + 200;
@@ -200,9 +211,10 @@ const SEQUENCE_NAME = 'process_number_seq';
 
 export interface DemoResetHooks {
   /**
-   * WARTET Trainingsschema (Order §19): laufende Trainingsversuche vor dem
+   * Phase 14 (training, Order §19/§94): laufende Trainingsversuche vor dem
    * Löschen als `interrupted` mit Grund DEMO_DATA_RESET markieren (nie löschen;
-   * bestandene bleiben bestanden). Läuft innerhalb der Phase-B-Transaktion.
+   * bestandene bleiben bestanden). Läuft innerhalb der Phase-B-Transaktion;
+   * verdrahtet in app.ts und `scripts/demo-reset.ts` (`interruptInProgressAttempts`).
    */
   beforeBusinessWipe?: ((tx: DatabaseTransaction) => Promise<void>) | undefined;
 }
@@ -212,6 +224,8 @@ export interface DemoResetServiceDeps {
   config: AppConfig;
   storage: StorageProvider;
   queue: JobQueue;
+  /** Review-Fix F1: Pool der dedizierten Lock-Verbindung (Default: Pool hinter `db`, `$client`). */
+  pool?: pg.Pool | undefined;
   logger?: JobRunnerLogger | undefined;
   seed?: DemoSeedService | undefined;
   dataset?: DemoDatasetService | undefined;
@@ -326,8 +340,10 @@ export class DemoResetService implements DemoResetRunner {
   private readonly logger: JobRunnerLogger | undefined;
   private readonly settleDelayMs: number;
   private readonly fkRetryDelayMs: number;
+  private readonly pool: pg.Pool;
 
   constructor(private readonly deps: DemoResetServiceDeps) {
+    this.pool = deps.pool ?? poolOf(deps.db);
     this.dataset = deps.dataset ?? new DemoDatasetService(deps.db);
     this.registry = deps.registry ?? new DemoSeedRegistry(deps.db);
     this.seed =
@@ -357,6 +373,22 @@ export class DemoResetService implements DemoResetRunner {
       throw new DemoError('FORBIDDEN', 'DEMO_ONLY', DEMO_MESSAGES.DEMO_ONLY);
     }
     const now = input.now ?? new Date();
+    // Review-Fix F1 (Order §20): Lauf-Lock über ALLE Phasen – ein zweiter Reset
+    // (Route, CLI, --force) scheitert sofort, nie erst in Phase B.
+    const runLock = await this.tryAcquireRunLock();
+    if (runLock === null) throw await this.runningError(now);
+    try {
+      return await this.run(input, now);
+    } finally {
+      await runLock.release();
+    }
+  }
+
+  /** Phasen A–D unter gehaltenem Lauf-Lock. */
+  private async run(
+    input: { actorId: string | null; sessionId?: string | null | undefined },
+    now: Date,
+  ): Promise<DemoResetResult> {
     const startedAt = Date.now();
     // Der Fachaktor des Seeds muss existieren, BEVOR gelöscht wird (sonst bliebe
     // die Demo leer und gesperrt).
@@ -442,8 +474,9 @@ export class DemoResetService implements DemoResetRunner {
    * Review F8 – NUR für die CLI (`pnpm demo:reset --force`): ein hängender Reset
    * (Flag gesetzt, aber kein Prozess hält den Advisory-Lock – z. B. nach einem
    * Prozessabbruch in Phase B/C) wird sofort als abgelaufen markiert, damit
-   * `reset()` ohne Wartezeit neu starten darf. Hält ein anderer Prozess den
-   * Lock (Phase B läuft tatsächlich), bleibt es bei DEMO_RESET_RUNNING. Das
+   * `reset()` ohne Wartezeit neu starten darf. Läuft tatsächlich ein Reset
+   * (Lauf-Lock belegt – in jeder Phase, Review-Fix F1) oder hält ein anderer
+   * Prozess den Xact-Lock der Phase B, bleibt es bei DEMO_RESET_RUNNING. Das
    * Flag selbst bleibt gesetzt (Gate fail-closed), bis der neue Reset
    * abgeschlossen ist. Rückgabe: ob ein hängendes Flag vorlag.
    */
@@ -451,6 +484,18 @@ export class DemoResetService implements DemoResetRunner {
     if (this.deps.config.appEnv !== 'demo') {
       throw new DemoError('FORBIDDEN', 'DEMO_ONLY', DEMO_MESSAGES.DEMO_ONLY);
     }
+    // Review-Fix F1: die Flag-Freigabe läuft unter gehaltenem Lauf-Lock – kein
+    // Reset kann dazwischen starten, und ein laufender wird immer erkannt.
+    const runLock = await this.tryAcquireRunLock();
+    if (runLock === null) throw await this.runningError(now);
+    try {
+      return await this.releaseStaleFlag(now);
+    } finally {
+      await runLock.release();
+    }
+  }
+
+  private async releaseStaleFlag(now: Date): Promise<boolean> {
     return this.deps.db.transaction(async (tx) => {
       const row = await this.dataset.lockRow(tx);
       if (!(await tryAdvisoryLock(tx))) {
@@ -472,6 +517,50 @@ export class DemoResetService implements DemoResetRunner {
       );
       return true;
     });
+  }
+
+  /** Review-Fix F1: `DEMO_RESET_RUNNING` mit dem Beginn des laufenden Resets (wie Phase A). */
+  private async runningError(now: Date): Promise<DemoError> {
+    const state = await this.dataset.state(now);
+    return new DemoError('CONFLICT', 'DEMO_RESET_RUNNING', DEMO_MESSAGES.DEMO_RESET_RUNNING, {
+      resetStartedAt: state.resetStartedAt?.toISOString() ?? null,
+    });
+  }
+
+  /**
+   * Review-Fix F1: Session-Advisory-Lock `DEMO_RESET_RUN_LOCK_KEY` auf einer
+   * dedizierten Verbindung (`pg_try_advisory_lock`, nie blockierend); null,
+   * wenn ein anderer Lauf ihn hält. `release()` gibt Lock und Verbindung
+   * zurück; scheitert das, wird die Verbindung verworfen – PostgreSQL löst
+   * Session-Locks mit der Verbindung auf (ebenso bei einem Prozessabbruch).
+   */
+  private async tryAcquireRunLock(): Promise<{ release(): Promise<void> } | null> {
+    const client = await this.pool.connect();
+    let locked: boolean;
+    try {
+      const result = await client.query<{ locked: boolean }>(
+        'SELECT pg_try_advisory_lock(hashtext($1)) AS locked',
+        [DEMO_RESET_RUN_LOCK_KEY],
+      );
+      locked = result.rows[0]?.locked === true;
+    } catch (error) {
+      client.release(toError(error));
+      throw error;
+    }
+    if (!locked) {
+      client.release();
+      return null;
+    }
+    return {
+      release: async () => {
+        try {
+          await client.query('SELECT pg_advisory_unlock(hashtext($1))', [DEMO_RESET_RUN_LOCK_KEY]);
+          client.release();
+        } catch (error) {
+          client.release(toError(error));
+        }
+      },
+    };
   }
 
   /** Phase A: Serialisierung und Flag (kurze Transaktion). */
@@ -500,7 +589,7 @@ export class DemoResetService implements DemoResetRunner {
       await tx.execute(
         sql`SELECT pg_advisory_xact_lock(hashtext(${DEMO_RESET_ADVISORY_LOCK_KEY}))`,
       );
-      // WARTET Trainingsschema: laufende Trainingsversuche ⇒ interrupted/DEMO_DATA_RESET.
+      // Phase 14 (training, Order §94): laufende Versuche ⇒ interrupted/DEMO_DATA_RESET (Hook aus app.ts/CLI).
       if (this.deps.hooks?.beforeBusinessWipe !== undefined) {
         await this.deps.hooks.beforeBusinessWipe(tx);
       }
@@ -630,6 +719,23 @@ export class DemoResetService implements DemoResetRunner {
       );
     }
   }
+}
+
+function toError(error: unknown): Error {
+  return error instanceof Error ? error : new Error(String(error));
+}
+
+/**
+ * Review-Fix F1: Pool hinter einer drizzle-Datenbank – `drizzle(pool)` setzt
+ * `$client` zur Laufzeit (nicht Teil des Typs `NodePgDatabase`); fehlt er
+ * (Mock), muss `deps.pool` gesetzt sein.
+ */
+function poolOf(db: Database): pg.Pool {
+  const client = (db as { $client?: unknown }).$client;
+  if (typeof (client as { connect?: unknown } | undefined)?.connect === 'function') {
+    return client as pg.Pool;
+  }
+  throw new Error('DemoResetService: kein Pool für den Lauf-Lock (deps.pool setzen)');
 }
 
 function prefixKeys(prefix: string, counts: Record<string, number>): Record<string, number> {

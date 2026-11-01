@@ -188,6 +188,32 @@ damit die Web-App nicht ausfällt; die Demo-Kennzeichnung hängt dann allein an
 6b) verlangt den Wert für jede Web-Instanz (`demo` bzw. `production`/
 `staging`); der Isolation-Check kann ihn nicht prüfen.
 
+### Demo-Mail: Senke, Whitelist und Demo-Testadressen des Seeds
+
+Die Demo versendet E-Mails ausschließlich an `MAIL_DEMO_WHITELIST` (Phase 12:
+vollständige Adressen oder `@domain`-Einträge; Betreff immer „[DEMO] …“;
+Prüfung beim Einreihen und vor dem Versand). Damit Mail-Übungen in der Demo
+tatsächlich zustellbar sind (Kundeninformation der Abrechnung bei berechneter
+Belastung, Kommunikationsantworten – beide gelten erst mit bestätigtem Versand
+als erledigt), sollte das Demo-Deployment eine **Sink-Domain** whitelisten,
+z. B. `MAIL_DEMO_WHITELIST=@demo.test` (reservierte TLD, nie real), und den
+SMTP-Weg (`MAIL_ENABLED=true`, `MAIL_SMTP_*`) auf eine Mail-Senke
+(Catch-all-Postfach/Test-SMTP) zeigen lassen; Mails mit Links (Angebote,
+Aktionen) brauchen außerdem `MAIL_PUBLIC_WEB_BASE_URL` (Config-Pflicht bei
+`MAIL_ENABLED=true`, sonst bleiben sie `blocked`/`PUBLIC_WEB_BASE_URL_MISSING`).
+
+Der Demo-Seed (Phase 14, Order §9 „konfigurierte Demo-Testadresse“) vergibt an
+die Kunden der Mail-Übungsszenarien (`process.settlement.review`,
+`process.return.damage`, `process.return.missing_part`, `conversation.email.*`)
+Adressen `<lokalteil>@<erste Whitelist-Domain>` (z. B. `einkauf@demo.test`,
+`lena.beispiel@demo.test`); ohne `@domain`-Eintrag bleiben alle Seed-Adressen
+unter example.com / example.invalid und jede Kundenmail `blocked`
+(DEMO_NOT_WHITELISTED). Vollständige Adressen der Whitelist (`tester@…`) werden
+nie an Seed-Kunden vergeben; alle übrigen Seed-Kunden behalten die
+Beispieldomain. Die Whitelist-Domain wirkt erst mit dem nächsten
+`pnpm demo:seed`/`demo:reset`; bestehende Kunden behalten ihre Adresse. Details:
+docs/TECH_DECISIONS.md („Demo-Testadressen im Seed“).
+
 ### Demo-Kennzeichnung der Staff-App
 
 Die Staff-App kennt ihre Umgebung über `GET /auth/me` (`environment`, auch im

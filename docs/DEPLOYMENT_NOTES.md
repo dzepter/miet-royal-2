@@ -319,7 +319,7 @@ Release `pnpm check:env-isolation <prod.env> <demo.env>`):
 
 | Prozess | Pflichtwerte zusätzlich zu den üblichen Variablen |
 | --- | --- |
-| API (demo) | `APP_ENV=demo`, optional `STAFF_LIVE_URL=https://app.<domain>` (Button „Live öffnen“); **kein** `STAFF_DEMO_URL`, kein Lexware-/WhatsApp-/GraphHopper-Key (Konfigurationsfehler); `MAIL_DEMO_WHITELIST` bei `MAIL_ENABLED=true` |
+| API (demo) | `APP_ENV=demo`, optional `STAFF_LIVE_URL=https://app.<domain>` (Button „Live öffnen“); **kein** `STAFF_DEMO_URL`, kein Lexware-/WhatsApp-/GraphHopper-Key (Konfigurationsfehler); `MAIL_DEMO_WHITELIST` bei `MAIL_ENABLED=true` – für Mail-Übungen (Kundeninformation, Kommunikationsantwort) eine Sink-Domain mit Mail-Senke whitelisten, z. B. `MAIL_DEMO_WHITELIST=@demo.test`, plus `MAIL_PUBLIC_WEB_BASE_URL` (docs/ENVIRONMENTS.md „Demo-Mail“) |
 | Worker (demo) | dieselben Variablen wie die Demo-API (`APP_ENV=demo`); legt Business-Jobs während eines Demo-Resets automatisch um 15 s zurück |
 | Staff (demo) | wie bisher (`STAFF_API_ORIGIN` auf die Demo-API, `STAFF_OFFLINE_LEASE_VERIFICATION_KEY` der Demo-API); Badge/Titel „DEMO“ kommen aus der API, keine eigene Variable |
 | Web (demo) | `WEB_API_ORIGIN` auf die Demo-API **und `WEB_APP_ENV=demo`** (fester Banner „DEMO – keine echten Kundendaten“ auf allen öffentlichen Seiten). Zusätzlich (Review F6) erscheint der Banner, wenn die konfigurierte API über `GET /health` `environment: 'demo'` meldet; `WEB_APP_ENV` bleibt Pflicht (Release-Ablauf 6b) |
@@ -366,7 +366,7 @@ Release `pnpm check:env-isolation <prod.env> <demo.env>`):
 | --- | --- |
 | `pnpm demo:seed` | legt den kanonischen Demo-Datensatz auf LEEREM Demo-Geschäftsbestand an; bei vorhandenen Daten Abbruch „Demo-Daten existieren bereits – demo:reset verwenden.“ (Exit 1) |
 | `pnpm demo:reset` | löscht ALLE Demo-Geschäftsdaten und seedet neu; verlangt interaktiv genau `DEMO ZURÜCKSETZEN` oder `--yes` (nur Automatisierung; ohne Terminal und ohne `--yes` Abbruch, Exit 2) |
-| `pnpm demo:reset --force` | wie `demo:reset` (Bestätigung bleibt Pflicht), setzt aber vorher einen **hängenden** Reset zurück (Flag `reset_in_progress` gesetzt, aber kein Prozess hält mehr den Advisory-Lock – z. B. nach Deploy/OOM während eines Resets) und startet sofort neu, statt die Stale-Spanne von 10 min abzuwarten. Läuft tatsächlich ein Reset (Lock belegt), bricht das Kommando mit `DEMO_RESET_RUNNING` ab. Nur benutzen, wenn sicher kein Reset-Prozess mehr läuft; nur CLI, nur `APP_ENV=demo` |
+| `pnpm demo:reset --force` | wie `demo:reset` (Bestätigung bleibt Pflicht), setzt aber vorher einen **hängenden** Reset zurück (Flag `reset_in_progress` gesetzt, aber kein Prozess hält mehr den Advisory-Lock – z. B. nach Deploy/OOM während eines Resets) und startet sofort neu, statt die Stale-Spanne von 10 min abzuwarten. Läuft tatsächlich ein Reset (Lauf-Lock belegt – gilt für die gesamte Laufzeit von Phase A bis D, Review-Fix F1), bricht das Kommando mit `DEMO_RESET_RUNNING` ab. Nur benutzen, wenn sicher kein Reset-Prozess mehr läuft; nur CLI, nur `APP_ENV=demo` |
 
 Beide Kommandos laufen mit den Umgebungsvariablen der Demo-API (`APP_ENV=demo`,
 `DATABASE_URL`, `STORAGE_*`, `AUTH_SECRET_KEY`, `COMMUNICATION_PAYLOAD_KEY`,
@@ -378,4 +378,11 @@ werden nur Datenbankname und Zähler. Nach einem Reset beginnen die
 Vorgangsnummern wieder bei `MR-<Jahr>-0001`; Staff-Konten, Rollen, Rechte,
 Geräte, Audit, Einstellungen und Stammdaten bleiben erhalten. Ohne
 `MAIL_ENABLED`/Whitelist landen alle Kundenmails des Seeds als `blocked` in der
-Outbox – gewollt, nichts verlässt die Demo.
+Outbox – gewollt, nichts verlässt die Demo. Mit einem `@domain`-Eintrag in
+`MAIL_DEMO_WHITELIST` (empfohlen: Sink-Domain `@demo.test` mit Mail-Senke)
+erhalten die Kunden der Mail-Übungsszenarien (`process.settlement.review`,
+`process.return.damage`/`.missing_part`, `conversation.email.*`) Adressen unter
+dieser Domain (z. B. `einkauf@demo.test`), damit Kundeninformationen und
+Kommunikationsantworten in der Demo tatsächlich zugestellt werden (Order §9);
+die Adressen gelten ab dem nächsten Seed/Reset, alle anderen Seed-Kunden
+bleiben unter example.com / example.invalid.

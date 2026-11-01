@@ -129,10 +129,17 @@ function renderDocument(
   });
 }
 
-/** Kennzeichnung im oberen Seitenrand (Folgeseiten) – Position/Schrift werden danach wiederhergestellt. */
+/**
+ * Kennzeichnung im oberen Seitenrand (Folgeseiten) – Position, Schrift, Größe
+ * und Füllfarbe werden danach wiederhergestellt. Review-Fix F3: `save`/`restore`
+ * sichern nur den Grafikzustand (q/Q); Schrift und Füllfarbe führt pdfkit
+ * daneben und schreibt sie bei jedem Textfragment neu – ohne Rücksetzen liefe
+ * der nach dem Seitenumbruch fortgesetzte Fließtext in der Band-Schrift.
+ */
 function drawEnvironmentBand(doc: PDFKit.PDFDocument, label: string): void {
   const x = doc.x;
   const y = doc.y;
+  const restoreTextState = captureTextState(doc);
   const top = 16;
   const width = doc.page.width - 2 * MARGIN;
   doc.save();
@@ -143,8 +150,51 @@ function drawEnvironmentBand(doc: PDFKit.PDFDocument, label: string): void {
     .fillColor('#000000')
     .text(label, MARGIN + 6, top + 5, { width: width - 12, lineBreak: false });
   doc.restore();
+  restoreTextState();
   doc.x = x;
   doc.y = y;
+}
+
+/** pdfkit-interne Felder des Textzustands (nicht Teil der Typdefinition; seit Jahren stabil). */
+interface PdfTextStateInternals {
+  _fontSource?: unknown;
+  _fontFamily?: unknown;
+  _fontSize?: unknown;
+  _font?: { name?: unknown } | null;
+  _fillColor?: unknown;
+}
+
+type PdfFillColor = Parameters<PDFKit.PDFDocument['fillColor']>[0];
+
+/**
+ * Schrift (Quelle/Familie bzw. Name), Größe und Füllfarbe merken und eine
+ * Funktion liefern, die sie über die öffentliche API wieder setzt. Fehlt ein
+ * Wert (andere pdfkit-Version), bleibt er unangetastet.
+ */
+function captureTextState(doc: PDFKit.PDFDocument): () => void {
+  const internals = doc as unknown as PdfTextStateInternals;
+  const source =
+    typeof internals._fontSource === 'string'
+      ? internals._fontSource
+      : typeof internals._font?.name === 'string'
+        ? internals._font.name
+        : null;
+  const family = typeof internals._fontFamily === 'string' ? internals._fontFamily : null;
+  const size = typeof internals._fontSize === 'number' ? internals._fontSize : null;
+  const fill = Array.isArray(internals._fillColor)
+    ? (internals._fillColor as [PdfFillColor, number | undefined])
+    : null;
+  return () => {
+    if (source !== null) {
+      if (family === null) doc.font(source);
+      else doc.font(source, family);
+    }
+    if (size !== null) doc.fontSize(size);
+    if (fill !== null) {
+      if (fill[1] === undefined) doc.fillColor(fill[0]);
+      else doc.fillColor(fill[0], fill[1]);
+    }
+  };
 }
 
 /** Kennzeichnung unter dem Kopf (erste Seite): fett, umrahmt, im Textfluss. */

@@ -830,6 +830,42 @@ describe('Phase 14 – Demo-Reset: Jobs, Outbox, Storage, Audit, Tokens (RESET)'
     }
   });
 
+  it(
+    'RF14-2. API-Runner (POST /staff/accounting/mock/run-due-jobs) trägt denselben Demo-Guard wie der Worker (Review-Fix F2, Order §21): ein beim Reset laufender Business-Job des alten Datensatzes wird nach dem Reset ohne Ausführung als dead/DEMO_DATASET_CHANGED beendet (kein Handler-Lauf)',
+    async () => {
+      const stale = await ctx.queue.enqueue(
+        'mail.send',
+        { deliveryId: randomUUID() },
+        { idempotencyKey: `rf14-2:stale:${randomUUID()}` },
+      );
+      const zombie = await claimAsZombie(stale.jobId);
+      expect((await demo.reset.reset({ actorId: adminId, now: new Date() })).ok).toBe(true);
+      expect((await jobRow(stale.jobId))?.status).toBe('processing'); // überlebt den Wipe
+      await zombie.reclaimExpired();
+      const reclaimed = await jobRow(stale.jobId);
+      expect(reclaimed?.status).toBe('pending');
+      expect(reclaimed!.createdAt.getTime()).toBeLessThan((await lastResetStartedAt()).getTime());
+      await makeDueFirst(stale.jobId);
+
+      const run = await ctx.app.inject({
+        method: 'POST',
+        url: '/staff/accounting/mock/run-due-jobs',
+        headers: { cookie: adminCookie },
+        payload: {},
+      });
+      expect(run.statusCode).toBe(200);
+      // Der Claim zählt als Versuch (+1); dead/DEMO_DATASET_CHANGED entsteht nur im Skip-Zweig
+      // VOR dem Handler (ohne Guard: succeeded). Kein Retry, kein weiterer Versuch.
+      expect(await jobRow(stale.jobId)).toMatchObject({
+        status: 'dead',
+        lastError: DEMO_DATASET_CHANGED_REASON,
+        attempts: reclaimed!.attempts + 1,
+      });
+      expect(await staleBusinessJobs()).toEqual([]);
+    },
+    RESET_TIMEOUT_MS,
+  );
+
   it('T57. Reset mehrfach sicher: nach mehreren Resets in dieser Datei ist der Zustand konsistent (kein Flag, Version aktuell, keine veralteten Business-Jobs); D-R1/D-R7/RF3 resetten ebenfalls mehrfach', async () => {
     const state = await demo.dataset.state();
     expect(state.resetInProgress).toBe(false);

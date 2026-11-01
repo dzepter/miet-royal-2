@@ -7,14 +7,18 @@ import {
   trainingDefinitions,
   trainingPathItems,
   trainingPaths,
+  type Database,
 } from '@mietroyal/database';
 import { and, asc, eq } from 'drizzle-orm';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { DEMO_MESSAGES } from '../src/demo/types.ts';
+import type { TrainingCatalog } from '../src/training/catalog.ts';
+import { TrainingCatalogService } from '../src/training/catalog-sync.ts';
 import { TRAINING_ERROR_CODES } from '../src/training/errors.ts';
 import { DEMO_RESET_INTERRUPTION_CODE } from '../src/training/training-service.ts';
 import { createTestContext, destroyTestContext, type TestContext } from './auth-helpers.ts';
 import { createCommerceWorld } from './commerce-helpers.ts';
+import { createEnvApp } from './env-app-helpers.ts';
 import { handoverServicesFor, scheduledBooking } from './handover-helpers.ts';
 import {
   adminSession,
@@ -815,5 +819,92 @@ describe('Datenminimierung (T89)', () => {
       'result',
       'stepKey',
     ]);
+  });
+});
+
+describe('RF14-6 – Katalog-Sync fail-soft beim Start, Lazy Retry (Review-Fix F6)', () => {
+  /** Sync, dessen erste `failures` Läufe scheitern (Simulation: Datenbank beim Start nicht erreichbar). */
+  class FlakyCatalogSync extends TrainingCatalogService {
+    calls = 0;
+
+    constructor(
+      db: Database,
+      private failures: number,
+    ) {
+      super(db);
+    }
+
+    override async sync(catalog?: TrainingCatalog, now?: Date) {
+      this.calls += 1;
+      if (this.failures > 0) {
+        this.failures -= 1;
+        const error = new Error('connect ECONNREFUSED 127.0.0.1:59999');
+        error.name = 'AggregateError';
+        throw error;
+      }
+      return super.sync(catalog, now);
+    }
+  }
+
+  it('RF14-6a. ensureSynced: ein Sync je Instanz (memoisiert, parallele Aufrufer teilen den Lauf); ein fehlgeschlagener Lauf wird nicht gemerkt – der nächste Aufruf synchronisiert erneut', async () => {
+    const flaky = new FlakyCatalogSync(dev.db, 1);
+    await expect(flaky.ensureSynced()).rejects.toThrow('ECONNREFUSED');
+    expect(flaky.calls).toBe(1);
+    const first = flaky.ensureSynced();
+    const second = flaky.ensureSynced();
+    expect(second).toBe(first);
+    expect(await first).toEqual({ definitions: 8, paths: 5, items: 8 });
+    expect(await flaky.ensureSynced()).toEqual({ definitions: 8, paths: 5, items: 8 });
+    expect(flaky.calls).toBe(2);
+  });
+
+  it('RF14-6b. Start-Sync scheitert ⇒ die App startet trotzdem (/health 200, /ready 200); die erste Trainingsroute holt den Sync nach (200, genau ein weiterer Lauf); dauerhaft scheiternder Sync ⇒ 503 TRAINING_CATALOG_UNAVAILABLE ohne Interna, jeder Zugriff versucht es erneut', async () => {
+    const { cookie } = await adminSession(dev);
+    const flaky = new FlakyCatalogSync(dev.db, 1);
+    const app = await createEnvApp(dev, 'development', { app: { trainingCatalog: flaky } });
+    try {
+      expect(flaky.calls).toBe(1); // Start-Sync versucht und gescheitert (fail-soft, kein Abbruch)
+      expect((await app.inject({ method: 'GET', url: '/health' })).statusCode).toBe(200);
+      expect((await app.inject({ method: 'GET', url: '/ready' })).statusCode).toBe(200);
+      const me = await app.inject({
+        method: 'GET',
+        url: '/staff/training/me',
+        headers: { cookie },
+      });
+      expect(me.statusCode, me.body).toBe(200);
+      expect(flaky.calls).toBe(2); // Lazy Retry beim ersten Zugriff
+      const definitions = await app.inject({
+        method: 'GET',
+        url: '/staff/training/definitions',
+        headers: { cookie },
+      });
+      expect(definitions.statusCode).toBe(200);
+      expect(definitions.json().definitions).toHaveLength(8);
+      expect(flaky.calls).toBe(2); // danach memoisiert
+    } finally {
+      await app.close();
+    }
+    const broken = new FlakyCatalogSync(dev.db, Number.POSITIVE_INFINITY);
+    const brokenApp = await createEnvApp(dev, 'development', {
+      app: { trainingCatalog: broken },
+    });
+    try {
+      for (const url of [
+        '/staff/training/me',
+        '/staff/training/definitions',
+        '/staff/training/admin/gates',
+      ]) {
+        const response = await brokenApp.inject({ method: 'GET', url, headers: { cookie } });
+        expect(response.statusCode, url).toBe(503);
+        expect(response.json().error, url).toMatchObject({
+          code: 'TRAINING_CATALOG_UNAVAILABLE',
+          message: 'Der Trainingskatalog ist vorübergehend nicht verfügbar.',
+        });
+        expect(response.body, url).not.toMatch(/ECONNREFUSED|59999|AggregateError|\n\s+at /);
+      }
+      expect(broken.calls).toBe(4); // Start + drei Zugriffe: kein „giftiger“ Merker
+    } finally {
+      await brokenApp.close();
+    }
   });
 });

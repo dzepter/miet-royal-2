@@ -147,7 +147,10 @@ export const TRAINING_DEFINITIONS: readonly TrainingDefinitionSpec[] = [
     instructions: [
       '1. Öffne die Abrechnung des Demo-Vorgangs mit offenen Klärungen.',
       '2. Entscheide die Klärungen (z. B. Schadenkosten) und prüfe die Positionen.',
-      '3. Bringe die Abrechnung in den Zustand „Bereit zur Buchhaltung“.',
+      // Review-Fix F8 (Order §25/§79): Belastungen verlangen die Kundeninformation per Mail –
+      // der Demo-Kunde dieses Szenarios trägt dafür die konfigurierte Demo-Testadresse.
+      '3. Berechnest du Schaden- oder Fehlteilkosten, prüfe die Kundeninformation und wähle „Freigeben und senden“. Nach dem bestätigten Versand beendest du das Wartefenster („Jetzt freigeben“) oder erfasst die Kundenrückmeldung. Bei „Nicht berechnen“ entfällt dieser Schritt.',
+      '4. Bringe die Abrechnung in den Zustand „Bereit zur Buchhaltung“.',
       TRAINING_MESSAGES.SETTLEMENT_DEMO_NOTE,
     ].join('\n'),
     evaluatorKey: 'settlement_review',

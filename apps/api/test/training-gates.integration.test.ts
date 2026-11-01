@@ -13,6 +13,7 @@ import type { FastifyInstance } from 'fastify';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { staffTrainingClearances, tours } from '@mietroyal/database';
 import { eq } from 'drizzle-orm';
+import { TrainingCatalogService } from '../src/training/catalog-sync.ts';
 import { TRAINING_FEATURE_KEYS } from '../src/training/features.ts';
 import {
   ADMIN_EMAIL,
@@ -41,6 +42,7 @@ import {
   setDefinitionActive,
   setRequirement,
 } from './training-gate-helpers.ts';
+import { catalogVariant } from './training-helpers.ts';
 import { inventoryServiceFor } from './warehouse-helpers.ts';
 
 let ctx: TestContext;
@@ -531,6 +533,55 @@ describe('T115–T116: inaktive/inkonsistente Definition', () => {
     });
     expect(disabled.status).toBe(200);
     expect((await apiOn(prod, staff.cookie)('POST', approveUrl(stocktakeId))).status).toBe(200);
+  });
+
+  it('RF14-H1. Katalog-Sync warnt (nur Log), wenn eine aktivierte Sperre auf eine jetzt inaktive Übung zeigt – kein Abbruch, kein Auto-Disable; das Gate bleibt fail-closed (wie T116), Re-Sync mit aktiver Übung ⇒ keine Warnung', async () => {
+    const { admin, cookie } = await adminSession();
+    const staff = await approver(admin.id);
+    const stocktakeId = await pendingStocktake(admin.id);
+    const api = apiOn(prod, cookie);
+    const enabled = await api('PUT', `/staff/training/admin/gates/${FEATURE}`, {
+      definitionKey: DEFINITION,
+      enabled: true,
+    });
+    expect(enabled.status).toBe(200);
+    const warnings: Record<string, unknown>[] = [];
+    const logger = {
+      info: () => undefined,
+      warn: (context: Record<string, unknown>) => {
+        warnings.push(context);
+      },
+    };
+    // Katalogvariante: Übung im Code deaktiviert (Order §71) – der Sync läuft durch und warnt.
+    const sync = new TrainingCatalogService(ctx.db, { logger });
+    const result = await sync.sync(
+      catalogVariant((catalog) => {
+        const definition = catalog.definitions.find((entry) => entry.key === DEFINITION);
+        if (definition === undefined) throw new Error('Übung fehlt im Katalog');
+        definition.active = false;
+      }),
+    );
+    expect(result.definitions).toBe(8);
+    expect(warnings).toEqual([{ featureKey: FEATURE, definitionKey: DEFINITION }]);
+    // Sperre unverändert aktiv ⇒ fail-closed (TRAINING_CONFIGURATION_INVALID), kein Auto-Disable.
+    const overview = await api('GET', '/staff/training/admin/gates');
+    const feature = overview.body.features.find(
+      (f: { featureKey: string }) => f.featureKey === FEATURE,
+    );
+    expect(feature.requirement).toMatchObject({ definitionKey: DEFINITION, enabled: true });
+    expect(feature.definition).toMatchObject({ key: DEFINITION, active: false });
+    const blocked = await apiOn(prod, staff.cookie)('POST', approveUrl(stocktakeId));
+    expect(blocked.status).toBe(403);
+    expect(blocked.body.error.code).toBe('TRAINING_CONFIGURATION_INVALID');
+    // Re-Sync mit dem Code-Katalog (Übung aktiv) ⇒ keine Warnung, Sperre greift regulär.
+    warnings.length = 0;
+    await sync.sync();
+    expect(warnings).toEqual([]);
+    expectTrainingRequired(
+      await apiOn(prod, staff.cookie)('POST', approveUrl(stocktakeId)),
+      FEATURE,
+      await definitionTitle(ctx.db, DEFINITION),
+    );
   });
 });
 

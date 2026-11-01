@@ -466,6 +466,35 @@ describe('T95/T96 settlement_review', () => {
     expect(demo.lexware.client).toBeNull();
     expect((await attemptRow(demo, attemptId)).status).toBe('passed');
   });
+
+  it('RF14-4. Keine Prüfung ohne Übergang (Review-Fix F4): eine manuelle Position auf einer bereits „bereiten“ Abrechnung (ohne Klärung) erzeugt kein settlement.reviewed – der Versuch bleibt in_progress; erst der Übergang nach ready_for_accounting zählt (T95)', async () => {
+    const { admin, cookie } = await adminSession(demo);
+    // Rückgabe ohne Schäden/Fehlteile ⇒ Abrechnung sofort „Bereit zur Buchhaltung“.
+    const { view } = await settledReturn(demo, admin.id, cookie);
+    expect(view.settlement.status).toBe('ready_for_accounting');
+    const reviewer = await trainee(
+      demo,
+      admin.id,
+      ['settlement.view', 'settlement.release', 'settlement.add_manual_charge', 'process.view_all'],
+      'Pruefung',
+    );
+    const api = apiFor(demo.app, reviewer.cookie);
+    const attemptId = await startedAttemptId(api, 'settlement_review');
+    const line = await api('POST', `/staff/settlements/${view.settlement.id}/lines`, {
+      type: 'manual_charge',
+      description: 'Prüfvermerk',
+      amountCents: 100,
+      version: view.settlement.version,
+    });
+    expect(line.status, JSON.stringify(line.body)).toBe(200);
+    expect(line.body.settlement.status).toBe('ready_for_accounting'); // war bereits bereit
+    expect((await attemptRow(demo, attemptId)).status).toBe('in_progress');
+    expect(await eventsOf(demo, attemptId)).toEqual([]);
+    // „Übung prüfen“ bestätigt: offener Schritt, kein Bestehen.
+    const check = await checkAttempt(api, attemptId);
+    expect(check.status).toBe(200);
+    expect((await attemptRow(demo, attemptId)).status).toBe('in_progress');
+  });
 });
 
 describe('T97/T98 Fachrechte und Pflichtschritte', () => {

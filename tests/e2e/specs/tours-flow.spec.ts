@@ -957,8 +957,11 @@ test('I Reschedule: Termin während der Tour verschoben ⇒ Route veraltet ⇒ n
   // Incident wird aufgelöst, kein weiterer Push (Order §55).
   await fritzContext.setGeolocation(MAINZ_NEAR);
   await fritz.reload();
+  // Phase 14 (§112): dieselbe robuste Wartezeit wie die übrigen fachlichen Polls (30 s) –
+  // die Warnung erscheint erst, wenn die Seite den Serverstand „veraltet“ nachgeladen hat.
   await expect(fritz.getByTestId('active-tour-warnings')).toContainText(
     'Route veraltet – neu berechnen',
+    { timeout: 30_000 },
   );
   // Server-Rate-Limit (1 Update je 10 s je Tour) abwarten, sonst zählt der Client ein 429 als gesendet.
   await fritz.waitForTimeout(LOCATION_GAP_MS);

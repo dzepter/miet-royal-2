@@ -1,7 +1,13 @@
 import { settlements } from '@mietroyal/database';
 import { eq } from 'drizzle-orm';
 import type { DemoScenario, DemoSeedContext } from '../context.ts';
-import { DEMO_ADDRESSES, DEMO_CUSTOMERS, DEMO_MACHINES, DEMO_SEED_KEYS } from '../data.ts';
+import {
+  DEMO_ADDRESSES,
+  DEMO_CUSTOMERS,
+  DEMO_MACHINES,
+  DEMO_SEED_KEYS,
+  withDemoTestAddress,
+} from '../data.ts';
 import {
   acceptDemoOffer,
   confirmDemoBooking,
@@ -62,12 +68,16 @@ async function issuedPickupBooking(
   return { processId, bookingId, customerId };
 }
 
-/** Rückgabe mit Schaden: Klärung „Schadenskosten“ offen, Maschine seit > 24 h in Reinigung (Warnung). */
+/**
+ * Rückgabe mit Schaden: Klärung „Schadenskosten“ offen, Maschine seit > 24 h in
+ * Reinigung (Warnung). Kunde mit Demo-Testadresse (Order §9): eine berechnete
+ * Belastung erfordert die Kundeninformation per Mail.
+ */
 export const returnDamageScenario: DemoScenario = {
   name: 'process.return.damage',
   async run(ctx) {
     const { processId, bookingId } = await issuedPickupBooking(ctx, {
-      customer: DEMO_CUSTOMERS.returnDamage,
+      customer: withDemoTestAddress(ctx.config, DEMO_CUSTOMERS.returnDamage),
       inquiry: {
         eventInDays: -3,
         guestCount: 45,
@@ -109,12 +119,15 @@ export const returnDamageScenario: DemoScenario = {
   },
 };
 
-/** Rückgabe mit Fehlteil (Deckel): Klärung „Fehlteilkosten“ offen, Fehlteil-Nachverfolgung aktiv. */
+/**
+ * Rückgabe mit Fehlteil (Deckel): Klärung „Fehlteilkosten“ offen, Fehlteil-
+ * Nachverfolgung aktiv. Kunde mit Demo-Testadresse (Order §9).
+ */
 export const returnMissingPartScenario: DemoScenario = {
   name: 'process.return.missing_part',
   async run(ctx) {
     const { processId, bookingId } = await issuedPickupBooking(ctx, {
-      customer: DEMO_CUSTOMERS.returnMissing,
+      customer: withDemoTestAddress(ctx.config, DEMO_CUSTOMERS.returnMissing),
       inquiry: {
         eventInDays: -2,
         guestCount: 30,
@@ -155,13 +168,19 @@ export const returnMissingPartScenario: DemoScenario = {
 /**
  * Abrechnung in Prüfung (Organisation, Lieferung): Schaden + Fehlteil +
  * Reinigungsmangel + teilweise ungeöffnet zurückgegebene Kommissionsware –
- * mehrere offene Klärungen (Status „Klärung erforderlich“).
+ * mehrere offene Klärungen (Status „Klärung erforderlich“). Der Kunde trägt
+ * die Demo-Testadresse (Order §9): Berechnet der Trainee Kosten, kann die
+ * Kundeninformation tatsächlich versendet und die Abrechnung bis „Bereit zur
+ * Buchhaltung“ gebracht werden (Übung `settlement_review`, Order §79).
  */
 export const settlementReviewScenario: DemoScenario = {
   name: 'process.settlement.review',
   async run(ctx) {
     const acceptedAt = ctx.clock.at(-12, 10, 0);
-    const customerId = await createDemoCustomer(ctx, DEMO_CUSTOMERS.settlementReview);
+    const customerId = await createDemoCustomer(
+      ctx,
+      withDemoTestAddress(ctx.config, DEMO_CUSTOMERS.settlementReview),
+    );
     const { processId } = await createDemoProcess(ctx, {
       customerId,
       source: 'website',

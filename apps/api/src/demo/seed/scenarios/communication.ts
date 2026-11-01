@@ -1,12 +1,15 @@
 import type { DemoScenario } from '../context.ts';
-import { DEMO_CUSTOMERS, DEMO_SEED_KEYS } from '../data.ts';
+import { DEMO_CUSTOMERS, DEMO_SEED_KEYS, withDemoTestAddress } from '../data.ts';
 
 /**
  * Kommunikation (Order §10): eingehende Kunden-E-Mail zum Angebotsentwurf
  * (ConversationService.createInbound – der Service-Einstieg des IMAP-
  * Eingangs) und eine Staff-Antwort über ConversationService.replyByEmail
  * (Mail-Outbox; in der Demo ohne Whitelist-Eintrag `blocked`, nie ein echter
- * Versand). Zusätzlich eine unbeantwortete Anfrage-Mail als Übungsaufgabe.
+ * Versand – mit konfigurierter Demo-Testdomain (Order §9) `queued`, der
+ * Demo-Worker stellt sie an die Senke zu). Zusätzlich eine unbeantwortete
+ * Anfrage-Mail als Übungsaufgabe (Kommunikations-Übung: die Antwort an die
+ * Demo-Testadresse kann tatsächlich `sent` werden, Order §78).
  * WhatsApp-Eingänge gibt es in der Demo nur über den (simulierten) Webhook –
  * hier bewusst nicht per Fixture eingespielt.
  */
@@ -14,6 +17,9 @@ export const communicationScenario: DemoScenario = {
   name: 'communication',
   async run(ctx) {
     const { conversations, outbox } = ctx.services;
+    // Absenderadressen = Kundenadressen des Seeds (ggf. Demo-Testdomain, siehe customers.ts).
+    const orgBasic = withDemoTestAddress(ctx.config, DEMO_CUSTOMERS.orgBasic);
+    const privateBasic = withDemoTestAddress(ctx.config, DEMO_CUSTOMERS.privateBasic);
     const draftProcessId = await ctx.resolve(DEMO_SEED_KEYS.processOfferDraft);
     const orgCustomerId = await ctx.resolve(DEMO_SEED_KEYS.customerOrgBasic);
     const inbound = await conversations.createInbound({
@@ -21,8 +27,8 @@ export const communicationScenario: DemoScenario = {
       customerId: orgCustomerId,
       channel: 'email',
       sender: {
-        name: DEMO_CUSTOMERS.orgBasic.contactPerson,
-        email: DEMO_CUSTOMERS.orgBasic.email,
+        name: orgBasic.contactPerson ?? null,
+        email: orgBasic.email,
       },
       subject: 'Rückfrage zum Angebot – Sommerfest',
       body:
@@ -56,8 +62,8 @@ export const communicationScenario: DemoScenario = {
       customerId: privateCustomerId,
       channel: 'email',
       sender: {
-        name: `${DEMO_CUSTOMERS.privateBasic.firstName} ${DEMO_CUSTOMERS.privateBasic.lastName}`,
-        email: DEMO_CUSTOMERS.privateBasic.email,
+        name: `${privateBasic.firstName} ${privateBasic.lastName}`,
+        email: privateBasic.email,
       },
       subject: 'Frage zur Abholung',
       body:

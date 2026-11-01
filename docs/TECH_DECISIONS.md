@@ -3814,6 +3814,37 @@ Vom Auftraggeber bestätigt (2026-10-31, Phase 13 Final §6) – nicht mehr offe
   Fehlt jede Mietbedingungen-Version, legt der Seed einen klar als TEST
   markierten Platzhalter an (`TEST-Platzhalter Demo v1`, `is_test`) – nie
   einen Rechtstext.
+- **Demo-Testadressen im Seed (Order §9 „konfigurierte Demo-Testadresse“,
+  §25/§78/§79; Review-Fix F8)**: Die Kunden der Trainingsszenarien mit
+  Mailabläufen – Lena Beispiel (`conversation.email.unanswered` zu
+  `process.inquiry.new`), Musterverein (`conversation.email.inbound`/`.reply`
+  zu `process.offer.draft`), Rückgabe mit Schaden/Fehlteil
+  (`process.return.damage`/`.missing_part`) und Beispiel-Werke GmbH
+  (`process.settlement.review`) – erhalten ihre Adresse über
+  `withDemoTestAddress`/`demoCustomerEmail` (`seed/data.ts`,
+  `DEMO_MAIL_EXERCISE_CUSTOMERS`): enthält `MAIL_DEMO_WHITELIST` der Demo-
+  Konfiguration mindestens einen `@domain`-Eintrag, lautet sie
+  `<lokalteil>@<erste Whitelist-Domain>` (Lokalteil wie bisher, z. B.
+  `einkauf@demo.test`); sonst bleibt die Beispieldomain. Grund: Eine
+  berechnete Belastung verlangt die Kundeninformation per Mail
+  (`customer_notice_required` ⇒ „Freigeben und senden“ ⇒ bestätigter Versand
+  ⇒ `customer_waiting` ⇒ „Jetzt freigeben“/Kundenrückmeldung ⇒
+  `ready_for_accounting`), die Kommunikations-Übung eine tatsächlich `sent`-
+  Antwort (§42: queued ist nicht sent); ohne erreichbare Adresse bliebe jede
+  Mail `blocked` (DEMO_NOT_WHITELISTED) und die Übung in einer Sackgasse. Alle
+  übrigen Kunden (insbesondere `process.offer.sent`) behalten example.com /
+  example.invalid – die Demo zeigt damit weiterhin blockierte Zustellungen.
+  Vollständige Whitelist-Adressen (`tester@…`) werden nie an Kunden vergeben,
+  andere reale Domains nie; die Whitelist bleibt beim Einreihen UND vor dem
+  Versand maßgeblich (Phase 12), Betreff immer „[DEMO] …“. Das Demo-
+  Deployment sollte dafür eine Sink-Domain (z. B. `@demo.test`, reservierte
+  TLD) mit Mail-Senke whitelisten; Mails mit Links (Angebote) brauchen zudem
+  `MAIL_PUBLIC_WEB_BASE_URL` (sonst `blocked`/`PUBLIC_WEB_BASE_URL_MISSING`).
+  Die Adressen gelten ab dem nächsten Seed/Reset. Die Übungsanleitung
+  `settlement_review` nennt den Mailschritt (Katalogtext, keine neue
+  Version). Tests: `demo-seed.integration.test.ts` D-S4 (ohne Domain), D-S4b
+  (mit Domain), D-S14 (Belastung bis „Bereit zur Buchhaltung“ ohne
+  Übertragung, Übung `settlement_review` bestanden).
 - **Zeitlogik ausschließlich relativ zu `now`** (Order §12): `now` ist
   injizierbar (`seed({ actorId, now })`), alle Zeitpunkte entstehen über
   `createDemoClock(now)` (Berliner Kalendertage, DST-fest). Nicht injizierbar
@@ -3822,15 +3853,22 @@ Vom Auftraggeber bestätigt (2026-10-31, Phase 13 Final §6) – nicht mehr offe
   Routenberechnung der Tour „morgen“ nutzt das spätere von `now` und Echtzeit,
   weil die Depot-Einstellung den echten Schreibzeitpunkt trägt und eine
   „früher“ berechnete Route sofort als veraltet gälte.
-- **Reset-Mechanik** (`DemoResetService`, Design §6): Phase A (kurze Tx:
+- **Reset-Mechanik** (`DemoResetService`, Design §6): Lauf-Lock (Review-Fix
+  F1, Order §20 „global serialisiert“: Session-Advisory-Lock
+  `pg_try_advisory_lock(hashtext('demo-reset-run'))` auf einer dedizierten
+  Pool-Verbindung VOR Phase A, Freigabe im `finally` nach Phase D – auch bei
+  Fehlern; belegt ⇒ sofort `CONFLICT/DEMO_RESET_RUNNING`; deckt damit auch
+  Schutzfenster, Phase C und D ab, und bei einem Prozessabbruch gibt
+  PostgreSQL ihn mit der Verbindung frei), Phase A (kurze Tx:
   Singleton-Zeile `FOR UPDATE`, `pg_try_advisory_xact_lock(hashtext('demo-
   reset'))`, laufender Reset jünger als `DEMO_RESET_STALE_MS` = 10 min
   (Review F8, vorher 30 min) ⇒ `CONFLICT/DEMO_RESET_RUNNING`, sonst
   `reset_in_progress` setzen), Schutzfenster (Review F4: `settleDelayMs`,
   Default Gate-Cache-TTL 1 s + 200 ms, damit API-/Worker-Caches ablaufen und
   bereits angenommene Anfragen committen; Tests setzen 0), Phase B (eine Tx
-  unter blockierendem Advisory-Lock: Hook `beforeBusinessWipe(tx)` – WARTET
-  Trainingsschema –, 73 Business-Tabellen (69 FK-gebundene + 4 FK-freie,
+  unter blockierendem Advisory-Lock: Hook `beforeBusinessWipe(tx)` –
+  verdrahtet in app.ts und CLI, unterbricht laufende Trainingsversuche (Order
+  §94) –, 73 Business-Tabellen (69 FK-gebundene + 4 FK-freie,
   `DEMO_BUSINESS_TABLES_DELETE_ORDER`; Review F5: zusammen mit der Behalten-
   Liste unten sind alle 102 Tabellen der Datenbank abgedeckt, Reviewer-
   Prüfung R7) in expliziter FK-sicherer Reihenfolge per `DELETE` ohne
@@ -3876,10 +3914,12 @@ Vom Auftraggeber bestätigt (2026-10-31, Phase 13 Final §6) – nicht mehr offe
   (`resetStale`, neuer Reset erlaubt). Früher löst nur die CLI auf: `pnpm
   demo:reset --force` (`DemoResetService.releaseStaleReset`) markiert ein
   hängendes Flag sofort als abgelaufen und startet den Reset neu – aber nur,
-  wenn kein Prozess den Advisory-Lock hält (sonst DEMO_RESET_RUNNING); Phase
-  C/D halten den Lock nicht, der Schalter ist deshalb ein bewusster Admin-
-  Eingriff für den Fall „kein Reset-Prozess läuft mehr“. Kein Override über
-  die Route oder die UI.
+  wenn kein Prozess den Lauf-Lock (Session-Lock über alle Phasen A–D, Review-
+  Fix F1) oder den Xact-Lock der Phase B hält (sonst DEMO_RESET_RUNNING);
+  „Lock belegt“ gilt damit für die gesamte Laufzeit eines Resets, nicht mehr
+  nur für Phase B. Der Schalter bleibt ein bewusster Admin-Eingriff für den
+  Fall „kein Reset-Prozess läuft mehr“ (Flag ohne Lock-Inhaber). Kein
+  Override über die Route oder die UI.
 - **W1 – entschieden und gebaut (Auftrag Teil 2, W1/§29/§30; MASTER_SPEC
   §29 „Keine Lexware-Simulation/echte Übertragung“)**: siehe Abschnitt
   „Phase 14: W1 Lexware/Accounting in der Demo“ unten. Der frühere
@@ -3900,7 +3940,9 @@ Vom Auftraggeber bestätigt (2026-10-31, Phase 13 Final §6) – nicht mehr offe
   Business-Jobs (`DEMO_BUSINESS_JOB_TYPES`, `apps/api/src/demo/job-types.ts`,
   plus Retention-Jobs `scope: 'photos'`) in pending/dead/succeeded; ein beim
   Reset laufender Job (`processing`) überlebt die Löschung und wird beim nächsten
-  Claim vom Guard (`createDemoJobGuard`, Worker und API-Runner in demo) ohne
+  Claim vom Guard (`createDemoJobGuard`; Worker `apps/worker/src/main.ts` und
+  – seit Review-Fix F2 – auch der API-Runner der Mock-Steuerung
+  `run-due-jobs`, `createDemoWorkerGuard` im Demo-Block von `app.ts`) ohne
   Ausführung als `dead` mit `last_error = DEMO_DATASET_CHANGED` beendet, wenn
   `created_at < last_reset_started_at` (Runner-Entscheidung `{ skip }`,
   `JobQueue.markDead`; `runOnce()` ⇒ `'skipped'`). Eine UUID-Kollision ist keine
@@ -4119,6 +4161,14 @@ Vom Auftraggeber bestätigt (2026-10-31, Phase 13 Final §6) – nicht mehr offe
   `createEnvApp`/`withEnvApp`, Auth-Secret vom Testkontext ⇒ Session-Cookies
   austauschbar); T117 prüft alle acht Routen und den Offline-Sync, T113
   statisch, dass `requireTrainingGate` nur an den acht Zielen vorkommt.
+- **Katalog-Deaktivierung vs. aktive Sperre (Review 14b, Härtung):**
+  deaktiviert der Code-Katalog eine Übung (`active: false`, §71), auf die in
+  production eine aktivierte Sperre zeigt, blockiert das Gate die Funktion
+  beim nächsten Deploy fail-closed für alle (§97). Der Katalog-Sync
+  (`catalog-sync.ts`) prüft deshalb nach dem Upsert jede aktivierte
+  `training_feature_requirements`-Zeile gegen ihre Definition und loggt je
+  Treffer `warn` mit `featureKey`/`definitionKey` – kein Abbruch, kein
+  Auto-Disable (Admin-Entscheidung, §98; Test RF14-H1).
 - **Bewusst nicht gebaut:** keine Gates auf Lese-Routen, Login, Kalender-,
   Dokument- oder Trainingsansicht (§99); keine Sperrkonfiguration in der Demo;
   kein Caching von Freigaben; keine neuen Rechte (§86).
@@ -4135,8 +4185,18 @@ Vom Auftraggeber bestätigt (2026-10-31, Phase 13 Final §6) – nicht mehr offe
   Datenbank gespiegelt (eine Transaktion unter
   `pg_advisory_xact_lock(hashtext('training-catalog-sync'))`; Upsert nach `key`;
   Pfad-Elemente mit Zwei-Schritt-Resequenzierung – ein positiver Offset statt
-  negativer Werte, weil der CHECK `sequence >= 1` verlangt; nie löschen; ein
-  Sync-Fehler bricht den Start ab und loggt nur die Fehlerklasse). Demo und Live
+  negativer Werte, weil der CHECK `sequence >= 1` verlangt; nie löschen).
+  Review-Fix F6 – Sync beim Start fail-soft, Lazy Retry: scheitert der Start-
+  Sync (z. B. Datenbank beim Start nicht erreichbar), startet die API trotzdem
+  (`/ready` meldet wie bisher 503, Log nur `errorName`);
+  `TrainingCatalogService.ensureSynced()` (memoisiertes Promise – parallele
+  Aufrufer teilen den Lauf, ein fehlgeschlagener Lauf wird nicht gemerkt) holt
+  den Sync beim ersten Zugriff nach: alle `/staff/training/*`-Routen (inkl.
+  Gate-Verwaltung, `requireTrainingCatalog`) und `TrainingGateService` vor dem
+  Laden eines Requirements rufen ihn vorab; schlägt er erneut fehl, antworten
+  die Routen 503 `TRAINING_CATALOG_UNAVAILABLE` („Der Trainingskatalog ist
+  vorübergehend nicht verfügbar.“) ohne Interna (Tests RF14-6a/b,
+  `ready.integration`). Demo und Live
   referenzieren sich ausschließlich über die stabilen Keys; `requiredPermissions`
   (anyOf/allOf) sind keine neuen Rechte, sondern die Vorbedingung beim Start
   (§55). `TRAINING_FEATURES` liegt in `features.ts` (Gates) und wird über
@@ -4149,8 +4209,11 @@ Vom Auftraggeber bestätigt (2026-10-31, Phase 13 Final §6) – nicht mehr offe
   boolean` – true nur, wenn dieser Aufruf finalisiert hat; damit zählt weder
   die idempotente Wiederholung noch die parallele Finalisierung), Tour (planen
   nur bei `planningStatus = planned`, `ready` nur beim Übergang draft→ready,
-  `start`/`end` nur bei `started`/`ended = true`), Settlement (nur wenn die
-  resultierende View `ready_for_accounting` ist – die Übung endet VOR der
+  `start`/`end` nur bei `started`/`ended = true`), Settlement (nur beim
+  ÜBERGANG nach `ready_for_accounting`: Status vor der Aktion – die vor dem
+  Fachaufruf geladene Zeile – ≠ `ready_for_accounting` und resultierende View
+  `ready_for_accounting`; Review-Fix F4: eine Positionsänderung auf einer
+  bereits bereiten Abrechnung ist keine Prüfung – die Übung endet VOR der
   externen Übertragung, §79), Reinigungsabschluss, Inventur (Zählung nur mit
   Differenz, Freigabe), Offline-Sync (Akteur = Sync-User) sowie Mail-/WhatsApp-
   Antworten erst mit bestätigtem Versand (`MailSentListener` für

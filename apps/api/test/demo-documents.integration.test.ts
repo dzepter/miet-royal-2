@@ -1,5 +1,5 @@
 import { documents } from '@mietroyal/database';
-import { PDF_TITLE_PREFIX_DEMO } from '@mietroyal/documents';
+import { PDF_TITLE_PREFIX_DEMO, renderOfferPdf, type OfferPdfData } from '@mietroyal/documents';
 import { eq } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
@@ -173,4 +173,84 @@ describe('Phase 14 – Demo-Kennzeichnung der PDFs (Order §89)', () => {
     const rendered = await renderAll(dev, admin.id);
     for (const [what, bytes] of Object.entries(rendered)) expectLabel(bytes, false, what);
   }, 120_000);
+});
+
+// ── Review-Fix F3: Schriftzustand nach dem Seitenumbruch (ohne Datenbank) ──────
+
+/** Inhaltsströme (Seiten) in Dateireihenfolge – pdfkit schreibt unkomprimiert (`compress: false`). */
+function pageContentStreams(bytes: Buffer): string[] {
+  const raw = bytes.toString('latin1');
+  const streams: string[] = [];
+  for (const match of raw.matchAll(/stream\r?\n([\s\S]*?)\r?\nendstream/g)) {
+    const body = match[1] ?? '';
+    if (body.includes('BT')) streams.push(body);
+  }
+  return streams;
+}
+
+/** Tf-Operatoren (Schrift-ID + Größe) eines Inhaltsstroms in Reihenfolge. */
+function fontOperators(stream: string): string[] {
+  return [...stream.matchAll(/\/(F\d+) ([\d.]+) Tf/g)].map((m) => `${m[1]} ${m[2]}`);
+}
+
+/** Angebot mit langen Mietbedingungen (Helvetica 8) ⇒ mehrere Seiten durch automatischen Umbruch. */
+function longTermsOffer(): OfferPdfData {
+  return {
+    processNumber: 'MR-2026-0001',
+    versionNumber: 1,
+    customerName: 'Lena Beispiel',
+    customerAddressLines: ['Beispielweg 1', '55116 Mainz'],
+    eventDateLabel: '01.12.2026',
+    eventTimeLabel: null,
+    fulfillmentLabel: 'Selbstabholung',
+    lineItems: [
+      {
+        description: 'Slush-Maschine 1×10 l',
+        quantity: 1,
+        unit: 'Stück',
+        agreedUnitPriceCents: 9900,
+        totalCents: 9900,
+        billingMode: 'fixed',
+      },
+    ],
+    machineSubtotalCents: 9900,
+    discountCents: 0,
+    discountLabel: null,
+    voucher: null,
+    fixedTotalCents: 9900,
+    commissionMaxCents: 0,
+    validUntilLabel: '10.12.2026',
+    termsLabel: 'TEST',
+    termsContent: Array.from(
+      { length: 120 },
+      (_, i) =>
+        `${i + 1}. Dies ist ein langer Absatz der Mietbedingungen, der das Angebotsdokument über mehrere Seiten laufen lässt. Der Mieter verpflichtet sich zur pfleglichen Behandlung der Maschine.`,
+    ).join('\n'),
+    createdAtLabel: '31.10.2026',
+  };
+}
+
+describe('RF14-3 – Demo-Band und Schriftzustand auf Folgeseiten (Review-Fix F3, Order §89)', () => {
+  it('RF14-3. Nach dem Band (Helvetica-Bold 9) läuft der fortgesetzte Fließtext in seiner eigenen Schrift weiter: die Tf-Folge der Folgeseite nach dem Band entspricht der Folgeseite ohne Label; das Label steht weiterhin auf jeder Seite', async () => {
+    const labelled = pageContentStreams(
+      await renderOfferPdf(longTermsOffer(), { environmentLabel: PDF_DEMO_ENVIRONMENT_LABEL }),
+    );
+    const plain = pageContentStreams(await renderOfferPdf(longTermsOffer()));
+    expect(labelled.length).toBeGreaterThanOrEqual(3);
+    expect(plain.length).toBeGreaterThanOrEqual(3);
+    // Zweite Seite: in beiden Dokumenten eine volle Seite Mietbedingungen (Helvetica 8).
+    const labelledOps = fontOperators(labelled[1]!);
+    const plainOps = fontOperators(plain[1]!);
+    expect(plainOps.length).toBeGreaterThan(1);
+    expect(new Set(plainOps).size).toBe(1); // ohne Label: durchgehend eine Schrift
+    expect(labelledOps[0]).toMatch(/ 9$/); // erster Tf der Folgeseite: das Band
+    expect(labelledOps[0]).not.toBe(plainOps[0]);
+    expect(labelledOps.slice(1)).toEqual(plainOps); // danach exakt die Fließtext-Schrift
+    for (const [index, page] of labelled.entries()) {
+      expect(
+        /keine\s*echten\s*Kundendaten/.test(pdfText(Buffer.from(page, 'latin1'))),
+        `Seite ${index + 1}: Label`,
+      ).toBe(true);
+    }
+  });
 });
