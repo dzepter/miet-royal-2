@@ -387,18 +387,20 @@ die App-Shell mit Service Worker brauchen.
 | B Demo Seed | `training-demo.spec.ts` (demo-communication) | Reset per API, Registry inkl. `voucher.situation` (ein aktiver Fixture-Gutschein ohne Transfer), Audit nur Meta, `storageCleanup` 0/0 |
 | C Demo Reset | `demo-environment.spec.ts` („C/D3–C/D7“) | Rechte, Dialog, 503-Gate, Datensatz, Staff-Daten bleiben |
 | D Reset + Offline Epoch | `training-demo.spec.ts` | Arbeitspaket mit Epoch, offline erfasste Übergabe-Prüfung, Admin-Reset per API, online ⇒ `dataset-changed-banner`/`-dialog`, „Später“ (keine Sync), Bestätigen ⇒ Pending 0, neue Epoch, neuer Seed ohne Prüfung/Fotos/Unterschriften |
-| E Offer Training | `training-demo.spec.ts` | Rabatt auf den Seed-Entwurf + Versand ⇒ bestanden; Prüfung vorher ⇒ offener Schritt |
+| E Offer Training | `training-demo.spec.ts` | Rabatt auf den Seed-Entwurf + Versand ⇒ bestanden; Prüfung vorher ⇒ offener Schritt; Angebotsmail an die Demo-Testadresse `verein@demo.test` pending ⇒ `run-due-jobs` ⇒ Senke „[DEMO] Dein Angebot …“ ⇒ sent |
 | F Handover Training | `training-demo.spec.ts` | Übergabe-Wizard vollständig ⇒ bestanden |
 | G Return Training | `training-demo.spec.ts` | Rückgabe-Wizard ohne Beanstandung ⇒ bestanden, Pfad abgeschlossen |
 | H Tour Training | `training-demo.spec.ts` | eigene Tour (Stopp heute via `e2e-tours-seed`) ⇒ bereit/starten/beenden ⇒ bestanden, Routing Mock ohne Provider-Request |
 | I Communication Training | `training-demo.spec.ts` | E-Mail-Antwort an `@demo.test` ⇒ queued zählt nicht ⇒ `run-due-jobs` ⇒ sent ⇒ bestanden |
+| F7 Freie Übung (Review-Fix F7) | `training-demo.spec.ts` | Mitarbeiterin ohne Zuweisung besteht `communication_reply` unter „Weitere Übungen“ (Antwort an `lena.beispiel@demo.test`, Seed `conversation.email.unanswered`) ⇒ nach Reload `data-state=passed` mit „Bestanden am“, ohne „Übung starten“, genau ein Versuch, `/me.definitions[].attempt` |
 | J Settlement Training | `training-demo.spec.ts` | Klärungen „Nicht berechnen“ ⇒ „Bereit zur Buchhaltung“, Demo-Hinweis, kein Transfer (auch nach Jobs) |
+| J2 Settlement mit Belastung (Review-Fix F8/F4) | `training-demo.spec.ts` | Reset per API, Trainee mit `settlement.release` + `settlement.end_pre_notice_wait`: 50,00 € + 15,00 € ⇒ „Kundeninformation prüfen“ ⇒ „Freigeben und senden“ (pending, „Übung prüfen“ offen, kein `settlement.reviewed`) ⇒ `run-due-jobs` ⇒ Senke „[DEMO] …“ an `einkauf@demo.test` ⇒ `customer_waiting` ⇒ „Jetzt freigeben“ ⇒ „Bereit zur Buchhaltung“ ⇒ bestanden (genau ein akzeptiertes Ereignis), kein Transfer |
 | K Admin Progress | `training-demo.spec.ts` | Zuweisung, Fortschritt 3/3, Fehlprüfung + Ereignis ohne Businessdaten, Training-Reset, Trainee startet neu |
 | L Production Gate blockiert | `training-gates.spec.ts` (production-gates) | Sperre `offer.send` ⇒ UI-Hinweis, Entwurf bleibt, API 403, `/training` „offen“ |
 | M Verified Demo erlaubt | `training-gates.spec.ts` | Freigabe `verified_demo` ⇒ Senden klappt, Zeile ohne Demo-Daten |
 | N Override / Revoke | `training-gates.spec.ts` | Widerruf sofort wirksam, Override ohne Grund = Formularfehler, mit Grund erlaubt, Widerruf, Audit ohne Begründung |
 | O Definition Update Stability | `training-demo.spec.ts` | `scripts/e2e-training-catalog-bump.ts` (Version +1, Titel) ⇒ bestanden bleibt, Katalog zeigt Version 2, danach `restore` |
-| P Demo Provider Isolation | `training-demo.spec.ts` | Accounting disabled/Webhook 404/Mock 409, WhatsApp `mock-…` ohne Graph-Request, Routing Mock ohne Fake-Request, Nicht-Whitelist-Mail blocked mit „[DEMO]“, keine Secrets |
+| P Demo Provider Isolation | `training-demo.spec.ts` | Accounting disabled/Webhook 404/Mock 409, WhatsApp `mock-…` ohne Graph-Request, Routing Mock ohne Fake-Request, Nicht-Whitelist-Mail (`process.offer.sent`, example.com) blocked mit „[DEMO]“, keine Secrets |
 | Q Live↔Demo Wechsel | `demo-environment.spec.ts` („Q/D2“) | neues Fenster ohne Session/IDs/Token |
 
 - Projekt `production-gates`: API 3110 mit `APP_ENV=production`, Datenbank
@@ -413,6 +415,13 @@ die App-Shell mit Service Worker brauchen.
 - Sperrfenster (Berlin): `training-demo.spec.ts` (H) und `tours-demo.spec.ts` nicht zwischen
   23:38 und 00:02 starten, `tours-flow.spec.ts` nicht zwischen 22:43 und 00:02 (Resttag zu
   kurz, siehe Kopfkommentare).
+- Demo-Testadressen (Review-Fix F8): Die Demo-API des Projekts läuft mit
+  `MAIL_DEMO_WHITELIST=@demo.test`; fünf Seed-Kunden der Mail-Übungen tragen deshalb
+  `<lokalteil>@demo.test` (`lena.beispiel`, `verein`, `miriam.demoperson`, `jana.beispielhaft`,
+  `einkauf`), alle anderen example.*. Ein Seed/Reset erzeugt dadurch eingereihte (`pending`)
+  Mails an diese Adressen (plus `mail.send`-Jobs); ohne Worker verlässt nichts die Umgebung –
+  erst `run-due-jobs` stellt sie an die Senke zu. Senken-Prüfungen filtern daher immer nach
+  Empfänger + Betreff (`demo-environment.spec.ts` C/D4/C/D6, `training-demo.spec.ts` E/F7/J2/P).
 
 ## Definition of Done
 Fachregel korrekt, Rechte serverseitig, Validierung, Fehlerfall,

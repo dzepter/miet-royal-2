@@ -7,7 +7,9 @@
  *   inkl. `voucher.situation` (Fixture-Gutschein ohne Transfer), Audit
  *   `demo.reset_started`/`demo.reset_completed` nur mit Meta-Details.
  * - E Offer Training: Entwurf bearbeiten (Rabatt) + versenden ⇒ bestanden;
- *   „Übung prüfen“ vor dem Versand ⇒ „Noch nicht vollständig“.
+ *   „Übung prüfen“ vor dem Versand ⇒ „Noch nicht vollständig“; Angebotsmail an
+ *   die Demo-Testadresse des Seed-Kunden (Review-Fix F8, Whitelist-Domain):
+ *   pending ⇒ Job `mail.send` ⇒ Senke „[DEMO] …“ ⇒ sent.
  * - F Handover Training: Übergabe-Wizard vollständig ⇒ bestanden.
  * - G Return Training: Rückgabe-Wizard vollständig ⇒ bestanden; Pfad
  *   „Grundlagen Vermietung“ abgeschlossen.
@@ -18,13 +20,22 @@
  *   beenden ⇒ bestanden; Routing nur Mock (kein Request am Provider-Fake).
  * - I Communication Training: E-Mail-Antwort an eine `@demo.test`-Adresse ⇒
  *   Job `mail.send` ⇒ `sent` ⇒ bestanden (eingereiht allein zählt nicht).
+ * - F7 Freie Übung ohne Zuweisung (Review-Fix F7): Mitarbeiterin ohne Pfad
+ *   besteht `communication_reply` unter „Weitere Übungen“ (Antwort an die
+ *   Seed-Kundin mit Demo-Testadresse) ⇒ nach Reload Karte „erledigt“ mit
+ *   „Bestanden am“, ohne „Übung starten“, genau ein Versuch.
  * - J Settlement Training ohne Lexware-Erfolg: Klärungen entscheiden ⇒
  *   „Bereit zur Buchhaltung“, Demo-Hinweis, kein Transfer, keine Mock-Karte.
+ * - J2 Settlement Training mit Belastung (Review-Fix F8/F4): Beträge festlegen
+ *   ⇒ „Kundeninformation prüfen“ ⇒ „Freigeben und senden“ (eingereiht, Prüfung
+ *   offen) ⇒ Job `mail.send` ⇒ Senke „[DEMO] …“ an die Demo-Testadresse ⇒
+ *   „Jetzt freigeben“ ⇒ „Bereit zur Buchhaltung“ ⇒ bestanden, kein Transfer.
  * - O Definition Update Stability: Katalog-Variante (Version +1, neuer Titel)
  *   ⇒ bestandene Übung bleibt bestanden, Katalog zeigt die neue Version.
  * - P Demo Provider Isolation: Accounting disabled, Lexware-Webhook 404,
  *   WhatsApp nur Mock (`mock-…`, kein Graph-Request), Routing Mock ohne
- *   Provider-Request, Mail außerhalb der Whitelist blockiert mit „[DEMO]“.
+ *   Provider-Request, Mail an einen Seed-Kunden mit Beispieldomain blockiert
+ *   mit „[DEMO]“ (die fünf Mail-Übungskunden tragen die Demo-Testadresse).
  * - D Reset + Offline Epoch: offline erfasste Übergabe-Prüfung, Reset durch
  *   den Admin, online ⇒ Banner/Dialog „Demo-Daten zurückgesetzt“, „Später“,
  *   Bestätigen ⇒ alter Stand verworfen, neues Paket mit neuer Epoch, neuer
@@ -48,8 +59,9 @@ import {
   DEMO_AUTH_SECRET_KEY,
   DEMO_COMMUNICATION_PAYLOAD_KEY,
   DEMO_DATABASE_URL,
+  DEMO_MAIL_WHITELIST,
 } from '../helpers/demo-env.ts';
-import { clearSink, expectMailCount, waitForMail } from '../helpers/mail.ts';
+import { clearSink, expectMailCount, linkFromMail, waitForMail } from '../helpers/mail.ts';
 import { resetRoutingFake, routingRequests } from '../helpers/routing.ts';
 import { seedTours, todayWindow } from '../helpers/tours.ts';
 import {
@@ -59,6 +71,7 @@ import {
   bookingIdOfProcess,
   browserApi,
   checkExerciseViaUi,
+  customerEmailOfProcess,
   demoApi,
   demoApiLogin,
   demoDb,
@@ -68,6 +81,7 @@ import {
   finalizeReturnViaUi,
   loginDemo,
   openTraining,
+  processNumberOf,
   resetDemoViaApi,
   runDemoJobs,
   seedEntityId,
@@ -75,6 +89,7 @@ import {
   staffUserIdByEmail,
   startExerciseViaUi,
   syncTrainingCatalog,
+  type TrainingMeDefinition,
 } from '../helpers/training.ts';
 import { clearWhatsAppFake, whatsappRequests } from '../helpers/whatsapp.ts';
 
@@ -138,6 +153,9 @@ interface Trainee {
  * - tour: H (Planer + Fahrer: calendar.view/view_all/manage, appointment.assign).
  * - contact: I (message.reply_customer).
  * - review: J (settlement.view, damage.set_cost, missing_item.set_cost).
+ * - release: J2 (wie review + settlement.release für „Freigeben und senden“ und
+ *   settlement.end_pre_notice_wait für „Jetzt freigeben“ – Rechte des Belastungspfads).
+ * - free: F7 (message.reply_customer, OHNE Zuweisung – freie Übung „Weitere Übungen“).
  * Alle Werte sind synthetisches TEST-Material (Whitelist-Domain demo.test).
  */
 const TRAINEES = {
@@ -201,6 +219,30 @@ const TRAINEES = {
       'missing_item.set_cost',
     ],
   },
+  release: {
+    key: 'release',
+    firstName: 'Samira',
+    lastName: 'Senden',
+    email: 'samira.senden@demo.test',
+    password: 'e2e-demo-senden-passwort-1',
+    permissions: [
+      'process.view_all',
+      'customer.view',
+      'settlement.view',
+      'damage.set_cost',
+      'missing_item.set_cost',
+      'settlement.release',
+      'settlement.end_pre_notice_wait',
+    ],
+  },
+  free: {
+    key: 'free',
+    firstName: 'Frida',
+    lastName: 'Frei',
+    email: 'frida.frei@demo.test',
+    password: 'e2e-demo-frei-passwort-1',
+    permissions: ['process.view_all', 'customer.view', 'message.reply_customer'],
+  },
 } satisfies Record<string, Trainee>;
 
 const STEP_NOT_COMPLETED_PREFIX = 'Noch nicht vollständig – offener Schritt: ‚';
@@ -216,6 +258,49 @@ let contactProcess: { customerId: string; processId: string; processNumber: stri
 
 const CONTACT_CUSTOMER_EMAIL = 'kai.kunde@demo.test';
 const DEMO_WA_ID = '4915100009902';
+/**
+ * Review-Fix F8: Seed-Kunden der Mail-Übungen tragen `<lokalteil>@<Whitelist-Domain>`
+ * (apps/api/src/demo/seed/data.ts DEMO_MAIL_EXERCISE_CUSTOMERS, Demo-API mit
+ * MAIL_DEMO_WHITELIST=@demo.test): Musterverein (process.offer.draft), Lena Beispiel
+ * (process.inquiry.new / conversation.email.unanswered), Beispiel-Werke GmbH
+ * (process.settlement.review). `process.offer.sent` (Hannah Testerin) bleibt example.com.
+ */
+const OFFER_CUSTOMER_EMAIL = `verein${DEMO_MAIL_WHITELIST}`;
+const UNANSWERED_CUSTOMER_EMAIL = `lena.beispiel${DEMO_MAIL_WHITELIST}`;
+const SETTLEMENT_CUSTOMER_EMAIL = `einkauf${DEMO_MAIL_WHITELIST}`;
+/** Staff-UI nach „Freigeben und senden“ (Phase 12, Outbox) – wie settlement-flow.spec.ts. */
+const NOTICE_QUEUED_TEXT =
+  'Kundeninformation freigegeben – das Wartefenster beginnt mit bestätigtem Mailversand.';
+
+interface MailDeliveryRow {
+  id: string;
+  status: string;
+  blocked_reason: string | null;
+  recipient_email: string;
+  subject: string;
+  sent_at: string | null;
+}
+
+/** Outbox-Zeilen eines Vorgangs je Art (älteste zuerst). */
+function mailDeliveriesOf(processId: string, kind: string): MailDeliveryRow[] {
+  return demoDb<MailDeliveryRow>(
+    `SELECT id, status, blocked_reason, recipient_email, subject, sent_at FROM mail_deliveries
+      WHERE process_id = $1 AND kind = $2::mail_delivery_kind ORDER BY created_at ASC`,
+    [processId, kind],
+  );
+}
+
+function settlementRow(settlementId: string) {
+  const rows = demoDb<{
+    status: string;
+    accounting_transfer_id: string | null;
+    transferred_at: string | null;
+  }>('SELECT status, accounting_transfer_id, transferred_at FROM settlements WHERE id = $1', [
+    settlementId,
+  ]);
+  expect(rows, `Abrechnung ${settlementId}`).toHaveLength(1);
+  return rows[0]!;
+}
 
 async function traineePage(browser: Browser, trainee: Trainee): Promise<Page> {
   const existing = sessions.get(trainee.key);
@@ -333,6 +418,8 @@ test.describe('Training in der Demo (Projekt demo-communication)', () => {
     await assignPathViaApi(adminCookie, traineeId(TRAINEES.rental), 'rental_basics');
     await assignPathViaApi(adminCookie, traineeId(TRAINEES.contact), 'communication');
     await assignPathViaApi(adminCookie, traineeId(TRAINEES.review), 'settlement');
+    await assignPathViaApi(adminCookie, traineeId(TRAINEES.release), 'settlement');
+    // TRAINEES.free bekommt bewusst KEINE Zuweisung (Szenario F7: freie Übung).
   });
 
   test.afterAll(async () => {
@@ -431,7 +518,7 @@ test.describe('Training in der Demo (Projekt demo-communication)', () => {
     });
   });
 
-  test('E Offer Training: Übung starten → Entwurf des Demo-Vorgangs bearbeiten (Rabatt) → „Übung prüfen“ ⇒ offener Schritt „Angebot versenden“ → versenden ⇒ automatisch bestanden; Angebotsmail bleibt in der Demo blockiert', async ({
+  test('E Offer Training: Übung starten → Entwurf des Demo-Vorgangs bearbeiten (Rabatt) → „Übung prüfen“ ⇒ offener Schritt „Angebot versenden“ → versenden ⇒ automatisch bestanden; Angebotsmail an die Demo-Testadresse pending ⇒ Job mail.send ⇒ Senke „[DEMO] …“ ⇒ sent', async ({
     browser,
   }) => {
     test.setTimeout(240_000);
@@ -521,7 +608,9 @@ test.describe('Training in der Demo (Projekt demo-communication)', () => {
       ]),
     );
     expect(events.some((event) => event.error_code === 'STEP_NOT_COMPLETED')).toBe(true);
-    // Fachlich versendet; Mail an die Nicht-Whitelist-Adresse bleibt blockiert (Order §25).
+    // Fachlich versendet; der Seed-Kunde trägt die Demo-Testadresse (Whitelist-Domain, Review-Fix
+    // F8): die Angebotsmail ist eingereiht (pending), nicht blockiert – zugestellt wird sie erst
+    // durch den Job mail.send (kein Worker im E2E-Lauf), mit „[DEMO]“-Betreff an die Senke.
     expect(
       demoDb<{ status: string }>(
         `SELECT v.status FROM offer_versions v JOIN offers o ON o.id = v.offer_id
@@ -529,17 +618,32 @@ test.describe('Training in der Demo (Projekt demo-communication)', () => {
         [processId],
       )[0],
     ).toMatchObject({ status: 'sent' });
-    const offerMails = demoDb<{ status: string; blocked_reason: string | null; subject: string }>(
-      `SELECT status, blocked_reason, subject FROM mail_deliveries
-        WHERE process_id = $1 AND kind = 'offer'`,
-      [processId],
-    );
+    expect(customerEmailOfProcess(processId)).toBe(OFFER_CUSTOMER_EMAIL);
+    const offerMails = mailDeliveriesOf(processId, 'offer');
     expect(offerMails).toHaveLength(1);
     expect(offerMails[0]).toMatchObject({
-      status: 'blocked',
-      blocked_reason: 'DEMO_NOT_WHITELISTED',
+      status: 'pending',
+      blocked_reason: null,
+      recipient_email: OFFER_CUSTOMER_EMAIL,
+      sent_at: null,
     });
-    expect(offerMails[0]!.subject.startsWith('[DEMO] ')).toBe(true);
+    const offerSubject = offerMails[0]!.subject;
+    expect(offerSubject).toBe(
+      `[DEMO] Dein Angebot von Miet-Royal – Vorgang ${processNumberOf(processId)}`,
+    );
+    await expectMailCount({ to: OFFER_CUSTOMER_EMAIL, subject: offerSubject }, 0);
+    await runDemoJobs(adminCookie);
+    const offerMail = await waitForMail({ to: OFFER_CUSTOMER_EMAIL, subject: offerSubject });
+    expect(offerMail.subject).toBe(offerSubject);
+    expect(new URL(linkFromMail(offerMail, '/angebot/')).pathname).toMatch(/^\/angebot\/.+/);
+    await expectMailCount({ to: OFFER_CUSTOMER_EMAIL, subject: offerSubject }, 1);
+    const sentOfferMail = mailDeliveriesOf(processId, 'offer')[0]!;
+    expect(sentOfferMail).toMatchObject({
+      id: offerMails[0]!.id,
+      status: 'sent',
+      blocked_reason: null,
+    });
+    expect(sentOfferMail.sent_at).not.toBeNull();
   });
 
   test('F Handover Training: vorbereitete Ausgabe des Demo-Vorgangs im Übergabe-Wizard vollständig abschließen (Prüfung, Foto, Empfänger, zwei Unterschriften) ⇒ bestanden', async ({
@@ -945,6 +1049,120 @@ test.describe('Training in der Demo (Projekt demo-communication)', () => {
     ]);
   });
 
+  test('F7 Freie Übung ohne Zuweisung (Review-Fix F7): Mitarbeiterin ohne Pfad startet „Kundenkommunikation beantworten“ unter „Weitere Übungen“, beantwortet die unbeantwortete Seed-Nachricht (Demo-Testadresse) per E-Mail ⇒ Job mail.send ⇒ Senke „[DEMO] …“ ⇒ bestanden; nach Reload Karte „erledigt“ mit „Bestanden am“, ohne „Übung starten“, genau ein Versuch', async ({
+    browser,
+  }) => {
+    test.setTimeout(240_000);
+    const trainee = TRAINEES.free;
+    const userId = traineeId(trainee);
+    await clearSink();
+    // Seed-Szenario der Übung (Registry): unbeantwortete E-Mail von Lena Beispiel zu process.inquiry.new.
+    const processId = seedEntityId('process.inquiry.new');
+    const unansweredId = seedEntityId('conversation.email.unanswered');
+    expect(
+      demoDb<{ process_id: string; direction: string; channel: string }>(
+        'SELECT process_id, direction, channel FROM conversation_messages WHERE id = $1',
+        [unansweredId],
+      )[0],
+    ).toMatchObject({ process_id: processId, direction: 'inbound', channel: 'email' });
+    const recipient = customerEmailOfProcess(processId);
+    expect(recipient).toBe(UNANSWERED_CUSTOMER_EMAIL);
+    expect(demoDb('SELECT id FROM training_assignments WHERE user_id = $1', [userId])).toHaveLength(
+      0,
+    );
+
+    const page = await traineePage(browser, trainee);
+    await openTraining(page);
+    await expect(page.getByTestId('training-no-assignments')).toBeVisible();
+    await expect(page.getByTestId('training-assignment')).toHaveCount(0);
+    const freeSection = page.getByTestId('training-free-exercises');
+    await expect(freeSection).toBeVisible();
+    const card = freeSection.locator(
+      '[data-testid="training-exercise"][data-key="communication_reply"]',
+    );
+    await expect(card).toHaveAttribute('data-state', 'open');
+    await expect(card.getByTestId('training-exercise-passed')).toHaveCount(0);
+    await expect(card.getByTestId('training-start')).toBeVisible();
+    const attemptId = await startExerciseViaUi(page, userId, 'communication_reply');
+    await expect(card).toHaveAttribute('data-state', 'in_progress');
+    await expect(card.getByTestId('training-demo-link')).toHaveAttribute('href', /^\/vorgaenge/);
+
+    await page.goto(`/vorgaenge/${processId}/kommunikation`);
+    await expect(page.getByTestId('reply-form')).toBeVisible();
+    const emailChannel = page.getByTestId('reply-channel-email');
+    if ((await emailChannel.count()) > 0) await emailChannel.check();
+    await page
+      .getByTestId('reply-body')
+      .fill(
+        'Hallo Frau Beispiel, eine Abholung am Donnerstagabend ist möglich – die Maschine passt in einen Kleinwagen. (Demo-Übung, freie Übung)',
+      );
+    await page.getByTestId('reply-submit').click();
+    await expect(page.getByTestId('reply-success')).toBeVisible();
+    await expect(page.getByTestId('reply-error')).toHaveCount(0);
+    const outbound = demoDb<{ id: string; delivery_state: string }>(
+      `SELECT id, delivery_state FROM conversation_messages
+        WHERE process_id = $1 AND direction = 'outbound' ORDER BY created_at DESC LIMIT 1`,
+      [processId],
+    );
+    expect(outbound).toHaveLength(1);
+    expect(outbound[0]!.delivery_state).toBe('queued');
+
+    // Job mail.send ⇒ Zustellung an die Demo-Testadresse (Whitelist-Domain), Betreff „[DEMO] …“.
+    await runDemoJobs(adminCookie);
+    const mail = await waitForMail({
+      to: recipient,
+      subject: `[DEMO] Nachricht von Miet-Royal – Vorgang ${processNumberOf(processId)}`,
+    });
+    expect(mail.text).toContain('freie Übung');
+    await expect
+      .poll(
+        () =>
+          demoDb<{ delivery_state: string }>(
+            'SELECT delivery_state FROM conversation_messages WHERE id = $1',
+            [outbound[0]!.id],
+          )[0]?.delivery_state,
+      )
+      .toBe('sent');
+
+    // Review-Fix F7: der Serverzustand (`/me.definitions[]`) ist maßgeblich – auch nach einem
+    // weiteren Reload bleibt die freie Übung „erledigt“ (kein „Übung starten“, kein zweiter Versuch).
+    await expectExercisePassedViaUi(page, 'communication_reply');
+    await page.reload();
+    await expect(page.getByTestId('training-page')).toBeVisible();
+    const passedCard = page
+      .getByTestId('training-free-exercises')
+      .locator('[data-testid="training-exercise"][data-key="communication_reply"]');
+    await expect(passedCard).toHaveAttribute('data-state', 'passed');
+    await expect(passedCard.getByTestId('training-exercise-state')).toHaveText('erledigt');
+    await expect(passedCard.getByTestId('training-exercise-passed')).toContainText('Bestanden am');
+    await expect(passedCard.getByTestId('training-start')).toHaveCount(0);
+    await expect(passedCard.getByTestId('training-check')).toHaveCount(0);
+    await expect(passedCard.getByTestId('training-interrupted')).toHaveCount(0);
+    await expect(page.getByTestId('training-assignment')).toHaveCount(0);
+    const me = await browserApi<{ definitions: TrainingMeDefinition[] }>(
+      page,
+      'GET',
+      '/staff/training/me',
+    );
+    expect(me.status).toBe(200);
+    const definition = me.data.definitions.find((entry) => entry.key === 'communication_reply');
+    expect(definition).toMatchObject({ state: 'passed', permissionMissing: false });
+    expect(definition!.passedAt).not.toBeNull();
+    expect(definition!.attempt).toMatchObject({ id: attemptId, status: 'passed' });
+    const attempts = attemptsOf(userId, 'communication_reply');
+    expect(attempts).toHaveLength(1);
+    expect(attempts[0]).toMatchObject({ id: attemptId, status: 'passed', failed_check_count: 0 });
+    expect(attempts[0]!.completed_at).not.toBeNull();
+    expect(
+      attemptEvents(attemptId).filter((event) => event.event_key === 'communication.reply_sent'),
+    ).toEqual([
+      expect.objectContaining({ event_key: 'communication.reply_sent', result: 'accepted' }),
+    ]);
+    expect(demoDb('SELECT id FROM training_assignments WHERE user_id = $1', [userId])).toHaveLength(
+      0,
+    );
+  });
+
   test('J Settlement Training ohne Lexware-Erfolg: offene Klärungen (Schaden, Fehlteil) entscheiden ⇒ „Bereit zur Buchhaltung“ mit Demo-Hinweis, kein „Jetzt an Buchhaltung übertragen“, keine Mock-Karte ⇒ bestanden; keine Übertragung, auch nicht nach Jobs', async ({
     browser,
   }) => {
@@ -1187,15 +1405,22 @@ test.describe('Training in der Demo (Projekt demo-communication)', () => {
     expect(await routingRequests()).toHaveLength(0);
 
     // Mail außerhalb der Whitelist: blocked, Betreff „[DEMO] …“, nichts in der Senke (Order §25).
-    const inquiryProcessId = seedEntityId('process.inquiry.new');
-    const blockedRecipient = demoDb<{ email: string }>(
-      'SELECT c.email FROM customers c JOIN processes p ON p.customer_id = c.id WHERE p.id = $1',
-      [inquiryProcessId],
-    )[0]!.email;
+    // Seit Review-Fix F8 tragen die fünf Mail-Übungskunden die Demo-Testadresse; der Kunde von
+    // `process.offer.sent` (Hannah Testerin) bleibt bewusst auf der Beispieldomain.
+    for (const [seedKey, email] of [
+      ['process.inquiry.new', UNANSWERED_CUSTOMER_EMAIL],
+      ['process.offer.draft', OFFER_CUSTOMER_EMAIL],
+      ['process.settlement.review', SETTLEMENT_CUSTOMER_EMAIL],
+    ] as const) {
+      expect(customerEmailOfProcess(seedEntityId(seedKey)), seedKey).toBe(email);
+    }
+    const blockedProcessId = seedEntityId('process.offer.sent');
+    const blockedRecipient = customerEmailOfProcess(blockedProcessId);
     expect(blockedRecipient).toMatch(/@example\.(com|invalid)$/);
+    expect(blockedRecipient.toLowerCase().endsWith(DEMO_MAIL_WHITELIST)).toBe(false);
     const blocked = await demoApi<{ deliveryState: string; mailDeliveryId: string }>(
       'POST',
-      `/staff/processes/${inquiryProcessId}/conversation/reply`,
+      `/staff/processes/${blockedProcessId}/conversation/reply`,
       {
         cookie: adminCookie,
         body: { channel: 'email', body: 'Antwort (darf nicht zugestellt werden).' },
@@ -1211,6 +1436,183 @@ test.describe('Training in der Demo (Projekt demo-communication)', () => {
     expect(blockedRow).toMatchObject({ status: 'blocked', blocked_reason: 'DEMO_NOT_WHITELISTED' });
     expect(blockedRow.subject.startsWith('[DEMO] ')).toBe(true);
     await expectMailCount({ to: blockedRecipient }, 0);
+  });
+
+  test('J2 Settlement Training mit Belastung (Review-Fix F8): Schaden- und Fehlteilkosten festlegen ⇒ „Kundeninformation prüfen“ ⇒ „Freigeben und senden“ (eingereiht, „Übung prüfen“ noch offen) ⇒ Job mail.send ⇒ Senke „[DEMO] …“ an die Demo-Testadresse ⇒ „Kundenrückmeldung abwarten“ ⇒ „Jetzt freigeben“ ⇒ „Bereit zur Buchhaltung“ mit Demo-Hinweis ⇒ bestanden (Ereignis nur beim Übergang); keine Übertragung, auch nicht nach Jobs', async ({
+    browser,
+  }) => {
+    test.setTimeout(360_000);
+    const trainee = TRAINEES.release;
+    const userId = traineeId(trainee);
+    // J hat das Seed-Szenario verbraucht: frischer Seed per API (Staff-/Trainingsdaten bleiben,
+    // Order §18; der Vorgang aus I/P wird dabei gelöscht – P ist bereits gelaufen, D setzt erneut zurück).
+    await resetDemoViaApi(adminCookie);
+    await clearSink();
+    const processId = seedEntityId('process.settlement.review');
+    const settlementId = seedEntityId('settlement.review');
+    const processNumber = processNumberOf(processId);
+    const recipient = customerEmailOfProcess(processId);
+    expect(recipient).toBe(SETTLEMENT_CUSTOMER_EMAIL);
+    expect(settlementRow(settlementId)).toMatchObject({
+      status: 'clarification_required',
+      accounting_transfer_id: null,
+    });
+
+    const page = await traineePage(browser, trainee);
+    await openTraining(page);
+    await expect(assignmentCard(page, 'settlement')).toBeVisible();
+    const attemptId = await startExerciseViaUi(page, userId, 'settlement_review');
+    const card = exerciseCard(page, 'settlement_review');
+    await expect(card.getByTestId('training-demo-link')).toHaveAttribute(
+      'href',
+      `/vorgaenge/${processId}`,
+    );
+    await expect(card).toContainText('Freigeben und senden');
+
+    await page.goto(`/vorgaenge/${processId}/abrechnung`);
+    await expect(page.getByTestId('settlement-page')).toBeVisible();
+    const status = page.getByTestId('settlement-status');
+    await expect(status).toContainText('Klärung erforderlich');
+    await expect(page.getByTestId('clarification-item')).toHaveCount(2);
+    // Belastungen festlegen (damage.set_cost / missing_item.set_cost): 50,00 € + 15,00 €.
+    const chargeable = (label: string) =>
+      page
+        .getByTestId('clarification-item')
+        .filter({ hasText: label })
+        .filter({ has: page.getByTestId('clarification-charge') });
+    await chargeable('Schadenkosten').getByTestId('clarification-charge-amount').fill('50,00');
+    await chargeable('Schadenkosten').getByTestId('clarification-charge').click();
+    await expect(page.getByTestId('settlement-line-damage_charge')).toContainText('50,00');
+    await chargeable('Fehlteil').getByTestId('clarification-charge-amount').fill('15,00');
+    await chargeable('Fehlteil').getByTestId('clarification-charge').click();
+    await expect(page.getByTestId('settlement-line-missing_item_charge')).toContainText('15,00');
+    // Offen bleibt nur die Kundeninformation (Order §69) – ohne Betragseingabe.
+    await expect(status).toContainText('Kundeninformation erforderlich');
+    await expect(page.getByTestId('clarification-item')).toHaveCount(1);
+    await expect(page.getByTestId('clarification-item')).toContainText('Kundeninformation');
+    await expect(page.getByTestId('clarification-charge')).toHaveCount(0);
+    await expect(page.getByTestId('transfer-now')).toHaveCount(0);
+
+    // „Kundeninformation prüfen“ ⇒ EINE kombinierte Information ⇒ „Freigeben und senden“
+    // (settlement.release). Whitelist-Domain (Review-Fix F8): eingereiht statt blockiert; das
+    // Wartefenster beginnt erst mit bestätigtem Mailversand (Order §12).
+    await page.getByTestId('notice-review').click();
+    const preview = page.getByTestId('notice-preview');
+    await expect(preview).toBeVisible();
+    await expect(preview.getByTestId('notice-body')).toContainText(processNumber);
+    await expect(preview.getByTestId('notice-body')).toContainText('50,00');
+    await expect(preview.getByTestId('notice-body')).toContainText('15,00');
+    await expect(preview.getByTestId('notice-total')).toContainText('65,00');
+    await expect(page.getByTestId('notice-send')).toHaveText('Freigeben und senden');
+    await page.getByTestId('notice-send').click();
+    await expect(page.getByText(NOTICE_QUEUED_TEXT)).toBeVisible();
+    await expect(page.getByTestId('notice-send')).toHaveCount(0);
+    await expect(status).not.toContainText('Kundenrückmeldung abwarten');
+    await expect(page.getByTestId('settlement-wait-hint')).toHaveCount(0);
+    const notices = mailDeliveriesOf(processId, 'settlement_damage_missing_notice');
+    expect(notices).toHaveLength(1);
+    expect(notices[0]).toMatchObject({
+      status: 'pending',
+      blocked_reason: null,
+      recipient_email: recipient,
+      sent_at: null,
+    });
+    const noticeSubject = notices[0]!.subject;
+    expect(noticeSubject.startsWith('[DEMO] ')).toBe(true);
+    expect(noticeSubject).toContain(`Rückgabe – Vorgang ${processNumber}`);
+    expect(settlementRow(settlementId)).toMatchObject({ status: 'customer_notice_required' });
+    await expectMailCount({ to: recipient, subject: noticeSubject }, 0);
+    // Noch nicht „Bereit zur Buchhaltung“ ⇒ „Übung prüfen“ bleibt offen; kein Ereignis
+    // `settlement.reviewed` vor dem Übergang (Review-Fix F4).
+    await openTraining(page);
+    const checkResult = await checkExerciseViaUi(page, 'settlement_review');
+    await expect(checkResult).toHaveAttribute('data-passed', 'false');
+    await expect(checkResult).toContainText(STEP_NOT_COMPLETED_PREFIX);
+    await expect(checkResult).toContainText('Abrechnung prüfen bis');
+    expect(attemptsOf(userId, 'settlement_review')[0]).toMatchObject({
+      id: attemptId,
+      status: 'in_progress',
+      failed_check_count: 1,
+    });
+    expect(
+      attemptEvents(attemptId).filter((event) => event.event_key === 'settlement.reviewed'),
+    ).toEqual([]);
+
+    // Job mail.send ⇒ Zustellung an die Senke (Betreff „[DEMO] …“) ⇒ Wartefenster läuft.
+    await runDemoJobs(adminCookie);
+    const noticeMail = await waitForMail({ to: recipient, subject: noticeSubject });
+    expect(noticeMail.subject).toBe(noticeSubject);
+    expect(noticeMail.text).toContain(processNumber);
+    expect(noticeMail.text).toContain('50,00');
+    expect(noticeMail.text).toContain('15,00');
+    await expectMailCount({ to: recipient, subject: noticeSubject }, 1);
+    const sentNotice = mailDeliveriesOf(processId, 'settlement_damage_missing_notice')[0]!;
+    expect(sentNotice).toMatchObject({ id: notices[0]!.id, status: 'sent', blocked_reason: null });
+    expect(sentNotice.sent_at).not.toBeNull();
+    await expect.poll(() => settlementRow(settlementId).status).toBe('customer_waiting');
+
+    // Wartefenster vorzeitig beenden („Jetzt freigeben“, settlement.end_pre_notice_wait) ⇒
+    // „Bereit zur Buchhaltung“ mit Demo-Hinweis; keine Übertragung, keine Mock-Karte (W1/§79).
+    await page.goto(`/vorgaenge/${processId}/abrechnung`);
+    await expect(page.getByTestId('settlement-page')).toBeVisible();
+    await expect(status).toContainText('Kundenrückmeldung abwarten');
+    await expect(page.getByTestId('settlement-wait-hint')).toContainText(
+      'Kundenrückmeldung abwarten',
+    );
+    await expect(page.getByTestId('notice-send')).toHaveCount(0);
+    await expect(page.getByTestId('transfer-now')).toHaveCount(0);
+    const endWait = page.getByTestId('end-wait-now');
+    await expect(endWait).toHaveText('Jetzt freigeben');
+    await endWait.click();
+    await expect(page.getByTestId('end-wait-dialog')).toBeVisible();
+    await page.getByTestId('end-wait-confirm').click();
+    await expect(page.getByText('Warten beendet – Übertragung erfolgt manuell.')).toBeVisible();
+    await expect(status).toContainText('Bereit zur Buchhaltung');
+    const demoHint = page.getByTestId('settlement-demo-unavailable');
+    await expect(demoHint.first()).toBeVisible();
+    await expect(demoHint.first()).toHaveText(SETTLEMENT_DEMO_UNAVAILABLE_TEXT);
+    await expect(page.getByTestId('settlement-dominant-action')).toContainText(
+      'Bereit zur Buchhaltung',
+    );
+    await expect(page.getByTestId('end-wait-now')).toHaveCount(0);
+    await expect(page.getByTestId('transfer-now')).toHaveCount(0);
+    await expect(page.getByTestId('mock-controls')).toHaveCount(0);
+    await expect(page.getByTestId('mock-badge')).toHaveCount(0);
+    await expect(page.getByText('Nicht verfügbar (Demo)').first()).toBeVisible();
+
+    await expectExercisePassedViaUi(page, 'settlement_review');
+    await expect(assignmentCard(page, 'settlement')).toHaveAttribute('data-status', 'completed');
+    expect(attemptsOf(userId, 'settlement_review')[0]).toMatchObject({
+      id: attemptId,
+      status: 'passed',
+      failed_check_count: 1,
+    });
+    const events = attemptEvents(attemptId);
+    expect(
+      events.filter((event) => event.result === 'accepted').map((event) => event.event_key),
+    ).toEqual(['settlement.reviewed']);
+    expect(events.some((event) => event.error_code === 'STEP_NOT_COMPLETED')).toBe(true);
+
+    const expectNoTransfer = () => {
+      expect(settlementRow(settlementId)).toMatchObject({
+        status: 'ready_for_accounting',
+        accounting_transfer_id: null,
+        transferred_at: null,
+      });
+      expect(demoDb('SELECT id FROM accounting_transfers')).toHaveLength(0);
+      expect(
+        demoDb(`SELECT id FROM integration_jobs WHERE type = 'settlement.accounting_transfer'`),
+      ).toHaveLength(0);
+    };
+    expectNoTransfer();
+    await runDemoJobs(adminCookie);
+    expectNoTransfer();
+    await expectMailCount({ to: recipient, subject: noticeSubject }, 1);
+    expect(
+      demoDb<{ main_status: string }>('SELECT main_status FROM processes WHERE id = $1', [
+        processId,
+      ])[0]!.main_status,
+    ).not.toBe('completed');
   });
 
   test('D Reset + Offline Epoch: Trainee lädt das Arbeitspaket, erfasst offline einen Übergabe-Schritt, Admin-Reset per API ⇒ online Banner/Dialog „Demo-Daten zurückgesetzt“ („Später“ lässt alles stehen), Bestätigen ⇒ Pending 0, neues Paket mit neuer Epoch, neuer Seed unverändert', async ({

@@ -60,6 +60,17 @@ export function bookingIdOfProcess(processId: string): string {
   return rows[0]!.id;
 }
 
+/** E-Mail-Adresse des Kunden eines Vorgangs (Seed-Kunden: example.* oder Demo-Testadresse). */
+export function customerEmailOfProcess(processId: string): string {
+  const rows = demoDb<{ email: string | null }>(
+    'SELECT c.email FROM customers c JOIN processes p ON p.customer_id = c.id WHERE p.id = $1',
+    [processId],
+  );
+  expect(rows, `Kunde des Vorgangs ${processId}`).toHaveLength(1);
+  expect(rows[0]!.email, 'Kunden-E-Mail').not.toBeNull();
+  return rows[0]!.email!;
+}
+
 export function staffUserIdByEmail(email: string): string {
   const rows = demoDb<{ id: string }>('SELECT id FROM staff_users WHERE lower(email) = lower($1)', [
     email,
@@ -253,6 +264,8 @@ export interface TrainingMeDefinition {
   state: 'passed' | 'in_progress' | 'open';
   passedAt: string | null;
   permissionMissing: boolean;
+  /** Review-Fix F7: jüngster Versuch der Übung (auch ohne Zuweisung) – Serverzustand der freien Übungen. */
+  attempt: { id: string; status: 'in_progress' | 'passed' | 'interrupted' } | null;
 }
 
 export interface TrainingMeView {

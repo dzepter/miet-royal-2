@@ -14,7 +14,9 @@
  *   `demo.reset_completed` (nur Meta-Details), Admin bleibt angemeldet
  * - C/D5 503-Gate während `reset_in_progress` (Mutation 503 DEMO_RESET, GET/auth ok)
  * - C/D6 Seed-Nützlichkeit (Registry inkl. `voucher.situation`, Heute/Touren/
- *   Kalender, nur Beispieldomains, keine Mail verlässt die Whitelist)
+ *   Kalender, nur Beispieldomains – außer den fünf Mail-Übungskunden mit der
+ *   Demo-Testadresse `<lokalteil>@demo.test` (Review-Fix F8) –, keine Mail
+ *   verlässt die Whitelist: blocked außerhalb, pending innerhalb, Senke leer)
  * - C/D7 Reset löscht keine Staff-/Trainingsdaten (zweiter Mitarbeiter mit
  *   Rolle, Sessions, bekannte Geräte bleiben)
  *
@@ -113,6 +115,23 @@ const TRAINEE_PERMISSIONS = [
   'customer.view',
   'process.view_all',
 ];
+
+/**
+ * Review-Fix F8 (Order §9/§25): Die fünf Seed-Kunden der Mail-Übungen tragen
+ * `<lokalteil>@<erste Whitelist-Domain>` (apps/api/src/demo/seed/data.ts
+ * DEMO_MAIL_EXERCISE_CUSTOMERS; die Demo-API läuft mit
+ * MAIL_DEMO_WHITELIST=@demo.test): Lena Beispiel, Musterverein, Miriam
+ * Demoperson, Jana Beispielhaft, Beispiel-Werke GmbH (`einkauf`). Alle anderen
+ * Kunden bleiben auf example.com/example.invalid (Hannah Testerin von
+ * `process.offer.sent` bewusst – eine sichtbar blockierte Angebotsmail je Seed).
+ */
+const DEMO_TEST_ADDRESS_CUSTOMERS = [
+  'einkauf',
+  'jana.beispielhaft',
+  'lena.beispiel',
+  'miriam.demoperson',
+  'verein',
+].map((localPart) => `${localPart}${DEMO_MAIL_WHITELIST}`);
 
 // ── Helfer ─────────────────────────────────────────────────────────────
 
@@ -268,6 +287,28 @@ function berlinYear(): string {
   return new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Berlin', year: 'numeric' }).format(
     new Date(),
   );
+}
+
+/**
+ * Synthetische Kundenadressen des Seeds: jede Adresse unter example.com/example.invalid
+ * oder genau die fünf Demo-Testadressen (keine reale Domain, keine Adresse doppelt).
+ */
+function expectSyntheticCustomerEmails(): void {
+  const emails = demoDb<{ email: string | null }>('SELECT email FROM customers').map(
+    (row) => row.email,
+  );
+  expect(emails.length).toBeGreaterThan(0);
+  for (const email of emails) {
+    expect(email, 'Kunden-E-Mail').not.toBeNull();
+    const synthetic =
+      /@example\.(com|invalid)$/.test(email!) || email!.toLowerCase().endsWith(DEMO_MAIL_WHITELIST);
+    expect(synthetic, `synthetische Adresse: ${email}`).toBe(true);
+  }
+  expect(new Set(emails).size, 'keine Kundenadresse doppelt').toBe(emails.length);
+  expect(
+    emails.filter((email) => email!.toLowerCase().endsWith(DEMO_MAIL_WHITELIST)).sort(),
+    'genau die fünf Mail-Übungskunden mit Demo-Testadresse',
+  ).toEqual(DEMO_TEST_ADDRESS_CUSTOMERS);
 }
 
 // ── Zustand über die seriellen Tests hinweg ───────────────────────────
@@ -673,13 +714,8 @@ test.describe('Demo-Umgebung (Projekt demo-communication)', () => {
         (_, index) => `MR-${year}-${String(index + 1).padStart(4, '0')}`,
       ),
     );
-    expect(
-      demoDb(
-        `SELECT id FROM customers WHERE email IS NULL
-            OR (email NOT LIKE '%@example.com' AND email NOT LIKE '%@example.invalid')`,
-      ),
-      'nur synthetische Seed-Kunden',
-    ).toHaveLength(0);
+    // Nur synthetische Seed-Kunden (Beispieldomains bzw. die fünf Demo-Testadressen, Review-Fix F8).
+    expectSyntheticCustomerEmails();
     expect(
       demoDb('SELECT id FROM customers WHERE id = $1', [legacyCustomerId]),
       'Altbestand nach dem Reset',
@@ -828,7 +864,7 @@ test.describe('Demo-Umgebung (Projekt demo-communication)', () => {
     );
   });
 
-  test('C/D6 Seed-Nützlichkeit: Registry enthält alle Pflicht-Szenarien (inkl. voucher.situation); Heute zeigt heutige Termine, fällige und überfällige Rückgabe; Touren zeigen die heutige Tour (3 Stopps) und die Tour morgen; Kalender zeigt Termine; nur example.com/example.invalid; keine Mail verlässt die Whitelist', async ({
+  test('C/D6 Seed-Nützlichkeit: Registry enthält alle Pflicht-Szenarien (inkl. voucher.situation); Heute zeigt heutige Termine, fällige und überfällige Rückgabe; Touren zeigen die heutige Tour (3 Stopps) und die Tour morgen; Kalender zeigt Termine; nur example.com/example.invalid plus die fünf Demo-Testadressen; keine Mail verlässt die Whitelist (blocked außerhalb, pending innerhalb, Senke leer)', async ({
     page,
   }) => {
     test.setTimeout(180_000);
@@ -894,16 +930,15 @@ test.describe('Demo-Umgebung (Projekt demo-communication)', () => {
       await expect(page.getByTestId(`chip-${resolve(key)}`), key).toBeVisible();
     }
 
-    // Synthetische Daten: alle Kunden-E-Mails unter example.com/example.invalid, kein Telefon.
-    const customers = demoDb<{ email: string | null; phone: string | null }>(
-      'SELECT email, phone FROM customers',
-    );
-    expect(customers.length).toBeGreaterThan(0);
-    for (const customer of customers) {
-      expect(customer.email, 'Kunden-E-Mail').toMatch(/@example\.(com|invalid)$/);
+    // Synthetische Daten: Kunden-E-Mails unter example.com/example.invalid bzw. genau die fünf
+    // Demo-Testadressen der Mail-Übungskunden (Review-Fix F8), kein Telefon.
+    expectSyntheticCustomerEmails();
+    for (const customer of demoDb<{ phone: string | null }>('SELECT phone FROM customers')) {
       expect(customer.phone ?? '', 'Kein Telefon im Seed').toBe('');
     }
-    // Outbox: nichts außerhalb der Whitelist verlassen (blocked), keine Sendungen in der Senke.
+    // Outbox (Order §25): außerhalb der Whitelist blocked (DEMO_NOT_WHITELISTED), innerhalb
+    // (Demo-Testadressen) nur eingereiht (pending) – ohne Worker/Job-Lauf verlässt nichts die
+    // Umgebung; jeder Betreff trägt „[DEMO] “; Senke leer.
     const deliveries = demoDb<{
       status: string;
       recipient_email: string;
@@ -913,16 +948,39 @@ test.describe('Demo-Umgebung (Projekt demo-communication)', () => {
     expect(deliveries.length).toBeGreaterThan(0);
     for (const delivery of deliveries) {
       expect(['blocked', 'pending'], delivery.recipient_email).toContain(delivery.status);
-      if (!delivery.recipient_email.toLowerCase().endsWith(DEMO_MAIL_WHITELIST)) {
+      expect(delivery.subject.startsWith('[DEMO] '), delivery.subject).toBe(true);
+      if (delivery.recipient_email.toLowerCase().endsWith(DEMO_MAIL_WHITELIST)) {
+        expect(delivery.status, delivery.recipient_email).toBe('pending');
+        expect(delivery.blocked_reason).toBeNull();
+        expect(DEMO_TEST_ADDRESS_CUSTOMERS).toContain(delivery.recipient_email.toLowerCase());
+      } else {
         expect(delivery.status, delivery.recipient_email).toBe('blocked');
         expect(delivery.blocked_reason).toBe('DEMO_NOT_WHITELISTED');
       }
     }
     expect(deliveries.some((delivery) => delivery.status === 'blocked')).toBe(true);
-    expect(
-      demoDb(`SELECT id FROM integration_jobs WHERE type = 'mail.send' AND status <> 'succeeded'`),
-      'keine wartenden Versandjobs für blockierte Mails',
-    ).toHaveLength(0);
+    const pendingDeliveries = deliveries.filter((delivery) => delivery.status === 'pending');
+    expect(pendingDeliveries.length, 'eingereihte Mails an Demo-Testadressen').toBeGreaterThan(0);
+    // Wartende Versandjobs gehören ausschließlich zu eingereihten (pending) Zustellungen an die
+    // Whitelist-Domain – nie zu blockierten Mails.
+    const waitingJobs = demoDb<{
+      status: string;
+      delivery_status: string | null;
+      recipient_email: string | null;
+    }>(
+      `SELECT j.status, d.status AS delivery_status, d.recipient_email
+         FROM integration_jobs j
+         LEFT JOIN mail_deliveries d ON d.id::text = j.payload->>'deliveryId'
+        WHERE j.type = 'mail.send' AND j.status <> 'succeeded'`,
+    );
+    for (const job of waitingJobs) {
+      expect(job.status, 'wartender Versandjob').toBe('pending');
+      expect(job.delivery_status, 'Zustellung des wartenden Jobs').toBe('pending');
+      expect(job.recipient_email?.toLowerCase().endsWith(DEMO_MAIL_WHITELIST)).toBe(true);
+    }
+    expect(waitingJobs, 'ein Versandjob je eingereihter Mail').toHaveLength(
+      pendingDeliveries.length,
+    );
     expect(await sinkMails(), 'SMTP-Senke seit Spec-Beginn').toEqual([]);
   });
 
