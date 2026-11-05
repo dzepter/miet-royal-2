@@ -360,7 +360,7 @@ docs/CUSTOMER_PORTAL.md, TECH_DECISIONS „Phase 15: Kundenportal“):
 - **Staff-PATCH mit veraltetem Formular (vorbestehend, Nachbar von R7):** Speichert
   eine Mitarbeiterin ein vor dem verifizierten Portal-Wechsel geladenes
   Kundenformular, kann sie die Adresse zurückdrehen. Lösung wäre eine
-  optimistische Sperre (Versionsfeld) im CRM – Phase 16.
+  optimistische Sperre (Versionsfeld) im CRM – spätere Phase, nicht Teil von Phase 15.
 - **Optionale Härtungen (theoretisch, nicht reproduziert):**
   - R5 (TOCTOU): Die Bedingung „Bestätigung nur bei `prepared` nachreihen“ wird
     vor dem Service-Aufruf geprüft; zusätzlich unter `FOR UPDATE` in

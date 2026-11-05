@@ -4701,7 +4701,7 @@ Gesamtdarstellung: docs/CUSTOMER_PORTAL.md. Hier die technischen Entscheidungen
   verbrauchen; geteilte Demo-Übungskunden treffen die Drossel gemeinsam.
 - Kein Security-Event beim Papierkorb-Widerruf; eine von Staff geänderte, nicht
   verifizierte Adresse gilt für die Stornobestätigung als „aktuell“; Staff-PATCH
-  mit veraltetem Formular (optimistische Sperre, Phase 16).
+  mit veraltetem Formular (optimistische Sperre, spätere Phase).
 - Optionale Härtungen R5-TOCTOU (`prepared` unter `FOR UPDATE` in
   `sendConfirmation` prüfen) und R1-Wettlauf Storno + Reopen gegen Portalantwort.
 - Staff-Fotoroute ohne CSP; `apps/staff` behält den Next-Default 10 MiB beim
