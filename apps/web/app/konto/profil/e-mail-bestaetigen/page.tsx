@@ -38,7 +38,10 @@ export default function PortalEmailChangeConfirmPage() {
   useEffect(() => {
     const found = readTokenFromHash(window.location.hash);
     if (window.location.hash !== '') stripFragmentFromLocation();
-    setToken(found);
+    // Phase 15 (E2E-Fix): idempotent wie /konto/anmelden – React StrictMode (development)
+    // führt den Effekt doppelt aus; der zweite Lauf sieht das bereits entfernte Fragment
+    // und darf das gelesene Token nicht wieder auf null setzen.
+    if (found !== null) setToken(found);
     setChecked(true);
   }, []);
 

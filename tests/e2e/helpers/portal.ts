@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { resolve } from 'node:path';
-import { expect, type Page } from '@playwright/test';
+import { expect, type Page, type Response } from '@playwright/test';
 import { E2E_STORAGE_ROOT } from './jobs.ts';
 import { linkFromMail, mailsMatching, waitForMail, type SinkMail } from './mail.ts';
 import { TEST_DATABASE_URL, WEB_ORIGIN } from './seed.ts';
@@ -231,6 +231,56 @@ export interface MagicLinkOptions {
  * ausführen und den Link (`…/konto/anmelden#token=…`) aus der NEUEN Mail der
  * Senke lesen. Der Link (Token!) erscheint nie in einer Fehlermeldung.
  */
+/** Wartezeit aus `retry-after` (Sekunden) eines 429 – begrenzt auf 65 s. */
+function retryAfterMs(response: Response): number {
+  const seconds = Number(response.headers()['retry-after'] ?? '30');
+  return Math.min(65, Math.max(1, Number.isFinite(seconds) ? seconds : 30)) * 1000 + 500;
+}
+
+const RATE_LIMITED_TEXT = 'Zu viele Versuche. Bitte warte einen Moment.';
+const MAX_RATE_LIMIT_ATTEMPTS = 3;
+
+/**
+ * Anmeldelink über das Formular /konto/anmelden anfordern und den neutralen
+ * Text abwarten. Die Portal-Auth-Routen sind auch im E2E rate-limitiert (alle
+ * Testkunden teilen sich 127.0.0.1): ein 429 zeigt den Kundentext „Zu viele
+ * Versuche …“; der Helfer wartet dann wie ein Mensch `retry-after` ab und sendet
+ * erneut (höchstens drei Versuche).
+ */
+export async function submitLoginRequest(
+  page: Page,
+  email: string,
+  origin = WEB_ORIGIN,
+): Promise<void> {
+  for (let attempt = 1; ; attempt += 1) {
+    await page.goto(`${origin}/konto/anmelden`);
+    await expect(page.getByTestId('portal-login-form')).toBeVisible();
+    await page.getByTestId('portal-login-email').fill(email);
+    const answered = page.waitForResponse(
+      (response) =>
+        response.url().endsWith('/api/portal/auth/request') &&
+        response.request().method() === 'POST',
+    );
+    await page.getByTestId('portal-login-submit').click();
+    const response = await answered;
+    if (response.status() === 429 && attempt < MAX_RATE_LIMIT_ATTEMPTS) {
+      await expect(page.getByTestId('portal-error')).toContainText(RATE_LIMITED_TEXT);
+      await page.waitForTimeout(retryAfterMs(response));
+      continue;
+    }
+    expect(response.status(), 'POST /portal/auth/request').toBe(202);
+    await expect(page.getByTestId('portal-login-neutral')).toContainText(
+      PORTAL_TEXT.MAGIC_LINK_REQUESTED,
+    );
+    return;
+  }
+}
+
+/**
+ * Anmeldelink über das Formular anfordern (neutraler Text), Versandjob
+ * ausführen und den Link (`…/konto/anmelden#token=…`) aus der NEUEN Mail der
+ * Senke lesen. Der Link (Token!) erscheint nie in einer Fehlermeldung.
+ */
 export async function requestMagicLinkMail(
   page: Page,
   email: string,
@@ -239,13 +289,7 @@ export async function requestMagicLinkMail(
   const origin = options.origin ?? WEB_ORIGIN;
   const filter = { to: email, subject: options.subject ?? PORTAL_SUBJECT.login };
   const before = (await mailsMatching(filter)).length;
-  await page.goto(`${origin}/konto/anmelden`);
-  await expect(page.getByTestId('portal-login-form')).toBeVisible();
-  await page.getByTestId('portal-login-email').fill(email);
-  await page.getByTestId('portal-login-submit').click();
-  await expect(page.getByTestId('portal-login-neutral')).toContainText(
-    PORTAL_TEXT.MAGIC_LINK_REQUESTED,
-  );
+  await submitLoginRequest(page, email, origin);
   await options.runJobs();
   const mail = await waitForMail(filter, { count: before + 1 });
   const link = linkFromMail(mail, '/konto/anmelden');
@@ -266,7 +310,8 @@ export function tokenOfLink(link: string): string {
  * History-State steht (Order §6/§7). Ergebnis nur als Boolean.
  */
 export async function expectTokenNotInBrowser(page: Page, token: string): Promise<void> {
-  expect(new URL(page.url()).hash, 'Fragment aus der Adresszeile entfernt').toBe('');
+  // Boolesch – der Wert (Token!) darf nie in der Reporter-Ausgabe erscheinen.
+  expect(new URL(page.url()).hash === '', 'Fragment aus der Adresszeile entfernt').toBe(true);
   const leaked = await page.evaluate((secret) => {
     const parts: string[] = [window.location.href, document.cookie];
     for (const storage of [window.localStorage, window.sessionStorage]) {
@@ -296,22 +341,40 @@ export async function openMagicLink(
 ): Promise<void> {
   const token = tokenOfLink(link);
   expect(/^[A-Za-z0-9_-]{43}$/.test(token), 'Token: 32 Byte base64url (43 Zeichen)').toBe(true);
-  // Wie ein Klick in der Mail: frischer Seitenaufruf (sonst wäre ein Wechsel nur des Fragments
-  // auf derselben Seite eine Fragment-Navigation ohne Neuladen).
-  await page.goto('about:blank');
-  await page.goto(link);
-  await expect(page.getByTestId('portal-login-token-card')).toBeVisible();
-  await expectTokenNotInBrowser(page, token);
-  await page.getByTestId('portal-login-open').click();
-  if (options.expect === 'success') {
-    await page.waitForURL(
-      (url) => url.pathname.startsWith('/konto') && !url.pathname.startsWith('/konto/anmelden'),
+  for (let attempt = 1; ; attempt += 1) {
+    // Wie ein Klick in der Mail: frischer Seitenaufruf (sonst wäre ein Wechsel nur des
+    // Fragments auf derselben Seite eine Fragment-Navigation ohne Neuladen).
+    await page.goto('about:blank');
+    await page.goto(link);
+    await expect(page.getByTestId('portal-login-token-card')).toBeVisible();
+    await expectTokenNotInBrowser(page, token);
+    const answered = page.waitForResponse(
+      (response) =>
+        response.url().endsWith('/api/portal/auth/consume') &&
+        response.request().method() === 'POST',
     );
-  } else {
-    await expect(page.getByTestId('portal-error')).toContainText(PORTAL_TEXT.TOKEN_INVALID);
-    await expect(page.getByTestId('portal-login-form')).toBeVisible();
+    await page.getByTestId('portal-login-open').click();
+    const response = await answered;
+    if (response.status() === 429 && attempt < MAX_RATE_LIMIT_ATTEMPTS) {
+      // Rate-Limit (10/min je IP) vor dem Verbrauch: Token bleibt gültig; die Seite hat es
+      // verworfen ⇒ nach `retry-after` den Link aus der Mail erneut öffnen.
+      await expect(page.getByTestId('portal-error')).toContainText(RATE_LIMITED_TEXT);
+      await page.waitForTimeout(retryAfterMs(response));
+      continue;
+    }
+    if (options.expect === 'success') {
+      expect(response.status(), 'POST /portal/auth/consume').toBe(200);
+      await page.waitForURL(
+        (url) => url.pathname.startsWith('/konto') && !url.pathname.startsWith('/konto/anmelden'),
+      );
+    } else {
+      expect(response.status(), 'POST /portal/auth/consume').toBe(401);
+      await expect(page.getByTestId('portal-error')).toContainText(PORTAL_TEXT.TOKEN_INVALID);
+      await expect(page.getByTestId('portal-login-form')).toBeVisible();
+    }
+    await expectTokenNotInBrowser(page, token);
+    return;
   }
-  await expectTokenNotInBrowser(page, token);
 }
 
 /** Kompletter Login: Anforderung ⇒ Mail ⇒ Link ⇒ Kundenbereich. */

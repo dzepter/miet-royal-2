@@ -32,9 +32,9 @@
  * Einzige Datenbank-Schreibhilfe: reine Zeitverschiebung von Session-Zeilen
  * (H: Reauth-Frische abgelaufen; O: 30-Tage-Grenze).
  *
- * Zeit: G legt eine Lieferung HEUTE (Europe/Berlin) an (todayWindow) – Lauf nicht
- * zwischen ≈ 23:00 und 00:02 Uhr Berlin starten (Seed bricht dann mit „Resttag zu
- * kurz“ ab).
+ * Zeit: G legt eine Lieferung HEUTE (Europe/Berlin) an (todayWindow 30–90 min, minimal
+ * jetzt + 5 … + 20 min) – Lauf nicht zwischen 23:38 und 00:02 Uhr Berlin starten
+ * (beforeAll bricht dann mit „Resttag zu kurz“ ab; Laufzeit ≈ 4 min).
  */
 import { expect, test, type Browser, type Page } from '@playwright/test';
 import { expectPushCount } from '../helpers/communication-ops.ts';
@@ -70,6 +70,7 @@ import {
   seedPortal,
   sha256Hex,
   shiftPortalSession,
+  submitLoginRequest,
   tokenOfLink,
   type PortalSeedResult,
   type PortalSeededBooking,
@@ -310,12 +311,7 @@ test('B. No Enumeration: unbekannte, doppelte und gelöschte Adresse ⇒ identis
   test.setTimeout(120_000);
   const page = await customerPage(browser);
   for (const email of [UNKNOWN_EMAIL, DUPLICATE_EMAIL, TRASHED_EMAIL]) {
-    await page.goto(`${WEB_ORIGIN}/konto/anmelden`);
-    await page.getByTestId('portal-login-email').fill(email);
-    await page.getByTestId('portal-login-submit').click();
-    await expect(page.getByTestId('portal-login-neutral')).toContainText(
-      PORTAL_TEXT.MAGIC_LINK_REQUESTED,
-    );
+    await submitLoginRequest(page, email); // Formular ⇒ 202 + neutraler Text
   }
   // API über den Same-Origin-Proxy: Status + Body byte-identisch – auch für die eindeutige Adresse.
   const responses: string[] = [];
@@ -760,6 +756,7 @@ test('H. Profile Reauth: Mutation ohne frische Bestätigung blockiert ⇒ Bestä
   await hannaPage.goto('about:blank'); // frischer Seitenaufruf wie ein Klick in der Mail
   await hannaPage.goto(link);
   await expect(hannaPage.getByTestId('portal-reauth-page')).toBeVisible();
+  await expect(hannaPage.getByTestId('portal-reauth-confirm')).toBeVisible();
   await expectTokenNotInBrowser(hannaPage, token);
   await hannaPage.getByTestId('portal-reauth-confirm').click();
   await expect(hannaPage.getByTestId('portal-reauth-done')).toBeVisible();
@@ -831,6 +828,7 @@ test('I. Email Change + Session Revoke: Link an die NEUE Adresse, alte bleibt bi
   await device.goto('about:blank'); // frischer Seitenaufruf wie ein Klick in der Mail
   await device.goto(link);
   await expect(device.getByTestId('portal-email-change-page')).toBeVisible();
+  await expect(device.getByTestId('portal-email-change-confirm')).toBeVisible();
   await expectTokenNotInBrowser(device, token);
   await device.getByTestId('portal-email-change-confirm').click();
   await expect(device.getByTestId('portal-email-changed')).toContainText(PORTAL_TEXT.EMAIL_CHANGED);
@@ -865,11 +863,7 @@ test('I. Email Change + Session Revoke: Link an die NEUE Adresse, alte bleibt bi
   const oldLinksBefore = outboxTo(oldEmail).filter(
     (row) => row.kind === 'customer_portal_magic_link',
   ).length;
-  await hannaPage.getByTestId('portal-login-email').fill(oldEmail);
-  await hannaPage.getByTestId('portal-login-submit').click();
-  await expect(hannaPage.getByTestId('portal-login-neutral')).toContainText(
-    PORTAL_TEXT.MAGIC_LINK_REQUESTED,
-  );
+  await submitLoginRequest(hannaPage, oldEmail);
   await runJobs();
   expect(
     outboxTo(oldEmail).filter((row) => row.kind === 'customer_portal_magic_link'),
@@ -933,7 +927,11 @@ test('J. Free Cancellation: ≥ 15 Tage ⇒ „Stornogebühr: 0,00 €“, bewus
     'cancelled_free',
   );
   await expect(page.getByTestId('portal-cancel-section')).toHaveCount(0);
-  await expect(page.getByTestId('portal-messages-closed')).toBeVisible();
+  // Keine neuen Portalnachrichten zu einer stornierten Buchung (API; nach Neuladen kein Formular).
+  const lateMessage = await portalApiPost(page, `/bookings/${jonas.bookingId}/messages`, {
+    body: 'Noch eine Frage nach dem Storno',
+  });
+  expect([404, 409]).toContain(lateMessage.status);
 
   expect(cancellationsOf(jonas.processId)).toEqual([
     {
@@ -951,6 +949,10 @@ test('J. Free Cancellation: ≥ 15 Tage ⇒ „Stornogebühr: 0,00 €“, bewus
   });
   expect(again.status).toBe(200);
   expect(cancellationsOf(jonas.processId)).toHaveLength(1);
+
+  await page.reload();
+  await expect(page.getByTestId('portal-cancelled-view')).toBeVisible();
+  await expect(page.getByTestId('portal-message-form')).toHaveCount(0);
 
   // Automatische Stornobestätigung (genau eine Mail).
   await runJobs();
@@ -1220,7 +1222,10 @@ test('P. IDOR mit zwei Customers: fremde Buchung/Dokumente/Nachrichten/Fotos/Sto
   await notFound(annaPage, `/bookings/${erna.bookingId}/cancellation`, 'POST', { confirm: true });
   expect(cancellationsOf(erna.processId)).toHaveLength(0);
   expect(
-    queryTestDb('SELECT id FROM conversation_messages WHERE process_id = $1', [erna.processId]),
+    queryTestDb(
+      'SELECT id FROM conversation_messages WHERE process_id = $1 AND is_system_event = false',
+      [erna.processId],
+    ),
   ).toHaveLength(0);
 
   // Erna (Session E) gegen Annas Nachricht/Foto (auch über die eigene Buchung).
