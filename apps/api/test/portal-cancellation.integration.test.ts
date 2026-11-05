@@ -87,9 +87,15 @@ async function previewFor(cookie: string, bookingId: string): Promise<PortalCanc
   return response.body as PortalCancellationPreview;
 }
 
-async function cancelVia(cookie: string, bookingId: string) {
+/**
+ * Storno wie der Web-Dialog. Phase 15 (Review R2): Pflichtfeld `expectedFeeCents` =
+ * Gebühr der angezeigten Vorschau (ohne Angabe: Vorschau wird vorher geladen).
+ */
+async function cancelVia(cookie: string, bookingId: string, expectedFeeCents?: number) {
+  const fee = expectedFeeCents ?? (await previewFor(cookie, bookingId)).feeCents ?? 0;
   return portalPost(portal.app, cookie, `/portal/bookings/${bookingId}/cancellation`, {
     confirm: true,
+    expectedFeeCents: fee,
   });
 }
 
@@ -252,7 +258,8 @@ describe('C7–C13. Storno-Wirkung', () => {
         )
       ).status,
     ).toBe(404);
-    const attempt = await cancelVia(session.cookie, own.bookingId);
+    // Phase 15 (Review R2): gültiger Body mit Pflichtfeld – die fremde Buchung bleibt 404.
+    const attempt = await cancelVia(session.cookie, own.bookingId, 0);
     expect(attempt.status).toBe(404);
     expect(await cancellationRow(own.processId)).toBeUndefined();
     expect(
@@ -426,12 +433,14 @@ describe('C14–C16. Bestätigungsmail, Doppelklick, Race', () => {
     const { admin } = await adminSession(ctx);
     const booked = await bookedProcess(ctx, admin.id, { eventInDays: 10 });
     const session = await portalSessionFor(ctx, booked.customerId);
+    // Phase 15 (Review R2): gezeigte Gebühr VOR dem parallelen Doppelklick (wie der Dialog).
+    const fee = (await previewFor(session.cookie, booked.bookingId)).feeCents!;
     const [a, b] = await Promise.all([
-      cancelVia(session.cookie, booked.bookingId),
-      cancelVia(session.cookie, booked.bookingId),
+      cancelVia(session.cookie, booked.bookingId, fee),
+      cancelVia(session.cookie, booked.bookingId, fee),
     ]);
     expect([a.status, b.status]).toEqual([200, 200]);
-    const third = await cancelVia(session.cookie, booked.bookingId);
+    const third = await cancelVia(session.cookie, booked.bookingId, fee);
     expect(third.status).toBe(200);
     expect((third.body as PortalBookingView).portalState).toBe('cancelled_fee');
     const rows = await ctx.db
@@ -454,6 +463,8 @@ describe('C14–C16. Bestätigungsmail, Doppelklick, Race', () => {
     for (let i = 0; i < 3; i += 1) {
       const booked = await bookedProcess(ctx, admin.id, { eventInDays: 10 });
       const session = await portalSessionFor(ctx, booked.customerId);
+      // Phase 15 (Review R2): Vorschau vor dem Race laden, damit das Race eng bleibt.
+      const fee = (await previewFor(session.cookie, booked.bookingId)).feeCents!;
       const staff = () =>
         ctx.app.inject({
           method: 'POST',
@@ -461,7 +472,7 @@ describe('C14–C16. Bestätigungsmail, Doppelklick, Race', () => {
           headers: { cookie },
           payload: { confirm: true },
         });
-      const customer = () => cancelVia(session.cookie, booked.bookingId);
+      const customer = () => cancelVia(session.cookie, booked.bookingId, fee);
       const [staffResult, customerResult] =
         i % 2 === 0
           ? await Promise.all([staff(), customer()])
@@ -548,11 +559,12 @@ describe('C17–C19. Gutschein, Blocker, DTO', () => {
     const { admin } = await adminSession(ctx);
     const booked = await bookedProcess(ctx, admin.id, { eventInDays: 30 });
     const session = await portalSessionFor(ctx, booked.customerId);
-    // Client darf Satz/Basis/Gebühr nie mitsenden (strictObject ⇒ 400).
+    // Client darf Satz/Basis/Gebühr nie mitsenden (strictObject ⇒ 400). Phase 15 (Review R2):
+    // mit dem Pflichtfeld `expectedFeeCents`, damit die Strenge selbst geprüft wird.
     for (const payload of [
-      { confirm: false },
-      { confirm: true, feePercent: 0 },
-      { confirm: true, customerId: booked.customerId },
+      { confirm: false, expectedFeeCents: 0 },
+      { confirm: true, expectedFeeCents: 0, feePercent: 0 },
+      { confirm: true, expectedFeeCents: 0, customerId: booked.customerId },
       {},
     ]) {
       const rejected = await portalPost(

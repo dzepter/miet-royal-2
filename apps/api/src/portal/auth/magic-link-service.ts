@@ -7,7 +7,7 @@ import {
   type Database,
   type DatabaseExecutor,
 } from '@mietroyal/database';
-import { and, eq, gt, isNull, ne, sql } from 'drizzle-orm';
+import { and, count, eq, gt, isNull, ne, sql } from 'drizzle-orm';
 import { recordSecurityEvent } from '../../auth/audit.ts';
 import { generateToken, sha256Hex } from '../../auth/crypto.ts';
 import { AuthError } from '../../auth/service.ts';
@@ -18,9 +18,12 @@ import { isWellFormedPortalToken } from '../guard.ts';
 import { PORTAL_MESSAGES, PortalError, type PortalSessionContext } from '../types.ts';
 import {
   isReauthFresh,
+  PORTAL_LINK_THROTTLE_MAX,
+  PORTAL_LINK_THROTTLE_WINDOW_MS,
   PORTAL_MAGIC_LINK_TTL_MS,
   PORTAL_MAGIC_LINK_VALID_MINUTES,
 } from './constants.ts';
+import { lockPortalCustomerAuth } from './locks.ts';
 import type { PortalSessionService } from './session-service.ts';
 import { portalCustomerName } from './views.ts';
 
@@ -75,6 +78,10 @@ export class PortalMagicLinkService {
    * Niemals enumerierend: 0 oder >1 aktive Kunden mit dieser Adresse ⇒ kein
    * Link (nur Log ohne Adresse). Genau 1 ⇒ ältere offene Login-Links widerrufen,
    * neuer Link, Mail über die Outbox (Gateway nie in der Transaktion).
+   * Phase 15 (Review R4): höchstens 5 Login-Links je Kunde in 15 min – darüber
+   * still nichts (kein Link, kein Widerruf, keine Mail); die Route antwortet gleich.
+   * Phase 15 (Review R6/R9): unter dem Kunden-Lock muss der Kunde noch aktiv sein UND
+   * noch genau diese Adresse tragen – sonst kein Link (Rennen mit Papierkorb/E-Mail-Wechsel).
    */
   async requestLogin(emailRaw: string, now: Date = new Date()): Promise<void> {
     const email = normalizeEmailAddress(emailRaw);
@@ -94,11 +101,33 @@ export class PortalMagicLinkService {
       );
       return;
     }
-    const customer = candidates[0]!;
-    const { token, linkId } = await this.db.transaction(async (tx) => {
-      await this.revokeOpenLinks(tx, { customerId: customer.id, purpose: 'login' }, now);
-      return this.insertLink(tx, { customerId: customer.id, purpose: 'login' }, now);
+    const candidate = candidates[0]!;
+    const created = await this.db.transaction(async (tx) => {
+      // Phase 15 (Review R4/R6): Kunden-Lock zuerst – Zählung und Anlage sind damit exakt.
+      await lockPortalCustomerAuth(tx, candidate.id);
+      // Phase 15 (Review R9): parallel in den Papierkorb verschoben ⇒ kein neuer Link.
+      // Phase 15 (Nachbesserung R6): Kunde unter dem Lock FRISCH lesen – hat ein E-Mail-Wechsel
+      // die Adresse seit der Kandidatensuche geändert, entsteht kein Link an die alte Adresse
+      // (Order §35: Login nur mit der neuen Adresse; fail-closed).
+      const current = await this.activeCustomer(tx, candidate.id);
+      if (current === null || current.email !== email) return 'none' as const;
+      if (await this.throttled(tx, { customerId: current.id, purpose: 'login' }, now)) {
+        return 'throttled' as const;
+      }
+      await this.revokeOpenLinks(tx, { customerId: current.id, purpose: 'login' }, now);
+      const link = await this.insertLink(tx, { customerId: current.id, purpose: 'login' }, now);
+      return { ...link, customer: current };
     });
+    if (created === 'none' || created === 'throttled') {
+      this.logger.info(
+        created === 'throttled'
+          ? { reason: created, purpose: 'login', customerId: candidate.id }
+          : { reason: created },
+        'portal.magic_link.skipped',
+      );
+      return;
+    }
+    const { token, linkId, customer } = created;
     await this.sendLinkMail({
       kind: 'customer_portal_magic_link',
       customer,
@@ -115,25 +144,37 @@ export class PortalMagicLinkService {
     options: { userAgentLabel?: string | null } = {},
   ): Promise<{ sessionToken: string; expiresAt: Date; customerId: string; sessionId: string }> {
     if (!isWellFormedPortalToken(token)) throw tokenInvalid();
-    const link = await this.consumeOpenLink(this.db, { token, purpose: 'login' }, now);
-    if (link === null) throw tokenInvalid();
-    const customer = await this.activeCustomer(this.db, link.customerId);
-    if (customer === null) throw tokenInvalid();
-    const { token: sessionToken, session } = await this.sessions.create(
-      customer.id,
-      now,
-      options.userAgentLabel ?? null,
-    );
-    await recordSecurityEvent(this.db, {
-      type: 'portal.login',
-      details: { customerId: customer.id, sessionId: session.id },
+    // Phase 15 (Review R6): Consume + Session-Anlage unter demselben Kunden-Lock wie der
+    // E-Mail-Wechsel. Ein paralleler Wechsel widerruft entweder vorher den Link (⇒ 401)
+    // oder danach auch die hier angelegte Session – nie überlebt eine Session den Wechsel.
+    const result = await this.db.transaction(async (tx) => {
+      const customerId = await this.linkCustomerId(tx, token, 'login');
+      if (customerId === null) return null;
+      await lockPortalCustomerAuth(tx, customerId);
+      const link = await this.consumeOpenLink(tx, { token, purpose: 'login' }, now);
+      if (link === null) return null;
+      // Gelöschter Kunde: Link bleibt verbraucht (Commit), Antwort 401 wie bisher.
+      const customer = await this.activeCustomer(tx, link.customerId);
+      if (customer === null) return null;
+      const { token: sessionToken, session } = await this.sessions.create(
+        customer.id,
+        now,
+        options.userAgentLabel ?? null,
+        tx,
+      );
+      await recordSecurityEvent(tx, {
+        type: 'portal.login',
+        details: { customerId: customer.id, sessionId: session.id },
+      });
+      return {
+        sessionToken,
+        expiresAt: session.expiresAt,
+        customerId: customer.id,
+        sessionId: session.id,
+      };
     });
-    return {
-      sessionToken,
-      expiresAt: session.expiresAt,
-      customerId: customer.id,
-      sessionId: session.id,
-    };
+    if (result === null) throw tokenInvalid();
+    return result;
   }
 
   // ── Reauth (Order §32) ────────────────────────────────────────────────────
@@ -145,7 +186,18 @@ export class PortalMagicLinkService {
       this.logger.warn({ reason: 'no_recipient' }, 'portal.reauth.skipped');
       return;
     }
-    const { token, linkId } = await this.db.transaction(async (tx) => {
+    const created = await this.db.transaction(async (tx) => {
+      // Phase 15 (Review R4/R6): Kunden-Lock zuerst; höchstens 5 Reauth-Links je Session/15 min.
+      await lockPortalCustomerAuth(tx, customer.id);
+      if (
+        await this.throttled(
+          tx,
+          { customerId: customer.id, sessionId: session.sessionId, purpose: 'reauth' },
+          now,
+        )
+      ) {
+        return null;
+      }
       await this.revokeOpenLinks(tx, { sessionId: session.sessionId, purpose: 'reauth' }, now);
       return this.insertLink(
         tx,
@@ -153,6 +205,14 @@ export class PortalMagicLinkService {
         now,
       );
     });
+    if (created === null) {
+      this.logger.info(
+        { reason: 'throttled', purpose: 'reauth', sessionId: session.sessionId },
+        'portal.magic_link.skipped',
+      );
+      return;
+    }
+    const { token, linkId } = created;
     await this.sendLinkMail({
       kind: 'customer_portal_reauth',
       customer,
@@ -181,6 +241,17 @@ export class PortalMagicLinkService {
 
   // ── E-Mail-Wechsel (Order §34/§35) ────────────────────────────────────────
 
+  /**
+   * Phase 15 (Review R8): kein Existenz-Orakel – ist die Adresse bei einem ANDEREN aktiven
+   * Kunden hinterlegt, entsteht still kein Link und keine Mail; die Route antwortet identisch
+   * (202 `EMAIL_CHANGE_REQUESTED`). Wie bei einer freien Adresse ersetzt die Anforderung
+   * offene ältere Wechsel-Links (keine Unterscheidung über deren Gültigkeit). Die
+   * Eindeutigkeit entscheidet endgültig der Consume (fail-closed). Ausnahmen bleiben:
+   * eigene aktuelle Adresse / ungültiges Format ⇒ 400, ohne frische Reauth ⇒ 403.
+   * Phase 15 (Review R4): höchstens 5 Wechsel-Links je Kunde in 15 min, darüber still nichts.
+   * Auch eine belegte Adresse verbraucht dieses Kontingent (widerrufene Platzhalterzeile),
+   * damit die Drossel nicht verrät, ob die Adresse einem anderen Kunden gehört.
+   */
   async requestEmailChange(
     session: PortalSessionContext,
     newEmailRaw: string,
@@ -202,15 +273,31 @@ export class PortalMagicLinkService {
         PORTAL_MESSAGES.EMAIL_UNAVAILABLE,
       );
     }
-    if (await this.emailTakenByOther(this.db, email, customer.id)) {
-      throw new PortalError(
-        'VALIDATION',
-        'PORTAL_EMAIL_UNAVAILABLE',
-        PORTAL_MESSAGES.EMAIL_UNAVAILABLE,
-      );
-    }
-    const { token, linkId } = await this.db.transaction(async (tx) => {
+    const outcome = await this.db.transaction(async (tx) => {
+      // Phase 15 (Review R6): Anforderungen je Kunde serialisiert ⇒ nie zwei offene Wechsel-Links.
+      await lockPortalCustomerAuth(tx, customer.id);
+      if (await this.throttled(tx, { customerId: customer.id, purpose: 'email_change' }, now)) {
+        return 'throttled' as const;
+      }
       await this.revokeOpenLinks(tx, { customerId: customer.id, purpose: 'email_change' }, now);
+      // Phase 15 (Review R8): belegt ⇒ still kein Link (statt 400 PORTAL_EMAIL_UNAVAILABLE).
+      if (await this.emailTakenByOther(tx, email, customer.id)) {
+        // Phase 15 (Nachbesserung R8): nie versandte, sofort widerrufene Platzhalterzeile – sie
+        // zählt für die Drossel genau wie ein echter Link (kein Seitenkanal über das Kontingent);
+        // der Token verlässt diese Methode nie, die Zeile ist nicht konsumierbar.
+        await this.insertLink(
+          tx,
+          {
+            customerId: customer.id,
+            purpose: 'email_change',
+            sessionId: session.sessionId,
+            proposedEmail: email,
+            revoked: true,
+          },
+          now,
+        );
+        return 'unavailable' as const;
+      }
       return this.insertLink(
         tx,
         {
@@ -222,6 +309,14 @@ export class PortalMagicLinkService {
         now,
       );
     });
+    if (outcome === 'throttled' || outcome === 'unavailable') {
+      this.logger.info(
+        { reason: outcome, purpose: 'email_change', customerId: customer.id },
+        'portal.magic_link.skipped',
+      );
+      return;
+    }
+    const { token, linkId } = outcome;
     // An die NEUE Adresse; in demo blockiert ggf. die Whitelist (Status blocked) – Antwort bleibt neutral.
     await this.sendLinkMail({
       kind: 'customer_portal_email_change',
@@ -233,7 +328,9 @@ export class PortalMagicLinkService {
   }
 
   /**
-   * Commit des E-Mail-Wechsels: Advisory-Lock je Zieladresse, atomares Consume,
+   * Commit des E-Mail-Wechsels: Phase 15 (Review R6) zuerst der Kunden-Lock (Link-Zeile
+   * vorher OHNE Sperre gelesen, um die Kunden-ID zu kennen), dann Advisory-Lock je
+   * Zieladresse (feste Reihenfolge Kunde → Adresse), atomares Consume,
    * anfordernde Session muss noch gültig sein, Eindeutigkeit ERNEUT geprüft
    * (fail-closed ⇒ Rollback + CONFLICT). Danach: Adresse setzen, ALLE Sessions
    * und offenen Links des Kunden widerrufen. Kein Cookie nötig: der Link ist an
@@ -246,6 +343,7 @@ export class PortalMagicLinkService {
       const candidates = await tx
         .select({
           id: customerPortalMagicLinks.id,
+          customerId: customerPortalMagicLinks.customerId,
           proposedEmail: customerPortalMagicLinks.proposedEmail,
         })
         .from(customerPortalMagicLinks)
@@ -258,11 +356,16 @@ export class PortalMagicLinkService {
       const candidate = candidates[0];
       if (candidate === undefined || candidate.proposedEmail === null) throw tokenInvalid();
       const proposedEmail = candidate.proposedEmail;
+      // Phase 15 (Review R6): Kunden-Lock VOR Adress-Lock und Zeilensperren – parallele
+      // Consumes desselben Kunden warten hier statt sich zu verklemmen (vorher 40P01 ⇒ 500).
+      await lockPortalCustomerAuth(tx, candidate.customerId);
       await tx.execute(
         sql`select pg_advisory_xact_lock(hashtext(${`portal-email-change:${proposedEmail}`}))`,
       );
       const link = await this.consumeOpenLink(tx, { token, purpose: 'email_change' }, now);
-      if (link === null || link.sessionId === null) throw tokenInvalid();
+      if (link === null || link.sessionId === null || link.customerId !== candidate.customerId) {
+        throw tokenInvalid();
+      }
       const session = await this.sessions.byId(link.sessionId, tx);
       if (
         session === null ||
@@ -333,6 +436,52 @@ export class PortalMagicLinkService {
     return rows.length > 0;
   }
 
+  /**
+   * Phase 15 (Review R4): Wurden im Fenster (15 min) bereits ≥ 5 Links dieses Zwecks
+   * für den Kunden (Reauth: für die Session) erzeugt? Zählt alle erzeugten Zeilen –
+   * auch verbrauchte/widerrufene. Aufruf nur unter `lockPortalCustomerAuth`.
+   */
+  private async throttled(
+    executor: DatabaseExecutor,
+    filter: { customerId: string; sessionId?: string; purpose: CustomerPortalMagicLinkPurpose },
+    now: Date,
+  ): Promise<boolean> {
+    const conditions = [
+      eq(customerPortalMagicLinks.customerId, filter.customerId),
+      eq(customerPortalMagicLinks.purpose, filter.purpose),
+      gt(
+        customerPortalMagicLinks.createdAt,
+        new Date(now.getTime() - PORTAL_LINK_THROTTLE_WINDOW_MS),
+      ),
+    ];
+    if (filter.sessionId !== undefined) {
+      conditions.push(eq(customerPortalMagicLinks.sessionId, filter.sessionId));
+    }
+    const rows = await executor
+      .select({ value: count() })
+      .from(customerPortalMagicLinks)
+      .where(and(...conditions));
+    return (rows[0]?.value ?? 0) >= PORTAL_LINK_THROTTLE_MAX;
+  }
+
+  /** Phase 15 (Review R6): Kunden-ID eines Links OHNE Sperre (für den Kunden-Lock vor dem Consume). */
+  private async linkCustomerId(
+    executor: DatabaseExecutor,
+    token: string,
+    purpose: CustomerPortalMagicLinkPurpose,
+  ): Promise<string | null> {
+    const rows = await executor
+      .select({ customerId: customerPortalMagicLinks.customerId })
+      .from(customerPortalMagicLinks)
+      .where(
+        and(
+          eq(customerPortalMagicLinks.tokenHash, sha256Hex(token)),
+          eq(customerPortalMagicLinks.purpose, purpose),
+        ),
+      );
+    return rows[0]?.customerId ?? null;
+  }
+
   private async insertLink(
     executor: DatabaseExecutor,
     input: {
@@ -340,6 +489,8 @@ export class PortalMagicLinkService {
       purpose: CustomerPortalMagicLinkPurpose;
       sessionId?: string;
       proposedEmail?: string;
+      /** Phase 15 (Nachbesserung R8): Zeile sofort widerrufen (Platzhalter, nie versandt). */
+      revoked?: boolean;
     },
     now: Date,
   ): Promise<{ token: string; linkId: string }> {
@@ -354,6 +505,7 @@ export class PortalMagicLinkService {
         proposedEmail: input.proposedEmail ?? null,
         createdAt: now,
         expiresAt: new Date(now.getTime() + PORTAL_MAGIC_LINK_TTL_MS),
+        revokedAt: input.revoked === true ? now : null,
       })
       .returning({ id: customerPortalMagicLinks.id });
     const row = inserted[0];

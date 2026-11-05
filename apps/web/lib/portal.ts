@@ -250,6 +250,12 @@ export const PORTAL_MESSAGES = {
     'Änderungen gelten für zukünftige Anfragen. Deine bereits bestätigte Buchung bleibt unverändert.',
   EMAIL_CHANGED: 'E-Mail-Adresse geändert. Bitte melde dich mit deiner neuen Adresse erneut an.',
   EMAIL_UNAVAILABLE: 'Diese E-Mail-Adresse kann nicht verwendet werden.',
+  // Phase 15 (Review R2): Bestätigung an den gezeigten Betrag gebunden (409 PORTAL_CANCELLATION_FEE_CHANGED).
+  CANCELLATION_FEE_CHANGED:
+    'Die Stornogebühr hat sich inzwischen geändert. Bitte prüfe den neuen Betrag und bestätige erneut.',
+  // Phase 15 (Review R8): neutrale Antwort auf jede E-Mail-Wechsel-Anforderung (keine Enumeration).
+  EMAIL_CHANGE_REQUESTED:
+    'Wenn die Adresse verwendet werden kann, erhältst du dort gleich einen Bestätigungslink.',
 } as const;
 
 /** Reine UI-Texte des Portals (Design §5). */
@@ -268,7 +274,8 @@ export const PORTAL_UI = {
   PICKUP_ADDRESS_PENDING: 'Die genaue Abholadresse teilen wir dir rechtzeitig mit.',
   APPOINTMENT_UNPLANNED: 'Zeit wird noch festgelegt',
   REAUTH_SENT: 'Wir haben dir einen Bestätigungslink geschickt.',
-  EMAIL_CHANGE_SENT: 'Wir haben einen Bestätigungslink an die neue Adresse geschickt.',
+  // Phase 15 (Review R8): kein eigener Erfolgstext mehr für den E-Mail-Wechsel – er ist immer
+  // PORTAL_MESSAGES.EMAIL_CHANGE_REQUESTED (sagt nicht, ob die Adresse frei ist).
   REAUTH_DONE: 'Du kannst deine Änderung jetzt speichern.',
   PROFILE_SAVED: 'Deine Angaben sind gespeichert.',
   INVOICE_FOLLOWS: 'Rechnung folgt',
@@ -334,6 +341,15 @@ export function isReauthRequired(error: unknown): boolean {
 
 export function isNotFound(error: unknown): boolean {
   return error instanceof PortalApiError && error.status === 404;
+}
+
+/** Phase 15 (Review R2): 409 PORTAL_CANCELLATION_FEE_CHANGED – Gebühr seit der Vorschau geändert. */
+export function isCancellationFeeChanged(error: unknown): boolean {
+  return (
+    error instanceof PortalApiError &&
+    error.status === 409 &&
+    error.code === 'PORTAL_CANCELLATION_FEE_CHANGED'
+  );
 }
 
 interface ErrorBody {
@@ -429,6 +445,66 @@ export async function portalFetch<T>(path: string, options: PortalFetchOptions =
     );
   }
   return body as T;
+}
+
+// ── Storno-Bestätigung (Order §40; Phase 15, Review R2) ─────────────────────
+
+/** Body des Storno-POST: `expectedFeeCents` ist nur Prüfwert (die API rechnet selbst), nie Autorität. */
+export interface PortalCancellationConfirmInput {
+  confirm: true;
+  expectedFeeCents: number;
+}
+
+export type PortalCancellationOutcome =
+  | { kind: 'cancelled'; booking: PortalBookingView }
+  | { kind: 'fee_changed'; preview: PortalCancellationPreview; message: string };
+
+/**
+ * Phase 15 (Review R2): Gebühr, die der Dialog als „Stornogebühr: X,XX €“ anzeigt
+ * (fehlender Wert ⇒ 0,00 €) – genau dieser Betrag wird bestätigt.
+ */
+export function displayedCancellationFeeCents(preview: PortalCancellationPreview): number {
+  return preview.feeCents ?? 0;
+}
+
+export function cancellationConfirmBody(
+  preview: PortalCancellationPreview,
+): PortalCancellationConfirmInput {
+  return { confirm: true, expectedFeeCents: displayedCancellationFeeCents(preview) };
+}
+
+/**
+ * Phase 15 (Review R2): verbindliches Storno, gebunden an die Gebühr der ANGEZEIGTEN
+ * Vorschau. Hat sich die Gebühr inzwischen geändert (409 PORTAL_CANCELLATION_FEE_CHANGED,
+ * z. B. über die Berliner Mitternacht), wird nichts storniert: die Vorschau wird neu
+ * geladen und mit dem Hinweistext zurückgegeben – der Dialog zeigt den neuen Betrag,
+ * der Kunde bestätigt erneut. Alle anderen Fehler (409 blockiert, 401, 404, Netz)
+ * werden unverändert geworfen.
+ */
+export async function confirmPortalCancellation(
+  bookingId: string,
+  preview: PortalCancellationPreview,
+  options: { fetchImpl?: PortalFetchLike | undefined } = {},
+): Promise<PortalCancellationOutcome> {
+  const base = `/bookings/${encodeURIComponent(bookingId)}/cancellation`;
+  try {
+    const booking = await portalFetch<PortalBookingView>(base, {
+      method: 'POST',
+      body: cancellationConfirmBody(preview),
+      fetchImpl: options.fetchImpl,
+    });
+    return { kind: 'cancelled', booking };
+  } catch (error) {
+    if (!isCancellationFeeChanged(error)) throw error;
+    const fresh = await portalFetch<PortalCancellationPreview>(`${base}/preview`, {
+      fetchImpl: options.fetchImpl,
+    });
+    return {
+      kind: 'fee_changed',
+      preview: fresh,
+      message: PORTAL_MESSAGES.CANCELLATION_FEE_CHANGED,
+    };
+  }
 }
 
 // ── Fragment-Token (Order §7) ────────────────────────────────────────────────
@@ -695,7 +771,11 @@ export const PHOTO_MIME_TYPES = ['image/jpeg', 'image/png', 'image/webp'] as con
 export type PortalPhotoMimeType = (typeof PHOTO_MIME_TYPES)[number];
 export const PHOTO_MAX_BYTES = 8 * 1024 * 1024;
 export const PHOTO_MAX_COUNT = 5;
-/** Body-Limit der API 12 MiB; Base64 bläht um 4/3 ⇒ Summe der Rohbytes ≤ 8 MiB bleibt sicher darunter. */
+/**
+ * Body-Limit der API 12 MiB; Base64 bläht um 4/3 ⇒ Summe der Rohbytes ≤ 8 MiB (≈ 10,7 MiB JSON)
+ * bleibt sicher darunter. Phase 15 (Review R3): Der Next-Rewrite puffert dafür bis 13 MiB
+ * (`experimental.proxyClientMaxBodySize` in next.config.ts; Next-Default 10 MiB schnitt ab).
+ */
 export const PHOTO_MAX_TOTAL_BYTES = 8 * 1024 * 1024;
 
 export function isPortalPhotoMimeType(value: string): value is PortalPhotoMimeType {

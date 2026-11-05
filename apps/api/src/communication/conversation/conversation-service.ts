@@ -17,6 +17,7 @@ import { randomUUID } from 'node:crypto';
 import type { AppEnvironment } from '@mietroyal/config';
 import {
   bookings,
+  cancellations, // Phase 15 (Review R1)
   conversationMessages,
   customers,
   inboundMailReceipts,
@@ -550,15 +551,25 @@ export class ConversationService {
           lastName: customers.lastName,
           organizationName: customers.organizationName,
           bookingId: bookings.id,
+          cancellationId: cancellations.id, // Phase 15 (Review R1)
         })
         .from(processes)
         .innerJoin(customers, eq(customers.id, processes.customerId))
         .leftJoin(bookings, eq(bookings.processId, processes.id))
+        .leftJoin(cancellations, eq(cancellations.bookingId, bookings.id)) // Phase 15 (Review R1)
         .where(eq(processes.id, input.processId))
         .for('update', { of: processes });
       const row = rows[0];
       if (row === undefined) throw new AuthError('NOT_FOUND', 'Vorgang nicht gefunden.');
       if (row.bookingId === null || (row.mainStatus !== 'open' && row.mainStatus !== 'reopened')) {
+        throw new AuthError('CONFLICT', 'Zu diesem Vorgang ist keine Portalnachricht möglich.');
+      }
+      // Phase 15 (Review R1): Eine stornierte Buchung wird durch ein Reopen nicht wieder aktiv
+      // (Portal-Policy: nie `active` – der Kunde kann nicht antworten bzw. sieht sie gar nicht).
+      // Also keine Portalantwort und keine Hinweis-Mail. Ein parallel laufendes Storno fängt
+      // bereits die Statusprüfung oben ab (Sperre auf denselben Vorgang, `main_status` wird
+      // danach neu gelesen ⇒ `cancelled`); diese Prüfung deckt den späteren Reopen ab.
+      if (row.cancellationId !== null) {
         throw new AuthError('CONFLICT', 'Zu diesem Vorgang ist keine Portalnachricht möglich.');
       }
       await tx.insert(conversationMessages).values({

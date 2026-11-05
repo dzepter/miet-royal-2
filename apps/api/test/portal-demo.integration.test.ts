@@ -7,6 +7,7 @@ import {
   DEMO_SUBJECT_PREFIX,
   MAIL_BLOCKED_DEMO_NOT_WHITELISTED,
 } from '../src/communication/types.ts';
+import { recordSecurityEvent } from '../src/auth/audit.ts';
 import { DemoDatasetService } from '../src/demo/dataset.ts';
 import { DEMO_RESET_BARRIER_LOCK_KEY, type DemoResetBarrier } from '../src/demo/reset-barrier.ts';
 import { DEMO_RESET_RETRY_AFTER_SECONDS } from '../src/demo/reset-gate.ts';
@@ -639,6 +640,70 @@ describe('Phase 15 – Kundenportal in der Demo (E1–E11)', () => {
           })
         ).statusCode,
       ).toBe(200);
+    },
+    RESET_TIMEOUT_MS,
+  );
+});
+
+// Phase 15 (Review R10): Portal-Auth-Ereignisse liegen in staff_security_events (auth/audit.ts) und
+// tragen Kunden-/Session-IDs des alten Datensatzes – „sonstige portalgebundene Customer-Auth-Daten“
+// (Order §46). Staff-Ereignisse (Staff Auth/Training/Demo-Audit) bleiben.
+describe('Phase 15 – Review R10 (Demo-Reset und Portal-Security-Events)', () => {
+  it(
+    'R10. Reset löscht staff_security_events mit type portal.* (Zähler deleted["staff_security_events:portal"]); alle übrigen Ereignisse bleiben unverändert, neu sind nur demo.reset_started/demo.reset_completed',
+    async () => {
+      const login = await loginViaMagicLink(ctx, SEED_PORTAL_EMAIL);
+      const logout = await ctx.app.inject({
+        method: 'POST',
+        url: '/portal/auth/logout',
+        headers: { cookie: login.cookie },
+      });
+      expect(logout.statusCode).toBe(204);
+      await recordSecurityEvent(ctx.db, {
+        type: 'session.revoked',
+        actorUserId: adminId,
+        details: { reason: 'review-r10' },
+      });
+
+      const portalEvents = async () =>
+        (
+          await ctx.pool.query<{ type: string; details: Record<string, unknown> }>(
+            `SELECT type, details FROM staff_security_events WHERE type LIKE 'portal.%'`,
+          )
+        ).rows;
+      const otherEventIds = async () =>
+        (
+          await ctx.pool.query<{ id: string }>(
+            `SELECT id FROM staff_security_events WHERE type NOT LIKE 'portal.%' ORDER BY id`,
+          )
+        ).rows.map((row) => row.id);
+      const portalBefore = await portalEvents();
+      expect(portalBefore.map((event) => event.type)).toEqual(
+        expect.arrayContaining(['portal.login', 'portal.logout']),
+      );
+      // Die Ereignisse binden den alten Datensatz (Kunden-ID der Session).
+      const customerId = await customerIdByEmail(SEED_PORTAL_EMAIL);
+      expect(portalBefore.some((event) => event.details.customerId === customerId)).toBe(true);
+      const othersBefore = await otherEventIds();
+      expect(othersBefore.length).toBeGreaterThan(0);
+
+      const result = await demoServicesFor(ctx).reset.reset({ actorId: adminId, now: new Date() });
+      expect(result.ok).toBe(true);
+      expect(await portalEvents()).toEqual([]);
+      expect(result.deleted['staff_security_events:portal']).toBe(portalBefore.length);
+
+      const othersAfter = await otherEventIds();
+      expect(othersAfter).toEqual(expect.arrayContaining(othersBefore));
+      expect(othersAfter).toHaveLength(othersBefore.length + 2);
+      const added = await ctx.pool.query<{ type: string }>(
+        `SELECT type FROM staff_security_events WHERE NOT (id = ANY($1::uuid[])) ORDER BY type`,
+        [othersBefore],
+      );
+      expect(added.rows.map((row) => row.type)).toEqual([
+        'demo.reset_completed',
+        'demo.reset_started',
+      ]);
+      await expectNoLeak();
     },
     RESET_TIMEOUT_MS,
   );

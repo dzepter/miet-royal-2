@@ -1,8 +1,22 @@
 'use client';
 
 import { useEffect, useRef } from 'react';
-import { euro, formatDate, remainingDaysText, type PortalCancellationPreview } from '../lib/portal';
-import { CallButton, ErrorBox, card, dangerButton, mutedStyle, secondaryButton } from './portal-ui';
+import {
+  displayedCancellationFeeCents,
+  euro,
+  formatDate,
+  remainingDaysText,
+  type PortalCancellationPreview,
+} from '../lib/portal';
+import {
+  CallButton,
+  ErrorBox,
+  InfoBox,
+  card,
+  dangerButton,
+  mutedStyle,
+  secondaryButton,
+} from './portal-ui';
 
 /**
  * Storno-Dialog (Order §39–§41; Design §5): eigene Komponente statt
@@ -11,11 +25,15 @@ import { CallButton, ErrorBox, card, dangerButton, mutedStyle, secondaryButton }
  * bewusste Bestätigung „Buchung verbindlich stornieren“. Während der Anfrage
  * ist der Button gesperrt (Doppelklick-Schutz; die API ist zusätzlich
  * idempotent). Blocker ⇒ Kundentext + Anrufen, nie interne Gründe.
+ * Phase 15 (Review R2): Die Bestätigung ist an die hier angezeigte Gebühr gebunden;
+ * hat sie sich inzwischen geändert, zeigt der Dialog den neuen Betrag samt Hinweis
+ * (`notice`) und der Kunde bestätigt erneut.
  */
 export function PortalCancelDialog({
   preview,
   busy,
   error,
+  notice = null,
   phoneNumber,
   onConfirm,
   onClose,
@@ -23,6 +41,7 @@ export function PortalCancelDialog({
   preview: PortalCancellationPreview;
   busy: boolean;
   error: string | null;
+  notice?: string | null;
   phoneNumber: string | null;
   onConfirm: () => void;
   onClose: () => void;
@@ -38,7 +57,8 @@ export function PortalCancelDialog({
     return () => document.removeEventListener('keydown', onKey);
   }, [busy, onClose]);
 
-  const feeCents = preview.feeCents ?? 0;
+  // Phase 15 (Review R2): derselbe Wert, den die Bestätigung als expectedFeeCents sendet.
+  const feeCents = displayedCancellationFeeCents(preview);
   const days = remainingDaysText(preview.remainingDays);
 
   return (
@@ -68,6 +88,12 @@ export function PortalCancelDialog({
         <h2 id="portal-cancel-title" style={{ marginTop: 0, fontSize: '1.2rem' }}>
           Buchung stornieren
         </h2>
+
+        {notice !== null && (
+          <InfoBox tone="warning" testId="portal-cancel-fee-changed">
+            {notice}
+          </InfoBox>
+        )}
 
         {preview.allowed ? (
           <>

@@ -17,13 +17,16 @@ import type { CancellationRow } from '../cancellation/cancellation-service.ts';
  * - Sichtbar wird eine Buchung erst mit echter `bookings`-Zeile (Anfrage,
  *   Angebotsentwurf oder nur versendetes Angebot sind NIE eine Portalbuchung).
  * - Buchung UND Vorgang müssen demselben Kunden gehören (beide Spalten).
- * - `open`/`reopened` ⇒ `active`.
+ * - Stornozeile vorhanden (Phase 15, Review R1: unabhängig vom Vorgangsstatus,
+ *   also auch nach einem Reopen) ⇒ 0 € nur als Bestätigungsansicht direkt nach
+ *   der eigenen Aktion des Kunden (24 h, nur Detailroute/Storno-Antwort, nie in
+ *   Listen – Review R12); kostenpflichtig `cancelled_fee` bis
+ *   `finance_status = 'paid'`.
+ * - sonst `open`/`reopened` ⇒ `active`.
  * - `completed` ⇒ `completed_open`, solange finanziell kundenseitig offen
  *   (kein Settlement, nicht gesperrt, kein Zahlungsstatus, open/overdue);
  *   `paid` ⇒ unsichtbar.
- * - `cancelled` ⇒ ohne Stornozeile unsichtbar; 0 € nur als Bestätigungsansicht
- *   direkt nach der Aktion (24 h, nur Detailroute, nie in Listen);
- *   kostenpflichtig `cancelled_fee` bis `finance_status = 'paid'`.
+ * - `cancelled` ohne Stornozeile ⇒ unsichtbar.
  *
  * Es gibt KEINE Route und KEINEN Parameter für „alle“/„vergangene“ Buchungen.
  */
@@ -77,14 +80,19 @@ export function visibleBookingEventDate(
 }
 
 /**
- * Zustand je Kandidatenzeile – `null` = im Portal unsichtbar. `cancelledFreeWindow`
- * erlaubt die Bestätigungsansicht eines kostenfreien Stornos (nur Detailroute).
+ * Zustand je Kandidatenzeile – `null` = im Portal unsichtbar. `includeCancelledFree`
+ * erlaubt die Bestätigungsansicht eines kostenfreien KUNDENstornos (24 h; nur
+ * Detailroute und Antwort des Storno-POST).
  */
 export function portalStateOf(
   row: CandidateRow,
   now: Date,
   options: { includeCancelledFree: boolean },
 ): PortalBookingState | null {
+  // Phase 15 (Review R1): Eine Buchung mit Stornozeile ist NIE `active` – auch nicht, wenn der
+  // Vorgang danach wieder geöffnet wurde (Phase 9: die alte Buchung wird nicht reaktiviert).
+  // Der Zustand kommt dann ausschließlich aus der Stornozeile.
+  if (row.cancellation !== null) return cancelledStateOf(row.cancellation, now, options);
   switch (row.process.mainStatus) {
     case 'open':
     case 'reopened':
@@ -97,17 +105,27 @@ export function portalStateOf(
       if (settlement.paymentStatus === 'paid') return null;
       return 'completed_open';
     }
-    case 'cancelled': {
-      const cancellation = row.cancellation;
-      if (cancellation === null) return null;
-      if (cancellation.feeCents === 0) {
-        if (!options.includeCancelledFree) return null;
-        const age = now.getTime() - cancellation.cancelledAt.getTime();
-        return age <= PORTAL_CANCELLED_FREE_VISIBLE_MS ? 'cancelled_free' : null;
-      }
-      return cancellation.financeStatus === 'paid' ? null : 'cancelled_fee';
-    }
+    case 'cancelled':
+      // Ohne Stornozeile (z. B. Vorgang ohne Buchungsstorno) ⇒ unsichtbar.
+      return null;
   }
+}
+
+/** Zustand aus der Stornozeile: 0 € nur im Bestätigungsfenster, sonst bis `paid` sichtbar. */
+function cancelledStateOf(
+  cancellation: CancellationRow,
+  now: Date,
+  options: { includeCancelledFree: boolean },
+): PortalBookingState | null {
+  if (cancellation.feeCents === 0) {
+    if (!options.includeCancelledFree) return null;
+    // Phase 15 (Review R12): Bestätigungsansicht nur nach eigener Aktion des Kunden –
+    // ein kostenfreies Staff-Storno ist sofort unsichtbar.
+    if (cancellation.cancelerType !== 'customer') return null;
+    const age = now.getTime() - cancellation.cancelledAt.getTime();
+    return age <= PORTAL_CANCELLED_FREE_VISIBLE_MS ? 'cancelled_free' : null;
+  }
+  return cancellation.financeStatus === 'paid' ? null : 'cancelled_fee';
 }
 
 async function loadCandidates(
@@ -188,8 +206,9 @@ export async function listVisibleBookings(
 
 /**
  * Eine Buchung des Kunden auflösen – fremd/unbekannt/unsichtbar ⇒ `null`
- * (Route: neutrales 404). `includeCancelledFree` nur für die Detailansicht
- * direkt nach einem kostenfreien Storno (24 h).
+ * (Route: neutrales 404). `includeCancelledFree` nur für die Detailansicht und
+ * die Antwort des Storno-POST direkt nach einem kostenfreien Kundenstorno (24 h);
+ * alle übrigen Unterrouten lösen ohne Fenster auf (Phase 15, Review R12).
  */
 export async function resolveVisibleBooking(
   db: Database,

@@ -5,6 +5,7 @@ import {
   bookingSecurityDeposits,
   bookings,
   cancellations,
+  customers, // Phase 15 (Review R11)
   handovers,
   machineAssignments,
   machineRiskIncidents,
@@ -101,6 +102,24 @@ export class CancellationBlockedError extends AuthError {
     super('CONFLICT', `Storno nicht möglich: ${blockers.join(' ')}`);
     this.name = 'CancellationBlockedError';
   }
+}
+
+// Phase 15 (Review R2): Die vom Kunden bestätigte (angezeigte) Gebühr weicht von der unter der
+// Prozesssperre neu berechneten ab (z. B. Berliner Mitternacht zwischen Vorschau und Bestätigung).
+// Geworfen VOR jeder Schreiboperation – die Transaktion schreibt nichts.
+export class CancellationFeeChangedError extends AuthError {
+  constructor(
+    readonly expectedFeeCents: number,
+    readonly currentFeeCents: number,
+  ) {
+    super('CONFLICT', 'Die Stornogebühr hat sich seit der Vorschau geändert.');
+    this.name = 'CancellationFeeChangedError';
+  }
+}
+
+/** Phase 15 (Review R2): optionale Bindung der Bestätigung an die angezeigte Gebühr (nur Prüfwert). */
+export interface CancelOptions {
+  expectedFeeCents?: number;
 }
 
 /** 409 mit vorhandener Folgevorgangsnummer (Route: Code FOLLOW_UP_EXISTS). */
@@ -541,6 +560,7 @@ export class CancellationService {
     actor: CancellationActor, // Phase 15 (portal): zusätzlich { id: null, type: 'customer' }
     viewer: CancellationViewer,
     now = new Date(),
+    options: CancelOptions = {}, // Phase 15 (Review R2): Staff-Routen übergeben nichts
   ): Promise<CancellationView> {
     const evidenceKeys: string[] = [];
     const outcome = await this.db.transaction(async (tx) => {
@@ -614,6 +634,13 @@ export class CancellationService {
 
       // 4. Berechnung – ausschließlich Domänenregel.
       const calculation = this.calculate(process, booking, now);
+      // Phase 15 (Review R2): Prüfwert unter der Prozesssperre – Abweichung ⇒ nichts schreiben.
+      if (
+        options.expectedFeeCents !== undefined &&
+        options.expectedFeeCents !== calculation.feeCents
+      ) {
+        throw new CancellationFeeChangedError(options.expectedFeeCents, calculation.feeCents);
+      }
 
       // 5. Ressourcen freigeben (Order §56) – keine Lagerbewegungen. Offene
       //    Risikohinweise des Vorgangs werden sofort geschlossen (wie die
@@ -997,13 +1024,21 @@ export class CancellationService {
       const booking = bookingRows[0];
       const customer = record(booking?.customerSnapshot);
       const event = record(booking?.eventSnapshot);
+      // Phase 15 (Review R11): Kundenstorno ⇒ an die AKTUELLE (im Portal verifizierte) Adresse
+      // des aktiven Kunden; ohne aktuelle Adresse Rückfall auf den Snapshot. Staff-Stornos und
+      // der Snapshot selbst bleiben unverändert.
+      const recipientEmail =
+        row.cancelerType === 'customer'
+          ? ((await this.currentCustomerEmail(tx, booking?.customerId ?? process.customerId)) ??
+            str(customer.email))
+          : str(customer.email);
       const enqueued = await this.confirmations.enqueueWithin(tx, {
         cancellationId: row.id,
         processId: row.processId,
         processNumber: process.processNumber,
         customerId: booking?.customerId ?? process.customerId,
         bookingId: row.bookingId,
-        recipient: { email: str(customer.email), name: str(customer.displayName) },
+        recipient: { email: recipientEmail, name: str(customer.displayName) },
         eventDate: event.eventDate ?? process.eventDate,
         chargeCents: row.feeCents,
         now,
@@ -1023,6 +1058,18 @@ export class CancellationService {
       ),
     );
     return outcome.response;
+  }
+
+  /** Phase 15 (Review R11): aktuelle E-Mail des aktiven (nicht gelöschten) Kunden oder null. */
+  private async currentCustomerEmail(
+    executor: DatabaseExecutor,
+    customerId: string,
+  ): Promise<string | null> {
+    const rows = await executor
+      .select({ email: customers.email })
+      .from(customers)
+      .where(and(eq(customers.id, customerId), isNull(customers.deletedAt)));
+    return str(rows[0]?.email ?? null);
   }
 
   // ── Folgevorgang (Order §64) ────────────────────────────────────────────

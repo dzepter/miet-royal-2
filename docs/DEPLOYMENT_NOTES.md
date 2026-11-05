@@ -175,16 +175,58 @@ Claude Code deployt niemals eigenmächtig auf Produktion.
 <!-- Phase 12 (Härtung Review A, H8) -->
 ## Öffentliche Token-Links hinter Proxy (Phase 12, Härtung H8)
 
-- `API_TRUST_PROXY_HOPS` MUSS hinter Web-/Staff-Proxy gesetzt sein: Die
-  öffentlichen Rate-Limits (Kontakt-/Aktionslinks, Dokumentlinks,
-  Kalender-Feed, Angebotslinks; `publicLimit` je Client-IP) und das
-  Login-Limit greifen sonst auf die IP des Proxys – alle Kunden teilen sich
-  ein Limit (Sperre für alle) bzw. ein Angreifer wird nicht getrennt
-  begrenzt. Wert = Anzahl der vertrauenswürdigen Proxies zwischen Client und
-  API, z. B. nginx → Next-Server (`apps/web`/`apps/staff`, Rewrite `/api/*`)
-  → API = `2`; nur Next-Server → API = `1`. Alle Wege zur API (Web, Staff,
-  ggf. direkt freigegebener Kalender-Feed) müssen dieselbe Hop-Zahl haben;
-  nie pauschal vertrauen (X-Forwarded-For wäre fälschbar).
+- `API_TRUST_PROXY_HOPS` MUSS hinter dem vorgeschalteten Proxy gesetzt sein:
+  Die öffentlichen Rate-Limits (Kontakt-/Aktionslinks, Dokumentlinks,
+  Kalender-Feed, Angebotslinks; `publicLimit` je Client-IP), das Staff-Login-
+  Limit und die IP-Limits des Kundenportals greifen sonst auf die IP des
+  Proxys – alle Kunden teilen sich ein Limit (Sperre für alle) bzw. ein
+  Angreifer wird nicht getrennt begrenzt.
+  <!-- Phase 15 (Review R4): Hop-Zahl und X-Forwarded-For korrigiert -->
+- **So bestimmt die API die Client-IP** (Phase 15, Review R4 – ersetzt die
+  frühere Angabe von zwei Hops für nginx → Next → API bzw. einem Hop für ein
+  direkt erreichbares Next, die die Limits fälschbar machte): Fastify `trustProxy` in `apps/api/src/app.ts` ist
+  `(address, hop) => hop < API_TRUST_PROXY_HOPS` (`@fastify/proxy-addr`). Die
+  geprüfte Kette lautet [Socket-Partner, `X-Forwarded-For`-Einträge von
+  RECHTS nach links]; `request.ip` ist der erste nicht vertraute Eintrag. Mit
+  `API_TRUST_PROXY_HOPS=1` ist das der RECHTESTE `X-Forwarded-For`-Eintrag
+  (ohne Header die Socket-Adresse), mit `2` der zweitrechteste usw.; `0`
+  ignoriert `X-Forwarded-For` und nimmt immer die Socket-Adresse.
+- **Der Next-Rewrite hängt nichts an:** Der Same-Origin-Rewrite `/api/*` von
+  Web (`apps/web`) UND Staff (`apps/staff`) reicht ein vom Client gesendetes
+  `X-Forwarded-For` UNVERÄNDERT weiter und fügt selbst KEINEN Eintrag hinzu
+  (setzt nur `X-Forwarded-Host`). Geprüft im Code
+  (`next/dist/server/lib/router-utils/proxy-request.js`, httpxy ohne `xfwd`)
+  und mit `next start` (Next 16.3.3) gegen einen Echo-Server: Client-Header
+  `X-Forwarded-For: 198.51.100.7` kam unverändert an, ohne Client-Header kam
+  keiner an. Der Next-Server zählt deshalb NICHT als Hop.
+- **Pflicht-Topologie:** Next-Server (Web/Staff) und API sind NIE direkt aus
+  dem Internet erreichbar (nur über den vorgeschalteten Proxy, z. B. nginx;
+  Ports nur auf localhost/internem Netz). Der vorgeschaltete Proxy MUSS die
+  echte Client-IP an `X-Forwarded-For` anhängen
+  (`proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`) oder den
+  Header damit ersetzen (`proxy_set_header X-Forwarded-For $remote_addr;`).
+- **Richtiger Wert: `API_TRUST_PROXY_HOPS=1`** – sowohl für nginx → Next
+  (Web/Staff) → API als auch für nginx → API direkt (z. B. ein direkt
+  freigegebener Kalender-Feed): In beiden Fällen ist der rechteste Eintrag die
+  von nginx angehängte echte Client-IP; alle Wege zur API ergeben dieselbe
+  Hop-Zahl. Allgemein: Hop-Zahl = Anzahl der Proxies, die SELBST einen
+  `X-Forwarded-For`-Eintrag anhängen (z. B. ein zusätzlicher Load-Balancer vor
+  nginx, der die Client-IP anhängt ⇒ `2`); der Next-Rewrite zählt nie mit.
+- **Falsche Werte:** zu hoch (z. B. `2` hinter nur einem anhängenden Proxy) ⇒
+  die API nimmt einen vom Client selbst gesetzten Eintrag ⇒ jedes IP-Limit
+  ist mit wechselndem `X-Forwarded-For` umgehbar (Review R4: unbegrenzte
+  Magic-Link-Anforderungen an dieselbe Adresse). `1` bei direkt erreichbarem
+  Next- oder API-Server ⇒ ebenfalls fälschbar (der rechteste Eintrag stammt
+  dann vom Client). `0` hinter einem Proxy ⇒ alle Anfragen tragen die IP von
+  Proxy/Next und teilen sich EIN Limit (eine Person sperrt alle aus). Nie
+  pauschal vertrauen (`trustProxy: true`).
+- **Zweite Verteidigungslinie im Kundenportal (unabhängig von IP/XFF):**
+  DB-basierte Drossel der Magic Links – höchstens 5 erzeugte Links je 15 min
+  je Kunde (Anmeldung, E-Mail-Wechsel) bzw. je Session (Reauth); darüber
+  entsteht still kein weiterer Link, keine Mail, die Antwort bleibt neutral 202
+  (`PORTAL_LINK_THROTTLE_MAX`/`PORTAL_LINK_THROTTLE_WINDOW_MS` in
+  `apps/api/src/portal/auth/constants.ts`). Sie begrenzt Mailbombing auch bei
+  falsch gesetzter Hop-Zahl, ersetzt die korrekte Konfiguration aber nicht.
 - Reverse-Proxy-Access-Logs (nginx o. Ä. vor Web/Staff/API) müssen die
   Token-Pfade maskieren, denn das Token steht im Pfad: `/kontakt/<token>`,
   `/dokument/<token>`, `/angebot/<token>` und `/api/public/**`
@@ -457,9 +499,34 @@ Port, kein neues Secret, keine Pflichtvariable. Migration 0032
   normalisierten E-Mail und zusätzlich je IP), Einlösung, Reauth und E-Mail-
   Wechsel sind mit `@fastify/rate-limit` bzw. einem In-Memory-Fenster begrenzt
   – im Speicher JE API-PROZESS (wie das Staff-Login). Mehrere API-Prozesse
-  vervielfachen das effektive Limit; `API_TRUST_PROXY_HOPS` MUSS korrekt
-  gesetzt sein, sonst teilen sich alle Kunden die IP des Proxys (Sperre für
-  alle) – siehe „Öffentliche Token-Links hinter Proxy“.
+  vervielfachen das effektive Limit.
+  <!-- Phase 15 (Review R4) -->
+- **Client-IP hinter Proxy (Phase 15, Review R4):** Die IP-Limits treffen die
+  echte Client-IP nur in dieser Topologie: vorgeschalteter Proxy (z. B. nginx)
+  hängt die Client-IP an `X-Forwarded-For` an
+  (`$proxy_add_x_forwarded_for`) bzw. setzt sie (`$remote_addr`), Web-Next
+  und API sind NIE direkt erreichbar, `API_TRUST_PROXY_HOPS=1` – für nginx →
+  Web-Next → API genauso wie für nginx → API. Der Next-Rewrite `/api/*` reicht
+  ein vom Client gesendetes `X-Forwarded-For` unverändert weiter und hängt
+  selbst nichts an (zählt nicht als Hop). Zu hoch ⇒ IP-Limits mit gefälschtem
+  `X-Forwarded-For` umgehbar; `0` ⇒ alle Kunden teilen sich das Limit der
+  Proxy-IP (Sperre für alle). Unabhängig davon drosselt die API Magic Links in
+  der Datenbank: höchstens 5 je 15 min je Kunde (Anmeldung, E-Mail-Wechsel)
+  bzw. je Session (Reauth), darüber still kein Link, Antwort neutral. Details:
+  „Öffentliche Token-Links hinter Proxy“.
+  <!-- Phase 15 (Review R3) -->
+- **Body-Limit-Kette Fotos (Phase 15, Review R3):** Browser-Vorprüfung
+  höchstens 5 Bilder, je ≤ 8 MiB und zusammen ≤ 8 MiB Rohbytes (als Base64-JSON
+  ≈ 10,7 MiB) < API-Limit `POST /portal/bookings/:id/messages` 12 MiB
+  (`PORTAL_CHAT_BODY_LIMIT`) ≤ Puffer des Web-Rewrites 13 MiB
+  (`experimental.proxyClientMaxBodySize` in `apps/web/next.config.ts`). Der
+  Next-Default von 10 MiB schnitt größere Bodies OHNE Fehler ab (API erhielt
+  ein gekürztes JSON mit unverändertem `Content-Length` ⇒ Timeout statt
+  sauberer Ablehnung). Der vorgeschaltete Proxy muss für `/api/portal/`
+  mindestens 13 MiB zulassen (nginx `client_max_body_size 13m;` – der
+  nginx-Default 1 MiB würde schon kleine Fotos mit 413 ablehnen). Größere
+  Bodies lehnt die API anhand `Content-Length` mit 413 ab (Portal: „Die Bilder
+  sind zusammen zu groß …“).
 - **Portal-Basis-URL = `MAIL_PUBLIC_WEB_BASE_URL`:** Alle Anmelde-/Bestätigungs-
   links werden ausschließlich aus dieser Variable und festen Pfaden gebildet
   (`/konto/anmelden`, `/konto/profil/bestaetigen`,
@@ -478,7 +545,11 @@ Port, kein neues Secret, keine Pflichtvariable. Migration 0032
 - **Demo:** `/portal/*` fällt vollständig unter Reset-Gate und Reset-Barrier
   (503 `DEMO_RESET` während eines Resets – auch Anmeldung und Logout, keine
   Ausnahme); der Reset löscht `customer_portal_sessions` und
-  `customer_portal_magic_links` (Kunden melden sich neu an). Portal-Mails
+  `customer_portal_magic_links` (Kunden melden sich neu an) sowie – Phase 15
+  (Review R10) – die Portal-Auth-Ereignisse `staff_security_events` mit
+  `type LIKE 'portal.%'` (Kunden-/Session-IDs des alten Datensatzes; Zähler
+  `staff_security_events:portal` im Reset-Ergebnis); alle übrigen Staff-
+  Ereignisse bleiben. Portal-Mails
   unterliegen Whitelist und „[DEMO]“: Ohne Sink-Domain in `MAIL_DEMO_WHITELIST`
   ist in der Demo KEINE Portal-Anmeldung möglich (Zustellung `blocked`,
   Antwort neutral 202). Übungskunden mit Whitelist-Adresse und bestätigter

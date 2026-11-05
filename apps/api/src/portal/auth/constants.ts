@@ -15,3 +15,11 @@ export const PORTAL_MAGIC_LINK_VALID_MINUTES = PORTAL_MAGIC_LINK_TTL_MS / 60_000
 export function isReauthFresh(reauthenticatedAt: Date, now: Date): boolean {
   return now.getTime() - reauthenticatedAt.getTime() <= PORTAL_REAUTH_FRESH_MS;
 }
+
+// Phase 15 (Review R4): DB-basierte Versanddrossel – unabhängig von IP und
+// X-Forwarded-For (zweite Verteidigungslinie hinter den IP-Rate-Limits der Route).
+// Wurden im Fenster bereits so viele Links erzeugt (Login/E-Mail-Wechsel je Kunde,
+// Reauth je Session), entsteht still KEIN weiterer Link (kein Widerruf, keine Mail);
+// die öffentliche Antwort bleibt unverändert neutral.
+export const PORTAL_LINK_THROTTLE_MAX = 5;
+export const PORTAL_LINK_THROTTLE_WINDOW_MS = 15 * 60 * 1000;

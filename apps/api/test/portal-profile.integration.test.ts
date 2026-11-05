@@ -425,9 +425,8 @@ describe('E-Mail-Wechsel (Order §34/§35)', () => {
     const { customer, session } = await privateCustomer();
     const requested = await emailChangeRequest(session.cookie, ' Neu@Example.com ');
     expect(requested.statusCode).toBe(202);
-    expect(requested.json()).toEqual({
-      message: 'Wir haben einen Bestätigungslink an die neue Adresse geschickt.',
-    });
+    // Phase 15 (Review R8): neutraler Text – identisch für freie und belegte Adressen.
+    expect(requested.json()).toEqual({ message: PORTAL_MESSAGES.EMAIL_CHANGE_REQUESTED });
     const link = await emailChangeToken();
     expect(link.recipientEmail).toBe('neu@example.com');
     const [row] = await ctx.db.select().from(customerPortalMagicLinks);
@@ -497,22 +496,24 @@ describe('E-Mail-Wechsel (Order §34/§35)', () => {
     expect(await ctx.db.select().from(bookings)).toHaveLength(0);
   });
 
-  it('P15. Duplicate-Mail: Adresse eines anderen aktiven Kunden ⇒ 400 PORTAL_EMAIL_UNAVAILABLE; gelöschter Kunde blockiert nicht', async () => {
+  it('P15. Duplicate-Mail blockiert: Adresse eines anderen aktiven Kunden ⇒ neutrale 202 (Review R8), aber kein nutzbarer Link und keine Mail; gelöschter Kunde blockiert nicht', async () => {
     const { admin, customer, session } = await privateCustomer();
     await createTestCustomer(ctx, admin.id, { email: 'belegt@example.com', firstName: 'Bela' });
     const blocked = await emailChangeRequest(session.cookie, 'belegt@example.com');
-    expect(blocked.statusCode).toBe(400);
-    expect(blocked.json().error).toMatchObject({
-      code: 'PORTAL_EMAIL_UNAVAILABLE',
-      message: PORTAL_MESSAGES.EMAIL_UNAVAILABLE,
-    });
-    expect(await ctx.db.select().from(customerPortalMagicLinks)).toHaveLength(0);
+    // Phase 15 (Review R8): kein Existenz-Orakel – gleiche Antwort wie bei freier Adresse.
+    expect(blocked.statusCode).toBe(202);
+    expect(blocked.json()).toEqual({ message: PORTAL_MESSAGES.EMAIL_CHANGE_REQUESTED });
+    // Nachbesserung R8: höchstens eine sofort widerrufene Platzhalterzeile (Drosselzählung), nie offen.
+    const links = await ctx.db.select().from(customerPortalMagicLinks);
+    expect(links.filter((l) => l.revokedAt === null && l.consumedAt === null)).toHaveLength(0);
+    expect(await ctx.db.select().from(mailDeliveries)).toHaveLength(0);
     const trashed = await createTestCustomer(ctx, admin.id, {
       email: 'frei@example.com',
       firstName: 'Weg',
     });
     await customerServiceFor(ctx).moveToTrash(admin.id, trashed.id);
     expect((await emailChangeRequest(session.cookie, 'frei@example.com')).statusCode).toBe(202);
+    expect((await emailChangeToken()).recipientEmail).toBe('frei@example.com');
     expect((await customerRow(customer.id)).email).toBe('kunde@example.com');
   });
 

@@ -278,7 +278,13 @@ weder Gate noch Demo-Routen (`/staff/demo/*` ⇒ 404).
   `customer_portal_sessions` (Order §46; damit auch offene E-Mail-Wechsel-Links)
   – Demo-Kunden müssen sich danach neu anmelden; ein vor dem Reset erzeugter
   Magic Link ist danach ungültig (401) und legt keine Session im neuen Seed an.
-  Staff-Sessions, Geräte und Training bleiben unberührt.
+  Phase 15 (Review R10): Zusätzlich löscht der Reset in derselben Transaktion die
+  Portal-Auth-Ereignisse `staff_security_events` mit `type LIKE 'portal.%'`
+  (`portal.login`, `portal.logout`, `portal.email_changed`,
+  `portal.sessions_revoked` – sie tragen Kunden-/Session-IDs des alten
+  Datensatzes; Zähler `staff_security_events:portal` im Reset-Ergebnis).
+  Staff-Sessions, Geräte, Training und alle übrigen Security-Ereignisse
+  (Staff-Auth, `demo.reset_*`, `training.*`) bleiben unberührt.
 
 ## Kundenportal (Phase 15)
 
@@ -309,6 +315,14 @@ Fachlogik: docs/CUSTOMER_PORTAL.md.
   Staff-App); das Portal ruft `/api/portal/...` mit `credentials: 'same-origin'`.
   Kein CORS, kein neues Proxy-Ziel; der globale CSRF-Hook (`Sec-Fetch-Site`,
   Fallback `AUTH_ALLOWED_ORIGINS`) gilt für alle Portal-Mutationen.
+  Phase 15 (Review R3): Der Rewrite puffert Request-Bodies bis 13 MiB
+  (`experimental.proxyClientMaxBodySize` in `apps/web/next.config.ts`, keine
+  Variable; Next-Default 10 MiB schnitt Foto-Nachrichten ab) – über dem
+  API-Limit der Portal-Nachrichten von 12 MiB. Phase 15 (Review R4): Der
+  Rewrite reicht ein vom Client gesendetes `X-Forwarded-For` unverändert weiter
+  und hängt selbst nichts an – Web-Next und API nie direkt erreichbar machen,
+  der vorgeschaltete Proxy hängt die Client-IP an, `API_TRUST_PROXY_HOPS=1`
+  (docs/DEPLOYMENT_NOTES.md „Öffentliche Token-Links hinter Proxy“).
 - **Portal-Cookie:** außerhalb development `__Host-mr_customer_session`
   (HttpOnly, Secure, Path=/, kein Domain, SameSite=Strict, Max-Age bis zum
   ABSOLUTEN Ablauf 30 Tage nach Anmeldung – kein Sliding), in development
@@ -323,7 +337,8 @@ Fachlogik: docs/CUSTOMER_PORTAL.md.
 - **Demo:** Banner über das Root-Layout der Web-App (`WEB_APP_ENV=demo`, gilt für
   `/konto/*`); Portal-Mails nur an die Whitelist, Betreff „[DEMO]“ (Abschnitt
   „Demo-Mail“); Gate-/Barrier-Präfix `/portal` (Abschnitt „Demo-Reset-Gate“);
-  Reset löscht Portal-Sessions und Magic Links (Abschnitt „Reset-Folgen“).
+  Reset löscht Portal-Sessions, Magic Links und Portal-Auth-Ereignisse
+  (`portal.*`, Phase 15 Review R10; Abschnitt „Reset-Folgen“).
 - **Cleanup:** Abgelaufene/widerrufene Sessions und verbrauchte/abgelaufene Magic
   Links räumt der bestehende Scan-Lauf `communication.scan_due` (alle 2 min,
   Worker; API-Testrunner identisch) über Portal-Scanner auf – keine neue

@@ -698,3 +698,31 @@ describe('M16. Rate-Limit und Session-Hinweis', () => {
     expect((await staffConversation(world.processId)).portalActive).toBe(false);
   });
 });
+
+// Phase 15 (Review-Hinweis Polyglot, Defense in Depth): Ein Bild mit gültigen PNG-Magic-Bytes und
+// angehängtem HTML/Script wird (wie jedes erlaubte Bild) angenommen. Die Portal-Fotoroute liefert es
+// zusätzlich mit `content-security-policy: default-src 'none'; sandbox` aus – selbst bei falschem
+// Sniffing/direktem Öffnen kann nichts ausgeführt oder nachgeladen werden.
+describe('Polyglot-CSP. Portal-Fotoroute mit Content-Security-Policy', () => {
+  it("Polyglot-CSP. PNG mit angehängtem <script> ⇒ Auslieferung als image/png mit nosniff, no-store UND content-security-policy „default-src 'none'; sandbox“", async () => {
+    const world = await portalBooking();
+    const polyglot = Buffer.concat([
+      PNG_1X1,
+      Buffer.from('<html><body><script>alert(document.cookie)</script></body></html>'),
+    ]);
+    const response = await postMessage(world.cookie, world.bookingId, {
+      body: 'Polyglot',
+      photos: [photo(polyglot, 'image/png')],
+    });
+    expect(response.statusCode).toBe(201);
+    const view = response.json();
+    const bytes = await photoRoute(world.cookie, world.bookingId, view.id, view.photos[0].id);
+    expect(bytes.statusCode).toBe(200);
+    expect(bytes.headers['content-type']).toBe('image/png');
+    expect(bytes.headers['x-content-type-options']).toBe('nosniff');
+    expect(bytes.headers['cache-control']).toBe('private, no-store');
+    expect(bytes.headers['content-disposition']).toBe('inline');
+    expect(bytes.headers['content-security-policy']).toBe("default-src 'none'; sandbox");
+    expect(Buffer.from(bytes.rawPayload).equals(polyglot)).toBe(true);
+  });
+});
