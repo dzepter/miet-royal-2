@@ -9,6 +9,7 @@ export {
   ROUTING_PRODUCTION_BASE_URL,
   type RoutingConfig,
   type EnvironmentLinksConfig,
+  type PortalConfig,
   type LexwareConfig,
   type MailConfig,
   type CommunicationConfig,

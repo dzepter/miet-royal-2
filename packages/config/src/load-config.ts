@@ -48,6 +48,20 @@ export interface AppConfig {
   routing: RoutingConfig;
   /** Phase 14 (demo): feste Deployment-URL der jeweils anderen Umgebung (Live↔Demo-Wechsel). */
   environmentLinks: EnvironmentLinksConfig;
+  /** Phase 15 (Kundenportal): feste Kontakt-/Einstiegswerte des Portals (keine Secrets). */
+  portal: PortalConfig;
+}
+
+/**
+ * Phase 15 (Order §36/§37): „Neue Anfrage starten“ zeigt auf eine FEST
+ * konfigurierte URL (es gibt keine öffentliche Anfrage-Route), der Anruf-Button
+ * nutzt die zentral konfigurierte Miet-Royal-Telefonnummer. Beide Werte sind
+ * optional; fehlen sie, blendet das Portal die jeweilige Aktion aus
+ * (Go-live-Punkt in OPEN_ITEMS/PRE_START_CHECKLIST). Nie aus Browsereingaben.
+ */
+export interface PortalConfig {
+  newInquiryUrl: string | null;
+  phoneNumber: string | null;
 }
 
 /**
@@ -377,6 +391,19 @@ const rawEnvSchema = z.object({
   // Phase 14 (demo) – Live↔Demo-Wechsel: feste Staff-URLs (nur Origin, kein Secret).
   STAFF_DEMO_URL: z.string().max(2048).optional(),
   STAFF_LIVE_URL: z.string().max(2048).optional(),
+  // Phase 15 (Kundenportal) – feste Einstiegs-URL für neue Anfragen und Telefonnummer (keine Secrets).
+  PORTAL_NEW_INQUIRY_URL: z
+    .string()
+    .max(2048)
+    .regex(/^https?:\/\/[^\s]+$/, 'muss eine absolute http(s)-URL sein')
+    .optional(),
+  COMPANY_PHONE_NUMBER: z
+    .string()
+    .regex(
+      /^\+?[0-9][0-9 ()/-]{4,29}$/,
+      'muss eine Telefonnummer sein (Ziffern, +, Leerzeichen, -, /, Klammern)',
+    )
+    .optional(),
 });
 
 /**
@@ -522,6 +549,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   const push = buildPushConfig(raw, problems);
   const routing = buildRoutingConfig(raw, problems);
   const environmentLinks = buildEnvironmentLinks(raw, problems); // Phase 14 (demo)
+  const portal = buildPortalConfig(raw, problems); // Phase 15 (portal)
 
   if (problems.length > 0) {
     throw new ConfigError(problems);
@@ -575,6 +603,20 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     push,
     routing,
     environmentLinks,
+    portal,
+  };
+}
+
+// Phase 15 (Kundenportal): in production nur https für die Anfrage-URL; Telefonnummer wird getrimmt.
+function buildPortalConfig(raw: RawEnv, problems: string[]): PortalConfig {
+  const inquiry = raw.PORTAL_NEW_INQUIRY_URL?.trim() ?? '';
+  if (inquiry !== '' && raw.APP_ENV === 'production' && !inquiry.startsWith('https://')) {
+    problems.push('PORTAL_NEW_INQUIRY_URL: in production nur https');
+  }
+  const phone = raw.COMPANY_PHONE_NUMBER?.trim() ?? '';
+  return {
+    newInquiryUrl: inquiry === '' ? null : inquiry,
+    phoneNumber: phone === '' ? null : phone,
   };
 }
 
