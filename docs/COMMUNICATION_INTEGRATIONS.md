@@ -165,6 +165,13 @@ GPS/ETA (nur die Grenze `tour.delay_risk` ist benannt, es gibt keinen
 Tour-Push), bidirektionaler Apple-Kalender, iCloud-Zugangsdaten,
 Notification-Center-Glocke, Social Media.
 
+Phase 15: Das Kundenportal (`/konto`, docs/CUSTOMER_PORTAL.md) ist inzwischen
+gebaut. Es nutzt die Phase-12-Konversation mit `channel = portal` (gleiche
+Tabelle, gleiche Retention, gleiche Medienprüfung), die Outbox (vier neue
+Portal-Mailarten) und Web Push (`portal_message`, ohne Nachrichtentext). Eine
+öffentliche Kundenchat-App außerhalb des Portals, Push an Kunden und ein
+WhatsApp-Button im Portal bleiben bewusst ungebaut.
+
 ## Web Push (Mitarbeitende, Phase 12 – verifiziert 2026-10-18)
 
 **Standards/Quellen:** RFC 8030 (HTTP Web Push: 201 = angenommen, nicht

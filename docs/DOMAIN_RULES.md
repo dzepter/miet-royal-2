@@ -77,6 +77,10 @@ gescheiterter oder blockierter Versand startet sie nie.
 
 Keine Kundenantwort: danach automatisch weiter, falls keine anderen Blocker.
 Kundenantwort (auch normale Rückfrage): Auto-Lexware blockiert.
+Phase 15: Eine Nachricht im Kundenportal wird NICHT automatisch als
+„Kundenantwort“ der Abrechnungsklärung gewertet – Mitarbeitende sehen sie in der
+Vorgangskommunikation und erfassen die Kundenantwort wie bisher selbst (offener
+Fachpunkt, OPEN_ITEMS „Phase 15“).
 Mitarbeiter:
 - wie berechnet freigeben → Auto-Lexware
 - Betrag ändern → danach manueller Lexware-Klick
@@ -148,6 +152,28 @@ Storno entfernt operative Termine sofort und gibt Belegung frei.
 Gutschein:
 - 0 % Storno → reaktivieren, Restgültigkeit bleibt
 - 50/100 % → bleibt verbraucht
+
+Kundenstorno (Phase 15, Kundenportal): dieselbe Regel und derselbe Service
+(`canceler_type = customer`, keine Staff-ID). Der Kunde sieht vorher
+Eventdatum, verbleibende Tage, Prozentsatz, reguläre Maschinenmiet-Basis und
+die exakte Gebühr und bestätigt bewusst („Buchung verbindlich stornieren“).
+Online nur, solange der Phase-9-Service kein Blocker meldet (z. B. Übergabe
+abgeschlossen) – sonst „Diese Buchung kann nicht mehr online storniert werden.
+Bitte kontaktiere uns.“ Die Stornobestätigung geht bei Kundenstorno automatisch
+raus (Outbox, idempotent, Backstop); Mitarbeiter-Storno: Mail weiterhin
+bewusst über die Sendeaktion.
+
+## Kundenportal (Phase 15)
+- „Aktuelle Buchung“ (einzige Regel, `CustomerPortalVisibilityPolicy`):
+  Vorgang open/reopened; oder abgeschlossen, solange finanziell offen (keine
+  übertragene Abrechnung oder Zahlungsstatus offen/überfällig/unbekannt);
+  kostenpflichtig storniert bis bezahlt. Bezahlte Buchungen und kostenfreie
+  Stornos (außer der Bestätigungsansicht direkt nach der Aktion) erscheinen nie.
+  Keine Buchungshistorie.
+- Buchungsansicht nur aus dem Snapshot; Profiländerungen gelten nur für
+  zukünftige Anfragen.
+- Portalnachrichten nur zu einer aktiven Buchung; nach Abschluss/Storno nur
+  noch lesbar (Retention wie Phase 12).
 
 ## Frühere Rückgabe
 Keine automatische Mietpreisminderung.

@@ -14,6 +14,11 @@ Privat/Firma, Name, Firma, E-Mail, Telefon, Rechnungsadresse, optionale USt-ID.
 
 ### CustomerAccount
 Magic-Link-Konto, verifizierte Kontakte, Sessions, Löschstatus.
+Phase 15: Es gibt KEIN eigenes Konto-Fachobjekt – der `customers`-Datensatz ist
+die Identität. Das Portal ergänzt nur Auth-Tabellen (siehe „Kundenportal“ unten);
+„Löschstatus“ ist `customers.deleted_at` (macht alle Portal-Sessions sofort
+ungültig), „verifizierte Kontakte“ ist die per Magic Link bestätigte
+`customers.email` (Wechsel nur über `email_change`-Link an die neue Adresse).
 
 ### Process
 process_number, customer, source, main_status, assigned_user, event_date,
@@ -134,7 +139,9 @@ irgendeiner Spalte.
 Dauerhafte E-Mail-Outbox: `kind` (offer, order_confirmation, handover_protocol,
 return_protocol, settlement_damage_missing_notice, cancellation_confirmation,
 reminder_7_days, reminder_1_day, appointment_changed, voucher_delivery,
-invoice_delivery, manual_customer_reply), Bezüge `process_id`/`customer_id`/
+invoice_delivery, manual_customer_reply; Phase 15: customer_portal_magic_link,
+customer_portal_reply_notice, customer_portal_reauth,
+customer_portal_email_change – Migration 0032), Bezüge `process_id`/`customer_id`/
 `booking_id`, eingefrorener Empfänger (`recipient_email`, `recipient_name`),
 `subject`, `template_kind`/`template_version`, `context` (jsonb, NUR nicht-
 geheime Render-Daten), `secret_payload_ciphertext` (AES-256-GCM v2 mit
@@ -170,7 +177,9 @@ Bestandszeilen – Phase 12 Finalisierung: kein Push-Opt-out, wird nicht mehr
 erzeugt). Versand nur an Zeilen mit `disabled_at IS NULL`, aktivem User
 und nicht widerrufener Session. `push_deliveries`: `kind` (appointment_1h,
 return_overdue, machine_risk, machine_risk_6h, session_new_device_login,
-substitution_started), `user_id`, `idempotency_key` (UNIQUE, z. B.
+substitution_started; Phase 13: tour_delay_risk, assignment_reassigned;
+Phase 15: portal_message – Titel „Neue Kundennachricht – MR-…“, fester Body
+ohne Nachrichtentext), `user_id`, `idempotency_key` (UNIQUE, z. B.
 `push:return_overdue:<incidentId>:<userId>`), `payload` (jsonb {kind, title,
 body, url, tag} – datenminimiert), `status` (pending | sent | failed |
 skipped), `subscriptions_targeted`/`_succeeded`, `last_error_code`, `sent_at`.
@@ -241,11 +250,17 @@ es gibt keine Historie und keine Kopie der alten Telefonnummer.
 
 ### Document
 Typ, Version, Storage-Key, Hash, created/finalized, immutable, kunden-sichtbar.
+Phase 15: „kunden-sichtbar“ ist KEINE Spalte, sondern eine feste Regel im
+Portal (`apps/api/src/portal/documents.ts`): nur finalisierte Dokumente der
+sichtbaren Buchung – angenommene Angebotsversion (`offer_version_id` der
+Buchung), freigegebene Auftragsbestätigung, Lieferschein/Übergabeprotokoll
+finalisierter Übergaben, Rückgabeprotokoll finalisierter Rückgaben.
 
 ### ConversationMessage (Phase 12, `conversation_messages`)
 Eine Zeile je Nachricht im Vorgang: `process_id` (NULL = nicht zugeordnet,
 Order §22/§27), `customer_id`, `channel` (email | whatsapp | portal
-[vorbereitet]), `direction` (inbound | outbound), `sender_snapshot` (jsonb
+– Phase 15: Kundenportal-Chat; Kundennachrichten inbound, Staff-Antworten
+outbound mit `created_by_staff_id`), `direction` (inbound | outbound), `sender_snapshot` (jsonb
 ohne Secrets: `name?`, `email?`, `phone?` = wa_id – bei ausgehenden WhatsApp-
 Zeilen die Gegenstelle –, `skippedAttachments?` = Zähler nicht gespeicherter
 Anhänge), `subject`, `body` (NUR Text; HTML wird sicher zu Text, nie Raw-HTML),
@@ -493,6 +508,24 @@ einer kurzen `FOR UPDATE`-Transaktion reserviert, gewartet wird außerhalb),
 null oder beide gesetzt – vom Provider verhängte Pause, die API, Worker und
 Replikate gleichermaßen sehen, fail-fast), `updated_at`. Enthält nie Keys,
 URLs oder Request-Inhalte.
+
+### Kundenportal (Phase 15, Migration 0032)
+`customer_portal_sessions`: `customer_id` → customers, `token_hash` (SHA-256-
+Hex, UNIQUE – der Klartext steht nur im HttpOnly-Cookie), `created_at`,
+`authenticated_at`, `reauthenticated_at` (Profilmutationen verlangen ≤ 15 min),
+`last_seen_at` (nur Diagnostik, gedrosselt), `expires_at` (ABSOLUT
+`created_at` + 30 Tage, kein Sliding; CHECK `expires_at > created_at`),
+`revoked_at`, `user_agent_label` (grobe Geräteklasse, nie der rohe UA).
+`customer_portal_magic_links`: `customer_id`, `purpose`
+(`customer_portal_magic_link_purpose`: login | reauth | email_change),
+`token_hash` (SHA-256-Hex, UNIQUE), `session_id` (→ Sessions; bei reauth und
+email_change Pflicht), `proposed_email` (nur email_change, bereits
+normalisiert), `created_at`, `expires_at` (15 min), `consumed_at` (one-time,
+atomar gesetzt), `revoked_at`. CHECK `customer_portal_magic_links_purpose_check`
+erzwingt die Kombination purpose/session_id/proposed_email. Beide Tabellen sind
+Business-Daten ihrer Umgebung (Demo-Reset-Löschliste) und werden vom
+Scan-Lauf aufgeräumt (Links > 1 Tag nach Ablauf/Verbrauch/Widerruf, Sessions
+> 7 Tage nach Ablauf/Widerruf).
 
 ### SystemSetting
 Nur sinnvolle veränderbare Betriebsparameter; keine komplette Fachlogik als freie JSON-Regel.

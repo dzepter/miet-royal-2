@@ -85,6 +85,31 @@ Minimal: aktuelle Buchung, Termine, Preis, Docs, Nachricht, Rechnung,
 Storno, Anruf.
 Keine komplette Historie.
 
+Umsetzung Phase 15 (`/konto`, Details docs/CUSTOMER_PORTAL.md):
+- Ansprache „du“, Deutsch, mobile-first; eine Hauptaktion je Bildschirm.
+- Anmeldung nur per Magic Link; Antwort auf jede Anforderung identisch:
+  „Wenn die E-Mail-Adresse bei uns hinterlegt ist, erhältst du gleich einen
+  Anmeldelink.“ Der Link öffnet eine Seite mit dem Button „Kundenbereich öffnen“
+  (kein automatischer Login per Aufruf).
+- 0 aktuelle Buchungen ⇒ Hauptaktion „Neue Anfrage starten“ (feste URL aus
+  `PORTAL_NEW_INQUIRY_URL`, sonst Hinweis + Anrufen); 1 ⇒ direkt die Buchung;
+  mehrere ⇒ Liste „Aktuelle Buchungen“.
+- Statuslabels: „Bestätigte Buchung“, „Abgeschlossen – Rechnung offen“,
+  „Storniert“, „Storniert – Stornogebühr“; Rechnung „Offen“ / „Bezahlt“ /
+  „Überfällig“ / „Rechnung wird vorbereitet“. Status nie nur über Farbe.
+- Termine: exakte Zeit, Zeitfenster („10:00–12:00 Uhr“) oder „Zeit wird noch
+  festgelegt“. „Unterwegs“ nur als Wort – keine Karte, kein ETA, kein Fahrer.
+- Storno nur über einen eigenen Dialog (kein Browser-`confirm()`) mit
+  „Stornogebühr: X,XX €“ und „Buchung verbindlich stornieren“; blockiert ⇒
+  „Diese Buchung kann nicht mehr online storniert werden. Bitte kontaktiere
+  uns.“ + Anrufen.
+- Profil: Hinweis „Änderungen gelten für zukünftige Anfragen. Deine bereits
+  bestätigte Buchung bleibt unverändert.“; Änderungen verlangen eine Bestätigung
+  per Link („Änderung bestätigen“). Nach E-Mail-Wechsel: „E-Mail-Adresse
+  geändert. Bitte melde dich mit deiner neuen Adresse erneut an.“
+- Kein WhatsApp-Button, kein Online-Payment, keine rohen Codes in Fehlermeldungen
+  (429 ⇒ „Zu viele Versuche. Bitte warte einen Moment.“).
+
 ## Website
 Emotionaler als Staff, aber gleiche Marke.
 Primärer CTA: Angebot anfordern / Slush konfigurieren.

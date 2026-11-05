@@ -158,6 +158,15 @@ import {
  *   erzwungen (Order §63). Secure-/`__Host-`-Cookies funktionieren im
  *   Chromium auf http://127.0.0.1 (vertrauenswürdiger Loopback).
  *
+ * Phase 15 (E2E, Kundenportal – Szenarien A–M, O, P in portal-flow.spec.ts,
+ * N in portal-demo.spec.ts):
+ * - Die Haupt-API bekommt PORTAL_NEW_INQUIRY_URL + COMPANY_PHONE_NUMBER
+ *   (synthetisch) für „Neue Anfrage starten“ und den Anrufen-Button.
+ * - Die Demo-API setzt MAIL_PUBLIC_WEB_BASE_URL auf die Demo-WEB-Instanz (3108):
+ *   Magic Links des Demo-Portals dürfen nie auf die Haupt-Web-Instanz zeigen
+ *   (Order §48/§49). Keine bestehende Demo-Spec prüft den Origin von Mail-Links.
+ * - portal-demo.spec.ts läuft nur im Projekt `demo-communication`.
+ *
  * In Umgebungen mit vorinstalliertem Chromium kann CHROMIUM_PATH auf die
  * Browser-Binärdatei zeigen; sonst nutzt Playwright seine eigene Installation
  * (npx playwright install chromium).
@@ -245,6 +254,16 @@ const ROUTING_E2E_ENV = {
   GRAPHHOPPER_BASE_URL: GRAPHHOPPER_FAKE_BASE_URL,
 };
 
+/**
+ * Phase 15 (E2E): Kundenportal der Haupt-API – feste „Neue Anfrage“-URL und
+ * Telefonnummer für den Anrufen-Button (synthetisch; reservierte Domain
+ * `.example`, nie aufgerufen – Szenario M prüft nur das Linkziel).
+ */
+const PORTAL_E2E_ENV = {
+  PORTAL_NEW_INQUIRY_URL: 'https://anfrage.miet-royal.example/neue-anfrage',
+  COMPANY_PHONE_NUMBER: '+49 6131 000000',
+};
+
 const chromiumLaunch = process.env.CHROMIUM_PATH
   ? { launchOptions: { executablePath: process.env.CHROMIUM_PATH } }
   : {};
@@ -287,6 +306,8 @@ export default defineConfig({
         // gegen die Production-API (Projekt `production-gates`).
         /training-demo\.spec\.ts$/,
         /training-gates\.spec\.ts$/,
+        // Phase 15 (E2E): Szenario N (Demo-Portal + Reset) nur gegen Demo-API/Demo-Web.
+        /portal-demo\.spec\.ts$/,
       ],
     },
     ...(WEBKIT_ENABLED
@@ -319,7 +340,9 @@ export default defineConfig({
       // Phase 13 (E2E): tours-demo.spec.ts (Szenario O) ebenfalls gegen die Demo-API.
       // Phase 14 (E2E): demo-environment.spec.ts (A/C/Q, D1–D7; der Live-Gegentest darin läuft in
       // `chromium`) und training-demo.spec.ts (B, D–K, O, P).
-      testMatch: /(communication-demo|tours-demo|demo-environment|training-demo)\.spec\.ts$/,
+      // Phase 15 (E2E): portal-demo.spec.ts (Szenario N – Demo-Portal + Reset) über die Demo-Web-Instanz.
+      testMatch:
+        /(communication-demo|tours-demo|demo-environment|training-demo|portal-demo)\.spec\.ts$/,
     },
     {
       // Phase 14 (E2E, Training): Szenarien L–N (Live-Trainingssperren) gegen die Production-
@@ -384,6 +407,8 @@ export default defineConfig({
         ...WHATSAPP_PUSH_E2E_ENV,
         // Phase 13: Routing gegen den GraphHopper-Fake (HTTPS 4567, /api/1).
         ...ROUTING_E2E_ENV,
+        // Phase 15 (E2E): Kundenportal – feste Anfrage-URL + Telefonnummer (synthetisch).
+        ...PORTAL_E2E_ENV,
       },
     },
     {
@@ -466,6 +491,9 @@ export default defineConfig({
         E2E_DEMO_ADMIN_PASSWORD: DEMO_ADMIN_PASSWORD,
         // Phase 14 (E2E): Gegen-URL „Live öffnen“ (nur Origin; nie aufgelöst, siehe Spec D2).
         STAFF_LIVE_URL: DEMO_LIVE_URL,
+        // Phase 15 (E2E): Mail-Links der Demo (Magic Link des Demo-Portals, Angebots-/Dokument-
+        // links) zeigen auf die Demo-WEB-Instanz – nie auf die Haupt-Web-Instanz (Order §48/§49).
+        MAIL_PUBLIC_WEB_BASE_URL: `http://127.0.0.1:${DEMO_WEB_PORT}`,
       },
     },
     {
