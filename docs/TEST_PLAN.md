@@ -209,6 +209,14 @@ Zuordnung aller Pflicht-, E2E- und Review-Tests: Abschnitt „Kundenportal (Phas
   assignment, route-changes, travel-status, security, end, active-gps,
   delay-risk), Domänentests `packages/domain/test/tours.test.ts`.
   Traceability: `docs/PHASE13_TEST_TRACEABILITY.md`.
+- Sperrfenster Integration (Berlin, festgestellt im Phase-15-Gate): Einige Touren-
+  Integrationstests legen Termine bei „jetzt + N Minuten“ an und verlangen das heutige
+  Berliner Tourdatum (`inMinutes` in `apps/api/test/tours-helpers.ts` klemmt nur negative
+  Versätze auf den Tagesbeginn). Größter Versatz: `tours-delay-risk` +240 min,
+  `tours-multi-active` und `offline-tour-lease` +200 min. Laufen diese Dateien ab etwa
+  20:00 Uhr, rutschen Termine auf den nächsten Tag (`APPOINTMENT_NOT_ON_TOUR_DATE`). Die
+  komplette Integrationssuite (Dauer etwa 45–60 min) deshalb nicht zwischen 19:00 und 00:00
+  Uhr starten, die genannten Dateien einzeln nicht zwischen 20:00 und 00:00 Uhr.
 - Keine echten Provider im Gate: `FakeRoutingGateway` in Integrationstests;
   in E2E der echte GraphHopper-Client gegen den lokalen Contract-Fake auf dem
   HTTPS-Dispatcher (4567, Präfix `/api/1`, Test-CA nur über

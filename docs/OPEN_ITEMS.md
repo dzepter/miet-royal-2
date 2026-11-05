@@ -404,6 +404,11 @@ docs/CUSTOMER_PORTAL.md, TECH_DECISIONS „Phase 15: Kundenportal“):
     Reopen wieder als „Bestätigte Buchung“ (`reopened` ⇒ `active`, Order §14 A).
     Für den Kunden womöglich irritierend; eine Fachregel dazu fehlt – fachlich
     entscheiden.
+- **Uhrzeitabhängige Touren-Integrationstests (vorbestehend seit Phase 13, im
+  Phase-15-Gate festgestellt):** `tours-delay-risk` (RF1), `tours-multi-active` (V6) und
+  ggf. `offline-tour-lease` scheitern abends ab etwa 20:00 Uhr Berlin, weil Termine bei
+  „jetzt + bis zu 240 min“ auf den nächsten Tag fallen. Bis zu einer injizierbaren
+  Testuhr gilt das Sperrfenster in TEST_PLAN („Touren … Phase 13“); kein Produktfehler.
 - **E2E-Seed-Abkürzungen** (`apps/api/scripts/e2e-portal-seed.ts`,
   `tests/e2e/helpers/portal.ts`): Live-Standort der aktiven Tour (Szenario G) per
   SQL wie der Integrationstest-Helfer; vom Seed erzeugte Dokument-Bytes werden mit
