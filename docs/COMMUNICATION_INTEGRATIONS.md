@@ -68,7 +68,9 @@ Zustellung erreicht das Fachobjekt über das Schlüsselpräfix `<art>:<id>`.
 Gutschein: bleibt `pending` mit Problemcode, „Gutschein jetzt senden“ ist
 gesperrt. Nach `failed`/`blocked` legt die bewusste Fach-Sendeaktion eine NEUE
 Zustellung `<schlüssel>:retry:<vorherige id>` an (AB, Kundeninformation,
-Stornobestätigung, Gutschein an die AKTUELLE Kundenadresse); eine
+Stornobestätigung; Gutschein an die AKTUELLE Kundenadresse; Stornobestätigung
+seit Phase 15, Review R11: Kundenstorno an die aktuelle Adresse, Staff-Storno an
+die Snapshot-Adresse – `CancellationService.sendConfirmation`); eine
 Deduplizierung meldet stets den echten Status (`existingStatus`).
 **Konversation (Härtung RA-14):** jede automatische Mail eines Vorgangs
 erscheint als kompaktes Systemereignis (bei `sent` sowie bei `failed`/

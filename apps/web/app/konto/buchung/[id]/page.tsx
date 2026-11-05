@@ -364,41 +364,44 @@ export default function PortalBookingPage() {
         )}
       </section>
 
-      <section style={card} aria-labelledby="portal-appointments-title">
-        <h2 id="portal-appointments-title" style={{ marginTop: 0, fontSize: '1.1rem' }}>
-          Termine
-        </h2>
-        {booking.appointments.length === 0 ? (
-          <p style={mutedStyle}>Die Termine stimmen wir noch mit dir ab.</p>
-        ) : (
-          <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
-            {booking.appointments.map((appointment, index) => (
-              <li
-                key={`${appointment.kind}-${index}`}
-                data-testid="portal-appointment"
-                data-kind={appointment.kind}
-                data-timing={appointment.timing}
-                style={{ padding: '0.35rem 0', borderBottom: '1px solid #f0f0f0' }}
-              >
-                <strong>{appointmentLabel(appointment.kind, booking.fulfillment)}</strong>
-                {appointment.status === 'cancelled' ? (
-                  <span style={{ ...mutedStyle }}> – entfällt</span>
-                ) : (
-                  <>
-                    {': '}
-                    <span data-testid="portal-appointment-time">
-                      {formatAppointmentTime(appointment)}
-                    </span>
-                    {appointment.status === 'completed' && (
-                      <span style={{ ...mutedStyle }}> (erledigt)</span>
-                    )}
-                  </>
-                )}
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
+      {/* Storniert und nie terminiert ⇒ kein Termine-Bereich („stimmen wir noch ab“ wäre falsch). */}
+      {!(cancelled && booking.appointments.length === 0) && (
+        <section style={card} aria-labelledby="portal-appointments-title">
+          <h2 id="portal-appointments-title" style={{ marginTop: 0, fontSize: '1.1rem' }}>
+            Termine
+          </h2>
+          {booking.appointments.length === 0 ? (
+            <p style={mutedStyle}>Die Termine stimmen wir noch mit dir ab.</p>
+          ) : (
+            <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
+              {booking.appointments.map((appointment, index) => (
+                <li
+                  key={`${appointment.kind}-${index}`}
+                  data-testid="portal-appointment"
+                  data-kind={appointment.kind}
+                  data-timing={appointment.timing}
+                  style={{ padding: '0.35rem 0', borderBottom: '1px solid #f0f0f0' }}
+                >
+                  <strong>{appointmentLabel(appointment.kind, booking.fulfillment)}</strong>
+                  {appointment.status === 'cancelled' ? (
+                    <span style={{ ...mutedStyle }}> – entfällt</span>
+                  ) : (
+                    <>
+                      {': '}
+                      <span data-testid="portal-appointment-time">
+                        {formatAppointmentTime(appointment)}
+                      </span>
+                      {appointment.status === 'completed' && (
+                        <span style={{ ...mutedStyle }}> (erledigt)</span>
+                      )}
+                    </>
+                  )}
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+      )}
 
       {booking.fulfillment === 'pickup' && (
         <section style={card} aria-labelledby="portal-pickup-title">

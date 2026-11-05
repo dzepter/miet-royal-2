@@ -470,10 +470,17 @@ Serverseitige Umsetzung (Phase 14, W2, Order §55–§66, §97–§100):
   kommunikation (Kanal `portal`); die Antwort auf `channel = portal` verlangt
   wie jede Kundenantwort `message.reply_customer` („Kunden antworten“, Order
   §29) – kein neues Recht, ohne Recht 403 mit dem bestehenden Hinweistext.
-  Mitarbeitende können Portal-Sessions eines Kunden weder einsehen noch beenden
-  (kein Admin-Endpunkt, Order §55); der Kunde beendet seine Session per Logout,
-  ein E-Mail-Wechsel widerruft alle seine Sessions.
+  Unabhängig vom Recht ist die Portalantwort fachlich nur bei offenem/
+  wiedereröffnetem Vorgang mit Buchung OHNE Stornozeile möglich, sonst 409 und
+  `canReplyPortal = false` (Phase 15, Review R1; docs/CUSTOMER_PORTAL.md §7).
+  Mitarbeitende können Portal-Sessions eines Kunden weder einsehen noch gezielt
+  beenden (kein Admin-Endpunkt, Order §55); der Kunde beendet seine Session per
+  Logout, ein E-Mail-Wechsel widerruft alle seine Sessions. Einzige Staff-Aktion
+  mit dieser Wirkung: Das Verschieben des Kunden in den Papierkorb (bestehendes
+  Recht `trash.manage`) widerruft alle seine Portal-Sessions und offenen
+  Magic Links; eine Wiederherstellung belebt sie nicht (Review R9).
 - **Demo:** `demo.manage` und Reset wie Phase 14; der Reset löscht Portal-Sessions
-  und Magic Links aller Demo-Kunden (sie melden sich neu an), `/portal/*`-
-  Mutationen unterliegen Reset-Gate und Reset-Barrier.
+  und Magic Links aller Demo-Kunden (sie melden sich neu an) sowie die
+  Portal-Auth-Ereignisse `portal.*` in `staff_security_events` (Review R10),
+  `/portal/*`-Mutationen unterliegen Reset-Gate und Reset-Barrier.
 

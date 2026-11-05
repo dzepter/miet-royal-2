@@ -525,8 +525,17 @@ Port, kein neues Secret, keine Pflichtvariable. Migration 0032
   sauberer Ablehnung). Der vorgeschaltete Proxy muss für `/api/portal/`
   mindestens 13 MiB zulassen (nginx `client_max_body_size 13m;` – der
   nginx-Default 1 MiB würde schon kleine Fotos mit 413 ablehnen). Größere
-  Bodies lehnt die API anhand `Content-Length` mit 413 ab (Portal: „Die Bilder
-  sind zusammen zu groß …“).
+  Bodies lehnt die API anhand `Content-Length` sofort mit 413
+  (`FST_ERR_CTP_BODY_TOO_LARGE`) ab und schließt die Verbindung
+  (`connection: close`). Direkt an der API kommt das zuverlässig als 413 an;
+  über den Next-Rewrite dagegen NICHT verlässlich: Next schreibt den Body noch,
+  während die API die Verbindung schon geschlossen hat ⇒ `write EPIPE` im Proxy
+  ⇒ der Browser erhält oft 500 statt 413 (Messung der Review-Prüfung mit
+  `next start`: 12,5 MiB teils 413, teils 500; 16 MiB 500). Das Portal zeigt bei
+  413 „Die Bilder sind zusammen zu groß …“, bei 500 nur die allgemeine
+  Fehlermeldung. Eine verständliche Meldung liefert deshalb verlässlich nur die
+  Client-Vorprüfung (5 Bilder, je und zusammen ≤ 8 MiB Rohbytes) vor dem
+  Absenden; die 413 der API ist reine Absicherung.
 - **Portal-Basis-URL = `MAIL_PUBLIC_WEB_BASE_URL`:** Alle Anmelde-/Bestätigungs-
   links werden ausschließlich aus dieser Variable und festen Pfaden gebildet
   (`/konto/anmelden`, `/konto/profil/bestaetigen`,

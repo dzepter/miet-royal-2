@@ -226,7 +226,11 @@ bestätigter Buchung: `process.return.damage` (`miriam.demoperson@…`),
 `process.return.missing_part` (`jana.beispielhaft@…`) und
 `process.settlement.review` (`einkauf@…`); `customer.private.basic` hat nur eine
 Anfrage und `customer.org.basic` nur einen Angebotsentwurf (im Portal „keine
-aktuelle Buchung“ – ebenfalls ein Übungsfall).
+aktuelle Buchung“ – ebenfalls ein Übungsfall). Die DB-Versanddrossel gilt auch in
+der Demo (höchstens 5 Login-Links je 15 min je Kunde, Phase 15 Review R4): Teilen
+sich mehrere Teilnehmende denselben Übungskunden, bleiben weitere Anforderungen
+in diesem Fenster still ohne Mail – für parallele Portal-Übungen verschiedene
+Übungskunden verwenden.
 
 ### Demo-Kennzeichnung der Staff-App
 

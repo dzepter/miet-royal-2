@@ -159,21 +159,44 @@ Eventdatum, verbleibende Tage, Prozentsatz, reguläre Maschinenmiet-Basis und
 die exakte Gebühr und bestätigt bewusst („Buchung verbindlich stornieren“).
 Online nur, solange der Phase-9-Service kein Blocker meldet (z. B. Übergabe
 abgeschlossen) – sonst „Diese Buchung kann nicht mehr online storniert werden.
-Bitte kontaktiere uns.“ Die Stornobestätigung geht bei Kundenstorno automatisch
-raus (Outbox, idempotent, Backstop); Mitarbeiter-Storno: Mail weiterhin
-bewusst über die Sendeaktion.
+Bitte kontaktiere uns.“ Die Bestätigung ist an die gezeigte Gebühr gebunden
+(Phase 15, Review R2): Der Kunde sendet die angezeigte Gebühr in Cent mit
+(`expectedFeeCents`, nur Prüfwert); weicht die unter der Prozesssperre neu
+berechnete Gebühr ab (z. B. über die Berliner Mitternacht), wird nichts
+storniert, der Kunde sieht den neuen Betrag und bestätigt erneut. Die
+Stornobestätigung geht bei Kundenstorno automatisch raus (Outbox, idempotent,
+Backstop) – an die aktuelle Kundenadresse, ohne aktuelle Adresse an die
+Snapshot-Adresse (Review R11); ein wiederholter Klick reiht nur nach, solange
+die Bestätigung nie eingereiht wurde, nie nach `failed`/`blocked` (Review R5).
+Mitarbeiter-Storno: Mail weiterhin bewusst über die Sendeaktion an die
+Snapshot-Adresse.
 
 ## Kundenportal (Phase 15)
 - „Aktuelle Buchung“ (einzige Regel, `CustomerPortalVisibilityPolicy`):
-  Vorgang open/reopened; oder abgeschlossen, solange finanziell offen (keine
-  übertragene Abrechnung oder Zahlungsstatus offen/überfällig/unbekannt);
-  kostenpflichtig storniert bis bezahlt. Bezahlte Buchungen und kostenfreie
-  Stornos (außer der Bestätigungsansicht direkt nach der Aktion) erscheinen nie.
-  Keine Buchungshistorie.
+  - Hat die Buchung eine Stornozeile, entscheidet AUSSCHLIESSLICH sie – auch
+    wenn der Vorgang danach wieder geöffnet wurde (Review R1; die stornierte
+    Buchung wird nie wieder „Bestätigte Buchung“): kostenpflichtig sichtbar bis
+    bezahlt; kostenfrei unsichtbar, außer der Bestätigungsansicht direkt nach
+    einem KUNDENstorno (24 h, nur Detailansicht und Storno-Antwort; Review
+    R12). Ein kostenfreier Mitarbeiter-Storno ist sofort unsichtbar.
+  - Ohne Stornozeile: Vorgang open/reopened; oder abgeschlossen, solange
+    finanziell offen (keine übertragene Abrechnung oder Zahlungsstatus
+    offen/überfällig/unbekannt).
+  - Bezahlte Buchungen erscheinen nie. Keine Buchungshistorie.
+- Rechnungsstatus: abgeschlossen ohne (übertragene) Abrechnung ⇒ „Rechnung wird
+  vorbereitet“ (Review R13); mit Stornozeile immer aus dem Storno. Wann die
+  Sichtbarkeit eines abgeschlossenen Vorgangs ohne Abrechnung endet, ist
+  fachlich offen (OPEN_ITEMS „Phase 15“).
 - Buchungsansicht nur aus dem Snapshot; Profiländerungen gelten nur für
   zukünftige Anfragen.
-- Portalnachrichten nur zu einer aktiven Buchung; nach Abschluss/Storno nur
-  noch lesbar (Retention wie Phase 12).
+- Portalnachrichten nur zu einer aktiven Buchung; nach Abschluss oder
+  kostenpflichtigem Storno nur noch lesbar (Retention wie Phase 12); nach
+  kostenfreiem Storno nicht mehr erreichbar.
+- Mitarbeiter-Antwort im Kanal Portal nur bei offenem/wiedereröffnetem Vorgang
+  mit Buchung OHNE Stornozeile, sonst abgelehnt (keine Nachricht, keine
+  Hinweis-Mail; E-Mail-Antwort bleibt möglich). Ob nach kostenpflichtigem Storno
+  und Reopen per Portal geantwortet werden darf, ist eine offene
+  Fachentscheidung (bis dahin gesperrt).
 
 ## Frühere Rückgabe
 Keine automatische Mietpreisminderung.

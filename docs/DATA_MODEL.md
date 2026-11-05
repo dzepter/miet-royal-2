@@ -17,8 +17,10 @@ Magic-Link-Konto, verifizierte Kontakte, Sessions, Löschstatus.
 Phase 15: Es gibt KEIN eigenes Konto-Fachobjekt – der `customers`-Datensatz ist
 die Identität. Das Portal ergänzt nur Auth-Tabellen (siehe „Kundenportal“ unten);
 „Löschstatus“ ist `customers.deleted_at` (macht alle Portal-Sessions sofort
-ungültig), „verifizierte Kontakte“ ist die per Magic Link bestätigte
-`customers.email` (Wechsel nur über `email_change`-Link an die neue Adresse).
+ungültig; der Papierkorb widerruft sie samt offener Links zusätzlich, eine
+Wiederherstellung belebt sie nicht), „verifizierte Kontakte“ ist die per Magic
+Link bestätigte `customers.email` (Wechsel nur über `email_change`-Link an die
+neue Adresse).
 
 ### Process
 process_number, customer, source, main_status, assigned_user, event_date,
@@ -522,10 +524,18 @@ Hex, UNIQUE – der Klartext steht nur im HttpOnly-Cookie), `created_at`,
 email_change Pflicht), `proposed_email` (nur email_change, bereits
 normalisiert), `created_at`, `expires_at` (15 min), `consumed_at` (one-time,
 atomar gesetzt), `revoked_at`. CHECK `customer_portal_magic_links_purpose_check`
-erzwingt die Kombination purpose/session_id/proposed_email. Beide Tabellen sind
+erzwingt die Kombination purpose/session_id/proposed_email. Phase 15 (Review
+R4/R8): `created_at` ist zugleich die Basis der Versanddrossel (höchstens 5
+Zeilen je Zweck in 15 min – Login/E-Mail-Wechsel je Kunde, Reauth je Session;
+verbrauchte und widerrufene zählen mit). Eine E-Mail-Wechsel-Anforderung an eine
+Adresse, die einem anderen aktiven Kunden gehört, legt eine nie versandte, sofort
+widerrufene Platzhalterzeile an (`revoked_at = created_at`, zufälliger
+Token-Hash, `proposed_email` = angefragte Adresse wegen des CHECK). Nicht jede
+`email_change`-Zeile entspricht also einer versandten Mail. Beide Tabellen sind
 Business-Daten ihrer Umgebung (Demo-Reset-Löschliste) und werden vom
-Scan-Lauf aufgeräumt (Links > 1 Tag nach Ablauf/Verbrauch/Widerruf, Sessions
-> 7 Tage nach Ablauf/Widerruf).
+Scan-Lauf aufgeräumt (Links mehr als 1 Tag nach Ablauf/Verbrauch/Widerruf,
+Sessions mehr als 7 Tage nach Ablauf/Widerruf). Das Verschieben eines Kunden in
+den Papierkorb widerruft seine Sessions und offenen Links (Review R9).
 
 ### SystemSetting
 Nur sinnvolle veränderbare Betriebsparameter; keine komplette Fachlogik als freie JSON-Regel.

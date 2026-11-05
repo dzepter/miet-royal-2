@@ -311,7 +311,12 @@ ausstehend – Design Phase 15 §7):
   Storno-Blocker; das Portal folgt Phase 9 unverändert (keine neue Regel).
 - Ein abgeschlossener Vorgang ohne Abrechnung bleibt im Portal sichtbar
   (Order §14 „kein finaler Zahlungsstatus“), bis ein finaler Zahlungsstatus
-  vorliegt.
+  vorliegt – ohne Abrechnung also dauerhaft („Abgeschlossen – Rechnung offen“
+  mit „Rechnung wird vorbereitet“, Review R13). Eine Fachregel für das Ende
+  dieser Sichtbarkeit fehlt; vor dem Go-live klären.
+- Mehrdeutige Adressen (mehrere aktive Kunden mit derselben E-Mail-Adresse)
+  erhalten keinen Anmeldelink; ein Hinweis an die Mitarbeitenden ist dafür nicht
+  definiert (der Kunde sieht nur die neutrale Antwort).
 - Die Rechnungsnummer wird im Portal nicht gezeigt (nur Status Offen / Bezahlt /
   Überfällig; finaler Betrag erst bei finaler Rechnung).
 - Die Bestätigung eines E-Mail-Wechsels verlangt kein Cookie der anfordernden
@@ -320,3 +325,89 @@ ausstehend – Design Phase 15 §7):
   one-time Token; danach werden alle Sessions widerrufen.
 - Kein WhatsApp-Button, keine Buchungshistorie, kein Passwort-/Social-Login
   (Order §2) – keine offenen Punkte, bewusst nicht gebaut.
+
+Offen nach den Review-Fixes R1–R13 (Phase 15, 2026-11-05; Details
+docs/CUSTOMER_PORTAL.md, TECH_DECISIONS „Phase 15: Kundenportal“):
+
+- **Fachentscheidung Staff-Portalantwort nach kostenpflichtigem Storno und
+  Reopen:** Sobald die Buchung eine Stornozeile hat, ist die Portalantwort der
+  Mitarbeitenden gesperrt (409, `canReplyPortal = false`, keine Hinweis-Mail) –
+  auch nach einem Reopen. Beim 0-€-Storno sieht der Kunde die Buchung nicht, die
+  Sperre ist zwingend. Beim kostenpflichtigen Storno könnte der Kunde eine Antwort
+  lesen, aber nicht erwidern; ob Staff dort per Portal antworten darf, ist offen.
+  Bis zur Entscheidung konservativ gesperrt, Kontaktweg ist die E-Mail-Antwort.
+- **E-Mail-Wechsel an eine belegte Adresse (R8):** Die nie versandte, sofort
+  widerrufene Platzhalterzeile trägt wegen des CHECK-Constraints die angefragte,
+  einem ANDEREN Kunden gehörende Adresse in `proposed_email` – bis der Cleanup
+  sie löscht (1 Tag nach Widerruf, Demo-Reset sofort). Eine Alternative
+  (Platzhalter ohne Adresse) gibt es nur per Schemaänderung; Entscheidung der
+  Leitung.
+- **DB-Versanddrossel (R4):** Wer eine Kundenadresse kennt, kann deren
+  Login-Kontingent (5 Links je 15 min) verbrauchen; der Kunde behält seinen
+  jüngsten bereits versandten Link (keine Widerrufe oberhalb der Grenze), weitere
+  Anforderungen bleiben in diesem Fenster still. In der Demo teilen sich
+  Schulungsteilnehmende womöglich einen Übungskunden und treffen die Drossel
+  gemeinsam – in der Schulungsdoku berücksichtigen (je Teilnehmer ein eigener
+  Übungskunde).
+- **Papierkorb (R9):** Das Verschieben in den Papierkorb widerruft Portal-
+  Sessions und offene Links, schreibt dafür aber kein Security-Event (möglich
+  wäre `portal.sessions_revoked` mit `reason: 'customer_trashed'`); fachlich
+  entscheiden.
+- **Bestätigung eines Kundenstornos an die aktuelle Adresse (R11):** Als
+  „aktuell“ gilt `customers.email` – auch eine von Mitarbeitenden im CRM
+  geänderte, vom Kunden nicht verifizierte Adresse. Die Anrede kommt weiter aus
+  dem Buchungs-Snapshot. Bewusst so umgesetzt; bei Bedarf fachlich nachschärfen.
+- **Staff-PATCH mit veraltetem Formular (vorbestehend, Nachbar von R7):** Speichert
+  eine Mitarbeiterin ein vor dem verifizierten Portal-Wechsel geladenes
+  Kundenformular, kann sie die Adresse zurückdrehen. Lösung wäre eine
+  optimistische Sperre (Versionsfeld) im CRM – Phase 16.
+- **Optionale Härtungen (theoretisch, nicht reproduziert):**
+  - R5 (TOCTOU): Die Bedingung „Bestätigung nur bei `prepared` nachreihen“ wird
+    vor dem Service-Aufruf geprüft; zusätzlich unter `FOR UPDATE` in
+    `sendConfirmation` prüfen.
+  - R1 (Storno + Reopen im Wettlauf mit einer Staff-Portalantwort): in
+    `replyByPortal` die Stornozeile nach der Vorgangssperre in einer zweiten
+    Abfrage lesen.
+- **Staff-Fotoroute ohne CSP (außerhalb Phase 15):**
+  `/staff/messages/:id/photos/:photoId` liefert Kundenbilder ohne
+  `Content-Security-Policy: default-src 'none'; sandbox` (die Portal-Fotoroute hat
+  sie seit dem Review). Defense in Depth, kein bekannter Angriff.
+- **Body-Limit der Staff-App (vorbestehend seit Phase 8):**
+  `apps/staff/next.config.ts` behält den Next-Default von 10 MiB für den
+  Rewrite, `POST /staff/offline/sync` erlaubt 12 MiB – ein Sync-Body zwischen 10
+  und 12 MiB würde ohne Fehler abgeschnitten. Empfehlung:
+  `experimental.proxyClientMaxBodySize` ≥ 13 MiB wie in `apps/web`.
+- **Consume-Limit 10/min je IP:** `POST /portal/auth/consume` (und die übrigen
+  Consumes) greifen hinter einer gemeinsamen IP (Firmen-/Carrier-NAT) schon bei
+  etwa 10 Anmeldungen pro Minute; der Kunde sieht „Zu viele Versuche …“ und muss
+  den (weiter gültigen) Link erneut öffnen. Für den Go-live bewerten.
+- **Restrisiken aus dem Review (Hinweise ohne Fund, bewusst nicht geändert):**
+  - Login-CSRF über einen fremden Magic Link: Wer einem Kunden
+    `/konto/anmelden#token=<eigener Token>` schickt, meldet ihn nach dem Klick auf
+    „Kundenbereich öffnen“ im Konto des Absenders an; die Zielidentität wird vor dem
+    Consume nicht angezeigt. Bei Magic Links inhärent, verlangt einen bewussten
+    Klick. Ebenso inhärent: Ein E-Mail-Wechsel auf eine fremde, keinem aktiven
+    Kunden gehörende Adresse wird wirksam, sobald deren Inhaber den Link bestätigt.
+  - Keine Rate-Limits für den Profil-PATCH (verlangt aber eine höchstens 15 min
+    alte Reauth) sowie Dokumentliste und Dokument-Download; begrenzt sind nur die
+    Link-Anforderungen und Consumes, das Chat-Senden und der Storno-POST.
+  - Speichervolumen der Chat-Fotos: höchstens 5 Fotos je Nachricht zu je ≤ 8 MiB,
+    durch das Body-Limit von 12 MiB (Base64-JSON) rund 9 MiB Rohbytes je
+    Nachricht, bei 20 Nachrichten/min je Session; ein Speicherkontingent je Kunde
+    gibt es nicht.
+  - Mailzustellungen der Magic Links (ohne `process_id`): Der Secret-Payload wird
+    nach dem Versand geleert, Empfänger und Kontext entfernt erst der Scrub 90
+    Berliner Kalendertage nach dem Endzustand; die Zeilen selbst bleiben. Die Menge
+    begrenzen nur die IP-Limits und die DB-Versanddrossel (5 Links je 15 min je
+    Kunde bzw. bei Reauth je Session).
+  - Ein abgeschlossener und bezahlter Vorgang OHNE Stornozeile erscheint nach einem
+    Reopen wieder als „Bestätigte Buchung“ (`reopened` ⇒ `active`, Order §14 A).
+    Für den Kunden womöglich irritierend; eine Fachregel dazu fehlt – fachlich
+    entscheiden.
+- **E2E-Seed-Abkürzungen** (`apps/api/scripts/e2e-portal-seed.ts`,
+  `tests/e2e/helpers/portal.ts`): Live-Standort der aktiven Tour (Szenario G) per
+  SQL wie der Integrationstest-Helfer; vom Seed erzeugte Dokument-Bytes werden mit
+  identischem Storage-Key ins Storage der E2E-API (`apps/api/.storage`) kopiert;
+  Session-Zeilen werden für H (Reauth-Frische) und O (30-Tage-Grenze) nur in der
+  Zeit verschoben. Bei einer Änderung des Storage-Layouts der E2E-API muss
+  `seedPortal` mitgezogen werden.
