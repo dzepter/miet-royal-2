@@ -46,10 +46,7 @@ export const customerPortalSessions = pgTable(
   (table) => [
     index('customer_portal_sessions_customer_idx').on(table.customerId),
     index('customer_portal_sessions_expires_idx').on(table.expiresAt),
-    check(
-      'customer_portal_sessions_expiry_check',
-      sql`${table.expiresAt} > ${table.createdAt}`,
-    ),
+    check('customer_portal_sessions_expiry_check', sql`${table.expiresAt} > ${table.createdAt}`),
   ],
 );
 

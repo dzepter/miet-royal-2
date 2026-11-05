@@ -120,8 +120,7 @@ export class FollowUpExistsError extends AuthError {
  * Die Fachlogik (Sperren, Freigaben, Gutschein, Transfer) ist für beide identisch.
  */
 export type CancellationActor =
-  | { id: string; type: 'employee' | 'admin' }
-  | { id: null; type: 'customer' };
+  { id: string; type: 'employee' | 'admin' } | { id: null; type: 'customer' };
 
 export interface CancellationViewer {
   permissions: ReadonlySet<string>;

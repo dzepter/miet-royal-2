@@ -18,11 +18,7 @@ import {
   createCommerceWorld,
   setPickupExactAddress,
 } from './commerce-helpers.ts';
-import {
-  initializeAllInventory,
-  readyHandover,
-  scheduledBooking,
-} from './handover-helpers.ts';
+import { initializeAllInventory, readyHandover, scheduledBooking } from './handover-helpers.ts';
 import { settleMailJobs } from './mail-job-helpers.ts';
 import {
   forbiddenKeysIn,
@@ -57,10 +53,7 @@ async function documentsFor(cookie: string, bookingId: string): Promise<PortalDo
 }
 
 /** Angebot V1 versenden, V2 erzeugen+versenden, V2 annehmen ⇒ V1 supersedet. */
-async function bookingWithSupersededOffer(
-  adminId: string,
-  effective: ReadonlySet<PermissionKey>,
-) {
+async function bookingWithSupersededOffer(adminId: string, effective: ReadonlySet<PermissionKey>) {
   const world = await createCommerceWorld(ctx, adminId);
   const services = commerceServices(ctx);
   const { offerId, versionId: v1 } = await services.offers.createOffer(adminId, world.processId);
