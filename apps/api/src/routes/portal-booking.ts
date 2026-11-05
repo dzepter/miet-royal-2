@@ -3,6 +3,7 @@ import type { Database } from '@mietroyal/database';
 import type { StorageProvider } from '@mietroyal/integrations';
 import { parseOrThrow, z } from '@mietroyal/validation';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import { sha256Hex } from '../auth/crypto.ts';
 import { authErrorStatus, sendAuthError, sendError } from '../auth/http.ts';
 import type { CancellationService } from '../cancellation/cancellation-service.ts';
 import { DocumentService } from '../commerce/document-service.ts';
@@ -16,7 +17,11 @@ import {
   portalDocumentFilename,
   resolvePortalDocument,
 } from '../portal/documents.ts';
-import { requirePortalSession, type PortalSessionAuthenticator } from '../portal/guard.ts';
+import {
+  portalSessionCookieName,
+  requirePortalSession,
+  type PortalSessionAuthenticator,
+} from '../portal/guard.ts';
 import { PortalError } from '../portal/types.ts';
 import type { VisibleBooking } from '../portal/visibility.ts';
 import { UUID_PATTERN } from './auth.ts';
@@ -40,10 +45,19 @@ export interface PortalBookingRouteDeps {
 const uuidSchema = z.string().regex(UUID_PATTERN, 'muss eine UUID sein');
 const bookingParams = z.object({ id: uuidSchema });
 const documentParams = z.object({ id: uuidSchema, documentId: uuidSchema });
-/** Der Kunde bestätigt nur – alles andere (Satz, Basis, Gebühr) ist serverseitig (strict ⇒ 400). */
-const cancelBody = z.strictObject({ confirm: z.literal(true) });
+/**
+ * Der Kunde bestätigt nur – Satz, Basis und Gebühr rechnet der Server (strict ⇒ 400).
+ * Phase 15 (Review R2): `expectedFeeCents` = Gebühr der angezeigten Vorschau (Pflicht, nur
+ * Prüfwert): weicht die unter der Prozesssperre berechnete Gebühr ab ⇒ 409, nichts geschrieben.
+ */
+const cancelBody = z.strictObject({
+  confirm: z.literal(true),
+  expectedFeeCents: z.number().int().min(0).max(100_000_000),
+});
 
 export const PORTAL_NOT_FOUND_MESSAGE = 'Nicht gefunden.';
+/** Phase 15 (Review R5): Storno-Bestätigungen je Session und Minute. */
+export const PORTAL_CANCELLATION_RATE_LIMIT_PER_MINUTE = 10;
 
 function sendNotFound(request: FastifyRequest, reply: FastifyReply): void {
   sendError(request, reply, 404, 'NOT_FOUND', PORTAL_NOT_FOUND_MESSAGE);
@@ -71,11 +85,32 @@ export function registerPortalBookingRoutes(
   );
   const documentService = new DocumentService(deps.db, deps.storage);
 
-  /** Session + Buchung des Kunden; `null` ⇒ Antwort bereits gesendet (401/404). */
+  // Phase 15 (Review R5): Storno-POST 10/min je Session (Muster portal-chat.ts; Schlüssel =
+  // gehashter Sessiontoken, nie der Token selbst; ohne Cookie die IP). Inert ohne Rate-Limit-Plugin.
+  const cookieName = portalSessionCookieName(deps.config.appEnv);
+  const cancellationLimit = {
+    rateLimit: {
+      max: PORTAL_CANCELLATION_RATE_LIMIT_PER_MINUTE,
+      timeWindow: '1 minute',
+      keyGenerator: (request: FastifyRequest) => {
+        const token = request.cookies?.[cookieName];
+        return typeof token === 'string' && token !== ''
+          ? `portal-cancellation|session|${sha256Hex(token).slice(0, 32)}`
+          : `portal-cancellation|ip|${request.ip}`;
+      },
+    },
+  };
+
+  /**
+   * Session + Buchung des Kunden; `null` ⇒ Antwort bereits gesendet (401/404).
+   * Phase 15 (Review R12): `confirmationWindow` (24-h-Bestätigung eines kostenfreien
+   * Kundenstornos) NUR für Detailansicht und Storno-POST – alle übrigen Unterrouten ⇒ 404.
+   */
   const requireBooking = async (
     request: FastifyRequest,
     reply: FastifyReply,
     now: Date,
+    options: { confirmationWindow?: boolean } = {},
   ): Promise<{ customerId: string; visible: VisibleBooking } | null> => {
     const session = await requirePortalSession(request, reply, deps.sessions, deps.config, {
       now,
@@ -88,7 +123,7 @@ export function registerPortalBookingRoutes(
       sendNotFound(request, reply);
       return null;
     }
-    const visible = await bookingService.resolve(session.customerId, params.data.id, now);
+    const visible = await bookingService.resolve(session.customerId, params.data.id, now, options);
     if (visible === null) {
       sendNotFound(request, reply);
       return null;
@@ -110,7 +145,8 @@ export function registerPortalBookingRoutes(
   // ── Buchungsansicht (Order §16–§22) ─────────────────────────────────────
   app.get('/portal/bookings/:id', async (request, reply) => {
     const now = new Date();
-    const resolved = await requireBooking(request, reply, now);
+    // Phase 15 (Review R12): einzige GET-Route mit Bestätigungsfenster.
+    const resolved = await requireBooking(request, reply, now, { confirmationWindow: true });
     if (resolved === null) return;
     return bookingService.view(resolved.visible, now);
   });
@@ -170,27 +206,38 @@ export function registerPortalBookingRoutes(
     return cancellation.preview(resolved.visible, now);
   });
 
-  app.post('/portal/bookings/:id/cancellation', async (request, reply) => {
-    const now = new Date();
-    const resolved = await requireBooking(request, reply, now);
-    if (resolved === null) return;
-    parseOrThrow(cancelBody, request.body);
-    try {
-      await cancellation.cancel(resolved.visible, now);
-    } catch (error) {
-      if (sendPortalError(request, reply, error)) return;
-      throw error;
-    }
-    // Bestätigungsansicht (Order §44): Zustand cancelled_free/cancelled_fee mit Storno-Block.
-    const after = await bookingService.resolve(
-      resolved.customerId,
-      resolved.visible.booking.id,
-      now,
-    );
-    if (after === null) {
-      sendNotFound(request, reply);
-      return;
-    }
-    return bookingService.view(after, now);
-  });
+  app.post(
+    '/portal/bookings/:id/cancellation',
+    { config: cancellationLimit },
+    async (request, reply) => {
+      const now = new Date();
+      // Phase 15 (Review R12): Wiederholter Klick im Fenster ⇒ idempotente Bestätigungsansicht.
+      const resolved = await requireBooking(request, reply, now, { confirmationWindow: true });
+      if (resolved === null) return;
+      const body = parseOrThrow(cancelBody, request.body);
+      try {
+        // Phase 15 (Review R2): Bestätigung an die angezeigte Gebühr gebunden.
+        await cancellation.cancel(
+          resolved.visible,
+          { expectedFeeCents: body.expectedFeeCents },
+          now,
+        );
+      } catch (error) {
+        if (sendPortalError(request, reply, error)) return;
+        throw error;
+      }
+      // Bestätigungsansicht (Order §44): Zustand cancelled_free/cancelled_fee mit Storno-Block.
+      const after = await bookingService.resolve(
+        resolved.customerId,
+        resolved.visible.booking.id,
+        now,
+        { confirmationWindow: true }, // Phase 15 (Review R12)
+      );
+      if (after === null) {
+        sendNotFound(request, reply);
+        return;
+      }
+      return bookingService.view(after, now);
+    },
+  );
 }

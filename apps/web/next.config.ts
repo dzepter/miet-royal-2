@@ -10,6 +10,14 @@ const nextConfig: NextConfig = {
   // für die Demo-Web-Instanz der E2E-Suite mit WEB_APP_ENV=demo). `next dev` sperrt sein
   // distDir – zwei Dev-Server desselben Projekts brauchen getrennte Verzeichnisse.
   ...(process.env.WEB_DIST_DIR === undefined ? {} : { distDir: process.env.WEB_DIST_DIR }),
+  // Phase 15 (Review R3): Der Rewrite `/api/*` klont den Request-Body und puffert ihn nur bis
+  // `proxyClientMaxBodySize` (Next-Default 10 MiB); größere Bodies kommen OHNE Fehler abgeschnitten
+  // bei der API an (Content-Length unverändert ⇒ Timeout statt sauberem 413). Kette:
+  // Client-Vorprüfung 8 MiB Rohbytes (Base64-JSON ≈ 10,7 MiB) < API-Limit Portal-Chat 12 MiB
+  // (PORTAL_CHAT_BODY_LIMIT) ≤ dieser Puffer 13 MiB (Reserve). Bytezahl statt '13mb' – eindeutig.
+  experimental: {
+    proxyClientMaxBodySize: 13 * 1024 * 1024,
+  },
   // Same-Origin-Proxy zur API (wie in apps/staff): Browseranfragen laufen
   // über /api/* – kein Cross-Site-Verkehr, der CSRF-Schutz bleibt strikt,
   // und es liegen KEINE Storage-/API-Secrets im Frontend.

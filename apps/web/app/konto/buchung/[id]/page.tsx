@@ -9,6 +9,7 @@ import {
   PORTAL_ROUTES,
   PORTAL_UI,
   appointmentLabel,
+  confirmPortalCancellation,
   euro,
   formatAppointmentTime,
   formatDate,
@@ -62,7 +63,14 @@ type State =
 type CancelState =
   | { kind: 'closed' }
   | { kind: 'loading' }
-  | { kind: 'open'; preview: PortalCancellationPreview; busy: boolean; error: string | null };
+  | {
+      kind: 'open';
+      preview: PortalCancellationPreview;
+      busy: boolean;
+      error: string | null;
+      // Phase 15 (Review R2): Hinweis nach 409 PORTAL_CANCELLATION_FEE_CHANGED (neuer Betrag geladen).
+      notice: string | null;
+    };
 
 export default function PortalBookingPage() {
   const params = useParams<{ id: string }>();
@@ -122,7 +130,7 @@ export default function PortalBookingPage() {
       const preview = await portalFetch<PortalCancellationPreview>(
         `/bookings/${encodeURIComponent(bookingId)}/cancellation/preview`,
       );
-      setCancel({ kind: 'open', preview, busy: false, error: null });
+      setCancel({ kind: 'open', preview, busy: false, error: null, notice: null });
     } catch (caught) {
       if (isUnauthenticated(caught)) {
         toLogin();
@@ -137,10 +145,20 @@ export default function PortalBookingPage() {
     if (cancel.kind !== 'open' || cancel.busy) return;
     setCancel({ ...cancel, busy: true, error: null });
     try {
-      const updated = await portalFetch<PortalBookingView>(
-        `/bookings/${encodeURIComponent(bookingId)}/cancellation`,
-        { method: 'POST', body: { confirm: true } },
-      );
+      // Phase 15 (Review R2): Bestätigung an die angezeigte Gebühr gebunden (expectedFeeCents).
+      const outcome = await confirmPortalCancellation(bookingId, cancel.preview);
+      if (outcome.kind === 'fee_changed') {
+        // Nichts storniert: neuer Betrag im Dialog, Button wieder aktiv, Kunde bestätigt erneut.
+        setCancel({
+          kind: 'open',
+          preview: outcome.preview,
+          busy: false,
+          error: null,
+          notice: outcome.message,
+        });
+        return;
+      }
+      const updated = outcome.booking;
       setCancel({ kind: 'closed' });
       setJustCancelled(true);
       setState((current) =>
@@ -600,6 +618,7 @@ export default function PortalBookingPage() {
           preview={cancel.preview}
           busy={cancel.busy}
           error={cancel.error}
+          notice={cancel.notice}
           phoneNumber={phone}
           onConfirm={() => void confirmCancel()}
           onClose={() => setCancel({ kind: 'closed' })}

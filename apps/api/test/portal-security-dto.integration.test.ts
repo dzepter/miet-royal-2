@@ -115,6 +115,7 @@ describe('S1. Deep-Scan jeder Portal-Antwort', () => {
             `/portal/bookings/${bookingId}/cancellation`,
             {
               confirm: true,
+              expectedFeeCents: 0, // Phase 15 (Review R2): 30 Tage ⇒ angezeigte Gebühr 0 €
             },
           ),
         );
@@ -228,7 +229,8 @@ describe('S2–S5. Authentifizierung, Staff-Session, IDOR, Autorität', () => {
       portal.app,
       session.cookie,
       `/portal/bookings/${own.bookingId}/cancellation`,
-      { confirm: true, customerId: other.customerId },
+      // Phase 15 (Review R2): mit Pflichtfeld – die 400 kommt allein von `customerId` (strict).
+      { confirm: true, expectedFeeCents: 0, customerId: other.customerId },
     );
     expect(rejected.status).toBe(400);
     const list = await portalGet(

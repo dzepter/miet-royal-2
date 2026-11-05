@@ -3,6 +3,7 @@ import { and, asc, eq, isNull, lt } from 'drizzle-orm';
 import { AuthError } from '../auth/service.ts';
 import {
   CancellationBlockedError,
+  CancellationFeeChangedError,
   type CancellationService,
   type CancellationViewer,
 } from '../cancellation/cancellation-service.ts';
@@ -88,7 +89,12 @@ export class PortalCancellationService {
    * `cancellation_confirmation:<id>`); scheitert das, bleibt das Storno gültig
    * und der Backstop-Scanner holt den Versand nach.
    */
-  async cancel(visible: VisibleBooking, now = new Date()): Promise<PortalCancellationResult> {
+  async cancel(
+    visible: VisibleBooking,
+    // Phase 15 (Review R2): Gebühr der angezeigten Vorschau – nur Prüfwert, nie Autorität.
+    input: { expectedFeeCents: number },
+    now = new Date(),
+  ): Promise<PortalCancellationResult> {
     // Bereits storniert (erneuter Klick nach Netzabbruch/Reload): idempotent – nie
     // eine zweite Stornierung oder Belastung; die Bestätigung bleibt per Schlüssel einmalig.
     const existing = visible.cancellation;
@@ -96,7 +102,12 @@ export class PortalCancellationService {
       existing !== null &&
       (visible.portalState === 'cancelled_free' || visible.portalState === 'cancelled_fee')
     ) {
-      if (existing.cancelerType === 'customer') await this.sendConfirmationSafely(existing.id, now);
+      // Phase 15 (Review R5): nur nachreihen, wenn die Bestätigung NIE eingereiht wurde
+      // (`prepared`, z. B. Crash vor dem Einreihen). Nach failed/blocked erzeugt ein weiterer
+      // Klick keine neue Zustellung – ein erneuter Versand bleibt eine bewusste Staff-Aktion.
+      if (existing.cancelerType === 'customer' && existing.confirmationStatus === 'prepared') {
+        await this.sendConfirmationSafely(existing.id, now);
+      }
       return { cancellationId: existing.id, created: false };
     }
     if (visible.portalState !== 'active') {
@@ -114,8 +125,17 @@ export class PortalCancellationService {
         { id: null, type: 'customer' },
         PORTAL_CANCELLATION_VIEWER,
         now,
+        { expectedFeeCents: input.expectedFeeCents }, // Phase 15 (Review R2)
       );
     } catch (error) {
+      // Phase 15 (Review R2): Gebühr geändert ⇒ eigener Code, der Kunde prüft den neuen Betrag.
+      if (error instanceof CancellationFeeChangedError) {
+        throw new PortalError(
+          'CONFLICT',
+          'PORTAL_CANCELLATION_FEE_CHANGED',
+          PORTAL_MESSAGES.CANCELLATION_FEE_CHANGED,
+        );
+      }
       if (error instanceof CancellationBlockedError || error instanceof AuthError) {
         // Interne Blocker-/Konflikttexte bleiben intern (Order §41).
         throw new PortalError(
@@ -129,7 +149,9 @@ export class PortalCancellationService {
     const created = before === null && new Date(view.cancelledAt).getTime() === now.getTime();
     // Automatische Bestätigung NUR für Kundenstornos (Staff-Stornos behalten
     // ihre bewusste Sendeaktion). Idempotent – ein Doppelklick erzeugt keine Doppelmail.
-    if (view.cancelerType === 'customer') {
+    // Phase 15 (Review R5): auch im Race-Fall (Service liefert das parallel angelegte Storno)
+    // nur einreihen, solange die Bestätigung noch `prepared` ist.
+    if (view.cancelerType === 'customer' && view.confirmationStatus === 'prepared') {
       await this.sendConfirmationSafely(view.id, now);
     }
     return { cancellationId: view.id, created };

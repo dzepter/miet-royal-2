@@ -1,13 +1,24 @@
 import { loadConfig } from '@mietroyal/config';
-import { createDb, createPool, mailDeliveries } from '@mietroyal/database';
+import {
+  createDb,
+  createPool,
+  customerPortalMagicLinks,
+  customers,
+  mailDeliveries,
+} from '@mietroyal/database';
 import { PostgresJobQueue } from '@mietroyal/integrations';
-import { desc, eq } from 'drizzle-orm';
+import { and, count, desc, eq, gt, inArray, isNull, sql } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 import type pg from 'pg';
 import { FakeMailGateway } from '../src/communication/mail/gateways.ts';
 import { MailOutboxService } from '../src/communication/mail/outbox.ts';
 import { PayloadCrypto } from '../src/communication/payload-crypto.ts';
 import type { MailDeliveryKind } from '../src/communication/types.ts';
+import { normalizeEmailAddress } from '../src/crm/normalize.ts';
+import {
+  PORTAL_LINK_THROTTLE_MAX,
+  PORTAL_LINK_THROTTLE_WINDOW_MS,
+} from '../src/portal/auth/constants.ts';
 import { PortalMagicLinkService } from '../src/portal/auth/magic-link-service.ts';
 import { PortalProfileService } from '../src/portal/auth/profile-service.ts';
 import { PortalSessionService } from '../src/portal/auth/session-service.ts';
@@ -121,11 +132,57 @@ export async function requestMagicLink(
   };
 }
 
+/**
+ * Phase 15 (Review R4): Test-Harness. Die DB-Drossel (höchstens 5 Login-Links je Kunde
+ * in 15 min) gilt auch im Test. Helfer, deren Vertrag „liefert einen gültigen Login“ ist
+ * (`requestMagicLinkToken`/`loginViaMagicLink`), schieben deshalb – NUR wenn die Drossel
+ * sonst greifen würde – `created_at` der Login-Links dieses Kunden aus dem Fenster
+ * (`expires_at`/Gültigkeit bleiben unverändert). `requestMagicLink` bleibt unverändert
+ * roh; die Drossel selbst prüfen die R4-Tests (portal-review-auth) ohne diesen Helfer.
+ */
+export async function releasePortalLoginThrottle(
+  ctx: Pick<TestContext, 'db'>,
+  emailRaw: string,
+): Promise<void> {
+  const email = normalizeEmailAddress(emailRaw);
+  if (email === null) return;
+  const owners = await ctx.db
+    .select({ id: customers.id })
+    .from(customers)
+    .where(and(eq(customers.email, email), isNull(customers.deletedAt)));
+  if (owners.length !== 1) return;
+  const inWindow = and(
+    eq(customerPortalMagicLinks.customerId, owners[0]!.id),
+    eq(customerPortalMagicLinks.purpose, 'login'),
+    gt(customerPortalMagicLinks.createdAt, new Date(Date.now() - PORTAL_LINK_THROTTLE_WINDOW_MS)),
+  );
+  const rows = await ctx.db
+    .select({ value: count() })
+    .from(customerPortalMagicLinks)
+    .where(inWindow);
+  if ((rows[0]?.value ?? 0) < PORTAL_LINK_THROTTLE_MAX) return;
+  const ids = (
+    await ctx.db
+      .select({ id: customerPortalMagicLinks.id })
+      .from(customerPortalMagicLinks)
+      .where(inWindow)
+  ).map((row) => row.id);
+  await ctx.db
+    .update(customerPortalMagicLinks)
+    .set({
+      createdAt: sql`${customerPortalMagicLinks.createdAt} - make_interval(secs => ${
+        PORTAL_LINK_THROTTLE_WINDOW_MS / 1000 + 1
+      })`,
+    })
+    .where(inArray(customerPortalMagicLinks.id, ids));
+}
+
 /** Login-Magic-Link anfordern und den Token liefern (wirft, wenn keine Mail entstand). */
 export async function requestMagicLinkToken(
   ctx: Pick<TestContext, 'app' | 'db' | 'communication'>,
   email: string,
 ): Promise<string> {
+  await releasePortalLoginThrottle(ctx, email); // Phase 15 (Review R4): nur Test-Harness
   const result = await requestMagicLink(ctx, email);
   if (result.token === null) {
     throw new Error(`Kein Magic Link entstanden (Status ${result.statusCode}).`);

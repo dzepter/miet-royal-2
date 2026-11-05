@@ -30,7 +30,8 @@ import { UUID_PATTERN } from './auth.ts';
  * - GET  /portal/bookings/:id/messages/:messageId/photos/:photoId – Bytes privat.
  * Kunde IMMER aus der Session; Buchung über die zentrale Sichtbarkeits-Policy
  * (fremd/unsichtbar ⇒ neutrales 404). Antworten `cache-control: no-store`
- * (globaler Default) bzw. `private, no-store` + `nosniff` für Fotos.
+ * (globaler Default) bzw. `private, no-store` + `nosniff` für Fotos
+ * (Phase 15, Review Polyglot-CSP: zusätzlich `content-security-policy: default-src 'none'; sandbox`).
  */
 
 const uuidSchema = z.string().regex(UUID_PATTERN, 'muss eine UUID sein');
@@ -186,11 +187,15 @@ export function registerPortalChatRoutes(
       notFound(request, reply);
       return;
     }
+    // Phase 15 (Review Polyglot-CSP, Defense in Depth): ein Bild mit angehängtem HTML/Script
+    // (gültige Magic Bytes) kann beim direkten Öffnen nichts ausführen oder nachladen. Nur für
+    // Bilder – Dokument-PDFs (portal-booking.ts) bekommen die Policy bewusst nicht.
     return reply
       .header('content-type', photo.mimeType)
       .header('content-disposition', 'inline')
       .header('cache-control', 'private, no-store')
       .header('x-content-type-options', 'nosniff')
+      .header('content-security-policy', "default-src 'none'; sandbox")
       .send(Buffer.from(photo.bytes));
   });
 }

@@ -1,10 +1,17 @@
-import { bookings, customerPortalSessions, processes, type Database } from '@mietroyal/database';
+import {
+  bookings,
+  cancellations, // Phase 15 (Review R1)
+  customerPortalSessions,
+  processes,
+  type Database,
+} from '@mietroyal/database';
 import { and, eq, gt, inArray, isNull } from 'drizzle-orm';
 
 /**
  * Phase 15 (CHAT, Order §29/§55): Hinweise für die Staff-Kommunikationsseite.
  * - `canReplyPortal`: der Vorgang hat eine bestätigte Buchung und ist offen bzw.
- *   wieder geöffnet – nur dann ist eine Portalantwort möglich (Order §25).
+ *   wieder geöffnet – nur dann ist eine Portalantwort möglich (Order §25). Phase 15
+ *   (Review R1): nie bei einer Buchung mit Stornozeile (auch nicht nach einem Reopen).
  * - `portalActive`: der Kunde besitzt mindestens eine gültige Portal-Session
  *   (nicht widerrufen, nicht abgelaufen) ⇒ Badge „Kundenportal aktiv“.
  * Reine Leseabfragen ohne Sichtbarkeitsprüfung – die Route hat sie bereits erledigt.
@@ -15,7 +22,16 @@ export async function portalReplyPossible(db: Database, processId: string): Prom
     .select({ id: processes.id })
     .from(processes)
     .innerJoin(bookings, eq(bookings.processId, processes.id))
-    .where(and(eq(processes.id, processId), inArray(processes.mainStatus, ['open', 'reopened'])));
+    // Phase 15 (Review R1): mit Stornozeile keine Portalantwort – auch nicht nach einem Reopen
+    // (gleiche Regel wie ConversationService.replyByPortal und die Portal-Policy).
+    .leftJoin(cancellations, eq(cancellations.bookingId, bookings.id))
+    .where(
+      and(
+        eq(processes.id, processId),
+        inArray(processes.mainStatus, ['open', 'reopened']),
+        isNull(cancellations.id),
+      ),
+    );
   return rows.length > 0;
 }
 

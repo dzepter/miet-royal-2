@@ -54,10 +54,19 @@ export class PortalBookingService {
     return summaries;
   }
 
-  /** Buchung des Kunden auflösen (inkl. 24-h-Fenster kostenfreier Stornos) oder null. */
-  async resolve(customerId: string, bookingId: string, now = new Date()) {
+  /**
+   * Buchung des Kunden auflösen oder null. Phase 15 (Review R12): das 24-h-Fenster eines
+   * kostenfreien Kundenstornos (`confirmationWindow`) gilt NUR für die Detailansicht und die
+   * Antwort des Storno-POST; Dokumente, Vorschau und Travel-Status lösen ohne Fenster auf.
+   */
+  async resolve(
+    customerId: string,
+    bookingId: string,
+    now = new Date(),
+    options: { confirmationWindow?: boolean } = {},
+  ) {
     return resolveVisibleBooking(this.db, customerId, bookingId, now, {
-      includeCancelledFree: true,
+      includeCancelledFree: options.confirmationWindow ?? false,
     });
   }
 

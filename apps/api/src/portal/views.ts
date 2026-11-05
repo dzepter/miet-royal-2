@@ -267,9 +267,8 @@ export function buildPortalDelivery(
 export function buildPortalCancellationInfo(
   visible: VisibleBooking,
 ): PortalCancellationInfo | null {
-  if (visible.portalState !== 'cancelled_free' && visible.portalState !== 'cancelled_fee') {
-    return null;
-  }
+  // Phase 15 (Review R1): an die Stornozeile gekoppelt, nicht an den Vorgangsstatus –
+  // ein Reopen nach dem Storno lässt den Block nie verschwinden.
   const row = visible.cancellation;
   if (row === null) return null;
   return {

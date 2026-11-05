@@ -43,8 +43,8 @@ const REQUEST_MIN_DURATION_MS = 150;
 const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 export const PORTAL_REAUTH_REQUESTED_MESSAGE = 'Wir haben dir einen Bestätigungslink geschickt.';
-export const PORTAL_EMAIL_CHANGE_REQUESTED_MESSAGE =
-  'Wir haben einen Bestätigungslink an die neue Adresse geschickt.';
+// Phase 15 (Review R8): neutral – identisch für freie und belegte Adressen.
+export const PORTAL_EMAIL_CHANGE_REQUESTED_MESSAGE = PORTAL_MESSAGES.EMAIL_CHANGE_REQUESTED;
 
 /**
  * IP-weiter Zusatzschutz der Login-Anforderung (30/min je IP, Fenster 60 s) –
@@ -233,13 +233,20 @@ export function registerPortalAuthRoutes(app: FastifyInstance, deps: PortalAuthR
     const now = new Date();
     const session = await requirePortalSession(request, reply, sessions, config, { now });
     if (session === null) return;
-    try {
-      await magicLinks.requestEmailChange(session, body.email, now);
-      return reply.status(202).send({ message: PORTAL_EMAIL_CHANGE_REQUESTED_MESSAGE });
-    } catch (error) {
-      if (sendPortalError(request, reply, error)) return;
-      throw error;
+    // Phase 15 (Review R8): belegte und freie Adresse antworten gleich – auch zeitlich
+    // (dieselbe Mindestdauer wie die Login-Anforderung; der Mailpfad fehlt bei „belegt“).
+    const [failure] = await Promise.all([
+      magicLinks.requestEmailChange(session, body.email, now).then(
+        () => null,
+        (error: unknown) => ({ error }),
+      ),
+      delay(REQUEST_MIN_DURATION_MS),
+    ]);
+    if (failure !== null) {
+      if (sendPortalError(request, reply, failure.error)) return;
+      throw failure.error;
     }
+    return reply.status(202).send({ message: PORTAL_EMAIL_CHANGE_REQUESTED_MESSAGE });
   });
 
   app.post('/portal/auth/email-change/consume', { config: ipLimit }, async (request, reply) => {

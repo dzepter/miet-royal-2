@@ -8,9 +8,15 @@
 import { cancellations, processes } from '@mietroyal/database';
 import { eq } from 'drizzle-orm';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { PORTAL_CANCELLATION_VIEWER } from '../src/portal/cancellation.ts';
 import { PORTAL_STATE_LABELS } from '../src/portal/views.ts';
 import { createTestContext, destroyTestContext, type TestContext } from './auth-helpers.ts';
-import { adminSession, bookedProcess, cancelBooking } from './cancellation-helpers.ts';
+import {
+  adminSession,
+  bookedProcess,
+  cancelBooking,
+  cancellationServicesFor,
+} from './cancellation-helpers.ts';
 import { commerceServices, createCommerceWorld } from './commerce-helpers.ts';
 import { adminVisibilityCtx, processServiceFor } from './crm-helpers.ts';
 import {
@@ -150,7 +156,13 @@ describe('V7–V9. Stornierte Buchungen', () => {
     const { admin } = await adminSession(ctx);
     const booked = await bookedProcess(ctx, admin.id, { eventInDays: 30 });
     const session = await portalSessionFor(ctx, booked.customerId);
-    const view = await cancelBooking(ctx, admin.id, booked.processId);
+    // Phase 15 (Review R12): Das Bestätigungsfenster gilt nur nach der eigenen Aktion des
+    // KUNDEN – ein kostenfreies Staff-Storno ist sofort unsichtbar (portal-review-booking).
+    const view = await cancellationServicesFor(ctx).service.cancel(
+      booked.processId,
+      { id: null, type: 'customer' },
+      PORTAL_CANCELLATION_VIEWER,
+    );
     expect(view.feeCents).toBe(0);
 
     expect(await listFor(session.cookie)).toEqual([]);

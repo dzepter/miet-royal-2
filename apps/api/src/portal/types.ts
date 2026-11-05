@@ -28,6 +28,8 @@ export type PortalErrorCode =
   | 'PORTAL_EMAIL_UNAVAILABLE'
   | 'PORTAL_BOOKING_CLOSED'
   | 'PORTAL_CANCELLATION_BLOCKED'
+  // Phase 15 (Review R2): Gebühr zwischen Vorschau und Bestätigung geändert (z. B. Berliner Mitternacht).
+  | 'PORTAL_CANCELLATION_FEE_CHANGED'
   | 'PORTAL_PHOTO_REJECTED'
   | 'PORTAL_MAIL_UNAVAILABLE';
 
@@ -63,4 +65,10 @@ export const PORTAL_MESSAGES = {
     'Änderungen gelten für zukünftige Anfragen. Deine bereits bestätigte Buchung bleibt unverändert.',
   EMAIL_CHANGED: 'E-Mail-Adresse geändert. Bitte melde dich mit deiner neuen Adresse erneut an.',
   EMAIL_UNAVAILABLE: 'Diese E-Mail-Adresse kann nicht verwendet werden.',
+  /** Phase 15 (Review R2): Bestätigung an den gezeigten Betrag gebunden. */
+  CANCELLATION_FEE_CHANGED:
+    'Die Stornogebühr hat sich inzwischen geändert. Bitte prüfe den neuen Betrag und bestätige erneut.',
+  /** Phase 15 (Review R8): neutrale Antwort auf jede E-Mail-Wechsel-Anforderung (keine Enumeration). */
+  EMAIL_CHANGE_REQUESTED:
+    'Wenn die Adresse verwendet werden kann, erhältst du dort gleich einen Bestätigungslink.',
 } as const;

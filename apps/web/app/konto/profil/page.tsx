@@ -249,15 +249,13 @@ export default function PortalProfilePage() {
     setEmailError(null);
     setEmailSent(null);
     try {
-      const response = await portalFetch<PortalMessageResponse>('/auth/email-change/request', {
+      await portalFetch<PortalMessageResponse>('/auth/email-change/request', {
         method: 'POST',
         body: { email: newEmail.trim() },
       });
-      setEmailSent(
-        typeof response?.message === 'string' && response.message !== ''
-          ? response.message
-          : PORTAL_UI.EMAIL_CHANGE_SENT,
-      );
+      // Phase 15 (Review R8): immer der neutrale Text – verrät nicht, ob die Adresse frei ist
+      // (die API antwortet auch bei belegter Adresse 202 ohne Link).
+      setEmailSent(PORTAL_MESSAGES.EMAIL_CHANGE_REQUESTED);
       setNewEmail('');
     } catch (caught) {
       if (!handleAuthError(caught)) setEmailError(portalErrorMessage(caught));
