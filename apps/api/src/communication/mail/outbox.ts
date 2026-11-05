@@ -78,6 +78,11 @@ export const MAIL_DELIVERY_KIND_LABELS: Record<MailDeliveryKind, string> = {
   voucher_delivery: 'Gutschein',
   invoice_delivery: 'Rechnung',
   manual_customer_reply: 'Antwort an Kunde',
+  // Phase 15 (Kundenportal)
+  customer_portal_magic_link: 'Kundenbereich – Anmeldelink',
+  customer_portal_reply_notice: 'Kundenbereich – Nachrichtenhinweis',
+  customer_portal_reauth: 'Kundenbereich – Bestätigungslink',
+  customer_portal_email_change: 'Kundenbereich – E-Mail-Wechsel',
 };
 
 /**

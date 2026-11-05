@@ -33,7 +33,12 @@ export type MailDeliveryKind =
   | 'appointment_changed'
   | 'voucher_delivery'
   | 'invoice_delivery'
-  | 'manual_customer_reply';
+  | 'manual_customer_reply'
+  // Phase 15 (Kundenportal, Order §30)
+  | 'customer_portal_magic_link'
+  | 'customer_portal_reply_notice'
+  | 'customer_portal_reauth'
+  | 'customer_portal_email_change';
 
 export type MailDeliveryStatus =
   'pending' | 'sending' | 'sent' | 'retry' | 'failed' | 'blocked' | 'outcome_unknown';
