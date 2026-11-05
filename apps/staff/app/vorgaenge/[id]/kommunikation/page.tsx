@@ -15,6 +15,7 @@ import {
   CHANNEL_LABELS,
   DELIVERY_STATE_LABELS,
   fetchConversation,
+  PORTAL_ACTIVE_LABEL, // Phase 15 (portal)
   REPLY_MAX_CHARS,
   sendReply,
   senderLabel,
@@ -34,7 +35,7 @@ import { formatBerlin } from '../../../../lib/handover';
  * (Kunden-E-Mail bzw. WhatsApp-Nummer der letzten Kundennachricht).
  */
 
-type ReplyChannel = 'email' | 'whatsapp';
+type ReplyChannel = 'email' | 'whatsapp' | 'portal'; // Phase 15 (portal)
 
 function messageTime(message: ConversationMessage): string {
   return formatBerlin(message.receivedAt ?? message.sentAt ?? message.createdAt);
@@ -196,6 +197,7 @@ function CommunicationView() {
   const whatsappUsable =
     whatsappShown && view?.whatsapp.available === true && view.whatsapp.windowOpen;
   const whatsappClosed = whatsappShown && view?.whatsapp.available === true && !whatsappUsable;
+  const portalUsable = view?.canReplyPortal === true; // Phase 15 (portal)
 
   // Standardkanal: Kanal der letzten Kundennachricht, sofern nutzbar – sonst E-Mail.
   useEffect(() => {
@@ -203,15 +205,18 @@ function CommunicationView() {
     setChannel((current) => {
       if (current === 'email' && emailUsable) return current;
       if (current === 'whatsapp' && whatsappUsable) return current;
+      if (current === 'portal' && portalUsable) return current; // Phase 15 (portal)
       const lastInbound = [...view.messages]
         .reverse()
         .find((message) => message.direction === 'inbound' && !message.isSystemEvent);
       if (lastInbound?.channel === 'whatsapp' && whatsappUsable) return 'whatsapp';
+      if (lastInbound?.channel === 'portal' && portalUsable) return 'portal'; // Phase 15 (portal)
       if (emailUsable) return 'email';
       if (whatsappUsable) return 'whatsapp';
+      if (portalUsable) return 'portal'; // Phase 15 (portal)
       return null;
     });
-  }, [view, emailUsable, whatsappUsable]);
+  }, [view, emailUsable, whatsappUsable, portalUsable]);
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
@@ -230,11 +235,15 @@ function CommunicationView() {
     }
     setBody('');
     setNotice(
-      result.data.deliveryState === 'blocked'
-        ? 'Antwort gespeichert, der Versand ist jedoch blockiert (E-Mail-Versand nicht möglich).'
-        : channel === 'email'
-          ? 'Antwort wird per E-Mail gesendet.'
-          : 'Antwort wird per WhatsApp gesendet.',
+      channel === 'portal' // Phase 15 (portal)
+        ? result.data.noticeStatus === 'queued'
+          ? 'Antwort im Kundenportal veröffentlicht – der Kunde erhält einen E-Mail-Hinweis.'
+          : 'Antwort im Kundenportal veröffentlicht (kein E-Mail-Hinweis möglich).'
+        : result.data.deliveryState === 'blocked'
+          ? 'Antwort gespeichert, der Versand ist jedoch blockiert (E-Mail-Versand nicht möglich).'
+          : channel === 'email'
+            ? 'Antwort wird per E-Mail gesendet.'
+            : 'Antwort wird per WhatsApp gesendet.',
     );
     await load();
   }
@@ -263,6 +272,13 @@ function CommunicationView() {
           </span>
         </p>
       )}
+      {view?.portalActive === true && ( // Phase 15 (portal)
+        <p>
+          <span className="badge ok" data-testid="portal-active-hint">
+            {PORTAL_ACTIVE_LABEL}
+          </span>
+        </p>
+      )}
       {loadError !== null && <p className="error">{loadError}</p>}
       {view === null && loadError === null && <p className="muted">Wird geladen …</p>}
 
@@ -287,16 +303,17 @@ function CommunicationView() {
       {view !== null && (
         <div className="card" data-testid="reply-section">
           <h2>Antworten</h2>
-          {!emailUsable && !whatsappShown ? (
+          {!emailUsable && !whatsappShown && !portalUsable ? (
             <p className="muted" data-testid="reply-not-allowed">
-              Antworten an den Kunden erfordern das Recht „Kunden antworten“ (E-Mail) bzw. „WhatsApp
-              antworten“.
+              Antworten an den Kunden erfordern das Recht „Kunden antworten“ (E-Mail/Portal) bzw.
+              „WhatsApp antworten“.
             </p>
           ) : (
             <form data-testid="reply-form" onSubmit={(e) => void submit(e)}>
               <p className="muted" style={{ marginTop: 0 }}>
                 Empfänger ist immer der Kunde dieses Vorgangs – bei E-Mail die hinterlegte
-                Kunden-E-Mail, bei WhatsApp die Nummer der letzten Kundennachricht.
+                Kunden-E-Mail, bei WhatsApp die Nummer der letzten Kundennachricht, bei Portal der
+                Kundenbereich (mit E-Mail-Hinweis ohne Nachrichtentext).
               </p>
               <fieldset style={{ border: 'none', padding: 0, margin: '0 0 0.5rem' }}>
                 <legend className="muted" style={{ fontSize: '0.875rem' }}>
@@ -330,6 +347,19 @@ function CommunicationView() {
                       WhatsApp
                       {mock ? ` (${WHATSAPP_MOCK_LABEL})` : ''}
                     </span>
+                  </label>
+                )}{' '}
+                {portalUsable && ( // Phase 15 (portal): nur bei bestätigter, offener Buchung
+                  <label className="perm-item" style={{ display: 'inline-flex' }}>
+                    <input
+                      type="radio"
+                      name="reply-channel"
+                      value="portal"
+                      data-testid="reply-channel-portal"
+                      checked={channel === 'portal'}
+                      onChange={() => setChannel('portal')}
+                    />
+                    <span>Portal</span>
                   </label>
                 )}
               </fieldset>
@@ -378,7 +408,11 @@ function CommunicationView() {
                 data-testid="reply-submit"
                 disabled={busy || offlineNow || channel === null || body.trim() === ''}
               >
-                {channel === 'whatsapp' ? 'Per WhatsApp senden' : 'Per E-Mail senden'}
+                {channel === 'whatsapp'
+                  ? 'Per WhatsApp senden'
+                  : channel === 'portal'
+                    ? 'Im Kundenportal antworten' // Phase 15 (portal)
+                    : 'Per E-Mail senden'}
               </button>
             </form>
           )}

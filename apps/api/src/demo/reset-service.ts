@@ -106,7 +106,8 @@ export const DEMO_RESET_WIPE_LOCK_TIMEOUT_MS = 30_000;
 
 /**
  * Business-Tabellen in Löschreihenfolge (Kinder vor Eltern, Code-Map B §3.3):
- * 69 FK-gebundene + 4 FK-freie = 73 Tabellen. Zusammen mit der Behalten-Liste
+ * 71 FK-gebundene + 4 FK-freie = 75 Tabellen (Phase 15: + customer_portal_magic_links,
+ * customer_portal_sessions – Order §46). Zusammen mit der Behalten-Liste
  * unten decken sie alle Tabellen der Datenbank ab (Review-Prüfung R7).
  * Bewusst NICHT enthalten (Order §18, Code-Map B §3.5): staff_* (inkl.
  * Sessions, bekannte Geräte, Security-Events), push_subscriptions,
@@ -203,6 +204,11 @@ export const DEMO_BUSINESS_TABLES_DELETE_ORDER: readonly string[] = [
   'offers',
   // 8.
   'processes',
+  // Phase 15 (portal, Order §46): Portal-Auth-Daten des Kunden – Magic Links
+  // referenzieren Sessions (session_id), Sessions referenzieren Kunden.
+  // Staff-Auth und Training bleiben unberührt; kein CASCADE.
+  'customer_portal_magic_links',
+  'customer_portal_sessions',
   'customers',
   // Ohne FK-Bindung (Fingerprints, Cache, Webhook-Ereignisse, Offline-Quittungen)
   'appointment_conflict_suppressions',

@@ -16,6 +16,7 @@
 import { randomUUID } from 'node:crypto';
 import type { AppEnvironment } from '@mietroyal/config';
 import {
+  bookings,
   conversationMessages,
   customers,
   inboundMailReceipts,
@@ -32,6 +33,7 @@ import { and, asc, desc, eq, gt, inArray, isNull, lte, sql, type SQL } from 'dri
 import { AuthError } from '../../auth/service.ts';
 import { previewOf } from '../inbound/content.ts';
 import { renderMailSubject } from '../mail/templates/index.ts';
+import { mailSalutation } from '../transactional/keys.ts'; // Phase 15 (portal)
 import { isTerminalProcessStatus, PROCESS_TERMINAL_STATUSES } from '../retention/terminal.ts';
 import type { MailDeliveryKind, MailOutbox } from '../types.ts';
 
@@ -254,7 +256,8 @@ export class ConversationService {
       id?: string;
       processId: string | null;
       customerId: string | null;
-      channel: 'email' | 'whatsapp';
+      /** Phase 15 (portal): zusätzlich 'portal' – Kundennachrichten aus dem Kundenportal. */
+      channel: ConversationChannel;
       sender: SenderSnapshot;
       subject: string | null;
       body: string;
@@ -492,6 +495,118 @@ export class ConversationService {
     // Job erst nach Commit (Gateway nie unter offener Transaktion).
     if (result.state === 'queued') await outbox.scheduleSend(result.deliveryId);
     return { messageId, mailDeliveryId: result.deliveryId, deliveryState: result.state };
+  }
+
+  // ── Phase 15 (portal): Staff-Antwort in das Kundenportal (Order §29) ─────
+
+  /**
+   * Phase 15 (portal, Order §29/§55): Staff-Antwort auf dem Kanal `portal`.
+   * Voraussetzung: der Vorgang hat eine bestätigte Buchung und ist offen bzw.
+   * wieder geöffnet (terminal ⇒ CONFLICT). Die Konversationszeile ist sofort
+   * „sent“ (im Portal unmittelbar sichtbar); die E-Mail-Benachrichtigung
+   * `customer_portal_reply_notice` (fester Text + Portal-Link, NIE der Chattext)
+   * wird NACH dem Commit über die Outbox eingereiht – scheitert oder blockiert
+   * sie, bleibt die Portalnachricht bestehen (`noticeStatus`).
+   */
+  async replyByPortal(
+    outbox: MailOutbox | null,
+    input: {
+      processId: string;
+      body: string;
+      staffUserId: string;
+      appEnv: AppEnvironment;
+      now?: Date;
+    },
+  ): Promise<{
+    messageId: string;
+    channel: 'portal';
+    deliveryState: 'sent';
+    noticeStatus: 'queued' | 'blocked' | 'unavailable';
+  }> {
+    const body = input.body.trim();
+    if (body === '') throw new AuthError('VALIDATION', 'Die Nachricht darf nicht leer sein.');
+    if (body.length > MANUAL_REPLY_MAX_CHARS) {
+      throw new AuthError(
+        'VALIDATION',
+        `Die Nachricht darf höchstens ${MANUAL_REPLY_MAX_CHARS} Zeichen haben.`,
+      );
+    }
+    const now = input.now ?? new Date();
+    const staff = await this.db
+      .select({ firstName: staffUsers.firstName, lastName: staffUsers.lastName })
+      .from(staffUsers)
+      .where(eq(staffUsers.id, input.staffUserId));
+    const staffName =
+      staff[0] === undefined ? 'Miet-Royal' : `${staff[0].firstName} ${staff[0].lastName}`;
+    const messageId = randomUUID();
+    const target = await this.db.transaction(async (tx) => {
+      const rows = await tx
+        .select({
+          processNumber: processes.processNumber,
+          mainStatus: processes.mainStatus,
+          customerId: processes.customerId,
+          email: customers.email,
+          firstName: customers.firstName,
+          lastName: customers.lastName,
+          organizationName: customers.organizationName,
+          bookingId: bookings.id,
+        })
+        .from(processes)
+        .innerJoin(customers, eq(customers.id, processes.customerId))
+        .leftJoin(bookings, eq(bookings.processId, processes.id))
+        .where(eq(processes.id, input.processId))
+        .for('update', { of: processes });
+      const row = rows[0];
+      if (row === undefined) throw new AuthError('NOT_FOUND', 'Vorgang nicht gefunden.');
+      if (row.bookingId === null || (row.mainStatus !== 'open' && row.mainStatus !== 'reopened')) {
+        throw new AuthError('CONFLICT', 'Zu diesem Vorgang ist keine Portalnachricht möglich.');
+      }
+      await tx.insert(conversationMessages).values({
+        id: messageId,
+        processId: input.processId,
+        customerId: row.customerId,
+        channel: 'portal',
+        direction: 'outbound',
+        senderSnapshot: { name: staffName, role: 'staff' },
+        subject: null,
+        body,
+        isSystemEvent: false,
+        deliveryState: 'sent',
+        sentAt: now,
+        createdByStaffId: input.staffUserId,
+      });
+      return row;
+    });
+    // E-Mail-Hinweis erst nach Commit (Outbox + Job, nie unter offener Transaktion).
+    const recipientEmail = (target.email ?? '').trim().toLowerCase();
+    let noticeStatus: 'queued' | 'blocked' | 'unavailable' = 'unavailable';
+    if (outbox !== null && recipientEmail !== '') {
+      const displayName =
+        target.organizationName ?? [target.firstName, target.lastName].filter(Boolean).join(' ');
+      try {
+        const enqueued = await outbox.enqueue({
+          kind: 'customer_portal_reply_notice',
+          processId: input.processId,
+          customerId: target.customerId,
+          recipient: { email: recipientEmail, name: displayName === '' ? null : displayName },
+          // Nur Anrede + Vorgangsnummer – der Chattext wird NIE in die Mail dupliziert.
+          context: { salutation: mailSalutation(displayName), processNumber: target.processNumber },
+          idempotencyKey: `customer_portal_reply_notice:${messageId}`,
+          conversationMessageId: messageId,
+          createdBy: input.staffUserId,
+        });
+        if (enqueued.status === 'blocked') {
+          noticeStatus = 'blocked';
+        } else {
+          await outbox.scheduleSend(enqueued.deliveryId);
+          noticeStatus = 'queued';
+        }
+      } catch {
+        // Portalnachricht bleibt – der Hinweis ist nur Komfort (Order §29 „Mail scheitert ⇒ bleibt“).
+        noticeStatus = 'unavailable';
+      }
+    }
+    return { messageId, channel: 'portal', deliveryState: 'sent', noticeStatus };
   }
 
   // ── Unmatched-Inbox (Order §22) ────────────────────────────────────────

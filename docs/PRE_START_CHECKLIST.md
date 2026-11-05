@@ -68,6 +68,30 @@ Die jeweils benötigten Zugangsdaten/Stammdaten stehen in `OPEN_ITEMS.md`.
   bis 5 Wochen, Subprozessoren Geocoding) ergänzen; Depotadresse
   (`pickup_exact_address`) vollständig hinterlegen.
 
+## Production mit Kundenportal (ab Phase 15)
+- `MAIL_ENABLED=true` mit SMTP und `MAIL_PUBLIC_WEB_BASE_URL` (https, Web-App
+  derselben Umgebung): Sie ist zugleich die Portal-Basis aller Anmelde-/
+  Bestätigungslinks (`/konto/...`) – ohne Mailversand kann sich kein Kunde
+  anmelden (Magic Link ausschließlich per E-Mail).
+- Telefonnummer von Miet-Royal für den Anruf-Button festlegen
+  (`COMPANY_PHONE_NUMBER`, kein Secret, nur Ziffern/+/Leerzeichen/-/Klammern);
+  ohne Wert zeigt das Portal keinen Anruf-Button. Nichts erfinden.
+- Ziel-URL für „Neue Anfrage starten“ festlegen (`PORTAL_NEW_INQUIRY_URL`,
+  https) – es gibt keine öffentliche Anfrage-Route; ohne Wert fehlt Kunden ohne
+  aktuelle Buchung die Hauptaktion (neutraler Hinweis statt Link).
+- Kanonische Abholadresse `pickup_exact_address` (Einstellungen) vollständig
+  gepflegt: Das Portal zeigt bei bestätigter Selbstabholung ausschließlich diese
+  Adresse und den Navigationslink; ungepflegt ⇒ keine Adresse, kein Link.
+- Web und API unter demselben Origin (Web-Rewrite `/api/*`, `WEB_API_ORIGIN`),
+  TLS vor den Prozessen terminiert; Reverse-Proxy reicht
+  `__Host-mr_customer_session` unverändert durch und loggt `/konto/*` sowie
+  `/api/portal/*` ohne Body/Cookies; `API_TRUST_PROXY_HOPS` korrekt gesetzt
+  (docs/DEPLOYMENT_NOTES.md „Kundenportal“).
+- Demo-Deployment: `MAIL_DEMO_WHITELIST` mit Sink-Domain und Mail-Senke – sonst
+  ist in der Demo keine Portal-Anmeldung möglich (Mails bleiben `blocked`).
+- Kein neues Secret, keine neue Instanz; Migration 0032 angewendet
+  (`pnpm db:migrate`); `pnpm check:env-isolation` vor dem Release wie bisher.
+
 ## Sicherheitsregel
 Echte Zugangsdaten nie in Chat-Prompts oder Git-Dateien kopieren, wenn sie als
 Secrets/Environment-Variablen auf dem Zielsystem gesetzt werden können.

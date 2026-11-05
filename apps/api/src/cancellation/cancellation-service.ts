@@ -114,6 +114,15 @@ export class FollowUpExistsError extends AuthError {
   }
 }
 
+/**
+ * Phase 15 (portal): Auslöser eines Stornos – Mitarbeiter/Admin (Staff-ID) oder der
+ * Kunde selbst aus dem Kundenportal (`canceler_type = 'customer'`, keine Staff-ID).
+ * Die Fachlogik (Sperren, Freigaben, Gutschein, Transfer) ist für beide identisch.
+ */
+export type CancellationActor =
+  | { id: string; type: 'employee' | 'admin' }
+  | { id: null; type: 'customer' };
+
 export interface CancellationViewer {
   permissions: ReadonlySet<string>;
   isAdmin: boolean;
@@ -530,7 +539,7 @@ export class CancellationService {
 
   async cancel(
     processId: string,
-    actor: { id: string; type: 'employee' | 'admin' },
+    actor: CancellationActor, // Phase 15 (portal): zusätzlich { id: null, type: 'customer' }
     viewer: CancellationViewer,
     now = new Date(),
   ): Promise<CancellationView> {

@@ -7,6 +7,14 @@ import type { CommunicationContext } from '../communication/context.ts';
 import type { PushService } from '../communication/push/push-service.ts';
 import type { CancellationService } from '../cancellation/cancellation-service.ts';
 import type { PortalSessionAuthenticator } from './guard.ts';
+// Phase 15 (AUTH)
+import { PortalMagicLinkService } from './auth/magic-link-service.ts';
+import { PortalProfileService } from './auth/profile-service.ts';
+import { PortalSessionService } from './auth/session-service.ts';
+import { registerPortalAuthRoutes } from '../routes/portal-auth.ts';
+import { registerPortalProfileRoutes } from '../routes/portal-profile.ts';
+import { registerPortalBookingRoutes } from '../routes/portal-booking.ts'; // Phase 15 (BOOKING)
+import { registerPortalChatRoutes } from '../routes/portal-chat.ts'; // Phase 15 (CHAT)
 
 /**
  * Phase 15 (Kundenportal): Einhängepunkt aller `/portal/*`-Routen. Die
@@ -26,6 +34,8 @@ export interface PortalModuleDeps {
   push: PushService;
   cancellationService: CancellationService;
   logger: FastifyInstance['log'];
+  /** Phase 15 (AUTH): Rate-Limits der Auth-Grenze (Default: aktiv, wenn @fastify/rate-limit registriert ist). */
+  rateLimitEnabled?: boolean | undefined;
 }
 
 export interface PortalModule {
@@ -34,13 +44,47 @@ export interface PortalModule {
 }
 
 export function registerPortalModule(
-  _instance: FastifyInstance,
-  _deps: PortalModuleDeps,
+  instance: FastifyInstance,
+  deps: PortalModuleDeps,
 ): PortalModule {
-  // Phase 15 (AUTH): const sessions = createPortalAuth(...); registerPortalAuthRoutes(instance, {...});
-  // Phase 15 (BOOKING): registerPortalBookingRoutes(instance, { ..., sessions });
-  // Phase 15 (CHAT): registerPortalChatRoutes(instance, { ..., sessions });
-  throw new Error(
-    'Phase 15: Portal-Modul noch nicht verdrahtet (AUTH/BOOKING/CHAT ergänzen hier).',
+  // Phase 15 (AUTH): Sessions, Magic Links, Profil – Routen /portal/auth/*, /portal/me, /portal/profile.
+  const sessions = new PortalSessionService(deps.db);
+  const magicLinks = new PortalMagicLinkService(
+    deps.db,
+    deps.communication.outbox,
+    deps.config,
+    sessions,
+    { logger: deps.logger },
   );
+  registerPortalAuthRoutes(instance, {
+    db: deps.db,
+    config: deps.config,
+    sessions,
+    magicLinks,
+    rateLimitEnabled: deps.rateLimitEnabled,
+  });
+  registerPortalProfileRoutes(instance, {
+    config: deps.config,
+    sessions,
+    profile: new PortalProfileService(deps.db),
+  });
+  // Phase 15 (BOOKING): Buchungen, Dokumente, Rechnungsstatus, Storno – Order §13–§24, §38–§44.
+  registerPortalBookingRoutes(instance, {
+    db: deps.db,
+    config: deps.config,
+    storage: deps.storage,
+    cancellationService: deps.cancellationService,
+    sessions,
+    logger: deps.logger,
+  });
+  // Phase 15 (CHAT): Portal-Chat (Nachrichten, Fotos) – Order §25–§28.
+  registerPortalChatRoutes(instance, {
+    db: deps.db,
+    config: deps.config,
+    storage: deps.storage,
+    push: deps.push,
+    sessions,
+    logger: deps.logger,
+  });
+  return { sessions };
 }

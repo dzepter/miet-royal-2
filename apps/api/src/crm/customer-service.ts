@@ -163,6 +163,47 @@ export class CustomerService {
     return customer;
   }
 
+  /**
+   * Phase 15 (portal): Profiländerung aus dem Kundenportal. Dieselbe
+   * `toRow`-Validierung/Normalisierung wie bei Mitarbeitern (Pflichtfelder,
+   * Telefon, Trim), aber `type` UND `email` bleiben IMMER unverändert (der
+   * E-Mail-Wechsel hat einen eigenen verifizierten Pfad, Order §31/§34).
+   * Buchungs-Snapshots werden nie berührt (Order §17).
+   */
+  async updateCustomerFromPortal(
+    customerId: string,
+    patch: Omit<CustomerInput, 'type' | 'email'>,
+    now = new Date(),
+  ): Promise<Customer> {
+    const existing = await this.getActiveCustomer(customerId);
+    const merged: CustomerInput = {
+      type: existing.type,
+      email: existing.email ?? undefined,
+      firstName: patch.firstName ?? existing.firstName ?? undefined,
+      lastName: patch.lastName ?? existing.lastName ?? undefined,
+      organizationName: patch.organizationName ?? existing.organizationName ?? undefined,
+      contactPerson: patch.contactPerson ?? existing.contactPerson ?? undefined,
+      phone: patch.phone ?? existing.phone ?? undefined,
+      billingStreet: patch.billingStreet ?? existing.billingStreet ?? undefined,
+      billingPostalCode: patch.billingPostalCode ?? existing.billingPostalCode ?? undefined,
+      billingCity: patch.billingCity ?? existing.billingCity ?? undefined,
+      billingCountry: patch.billingCountry ?? existing.billingCountry ?? undefined,
+      vatId: patch.vatId ?? existing.vatId ?? undefined,
+      department: patch.department ?? existing.department ?? undefined,
+      costCenter: patch.costCenter ?? existing.costCenter ?? undefined,
+      orderReference: patch.orderReference ?? existing.orderReference ?? undefined,
+    };
+    const row = toRow(merged);
+    const updated = await this.db
+      .update(customers)
+      .set({ ...row, type: existing.type, email: existing.email, updatedAt: now })
+      .where(and(eq(customers.id, customerId), isNull(customers.deletedAt)))
+      .returning();
+    const customer = updated[0];
+    if (customer === undefined) throw new AuthError('NOT_FOUND', 'Kunde nicht gefunden.');
+    return customer;
+  }
+
   async getActiveCustomer(customerId: string): Promise<Customer> {
     const rows = await this.db
       .select()

@@ -26,9 +26,22 @@ const nextConfig: NextConfig = {
       { key: 'X-Frame-Options', value: 'DENY' },
       { key: 'X-Content-Type-Options', value: 'nosniff' },
     ];
+    // Phase 15 (portal): Kundenportal /konto – authentifizierte Seiten nie cachen
+    // (kein Next-Cache/CDN mit Kontodaten), nie indexieren, kein Referer, keine
+    // Einbettung (Order §50). Die Seiten selbst sind 'use client' und laden
+    // Daten ausschließlich per Fetch; das HTML enthält keine Kontodaten.
+    const portalPageHeaders = [
+      { key: 'Cache-Control', value: 'private, no-store, max-age=0' },
+      { key: 'X-Robots-Tag', value: 'noindex, nofollow, nocache' },
+      { key: 'Referrer-Policy', value: 'no-referrer' },
+      { key: 'X-Frame-Options', value: 'DENY' },
+      { key: 'X-Content-Type-Options', value: 'nosniff' },
+    ];
     return [
       { source: '/kontakt/:token', headers: tokenPageHeaders },
       { source: '/dokument/:token', headers: tokenPageHeaders },
+      { source: '/konto', headers: portalPageHeaders },
+      { source: '/konto/:path*', headers: portalPageHeaders },
     ];
   },
 };

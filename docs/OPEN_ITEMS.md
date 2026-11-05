@@ -268,3 +268,55 @@ Weiterhin offen (keine Blocker für Phase 15):
   keine existiert (Geschäftsdaten, siehe oben).
 - Go-live-Punkte früherer Phasen (Lexware, E-Mail/WhatsApp-Smokes, Routing-
   Terms, Hosting, Geschäftsdaten) bleiben wie in den Abschnitten oben.
+
+## Phase 15 – Stand nach Phase 15 (2026-11-05)
+
+Kundenportal (`/konto`, API `/portal/*`, docs/CUSTOMER_PORTAL.md): Magic-Link-
+Anmeldung, aktuelle Buchung(en), Dokumente, Portalnachrichten, Rechnungsstatus,
+Kundenstorno, Profil mit Reauth, Demo-Integration. Go-live-Punkte
+(Konfiguration/Geschäftsdaten, kein Code – nichts davon wird erfunden):
+
+- **Telefonnummer für den Anruf-Button (`COMPANY_PHONE_NUMBER`):** Produktivwert
+  der Miet-Royal-Rufnummer festlegen (kein Secret; Ziffern, optional `+`,
+  Leerzeichen, `-`, `/`, Klammern). Ohne Wert zeigt das Portal keinen Anruf-
+  Button; die Config bleibt optional (Order §37).
+- **Ziel-URL „Neue Anfrage starten“ (`PORTAL_NEW_INQUIRY_URL`):** Es gibt keine
+  öffentliche Anfrage-Route (Website/Konfigurator sind nicht Teil von Phase 15);
+  feste https-URL der bestehenden Anfrage-/Kontaktseite setzen. Ohne Wert zeigt
+  das Portal Kunden ohne aktuelle Buchung nur den Hinweis „Für eine neue Anfrage
+  melde dich gern bei uns.“ (Order §36).
+- **Kanonische Abholadresse `pickup_exact_address`:** vollständig pflegen
+  (Einstellungen) – das Portal zeigt bei bestätigter Selbstabholung
+  ausschließlich diese Adresse und den Navigationslink; ungepflegt ⇒ keine
+  Adresse, kein Link (Order §19; bereits Routing-Go-live-Punkt).
+- **Demo-Whitelist-Deployment:** `MAIL_DEMO_WHITELIST` mit Sink-Domain und
+  Mail-Senke (z. B. `@demo.test`) ist jetzt Voraussetzung dafür, dass die
+  Portal-Anmeldung in der Demo überhaupt möglich ist (Magic Link nur per Mail);
+  Übungskunden mit Whitelist-Adresse und bestätigter Buchung:
+  `process.return.damage`, `process.return.missing_part`,
+  `process.settlement.review` (ENVIRONMENTS „Demo-Mail“). Kein Seed-Umbau nötig.
+- **`MAIL_ENABLED` in production:** ohne SMTP kein Portal-Login (bestehender
+  E-Mail-Betriebspunkt oben).
+- **Leere Portal-Variablen:** `PORTAL_NEW_INQUIRY_URL=`/`COMPANY_PHONE_NUMBER=`
+  (leer) sind wie bei `MAIL_PUBLIC_WEB_BASE_URL` ein Konfigurationsfehler –
+  Variable weglassen. Bewusst keine Sonderbehandlung (Konsistenz mit den
+  übrigen validierten URL-Variablen); bei Bedarf zentral ändern.
+
+Offene Fachpunkte (konservativ umgesetzt, Entscheidung des Auftraggebers
+ausstehend – Design Phase 15 §7):
+
+- Eine Portalnachricht zählt NICHT automatisch als „Kundenantwort“ einer
+  Abrechnungsklärung – die Mitarbeitenden entscheiden weiterhin manuell.
+- Eine begonnene, nicht finalisierte Übergabe ist nach der Phase-9-Regel kein
+  Storno-Blocker; das Portal folgt Phase 9 unverändert (keine neue Regel).
+- Ein abgeschlossener Vorgang ohne Abrechnung bleibt im Portal sichtbar
+  (Order §14 „kein finaler Zahlungsstatus“), bis ein finaler Zahlungsstatus
+  vorliegt.
+- Die Rechnungsnummer wird im Portal nicht gezeigt (nur Status Offen / Bezahlt /
+  Überfällig; finaler Betrag erst bei finaler Rechnung).
+- Die Bestätigung eines E-Mail-Wechsels verlangt kein Cookie der anfordernden
+  Session (Gerätewechsel: die neue Adresse darf auf einem anderen Gerät geöffnet
+  werden); Bindung an Kunde + anfordernde Session (muss noch gültig sein) +
+  one-time Token; danach werden alle Sessions widerrufen.
+- Kein WhatsApp-Button, keine Buchungshistorie, kein Passwort-/Social-Login
+  (Order §2) – keine offenen Punkte, bewusst nicht gebaut.

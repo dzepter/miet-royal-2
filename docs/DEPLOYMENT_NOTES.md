@@ -417,3 +417,75 @@ dieser Domain (z. B. `einkauf@demo.test`), damit Kundeninformationen und
 Kommunikationsantworten in der Demo tatsächlich zugestellt werden (Order §9);
 die Adressen gelten ab dem nächsten Seed/Reset, alle anderen Seed-Kunden
 bleiben unter example.com / example.invalid.
+
+## Kundenportal (Phase 15)
+
+Das Kundenportal (`/konto/*` in apps/web, API-Routen `/portal/*`) läuft in den
+bestehenden Web-, API- und Worker-Prozessen: keine neue Instanz, kein neuer
+Port, kein neues Secret, keine Pflichtvariable. Migration 0032
+(`customer_portal_sessions`, `customer_portal_magic_links`) wird wie üblich mit
+`pnpm db:migrate` vor dem Start angewendet.
+
+- **Proxy darf `__Host-`-Cookies nicht umschreiben:** Das Portal-Session-Cookie
+  heißt außerhalb development `__Host-mr_customer_session` (wie das Staff-
+  Geräte-Cookie `__Host-mr_staff_device`). Browser akzeptieren `__Host-`-Cookies
+  nur mit `Secure`, `Path=/` und OHNE `Domain`-Attribut. Reverse-Proxy/CDN
+  dürfen Name, Domain oder Path dieses Cookies nicht ändern (nginx: kein
+  `proxy_cookie_domain`/`proxy_cookie_path`/`proxy_cookie_flags` auf diesem
+  Cookie, keine Cookie-Zusammenführung über Subdomains) und müssen `Set-Cookie`
+  unverändert durchreichen – sonst verwirft der Browser das Cookie und kein
+  Kunde bleibt angemeldet.
+- **HTTPS-Terminierung Pflicht (staging/demo/production):** `Secure`-Cookies
+  sendet der Browser nur über HTTPS; TLS muss VOR Web- und API-Prozess
+  terminieren. Web und API müssen unter DEMSELBEN Origin erreichbar sein
+  (Web-Rewrite `/api/*` → `WEB_API_ORIGIN` der API derselben Umgebung): Es
+  gibt kein CORS – Portal-Fetches laufen same-origin, der CSRF-Hook
+  (`Sec-Fetch-Site`, Fallback `AUTH_ALLOWED_ORIGINS`) lehnt fremde Origins ab.
+  Eine API, die nur unter einem anderen Origin veröffentlicht ist, kann das
+  Portal nicht benutzen – bewusst (Order §11).
+- **Access-Logs ohne Body und ohne Tokens:** `/konto/*` und `/api/portal/*`
+  (bzw. `/portal/*` direkt an der API) im Proxy-Log nur mit Methode, Pfad und
+  Status protokollieren – NIE Request-Bodies, `Cookie`-/`Set-Cookie`-Header
+  oder Query-Strings. Magic-Link-Token stehen ausschließlich im POST-Body
+  (`/api/portal/auth/consume` u. a.) bzw. im URL-Fragment der Mail
+  (`/konto/anmelden#token=…`, erreicht den Server nie), Sessiontoken nur im
+  HttpOnly-Cookie; die Portal-Pfade selbst enthalten keine Tokens. Die API
+  redigiert ihre eigenen Logs (authorization/cookie, keine Bodies) – Proxy-Logs
+  liegen außerhalb und brauchen eine eigene Regel (Vorbild „Öffentliche
+  Token-Links hinter Proxy“).
+- **Rate-Limits pro Prozess:** Magic-Link-Anforderung (je IP + Hash der
+  normalisierten E-Mail und zusätzlich je IP), Einlösung, Reauth und E-Mail-
+  Wechsel sind mit `@fastify/rate-limit` bzw. einem In-Memory-Fenster begrenzt
+  – im Speicher JE API-PROZESS (wie das Staff-Login). Mehrere API-Prozesse
+  vervielfachen das effektive Limit; `API_TRUST_PROXY_HOPS` MUSS korrekt
+  gesetzt sein, sonst teilen sich alle Kunden die IP des Proxys (Sperre für
+  alle) – siehe „Öffentliche Token-Links hinter Proxy“.
+- **Portal-Basis-URL = `MAIL_PUBLIC_WEB_BASE_URL`:** Alle Anmelde-/Bestätigungs-
+  links werden ausschließlich aus dieser Variable und festen Pfaden gebildet
+  (`/konto/anmelden`, `/konto/profil/bestaetigen`,
+  `/konto/profil/e-mail-bestaetigen`, Hinweis-Mail `/konto`); Host-Header,
+  `X-Forwarded-Host`, Query oder Body haben keinen Einfluss (Order §49). Die
+  Variable zeigt auf die Web-App DERSELBEN Umgebung (Demo auf die Demo-Web-
+  Instanz; `pnpm check:env-isolation` vergleicht sie). Ohne `MAIL_ENABLED=true`
+  und SMTP gibt es keinen Portal-Login (Magic Link nur per E-Mail).
+- **`PORTAL_NEW_INQUIRY_URL` / `COMPANY_PHONE_NUMBER` (optional, keine
+  Secrets):** Ziel von „Neue Anfrage starten“ (absolute http(s)-URL, production
+  nur https) und Telefonnummer des Anruf-Buttons. Ohne Werte startet die API;
+  `GET /portal/me` liefert `links.newInquiryUrl`/`links.phoneNumber` = null und
+  das Portal zeigt statt Link/Button einen neutralen Hinweis. Ungültige ODER
+  LEERE Werte brechen den Start ab (`PORTAL_NEW_INQUIRY_URL=` weglassen statt
+  leer setzen). Produktivwerte: docs/OPEN_ITEMS.md „Phase 15“.
+- **Demo:** `/portal/*` fällt vollständig unter Reset-Gate und Reset-Barrier
+  (503 `DEMO_RESET` während eines Resets – auch Anmeldung und Logout, keine
+  Ausnahme); der Reset löscht `customer_portal_sessions` und
+  `customer_portal_magic_links` (Kunden melden sich neu an). Portal-Mails
+  unterliegen Whitelist und „[DEMO]“: Ohne Sink-Domain in `MAIL_DEMO_WHITELIST`
+  ist in der Demo KEINE Portal-Anmeldung möglich (Zustellung `blocked`,
+  Antwort neutral 202). Übungskunden mit Whitelist-Adresse und bestätigter
+  Buchung: `process.return.damage`, `process.return.missing_part`,
+  `process.settlement.review` (docs/ENVIRONMENTS.md „Demo-Mail“).
+- **Cleanup ohne neuen Scheduler:** Abgelaufene/widerrufene Sessions und
+  verbrauchte/abgelaufene Magic Links räumt der bestehende Scan-Lauf
+  `communication.scan_due` (alle 2 min, Worker; Einstieg
+  `@mietroyal/api/jobs/portal`) auf – keine zusätzliche Cron-/Timer-
+  Konfiguration, keine unbegrenzt wachsenden Tabellen (Order §52).

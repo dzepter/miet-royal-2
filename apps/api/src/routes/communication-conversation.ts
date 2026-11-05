@@ -15,13 +15,15 @@ import { WhatsAppReplyService } from '../communication/whatsapp/reply-service.ts
 import { getCompletedVisibilityDays } from '../crm/settings-service.ts';
 import { ProcessService } from '../crm/process-service.ts';
 import { buildVisibilityContext } from '../crm/visibility.ts';
+import { customerPortalActive, portalReplyPossible } from '../portal/chat/staff-hints.ts'; // Phase 15 (portal)
 import { UUID_PATTERN } from './auth.ts';
 
 const uuidSchema = z.string().regex(UUID_PATTERN, 'muss eine UUID sein');
 const idParams = z.object({ id: uuidSchema });
 const photoParams = z.object({ id: uuidSchema, photoId: uuidSchema });
 const replySchema = z.object({
-  channel: z.enum(['email', 'whatsapp']),
+  // Phase 15 (portal): zusätzlich 'portal' (Order §29) – Recht message.reply_customer.
+  channel: z.enum(['email', 'whatsapp', 'portal']),
   body: z.string().min(1, 'darf nicht leer sein').max(MANUAL_REPLY_MAX_CHARS),
 });
 
@@ -86,10 +88,16 @@ export function registerConversationRoutes(
     const effective = await auth.effectivePermissions(context.user.id);
     const messages = await conversations.listForProcess(params.id);
     const whatsapp = await whatsappReplies.windowFor(params.id);
+    // Phase 15 (portal): Portalantwort nur bei bestätigter, offener Buchung; Hinweis „Kundenportal aktiv“.
+    const canReplyPortal =
+      effective.has('message.reply_customer') && (await portalReplyPossible(db, params.id));
+    const portalActive = await customerPortalActive(db, params.id);
     return {
       messages,
       canReplyEmail: effective.has('message.reply_customer') && mailOutbox !== undefined,
       canReplyWhatsApp: effective.has('whatsapp.reply') && whatsappGateway.kind !== 'disabled',
+      canReplyPortal,
+      portalActive,
       whatsapp: {
         mode: config.whatsapp.mode,
         available: whatsapp.available,
@@ -104,10 +112,25 @@ export function registerConversationRoutes(
     if (context === null) return;
     const params = parseOrThrow(idParams, request.params, 'params');
     const body = parseOrThrow(replySchema, request.body);
-    const permission = body.channel === 'email' ? 'message.reply_customer' : 'whatsapp.reply';
+    const permission = body.channel === 'whatsapp' ? 'whatsapp.reply' : 'message.reply_customer';
     if (!(await requirePermission(request, reply, auth, context, permission))) return;
     if (!(await requireVisibleProcess(request, reply, context, params.id))) return;
     try {
+      if (body.channel === 'portal') {
+        // Phase 15 (portal, Order §29): Konversationszeile sofort „sent“, Mail-Hinweis nach Commit.
+        const result = await conversations.replyByPortal(mailOutbox ?? null, {
+          processId: params.id,
+          body: body.body,
+          staffUserId: context.user.id,
+          appEnv: config.appEnv,
+        });
+        return reply.status(201).send({
+          messageId: result.messageId,
+          channel: 'portal',
+          deliveryState: result.deliveryState,
+          noticeStatus: result.noticeStatus,
+        });
+      }
       if (body.channel === 'email') {
         if (mailOutbox === undefined) {
           sendError(

@@ -127,6 +127,10 @@ import {
 // konfigurierbar außerhalb demo; Admin-Routen in demo nicht registriert (§68).
 import { TrainingGateService } from './training/gate-service.ts';
 import { registerTrainingGateRoutes } from './routes/training-gates.ts';
+// Phase 15 (portal): Kundenportal – Modul (Routen /portal/*) und Scanner
+// (Session-/Magic-Link-Cleanup, Storno-Mail-Backstop).
+import { registerPortalModule } from './portal/module.ts';
+import { createPortalScanners } from './portal/scanners.ts';
 
 export const API_VERSION = '0.1.0';
 
@@ -872,6 +876,15 @@ export function buildApp({
           },
           // Phase 13 (tours-live): Verspätungsbewertung aktiver Touren mit frischem Standort.
           tourLive.scanner,
+          // Phase 15 (portal): Portal-Cleanup/-Backstop (Order §52/§43) im selben Scan-Lauf;
+          // der Storno-Bestätigungs-Backstop nutzt dieselbe Storno-Instanz wie die Routen.
+          ...createPortalScanners({
+            db,
+            config,
+            queue,
+            logger: app.log,
+            cancellationConfirmations: cancellationService,
+          }),
         ],
         logger: app.log,
       });
@@ -904,6 +917,23 @@ export function buildApp({
         accountingGateway: accounting,
         transfers,
         cancellationService,
+      });
+      // Phase 15 (portal): Kundenportal – alle `/portal/*`-Routen ausschließlich über das
+      // Portal-Modul (Design §0/§4.1). Kunde immer aus der Portal-Session; dieselbe
+      // Storno-Instanz wie die Staff-Routen (genau eine Stornierung je Buchung), Mail-Outbox,
+      // Push und Storage des Prozesses. In demo unterliegen die Routen Gate und Barrier
+      // (Präfix /portal in reset-gate.ts).
+      registerPortalModule(instance, {
+        db,
+        config,
+        auth: authService,
+        storage: storageProvider,
+        queue,
+        communication,
+        push: pushModule.push,
+        cancellationService,
+        logger: app.log,
+        rateLimitEnabled, // Auth-Grenze: IP-/Mail-Hash-Limits wie die Staff-Anmeldung
       });
       registerAccountingRoutes(instance, {
         db,

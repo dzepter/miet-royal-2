@@ -53,6 +53,12 @@ export const SECURITY_EVENT_TYPES = [
   // IDs, Pfad-/Übungs-Keys und Zähler; nie Businessdaten.
   'training.assignment_created',
   'training.assignment_reset',
+  // Phase 15 (portal): Kundenportal-Auth (Order §6/§35) – Details ausschließlich
+  // { customerId, sessionId?, count?, reason? }; nie Tokens, nie E-Mail-Adressen. actorUserId bleibt null.
+  'portal.login',
+  'portal.logout',
+  'portal.email_changed',
+  'portal.sessions_revoked',
 ] as const;
 
 export type SecurityEventType = (typeof SECURITY_EVENT_TYPES)[number];

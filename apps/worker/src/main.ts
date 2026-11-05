@@ -31,6 +31,9 @@ import {
   registerScanDueJobHandlers,
   startChainWatchdog,
 } from '@mietroyal/api/jobs/communication-scan';
+// Phase 15 (portal): Portal-Cleanup/-Backstop-Scanner im selben Scan-Lauf; der
+// Storno-Bestätigungs-Backstop (Order §43) braucht die Storno-Komposition wie in app.ts.
+import { createCancellationService, createPortalScanners } from '@mietroyal/api/jobs/portal';
 import {
   enqueuePendingInvoiceDeliveries,
   enqueuePendingVoucherDeliveries,
@@ -158,24 +161,37 @@ registerCommunicationJobHandlers(runner, { communication });
 // Phase 12 (transactional): Sent-/Failed-Listener der Fachmodule (AB, Pakete,
 // Kundeninformation, Storno, Gutschein, Rechnung), transienter Rechnungsabruf
 // sowie die Jobs voucher.delivery / invoice.delivery.
-createTransactionalMailModule({
+// Phase 15 (portal): Transfer-Boundary und Modul als Konstanten, weil der Portal-
+// Backstop-Scanner (unten) denselben Storno-Bestätigungs-Mailer braucht.
+const transactionalTransfers = createAccountingTransferService({
+  db,
+  queue,
+  accountingGateway,
+  lexware,
+  workerId,
+  logger,
+  paymentStatusListeners: [voucherTriggers.paymentStatusListener],
+});
+const transactional = createTransactionalMailModule({
   communication,
   db,
   config,
   queue,
   lexware,
-  transfers: createAccountingTransferService({
-    db,
-    queue,
-    accountingGateway,
-    lexware,
-    workerId,
-    logger,
-    paymentStatusListeners: [voucherTriggers.paymentStatusListener],
-  }),
+  transfers: transactionalTransfers,
   logger,
 });
 registerTransactionalJobHandlers(runner, { communication, db, config, logger });
+// Phase 15 (portal, Order §43): Storno-Service mit denselben Deps wie app.ts – im Worker
+// nur für `sendConfirmation` des Backstops (keine Stornierung, daher keine Prozess-Listener).
+const portalCancellationService = createCancellationService({
+  db,
+  config,
+  storage,
+  transfers: transactionalTransfers,
+  confirmations: transactional.cancellationMailer,
+  logger,
+});
 // Phase 12 (push): push.send im Worker; Rechteauflösung für Admin-Pushes über
 // den Auth-Service (keine Session-Hooks im Worker). Gateway: WebPush/Disabled.
 const pushModule = createPushModule(
@@ -249,6 +265,14 @@ registerScanDueJobHandlers(runner, {
     },
     // Phase 13 (tours-live): Verspätungsbewertung aktiver Touren mit frischem Standort.
     tourLive.scanner,
+    // Phase 15 (portal): Portal-Cleanup/-Backstop (Order §52/§43) wie in der API.
+    ...createPortalScanners({
+      db,
+      config,
+      queue,
+      logger,
+      cancellationConfirmations: portalCancellationService,
+    }),
   ],
   logger,
 });
