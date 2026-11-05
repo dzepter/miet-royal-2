@@ -927,6 +927,9 @@ test('J. Free Cancellation: ≥ 15 Tage ⇒ „Stornogebühr: 0,00 €“, bewus
     'cancelled_free',
   );
   await expect(page.getByTestId('portal-cancel-section')).toHaveCount(0);
+  // Kostenfreier Storno ⇒ nur noch die Bestätigung: keine Dokumentlinks, kein Nachrichtenbereich.
+  await expect(page.getByTestId('portal-documents')).toHaveCount(0);
+  await expect(page.getByTestId('portal-messages')).toHaveCount(0);
   // Keine neuen Portalnachrichten zu einer stornierten Buchung (API; nach Neuladen kein Formular).
   const lateMessage = await portalApiPost(page, `/bookings/${jonas.bookingId}/messages`, {
     body: 'Noch eine Frage nach dem Storno',
@@ -946,6 +949,7 @@ test('J. Free Cancellation: ≥ 15 Tage ⇒ „Stornogebühr: 0,00 €“, bewus
   // Doppelklick/Wiederholung: idempotent – keine zweite Stornierung.
   const again = await portalApiPost(page, `/bookings/${jonas.bookingId}/cancellation`, {
     confirm: true,
+    expectedFeeCents: 0,
   });
   expect(again.status).toBe(200);
   expect(cancellationsOf(jonas.processId)).toHaveLength(1);
@@ -953,6 +957,8 @@ test('J. Free Cancellation: ≥ 15 Tage ⇒ „Stornogebühr: 0,00 €“, bewus
   await page.reload();
   await expect(page.getByTestId('portal-cancelled-view')).toBeVisible();
   await expect(page.getByTestId('portal-message-form')).toHaveCount(0);
+  await expect(page.getByTestId('portal-messages')).toHaveCount(0);
+  await expect(page.getByTestId('portal-documents')).toHaveCount(0);
 
   // Automatische Stornobestätigung (genau eine Mail).
   await runJobs();
@@ -1020,6 +1026,9 @@ test('K. Paid Cancellation Fee: 7–14 Tage ⇒ 50 % der regulären Maschinenmie
     'data-state',
     'cancelled_fee',
   );
+  // Kostenpflichtig storniert ⇒ Nachrichten lesbar, aber ohne Formular (Hinweis statt Eingabe).
+  await expect(page.getByTestId('portal-messages-closed')).toBeVisible();
+  await expect(page.getByTestId('portal-message-form')).toHaveCount(0);
   expect(cancellationsOf(karla.processId)).toEqual([
     {
       canceler_type: 'customer',
@@ -1078,7 +1087,8 @@ test('L. Cancellation Blocked: Übergabe abgeschlossen ⇒ kein Online-Storno, v
   const attempt = await portalApiPost<{ error: { code: string; message: string } }>(
     ernaPage,
     `/bookings/${erna.bookingId}/cancellation`,
-    { confirm: true },
+    // Pflichtfeld seit Review R2; der Blocker greift vor der Gebührenprüfung.
+    { confirm: true, expectedFeeCents: 0 },
   );
   expect(attempt.status).toBe(409);
   expect(attempt.data.error.code).toBe('PORTAL_CANCELLATION_BLOCKED');

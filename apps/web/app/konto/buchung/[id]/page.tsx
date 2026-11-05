@@ -221,6 +221,9 @@ export default function PortalBookingPage() {
   const phone = me.links.phoneNumber;
   const isActive = booking.portalState === 'active';
   const cancelled = booking.cancellation !== null;
+  // Phase 15 (Review R12): Nach einem kostenfreien Kundenstorno zeigt das Portal nur noch die
+  // Bestätigung – Dokumente und Nachrichten liefert die API dann bewusst nicht mehr (404).
+  const confirmationOnly = booking.portalState === 'cancelled_free';
   const eventTime = formatEventTime(booking.event.eventStart, booking.event.eventEnd);
   const occasion = occasionLabel(booking.event.occasion);
   const navHref =
@@ -523,45 +526,58 @@ export default function PortalBookingPage() {
         </section>
       )}
 
-      <section style={card} aria-labelledby="portal-documents-title" data-testid="portal-documents">
-        <h2 id="portal-documents-title" style={{ marginTop: 0, fontSize: '1.1rem' }}>
-          Dokumente
-        </h2>
-        {documents === null ? (
-          <p style={mutedStyle}>Dokumente werden geladen …</p>
-        ) : documents.length === 0 ? (
-          <p style={mutedStyle} data-testid="portal-documents-empty">
-            Noch keine Dokumente vorhanden.
-          </p>
-        ) : (
-          <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
-            {documents.map((document) => (
-              <li
-                key={document.id}
-                style={{ padding: '0.35rem 0', borderBottom: '1px solid #f0f0f0' }}
-                data-testid="portal-document-item"
-                data-type={document.type}
-              >
-                <a
-                  href={portalDocumentHref(booking.bookingId, document.id)}
-                  target="_blank"
-                  rel="noreferrer"
-                  data-testid="portal-document-link"
-                  style={{ fontWeight: 600 }}
+      {!confirmationOnly && (
+        <section
+          style={card}
+          aria-labelledby="portal-documents-title"
+          data-testid="portal-documents"
+        >
+          <h2 id="portal-documents-title" style={{ marginTop: 0, fontSize: '1.1rem' }}>
+            Dokumente
+          </h2>
+          {documents === null ? (
+            <p style={mutedStyle}>Dokumente werden geladen …</p>
+          ) : documents.length === 0 ? (
+            <p style={mutedStyle} data-testid="portal-documents-empty">
+              Noch keine Dokumente vorhanden.
+            </p>
+          ) : (
+            <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
+              {documents.map((document) => (
+                <li
+                  key={document.id}
+                  style={{ padding: '0.35rem 0', borderBottom: '1px solid #f0f0f0' }}
+                  data-testid="portal-document-item"
+                  data-type={document.type}
                 >
-                  {document.label} (PDF)
-                </a>
-                <span style={{ ...mutedStyle, fontSize: '0.9rem' }}>
-                  {' '}
-                  · {formatDate(document.createdAt)}
-                </span>
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
+                  <a
+                    href={portalDocumentHref(booking.bookingId, document.id)}
+                    target="_blank"
+                    rel="noreferrer"
+                    data-testid="portal-document-link"
+                    style={{ fontWeight: 600 }}
+                  >
+                    {document.label} (PDF)
+                  </a>
+                  <span style={{ ...mutedStyle, fontSize: '0.9rem' }}>
+                    {' '}
+                    · {formatDate(document.createdAt)}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+      )}
 
-      <PortalMessages bookingId={booking.bookingId} onUnauthenticated={toLogin} />
+      {!confirmationOnly && (
+        // Neuer Schlüssel je Zustand: Nach einem Storno lädt der Bereich neu (dann ohne Formular).
+        <PortalMessages
+          key={booking.portalState}
+          bookingId={booking.bookingId}
+          onUnauthenticated={toLogin}
+        />
+      )}
 
       {isActive && !cancelled && (
         <section
