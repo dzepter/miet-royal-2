@@ -59,6 +59,12 @@ export const SECURITY_EVENT_TYPES = [
   'portal.logout',
   'portal.email_changed',
   'portal.sessions_revoked',
+  // Phase 16 (CMS, Order §22): Veröffentlichen/Zurückziehen von Website-Inhalten und
+  // Vorschau-Zugänge – Details ausschließlich IDs, Revisionsnummern, Pfad und Quelle
+  // (`staff`|`bootstrap`); nie Texte, nie Tokens. actorUserId null = `cms:bootstrap`.
+  'cms.published',
+  'cms.unpublished',
+  'cms.preview_created',
 ] as const;
 
 export type SecurityEventType = (typeof SECURITY_EVENT_TYPES)[number];

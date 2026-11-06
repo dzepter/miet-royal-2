@@ -99,6 +99,17 @@ export function assertConfigsIsolated(a: AppConfig, b: AppConfig): void {
   // Phase 13 Final: ROUTING_PROVIDER_TERMS_CONFIRMED ist ein Deployment-Schalter,
   // kein Geheimnis – bewusst keine Kollisionsprüfung.
 
+  // Phase 16 (reviews): Ein Google-Places-API-Key darf nie in zwei Umgebungen gleichzeitig
+  // gelten (sonst verbraucht z. B. Staging das Production-Kontingent bzw. zahlt Live für
+  // fremde Abrufe). Demo hat ohnehin nie einen Key (loadConfig lehnt ihn dort ab).
+  // GOOGLE_PLACE_ID und GOOGLE_REVIEWS_TERMS_CONFIRMED sind keine Geheimnisse – bewusst
+  // keine Kollisionsprüfung.
+  if (a.reviews.google.apiKey !== null && a.reviews.google.apiKey === b.reviews.google.apiKey) {
+    collisions.push(
+      'GOOGLE_PLACES_API_KEY: beide Umgebungen nutzen denselben Google-Places-API-Key',
+    );
+  }
+
   // Phase 14 (demo): Die festen URLs des Live↔Demo-Wechsels sind keine Secrets,
   // dürfen aber nicht in beide Richtungen auf dasselbe Ziel zeigen (Live und
   // Demo wären dann dieselbe Staff-Instanz) und nie auf die eigene öffentliche

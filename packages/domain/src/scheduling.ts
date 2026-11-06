@@ -70,6 +70,17 @@ export function berlinDateTimeToUtc(dateIso: string, hour: number, minute = 0): 
   return new Date(`${dateIso}T${pad(hour)}:${pad(minute)}:00+01:00`);
 }
 
+/**
+ * Phase 16: Gibt es "Datum + Uhrzeit" in Europe/Berlin? `false` nur in der Sprunglücke der
+ * Sommerzeit-Umstellung (letzter Sonntag im März, 02:00–02:59) – dort liefert
+ * `berlinDateTimeToUtc` die +01:00-Lesart, also eine andere Wanduhrzeit.
+ */
+export function berlinLocalTimeExists(dateIso: string, hour: number, minute = 0): boolean {
+  const instant = berlinDateTimeToUtc(dateIso, hour, minute);
+  const parts = berlinParts(instant);
+  return berlinDateOf(instant) === dateIso && parts.hour === hour && parts.minute === minute;
+}
+
 /** Berliner Mitternacht (Tagesbeginn) eines ISO-Datums als UTC-Zeitpunkt. */
 export function berlinStartOfDay(dateIso: string): Date {
   return berlinDateTimeToUtc(dateIso, 0, 0);

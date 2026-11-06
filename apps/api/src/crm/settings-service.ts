@@ -68,8 +68,8 @@ export async function setStringSetting(
     });
 }
 
-/** Öffentliche Abholregion (Default: Mainz-Hechtsheim). */
-export async function getPickupPublicArea(db: Database): Promise<string> {
+/** Öffentliche Abholregion (Default: Mainz-Hechtsheim). Phase 16 (PUBLIC): Executor-fähig. */
+export async function getPickupPublicArea(db: DatabaseExecutor): Promise<string> {
   return (await getStringSetting(db, PICKUP_PUBLIC_AREA_KEY)) ?? PICKUP_PUBLIC_AREA_DEFAULT;
 }
 

@@ -3,11 +3,13 @@ import {
   inquirySelections,
   processes,
   type Database,
+  type DatabaseExecutor,
   type Inquiry,
 } from '@mietroyal/database';
 import {
   CANISTER_SLUG,
   CANISTERS_PER_CONTAINER_LIMIT,
+  canisterLimitFor,
   LARGE_EVENT_GUEST_THRESHOLD,
   LARGE_EVENT_NOTE,
 } from '@mietroyal/domain';
@@ -20,6 +22,11 @@ import { ProductService } from './product-service.ts';
  * Vorgang. KEINE Verfügbarkeitsentscheidung, NIEMALS automatische
  * Ablehnung – nur Erfassung. Das Kanisterlimit wird zentral geprüft
  * (Vorgabe Nr. 5), Gästezahlen ab 250 erzeugen nur einen internen Hinweis.
+ *
+ * Phase 16 (PUBLIC): Validierung + Schreiben liegen in `upsertWithin(executor, …)`,
+ * damit die öffentliche Website-Anfrage Kunde → Vorgang → Anfrage → Auswahl in EINER
+ * Transaktion anlegt (kein zweiter Pool-Zugriff). Staff-Pfad unverändert:
+ * `upsertForProcess` = eigene Transaktion um `upsertWithin`.
  */
 
 export interface InquirySelectionInput {
@@ -86,7 +93,21 @@ export class InquiryService {
   }
 
   async upsertForProcess(actorId: string, processId: string, input: InquiryInput) {
-    const processRows = await this.db
+    return this.db.transaction((tx) => this.upsertWithin(tx, actorId, processId, input));
+  }
+
+  /**
+   * Phase 16 (PUBLIC): Anlegen/Ändern innerhalb einer laufenden Transaktion – alle
+   * Lese- und Schreibzugriffe über `executor`. `actorId = null` ⇒ system-/kundenseitige
+   * Erzeugung (Website-Anfrage, `created_by` NULL). Dieselbe Validierung wie im Staff-Pfad.
+   */
+  async upsertWithin(
+    executor: DatabaseExecutor,
+    actorId: string | null,
+    processId: string,
+    input: InquiryInput,
+  ): Promise<string> {
+    const processRows = await executor
       .select({ id: processes.id, mainStatus: processes.mainStatus })
       .from(processes)
       .where(eq(processes.id, processId));
@@ -105,7 +126,7 @@ export class InquiryService {
     // Maschinentyp: nur aktive Maschinenprodukte für NEUE Auswahl.
     let machineContainers = 0;
     if (input.machineProductId !== null && input.machineProductId !== undefined) {
-      const machine = await this.productService.getProduct(input.machineProductId);
+      const machine = await this.productService.getProduct(input.machineProductId, executor);
       if (machine.category !== 'machine') {
         throw new AuthError('VALIDATION', 'Das gewählte Produkt ist kein Maschinentyp.');
       }
@@ -123,7 +144,7 @@ export class InquiryService {
       if (!Number.isInteger(selection.quantity) || selection.quantity <= 0) {
         throw new AuthError('VALIDATION', 'Mengen müssen positive ganze Zahlen sein.');
       }
-      const product = await this.productService.getProduct(selection.productId);
+      const product = await this.productService.getProduct(selection.productId, executor);
       if (!product.active) {
         throw new AuthError('VALIDATION', `„${product.name}“ ist deaktiviert und nicht wählbar.`);
       }
@@ -146,7 +167,7 @@ export class InquiryService {
           : `Das Gratis-Sirup-Kontingent beträgt ${machineContainers} L (1 L je Behälter).`,
       );
     }
-    const canisterLimit = machineContainers * CANISTERS_PER_CONTAINER_LIMIT;
+    const canisterLimit = canisterLimitFor(machineContainers);
     if (canisterCount > 0 && machineContainers === 0) {
       throw new AuthError('VALIDATION', 'Mischkanister erfordern einen gewählten Maschinentyp.');
     }
@@ -176,35 +197,33 @@ export class InquiryService {
       onsiteContactPhone: input.onsiteContactPhone ?? null,
     };
 
-    return this.db.transaction(async (tx) => {
-      const existing = await tx
-        .select({ id: inquiries.id })
-        .from(inquiries)
-        .where(eq(inquiries.processId, processId));
-      let inquiryId = existing[0]?.id;
-      if (inquiryId === undefined) {
-        const inserted = await tx
-          .insert(inquiries)
-          .values({ ...values, processId, createdBy: actorId })
-          .returning({ id: inquiries.id });
-        inquiryId = inserted[0]?.id;
-        if (inquiryId === undefined) throw new AuthError('CONFLICT', 'Anlegen fehlgeschlagen.');
-      } else {
-        await tx
-          .update(inquiries)
-          .set({ ...values, updatedAt: new Date() })
-          .where(eq(inquiries.id, inquiryId));
-        await tx.delete(inquirySelections).where(eq(inquirySelections.inquiryId, inquiryId));
-      }
-      for (const selection of selections) {
-        await tx.insert(inquirySelections).values({
-          inquiryId,
-          productId: selection.productId,
-          role: selection.role,
-          quantity: selection.quantity,
-        });
-      }
-      return inquiryId;
-    });
+    const existing = await executor
+      .select({ id: inquiries.id })
+      .from(inquiries)
+      .where(eq(inquiries.processId, processId));
+    let inquiryId = existing[0]?.id;
+    if (inquiryId === undefined) {
+      const inserted = await executor
+        .insert(inquiries)
+        .values({ ...values, processId, createdBy: actorId })
+        .returning({ id: inquiries.id });
+      inquiryId = inserted[0]?.id;
+      if (inquiryId === undefined) throw new AuthError('CONFLICT', 'Anlegen fehlgeschlagen.');
+    } else {
+      await executor
+        .update(inquiries)
+        .set({ ...values, updatedAt: new Date() })
+        .where(eq(inquiries.id, inquiryId));
+      await executor.delete(inquirySelections).where(eq(inquirySelections.inquiryId, inquiryId));
+    }
+    for (const selection of selections) {
+      await executor.insert(inquirySelections).values({
+        inquiryId,
+        productId: selection.productId,
+        role: selection.role,
+        quantity: selection.quantity,
+      });
+    }
+    return inquiryId;
   }
 }

@@ -84,6 +84,8 @@ Object Storage, DNS, Monitoring, SSH/Deployment.
 
 ## Marke / Assets (vor visueller Finalisierung)
 Logo, echte Maschinenbilder, Eventbilder, ggf. Teamfotos, Icons/Favicon.
+Phase 16: weiterhin offen – die neue Website nutzt bis dahin die Wortmarke
+„Miet-Royal“ und Sektionen ohne Bild (siehe „Phase 16“).
 
 ## Geschäftsdaten (vor Live)
 exakte Abholadresse, feste Telefonnummer, E-Mail, Impressumsdaten,
@@ -97,6 +99,10 @@ Bestände und Mindestmengen.
 
 ## Popcorn/Waffel (vor Website)
 Preise, Inklusivleistungen, Bilder, Anfragefelder, Transportinfos.
+Phase 16: Seiten `/popcornmaschine-mieten` und `/waffeleisen-mieten` existieren
+nur als CMS-Entwürfe ohne Preise/Inklusivleistungen/Transportangaben; die
+Geschäftsdaten bleiben offen (siehe „Phase 16“). Kein Blocker für den
+Slush-Relaunch.
 
 ## Steuer/Rechnung (vor Phase 9/10)
 MwSt.-Behandlung, brutto/netto, Rundungsregeln, Lexware-Verantwortung.
@@ -165,9 +171,15 @@ bedeutet ausschließlich „Vertrag gegen die implementierte Nutzung geprüft“
 
 ## Alte Website (vor Phase 17)
 URL-Liste, wichtige Rankings, Redirect-Mapping, zu übernehmender Content.
+Phase 16: Inventur (URLs, Inhalte, Bilder/Logo, Impressum/Datenschutz,
+Widersprüche) liegt in docs/WEBSITE_MIGRATION_NOTES.md; übernommene Texte nur als
+redaktionelle CMS-Entwürfe. Redirect-/410-Matrix und Ranking-Prüfung bleiben
+Phase 17.
 
 ## Noch als Admin-/Stammdaten definieren
-- genaue Gästezahl→Maschinenempfehlungslogik
+- genaue Gästezahl→Maschinenempfehlungslogik (Phase 16: technisch als pflegbare,
+  nicht überlappende Empfehlungsregeln in den Website-Einstellungen umgesetzt;
+  die Bereiche selbst sind weiterhin offen und initial leer)
 - Lieferpreis-Vorschlagslogik
 - Maschinengewichte/Transporttexte
 
@@ -280,9 +292,12 @@ Kundenstorno, Profil mit Reauth, Demo-Integration. Go-live-Punkte
   der Miet-Royal-Rufnummer festlegen (kein Secret; Ziffern, optional `+`,
   Leerzeichen, `-`, `/`, Klammern). Ohne Wert zeigt das Portal keinen Anruf-
   Button; die Config bleibt optional (Order §37).
-- **Ziel-URL „Neue Anfrage starten“ (`PORTAL_NEW_INQUIRY_URL`):** Es gibt keine
-  öffentliche Anfrage-Route (Website/Konfigurator sind nicht Teil von Phase 15);
-  feste https-URL der bestehenden Anfrage-/Kontaktseite setzen. Ohne Wert zeigt
+- **Ziel-URL „Neue Anfrage starten“ (`PORTAL_NEW_INQUIRY_URL`):** Stand Phase 15
+  gab es keine öffentliche Anfrage-Route. KORREKTUR Phase 16: Die neue Website
+  hat jetzt eine öffentliche Website-Anfrage (`/konfigurator` ⇒
+  `POST /public/inquiries`, docs/WEBSITE_CONFIGURATOR.md); nach dem Website-
+  Go-live kann die Variable auf die https-URL des Konfigurators der Live-Website
+  zeigen (Konfigurationsentscheidung, keine Codeänderung). Ohne Wert zeigt
   das Portal Kunden ohne aktuelle Buchung nur den Hinweis „Für eine neue Anfrage
   melde dich gern bei uns.“ (Order §36).
 - **Kanonische Abholadresse `pickup_exact_address`:** vollständig pflegen
@@ -415,3 +430,117 @@ folgenden Härtungen und Restrisiken sind KEINE Phase-15-Blocker (Phase 15 Final
   Session-Zeilen werden für H (Reauth-Frische) und O (30-Tage-Grenze) nur in der
   Zeit verschoben. Bei einer Änderung des Storage-Layouts der E2E-API muss
   `seedPortal` mitgezogen werden.
+
+## Phase 16 – Stand nach Phase 16 (2026-11-06)
+
+Neue Website, internes CMS, Slush-Konfigurator mit Website-Anfrage und
+Google-Bewertungs-Grenze sind technisch umgesetzt (docs/WEBSITE_CMS.md,
+docs/WEBSITE_CONFIGURATOR.md, docs/GOOGLE_REVIEWS_API_NOTES.md). Die bestehende
+Live-Website bleibt unverändert online; keine DNS-/Domain-Umschaltung.
+
+**Offene Business-Inhalte (Order §30 – NICHT erfunden; alles später über
+CMS/Konfiguration ergänzbar, ohne die Website neu zu programmieren):**
+
+- **Gästezahl→Maschinen-Empfehlungsbereiche:** Regeln (`guestMin`, `guestMax`
+  optional, aktive Slush-Maschine) sind im Staff unter Website → Website-
+  Einstellungen pflegbar; initial leer. Bis dahin zeigt der Konfigurator „Wir
+  prüfen persönlich, welche Maschine am besten zu deinem Event passt.“
+- **Popcorn:** Preis, Inklusivleistungen, Transportdetails (und Bilder,
+  Anfrageweg) – Seite bleibt Entwurf; später als Produkt mit Preis pflegen und
+  per `product_grid` mit `productSlugs` zeigen.
+- **Waffel:** Preis, Inklusivleistungen, Transportdetails (und Bilder,
+  Anfrageweg) – wie Popcorn.
+- **Eigene Bilder/Logo:** finale eigene Bilder (Maschinen, Events, ggf. Team) und
+  Logo mit geklärter Herkunft/Rechten bzw. Einwilligungen (insb. Fotos mit
+  Kindern); bis dahin Wortmarke und Sektionen ohne Bild. Upload über
+  Website → Medien (Alt-Text oder „dekorativ“).
+- **Öffentliche Kontaktwerte bestätigen:** Telefonnummer und E-Mail in den
+  Website-Einstellungen stammen als Entwurf von der bisherigen Website
+  („vor Veröffentlichung bestätigen“).
+- **Instagram-URL:** auf der bisherigen Website nicht belegt – erst nach
+  Bestätigung in den Website-Einstellungen eintragen (nur Link, kein Feed).
+- **Google Place ID und API-Zugang inkl. EWR-Nutzungszweck:** Google-Cloud-
+  Projekt, Key je Umgebung, Place ID, Klärung des EWR-Nutzungszwecks (Places API
+  EEA Permitted Uses) und alle Punkte aus docs/GOOGLE_REVIEWS_API_NOTES.md
+  „Go-live“. Bis dahin `REVIEWS_PROVIDER=disabled` (fail-closed, Sektion
+  ausgeblendet).
+- **Juristisch geprüfte Impressums-/Datenschutztexte:** Die Bootstrap-Entwürfe
+  sind redaktionelle Übernahmen der bisherigen Website und NICHT juristisch
+  geprüft (veraltete Abschnitte bleiben als Prüfpunkte in der Redaktionsnotiz).
+  Das Impressum enthält den Platzhalter „Anschrift: [vor Veröffentlichung
+  eintragen]“ (Anschrift, ggf. USt-IdNr./Steuernummer, Inhaberbezeichnung/
+  Rechtsform klären). Die Datenschutzhinweise müssen an die neue Website
+  angepasst werden (Konfigurator/Website-Anfrage, Kundenbereich, technisch
+  nötige Cookies inkl. Vorschau-Cookie, Google-Bewertungen per Klick, Instagram-
+  Link, Mailversand, Hoster/Logs, Aufsichtsbehörde, Stand). Erst die
+  Veröffentlichung von `/datenschutz` schaltet Website-Anfragen frei; Rechtstexte
+  lassen sich danach nicht zurückziehen, nur durch neue Revisionen ersetzen.
+- **Spätere Regionsseiten:** Mainz, Wiesbaden, Bad Kreuznach liegen als eigene
+  Entwürfe vor („vor Veröffentlichung lokal prüfen“); weitere Orte aus
+  MASTER_SPEC §30 nur einzeln und mit eigenem Inhalt (Website → „Regionale
+  Seite anlegen“), keine Massenerzeugung.
+- **Lieferpreis-Vorschlagslogik:** weiterhin undefiniert; Website und
+  Konfigurator nennen keinen Lieferpreis („Lieferung wird individuell geprüft“).
+- **Über-uns-Fakten bestätigen:** Geschichte, „Familienbetrieb aus Mainz seit
+  2023“, Namen und die kurze Einweisung bei der Übergabe stammen nur von der
+  bisherigen Website ⇒ Bestätigung durch den Inhaber; ebenso die Liste der
+  Einsatzgebiete und Mengen-/Zeitangaben im Text (bei Regeländerung manuell
+  nachziehen). Öffnungszeiten sind nicht belegt und werden nicht erfunden.
+
+**Phase 17 (NICHT in Phase 16 erledigt, bewusst nicht vorweggenommen):**
+komplette Redirect-/410-Matrix Alt → Neu, Sitemap, Robots-Finalisierung,
+Canonical-QA, strukturierte Daten, Core-Web-Vitals-/Performance-QA, SEO-Content-
+QA, Prüfung alter URLs/Rankings. Bis dahin bleibt die Indexierung aus
+(`WEB_INDEXING_ENABLED` nicht gesetzt ⇒ überall `noindex`).
+
+**Technische Restpunkte und Betriebshinweise (keine Phase-16-Blocker):**
+
+- **Rate-Limits prozesslokal:** Die IP-Limits der Website (Anfrage 5/min +
+  20/h, Konfigurator-Vorschau 60/min, Vorschau-Einlösen 20/min, Bewertungen
+  10/min) liegen wie alle bestehenden IP-Limits im Speicher JE API-PROZESS –
+  mehrere Replikate vervielfachen das effektive Limit. Wirksam je Client nur mit
+  korrektem `API_TRUST_PROXY_HOPS` (docs/DEPLOYMENT_NOTES.md „Öffentliche
+  Token-Links hinter Proxy“); hinter einer gemeinsamen IP (Firmen-/Carrier-NAT)
+  greifen sie entsprechend früher. Global (DB) ist nur die Tagesgrenze der
+  Google-Abrufe. Kein CAPTCHA in Phase 16.
+- **429-Fehlercode:** Die Minutenlimits über `@fastify/rate-limit` liefern wie
+  alle bestehenden Routen Status 429 mit dem generischen Code der
+  Fehlerbehandlung (`BAD_REQUEST`, englische Plugin-Meldung); nur das
+  Stundenfenster der Website-Anfrage liefert `RATE_LIMITED`. Web und Staff
+  werten den Status aus – bei Bedarf zentral vereinheitlichen (in Phase 16
+  bewusst nicht, betrifft alle bestehenden Routen; docs/TECH_DECISIONS.md
+  „Phase 16“).
+- **Status „Nicht veröffentlicht“:** Die API meldet für zurückgezogene Seiten
+  ebenfalls `never_published`; ein eigenes Feld (z. B. „war veröffentlicht“)
+  würde den Status präziser machen.
+- **Veröffentlichte Bilder im Browser-Cache:** öffentliche Medien tragen
+  `immutable` mit bis zu einem Jahr Gültigkeit – ein einmal veröffentlichtes Bild
+  kann nach dem Zurückziehen in Browser-Caches bleiben (docs/WEBSITE_CMS.md
+  „Medien“). Kein Löschen von Medien in Phase 16.
+- **Kontaktblock auf Popcorn-/Waffel-Seiten:** ERLEDIGT (Review-Fix
+  2026-11-06): `contact_details` zeigt auf `secondary_offer`-Seiten nur Telefon
+  und E-Mail – weder die Zeile „Abholung: …“ noch Instagram noch den Knopf
+  „Unverbindlich anfragen“ → `/konfigurator`.
+  Offen bleibt nur der Business-Inhalt (Anfrageweg, Transport) – siehe oben.
+- **Wiederholung nach Datumswechsel:** ERLEDIGT (Review-Fix 2026-11-06): Die
+  Website-Anfrage prüft „Datum nicht in der Vergangenheit“ und die Zeitregeln
+  erst NACH der Wiederholungserkennung; dieselbe `clientMutationId` liefert auch
+  nach Ablauf des Eventdatums 200 (gleicher Inhalt) bzw. 409 mit Vorgangsnummer
+  (Test PI21).
+- **Adress-Guard bewusst fail-closed:** Teilstring-Treffer (z. B. dieselbe Straße
+  mit einer Hausnummer, die mit der Abhol-Hausnummer beginnt) werden ebenfalls
+  abgelehnt; die Redaktion muss dann umformulieren.
+- **Produktdaten ohne Speicher-Guard:** Name/Beschreibung eines Produkts werden
+  beim Speichern unter `/produkte` nicht auf die exakte Abholadresse geprüft;
+  geschützt ist der öffentliche Lesepfad (Beschreibung ⇒ null, Name ⇒ Produkt
+  entfällt öffentlich). Ein Hinweis im Staff-Produktformular fehlt.
+- **Zusammengesetzte Emojis im CMS:** Das Verbot aller Unicode-Formatzeichen
+  schließt den Zero-Width-Joiner ein ⇒ zusammengesetzte Emojis sind in
+  CMS-Texten nicht erlaubt (einfache schon). Bei Bedarf später ZWJ nur zwischen
+  Emoji-Zeichen zulassen.
+- **Keine Bestätigungsmail an Kunden:** bewusst (Design Phase 16); der Kunde
+  sieht die Vorgangsnummer auf dem Bildschirm. Eine Mail-Bestätigung wäre eine
+  neue Mail-Art und eine eigene Entscheidung.
+- **Echte Google-Antwort ungetestet:** Host-Allowlist und Feldverfügbarkeit
+  (`photoUri`, `text`) sind aus der Doku abgeleitet ⇒ einmaliger Staging-Smoke
+  mit echtem Key vor Go-live (docs/GOOGLE_REVIEWS_API_NOTES.md „Go-live“).

@@ -187,6 +187,9 @@ Zuordnung aller Pflicht-, E2E- und Review-Tests: Abschnitt „Kundenportal (Phas
 - laufende Preissumme
 - Lieferung ohne festen Auto-Endpreis
 - keine Lagerzahl öffentlich
+Phase-16-Stand: alle Punkte sind Pflichttests (`public-configurator` PC*,
+`public-inquiry` PI*, Web `configurator.test.ts`); Zuordnung im Abschnitt
+„Website, CMS, Konfigurator, Bewertungen (Phase 16)“.
 
 ## Kommunikation (Phase 12)
 - Pflichttests 1–205 als Integrations-/Unit-Tests `apps/api/test/communication-*.test.ts`
@@ -616,6 +619,143 @@ sowie „R15-2b. …“ und „R15-4b. …“ (nicht zu verwechseln mit „R15. 
 | R15-8 | Portalnachricht nach versandter Vorinformation: kein `customer_response_received_at`, keine Klärung `customer_response`, Abrechnung unverändert |
 | R15-9 | alte bezahlte, wiedereröffnete Buchung: `GET /portal/bookings` leer; Detailroute, Dokumente, Nachrichten, Travel-Status, Storno-Vorschau, Nachricht senden und Storno-POST ⇒ 404 |
 | R15-10 | mehrere Buchungen: alte bezahlte + wiedereröffnete unsichtbar, aktuelle offene sichtbar |
+
+## Website, CMS, Konfigurator, Bewertungen (Phase 16)
+Fachdoku: docs/WEBSITE_CMS.md, docs/WEBSITE_CONFIGURATOR.md,
+docs/GOOGLE_REVIEWS_API_NOTES.md. Testnamen tragen das Kürzel am Anfang („C5. …“, „PI6. …“,
+„W-C3 …“). Integration: `cd apps/api && TEST_DATABASE_URL=… TEST_DATABASE_URL_SECOND=… pnpm
+vitest run --config vitest.integration.config.ts <Datei>`; `cms-preview` (P10) und `public-demo`
+nutzen die zweite Datenbank (Default `mietroyal_test7`). Unit API: `cd apps/api && pnpm vitest
+run`; Domain/Config/Validation: `pnpm vitest run` im Paket; Web: `pnpm --filter @mietroyal/web
+test` (`node --test`). Kein echter Google-/SMTP-/Provider-Aufruf: Google nur gegen den lokalen
+Contract-Fake `apps/api/src/reviews/testing/fake-places-server.ts` bzw. injizierte Gateways.
+Test-Helfer: `apps/api/test/cms-helpers.ts` (`publishCmsForTests`, `publishPrivacyForTests`,
+`truncateCmsTables`), `apps/api/test/cms-world.ts`, `apps/api/test/public-helpers.ts`
+(`inquiryBody`, `resetPublicWorld`). Eine Website-Anfrage braucht eine veröffentlichte
+Datenschutz-Revision (`publishPrivacyForTests`); `TRUNCATE staff_users CASCADE` leert auch alle
+CMS-Tabellen.
+
+Pflichttests (Order §25):
+
+| Bereich | Thema | Datei (unter `apps/api/test/`, sofern nicht anders genannt) | Testnamen |
+| --- | --- | --- | --- |
+| CMS | Rechte `cms.edit` vs. `cms.publish`, immutable Revisionen, Konflikt, Entwurf nie öffentlich, atomares Publish (stale, parallel), Pflichtangaben, Restore, Zurückziehen, Regionsanlage, Preistext, exakte Adresse, Audit ohne Texte, Empfehlungsregeln, strikte Bodies | `cms-editorial.integration.test.ts` | C1–C14 |
+| CMS | Medien: Upload-Recht, SVG/HTML/GIF/getarnt/defekt/zu groß, EXIF entfernt, Varianten, Entwurfsmedium 404 ⇒ nach Publish 200 + `immutable`, `cms_revision_media`, kein Storage-Key in DTO/Log | `cms-media.integration.test.ts` | M1–M6 |
+| CMS | Vorschau: Hash-only/30 min/no-store/Audit, einmalig, Cookie-Attribute, gebundene Revision, fremde Revision 404, Ablauf + Cleanup, Vorschau-Medien, Einstellungs-Vorschau, Token/Cookie nicht im Log, Cross-/Same-Site 403, Demo/Live (zwei DBs), 409 ohne Basis-URL + Rate-Limit, Nur-Publisher | `cms-preview.integration.test.ts` | P1–P12 |
+| CMS | Öffentliche Projektion: Settings-DTO ohne Regeln/Notizen, Katalogpreise/Inklusivleistungen, Preis ab `effective_from`, Adress-Fail-closed im Lesepfad, Reviews-Block nur mit Provider, strikte Pfade, kein CORS | `cms-public-site.integration.test.ts` | S1–S6 |
+| CMS | Bootstrap: Entwürfe, idempotent, überschreibt nie, ungültige Einträge, `--publish-demo` in production/staging verweigert, echte Standardliste, Skript-Exit-Codes | `cms-bootstrap.integration.test.ts` | B1–B8 |
+| CMS | CMS überlebt den Demo-Business-Reset (Zählungen vor/nach), Vorschau-Cookie in demo `__Host-` | `cms-demo-reset.integration.test.ts` | R1 |
+| CMS | Inhaltsschema (Blocktypen, strict, kein HTML, Preistext, Adressfragmente, Empfehlungsregeln, Pfade) | `packages/validation/test/cms.test.ts` | beschreibende Testnamen (ohne Kürzel) |
+| Inhalte | Bootstrap-Inhalte: Pflicht-Einträge, Schema, Pfade, Sperrliste, Altlasten, keine Medien/Instagram/Regeln, du-Ansprache, Links, Regions-Schablonen-Prüfung, Rechtstexte nur Text | `cms-bootstrap-content.test.ts` (Unit) | beschreibende Testnamen (ohne Kürzel) |
+| Produkte/Preise | Katalog = ProductService-Preis, Deep-Scan ohne IDs/Bestände/Historie, geplanter Preis ab Wirksamkeit (Fake-Zeit), inaktive/preislose Produkte fehlen, Abholung nur Region | `public-configurator.integration.test.ts` | PC1–PC5 |
+| Konfigurator | vier Maschinentypen, Gratis-Sirup je Behälter, „Sorte später abstimmen“, Kommission, Kanisterlimit, Lieferung ohne Preis, ≥ 250 nur Hinweis, fehlende Regel blockiert nie, Regeln nicht überlappend, nur Slush-Maschinen, strikter Body/Cross-Site | `public-configurator.integration.test.ts` | PC6–PC16 |
+| Konfigurator | Pricing-Helfer „Auswahl ⇒ PricingInput“, Domain-Konstanten, `PricingError.code` | `packages/domain/test/pricing-input.test.ts` | beschreibende Testnamen (ohne Kürzel) |
+| Website-Anfrage | genau ein Vorgang, `source = website`, `created_by` NULL, Organisation, Zeiten Berlin/Folgetag, Lieferung ohne Preis, Retry/Doppelklick idempotent, 409 mit Vorgangsnummer, Datenschutz fail-closed, E-Mail-Treffer ohne CRM-Overwrite, Dublette, Portal-Session, ≥ 250, kein Verfügbarkeits-Reject, atomar, Server prüft erneut, keine PII im Log, Cross-Site, Staff-Hinweis, Submission unveränderlich, Rate-Limit | `public-inquiry.integration.test.ts` | PI1–PI20 |
+| Website-Anfrage | Pool max = 1 (neuer Kunde, E-Mail-Treffer, Portal, Retry, parallel, Vorschau mit Empfehlung) | `public-inquiry-pool.integration.test.ts` | PP1–PP3 |
+| Demo | Demo-Anfrage in der Demo-DB, 503 während Reset, Löschliste | `public-demo.integration.test.ts`; `demo-reset.integration.test.ts` | PD1–PD3; D-R2b (Submissions gelöscht, CMS-Zählungen unverändert) |
+| Bewertungen | Config-Regeln je Umgebung (Default disabled, fake in production/staging, google in demo, Pflichtwerte, Key nur im Objekt, Isolation, `.env.example`) | `packages/config/test/reviews-config.test.ts` | RC1–RC9 |
+| Bewertungen | Google-Gateway gegen lokalen Fake-HTTP-Server (Feldmaske/Header/Sprache, Pflicht-Attribution, Host-Allowlist, Fehlerbilder, Timeout ohne Wiederholung, 429-Pause, kein Cache, Tagesgrenze) | `reviews-gateway.test.ts` (Unit) | RG1–RG13 |
+| Bewertungen | Fabrik/Laufzeitsperren, Fake eindeutig DEMO, DTO, Log-Redaktion | `reviews-factory.test.ts` (Unit) | RF1–RF8 |
+| Bewertungen | Route: disabled 404, Demo-Fake, Startabbruch production/staging-Fake bzw. demo-Google, Google-DTO, nichts in der DB, Ausfall ⇒ 503 bei erreichbarer Website, globale Grenze, Key nie im Log, Cross-/Same-Site 403, 10/min | `reviews-public.integration.test.ts` | RV1–RV10 |
+| Web | Header-Matrix `next.config.ts` (`/vorschau*`, `/angebot/:token` neu; Token-Seiten/`/konto` unverändert; `/kontakt` ohne Token-Header) | `apps/web/lib/next-config.test.ts` | W-H1–W-H5 |
+| Web | Formatierung Cent ⇒ EUR, Preiszeilen, Absätze, Seitentitel, Telefonlink; Indexierungs-Entscheidung und CMS-Metadaten | `apps/web/lib/site-format.test.ts`; `apps/web/lib/site-meta.test.ts` | W-F1–W-F7, W-I1–W-I2; W-I3–W-I6 |
+| Web | Navigation (Reihenfolge, nur veröffentlichte CMS-Ziele, Footer, Regionen, Instagram) | `apps/web/lib/site-nav.test.ts` | W-N1–W-N6 |
+| Web | SSR-Fetch, Formprüfung, Origin-Vergleich Build/Laufzeit | `apps/web/lib/site-api.test.ts` | W-A1–W-A5, W-O1–W-O2 |
+| Web | Vorschau: Fragment-Parser, Cookie-Header, Consume (same-origin, no-referrer), neutrale Fehlertexte, Banner | `apps/web/lib/site-preview.test.ts` | W-P1–W-P5 |
+| Web | Konfigurator: `clientMutationId`-Speicher (nur ID), Payload, Übersicht ohne Preise im Request, Antwort-/Fehlermatrix, Texte, sechs Schritte, Schrittprüfungen, Lieferfenster-Reihenfolge, Feldzuordnung der 400-Pfade | `apps/web/lib/configurator.test.ts` | W-C1–W-C18 |
+| Web | Block-Typen-Abdeckung des Renderers (gespiegelt aus `CMS_BLOCK_TYPES`), H1-Regel, Bilder, Kontaktblock (auch `secondary_offer`); Bewertungen (nur mit Provider, Pflicht-Attribution, Demo ohne „Google“, Richtlinienhinweis, Übersetzung, Modus-/Origin-Abweichung); Fokuskontrast CTA-Band | `apps/web/lib/site-blocks.test.ts`; `apps/web/lib/reviews.test.ts` | W-B1–W-B7, W-R1–W-R5; W-R6–W-R12, W-A11Y1 |
+| Regression | Startseite (Fallback ODER veröffentlichter Inhalt, eine H1, CTA, Kundenbereich, kein „verbindlich buchen“) | `tests/e2e/specs/smoke.spec.ts` | angepasster Startseiten-Test |
+
+Review-Regressionstests (Review vom 2026-11-06; die Kürzel setzen die Reihen oben fort):
+
+| Fund | Thema | Datei | Testnamen |
+| --- | --- | --- | --- |
+| pricing-1, cms-2, content_ux-1 | Preis-Freitext in Strich-/Währungsvarianten („60,- €“, „60,– €“, „60.- EUR“, „EUR60“, „60,-“) und mit unsichtbaren Zeichen ⇒ 400 beim Speichern UND Veröffentlichen; Zeit-/Mengenangaben bleiben erlaubt | `packages/validation/test/cms.test.ts`; `cms-editorial.integration.test.ts` | „erkennt übliche deutsche Preisschreibweisen …“; C15 |
+| cms-1, pricing-2 | Abholadresse ohne Komma, mit PLZ vorn, in Schreibvarianten (Nr., ohne Leerzeichen, Bindestrich, Formatzeichen, URL-Kodierung) ⇒ 400; Firmenname/Region bleiben erlaubt; Lesepfad fail-closed | `packages/validation/test/cms.test.ts`; `cms-editorial.integration.test.ts`; `cms-public-site.integration.test.ts` | „Fragmente: Straße + Hausnummer auch ohne Komma …“, „erkennt Schreibvarianten der Adresse …“, „erkennt die exakte Abholadresse und ihren Straßenteil (normalisiert)“; C16; S7 |
+| pricing-3 | Produktbeschreibung mit Adresse ⇒ `null`, Produktname mit Adresse ⇒ Produkt öffentlich weg (Katalog, `product_grid`, `included_items`, Staff-Lesesicht, Vorschau, Empfehlung); Log nur Slug | `cms-public-site.integration.test.ts`; `public-configurator.integration.test.ts` | S8; PC18 |
+| cms-3 | C1-, Bidi-, Zero-Width-, Format- und U+2028/U+2029-Zeichen in Titel, Text, Meta, Alt-Text, Redaktionsnotiz, Medien-Bezeichnung/-Standard-Alt-Text ⇒ 400 `VALIDATION_ERROR` | `packages/validation/test/cms.test.ts`; `cms-editorial.integration.test.ts`; `cms-media.integration.test.ts` | Block „Steuer- und Formatzeichen (Review cms-3)“; C17; M7 |
+| pricing-4 | Maschinen-Slug als Sirup ⇒ `SYRUP_UNAVAILABLE` am Sirup (Vorschau) bzw. 400 am Sirupfeld (Anfrage), Maschine normal berechnet | `public-configurator.integration.test.ts`; `public-inquiry.integration.test.ts` | PC17; PI24 |
+| inquiry-1 | Wiederholung nach Mitternacht (Eventdatum vergangen): gleiche ID + Inhalt ⇒ 200, anderer Inhalt ⇒ 409, neue ID ⇒ 400 | `public-inquiry.integration.test.ts` | PI21 |
+| inquiry-2 | Uhrzeit in der Sommerzeit-Lücke ⇒ 400 am jeweiligen Feld; gespeichertes Ende liegt immer nach dem Beginn | `packages/domain/test/scheduling.test.ts`; `public-inquiry.integration.test.ts` | „Phase 16: berlinLocalTimeExists – …“; PI22 |
+| inquiry-3 | Wunsch-Lieferzeitfenster am Veranstaltungstag: Ende ≤ Beginn ⇒ 400 an `body.fulfillment.windowTo` (keine Folgetag-Regel); Eventzeiten behalten die Folgetag-Regel | `public-inquiry.integration.test.ts` | PI23 |
+| demo_reviews-3 | `HEAD /public/reviews` ⇒ 404 ohne Gateway-Aufruf; GET-Limit bleibt 10/min | `reviews-public.integration.test.ts` | RV11 |
+| demo_reviews-1 | Web, Google-Modus: Richtlinienhinweis + https-Link (lokaler Fallback bei fehlenden/ungültigen Feldern), „Von Google übersetzt“, Originaltext nur bei übersetzten Bewertungen; Demo ohne alles davon | `apps/web/lib/reviews.test.ts` | W-R6–W-R8 |
+| demo_reviews-4 | Attribution „Google Maps“ mit `translate="no"` und nowrap; Demo nie „Google“ | `apps/web/lib/reviews.test.ts` | W-R9 |
+| demo_reviews-2, web_security-1 | Antwort mit anderem Modus als der SSR-Modus ⇒ verworfen („nicht verfügbar“); Build-/Laufzeit-Origin-Abweichung ⇒ Sektion wie `disabled` | `apps/web/lib/reviews.test.ts` | W-R10–W-R12 |
+| demo_reviews-5 | Demo-Instanz immer noindex, auch mit `WEB_INDEXING_ENABLED=true` | `apps/web/lib/site-meta.test.ts` | W-I3 |
+| web_security-2 | Fallback-Startseite und „nicht erreichbar“ immer noindex; CMS-Routen (404/noindex); `/konfigurator` ohne Katalog/Maschine noindex | `apps/web/lib/site-meta.test.ts` | W-I4–W-I6 |
+| content_ux-2 | Kontaktblock auf `secondary_offer`: nur Telefon/E-Mail, keine Abholzeile, kein Konfigurator-Knopf; andere Seitentypen unverändert | `apps/web/lib/site-blocks.test.ts` | W-B7 |
+| content_ux-3 | Fokusrahmen im CTA-Band in Gold, Kontrast ≥ 3:1 (nachgerechnet aus den CSS-Tokens) | `apps/web/lib/reviews.test.ts` | W-A11Y1 |
+| web_security-3 | `tel:`-Link ohne geklammerte „(0)“ nach der Ländervorwahl, andere Schreibweisen unverändert | `apps/web/lib/site-format.test.ts` | W-F7 |
+| inquiry-2/-3 (Web) | Lieferfenster Ende ≤ Beginn blockiert den Schritt mit der API-Meldung am Feld `windowTo`; 400-Pfade (Zeitumstellung/Lieferfenster) ⇒ richtiger Schritt und richtiges Feld, Meldung genau einmal | `apps/web/lib/configurator.test.ts` | W-C17, W-C18 |
+
+Die Sperre der Konfigurator-Steuerelemente bis zur Hydration (E2E-Beobachtung) hat keinen eigenen
+Unit-Test; sie ist im SSR-HTML sichtbar (`fieldset disabled`, `data-hydrated="false"`,
+`cfg-hydrating`) und wird durch die E2E-Specs C–G mit abgedeckt (`openConfigurator` wartet auf
+die erste Vorschau-Antwort, Playwright wartet auf aktivierte Felder).
+
+Security-Pflichtpunkte (§25) sind in den Dateien oben verteilt: Cross-Site-Mutation (C14/P9/PC16/
+PI17/RV9), keine CORS-Wildcard bzw. keine CORS-Header (S1/P9/PI17), Vorschau
+noindex/no-store/no-referrer (P1/P2, W-H*), `/konto` weiterhin privat/noindex und Token-Seiten
+unverändert (W-H*, `apps/web/lib/portal.test.ts`), keine PII/Tokens/Keys im Log (P8/PI16/RV8/M6).
+
+Phase-16-E2E (Order §26, Szenarien A–M; `pnpm test:e2e`, `tests/e2e/playwright.config.ts`):
+
+| Spec | Projekt | Tests |
+| --- | --- | --- |
+| `tests/e2e/specs/website-flow.spec.ts` (serial) | `chromium` | A1, A2, B, C, D, E, F, G1, G2, M, L |
+| `tests/e2e/specs/website-cms.spec.ts` (serial) | `chromium` | H, I, J |
+| `tests/e2e/specs/website-demo.spec.ts` (serial) | nur `demo-communication` (in `chromium` per `testIgnore` ausgeschlossen) | K1, K2, K3 |
+
+Daten und Helfer: Seed `apps/api/scripts/e2e-website-seed.ts` (Kindprozess; echter
+CMS-Bootstrap mit `CMS_BOOTSTRAP_ENTRIES` und `publishDemo` – derselbe Weg wie
+`pnpm cms:bootstrap --publish-demo`, damit auch `/datenschutz` veröffentlicht; Ziel `main`
+legt zusätzlich je einen Mitarbeiter „nur `cms.edit`“ und „nur `cms.publish`“ an, Ziel `demo`
+nur Inhalte in `mietroyal_test_demo`; Sicherheitsstopp ohne `mietroyal_test` im DB-Namen;
+idempotent), Helfer `tests/e2e/helpers/website.ts` (`seedWebsite('main'|'demo')`,
+Mitarbeiter-Konstanten, DB-Lesehelfer, Katalog direkt an der API, `euro`/`priceText` als
+Spiegel der Web-Formatierung, Konfigurator-Schritte über `data-testid`, `openConfigurator`
+wartet auf die erste Vorschau-Antwort (erst nach der Hydration), `RateWindow`, im Test
+erzeugtes PNG – keine Fremd-/Stockbilder). `website-flow` und `website-cms` setzen im
+`beforeAll` die DB zurück und seeden das CMS neu (der Basis-Seed leert `staff_users CASCADE`
+und damit das CMS); `website-demo` seedet die Demo-DB idempotent (CMS überlebt Demo-Resets).
+M hängt innerhalb von `website-flow` an C. Demo-API der E2E-Suite mit `REVIEWS_PROVIDER=fake`,
+Haupt-API mit Default `disabled` (nie Google, kein Key).
+
+| Test | Inhalt |
+| --- | --- |
+| A1 | Startseite Desktop: Navigation (7 Punkte, Labels, `aria-current`), kein Menü-Knopf, CTA Kopf + Hero → `/konfigurator`, genau eine H1, alle veröffentlichten Seiten durchgeklickt, kein Fake-Content (Zähler, Sterne, „verbindlich buchen“, WhatsApp, Google), keine Reviews-Sektion ohne Provider, keine exakte Abholadresse, keine Requests an fremde Hosts, Kundenbereich ohne Website-Rahmen |
+| A2 | Startseite mobil (390×844): Menü-Knopf mit `aria-expanded`, Escape schließt (Fokus zurück), Navigation per Menü, CTA ≥ 44 px als volle Zeile, kein horizontales Scrollen (Start + Konfigurator) |
+| B | Slush-Seite: Preise = Katalog = Staff-`/staff/products`; Preisänderung per `POST /api/staff/products/:id/price` (`price.manage`) erscheint auf Slush- und Startseite, CMS-Einträge/-Revisionen unverändert |
+| C | Konfigurator Abholung (6 Schritte, Fallback-Empfehlung, Katalogpreise, keine Bestandsworte, Gratis-Sirup + „Sorte später abstimmen“, „Mainz-Hechtsheim“ ohne exakte Adresse, Datenschutz-Checkbox) ⇒ Vorgangsnummer; DB genau +1 Vorgang/Anfrage/Kunde/Submission, `source = website`, `created_by` NULL, `customer_match = new_customer`, Datenschutz-Revision; Staff-Kasten „Website-Anfrage“ |
+| D | Konfigurator Lieferung: Adresse + Zeitfenster 14–16 Uhr, „individuell geprüft“, nirgends ein Lieferpreis; DB-Fenster am Eventtag (Europe/Berlin), Staff-Hinweis |
+| E | Großevent: 249 ohne, 300 mit Hinweis (Schritt 1 + Zusammenfassung), Absenden möglich |
+| F | Sirup & Zubehör: Gratis-Kontingent je Behälter, 25 + 25 inklusive, Kommission mit Einheitspreis, Kanister 0 vorausgewählt und max. 2 je Behälter; Server-Vorschau meldet `CANISTER_LIMIT_EXCEEDED` + `FREE_SYRUP_BUDGET_EXCEEDED`; Selections exakt |
+| G1 | Doppelklick ⇒ dieselbe `clientMutationId`, genau +1 Vorgang, ID danach aus `sessionStorage` gelöscht; identischer Payload erneut ⇒ 200, gleiche Nummer |
+| G2 | Netzabbruch NACH der Serververarbeitung (`page.route` + `route.fetch()` + `route.abort('connectionreset')`) ⇒ „unklar“ + „Erneut senden“, Formular gesperrt, Web Storage nur UUID; Retry ⇒ 200, dieselbe Nummer, weiterhin genau +1 |
+| M | Regression Angebotslink: Angebot aus der Website-Anfrage von C ⇒ `/angebot/<token>` (noindex, no-referrer, no-store/no-cache, ohne Website-Rahmen) inkl. Annahme; `/kontakt/<token>` noindex; `/kontakt` (CMS) mit Rahmen, ohne X-Robots-Tag |
+| L | Regression Kundenportal: Magic-Link-Login (`/konto`, SMTP-Senke), aktive Buchung, ohne Website-Rahmen |
+| H | CMS: Entwurf `/ueber-uns` speichern ⇒ öffentlich unverändert ⇒ „Vorschau öffnen“ (Popup, Fragment-Token, Consume, Cookie `mr_cms_preview` HttpOnly/Strict) zeigt Entwurf mit Banner, noindex/no-store/no-referrer ⇒ Veröffentlichen ⇒ öffentlich Revision 2, Audit `cms.published` |
+| I | Rechte: nur `cms.edit` speichert, kein Veröffentlichen-Knopf, `POST …/publish` 403; nur `cms.publish` im Lesemodus, `PUT …/draft` und Medien-Upload 403, Vorschau + Veröffentlichen möglich (`published_by`) |
+| J | Medien: PNG hochladen (Standard-Alt-Text), in `/faq` einsetzen ⇒ öffentlich weder Bild noch Medien-URL (404) ⇒ nach Veröffentlichen `<img alt>`, Varianten 200 `image/webp`, `immutable`, `nosniff`; kein Storage-Key in DOM/Antworten |
+| K1 | DEMO-Banner auf allen veröffentlichten Seiten, `/konfigurator` und 404 der Demo-Web-Instanz; Live-Web ohne Banner; keine Fremd-Requests |
+| K2 | Demo-Bewertungen nur als DEMO (Fake-Provider, Klick-zum-Laden, nie „Google“, keine Bilder/Links); Live `disabled` ⇒ 404 `REVIEWS_DISABLED`, keine Sektion; kein Google-Request, kein Places-Key |
+| K3 | Anfrage über die Demo-Web-Instanz ⇒ +1 nur in der Demo-DB, Live-DB unverändert |
+
+Rate-Limits sind in allen E2E-APIs aktiv (alle Requests von 127.0.0.1): `POST /public/inquiries`
+5/min + 20/h je API-Prozess, Konfigurator-Vorschau 60/min. `RateWindow` zählt die eigenen
+Requests je Route über alle Browserkontexte und wartet nur bei Bedarf (Budget ≤ 4 Anfragen/min,
+≤ 45 Vorschauen/min; die Wartezeit wird dem Testtimeout gutgeschrieben, Log-Zeile
+`[rate-window] …`). `website-flow` wartet dafür typischerweise einmal ~55 s vor G1. Weil
+`website-flow` je Lauf bis zu 9 Anfragen sendet (C, D, E, F je 1; G1 bis zu 3; G2 2), darf die
+Spec höchstens 2× je Playwright-Aufruf (gegen denselben API-Prozess) laufen – nie
+`--repeat-each=3` o. ä. Keine andere Spec nutzt diese Routen; K läuft gegen die Demo-API
+(eigener Prozess, eigenes Limit).
+
+Hinweise: `next dev` ersetzt `Cache-Control` (no-cache) – Header-Assertions auf Web-Seiten
+tolerant halten (API-Header exakt); „Vorschau öffnen“ öffnet ein Popup (erst `about:blank`,
+dann die Vorschau-URL). Quality-Gate-Ergebnisse (Order §27) stehen im Phase-16-Abschlussbericht,
+nicht in diesem Dokument.
 
 ## Definition of Done
 Fachregel korrekt, Rechte serverseitig, Validierung, Fehlerfall,

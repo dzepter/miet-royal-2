@@ -11,6 +11,7 @@ import {
   assertValidTimePosition,
   berlinDateOf,
   berlinDateTimeToUtc,
+  berlinLocalTimeExists,
   isReminderDue,
   isReturnOverdue,
   isSameBerlinDay,
@@ -45,6 +46,19 @@ describe('Europe/Berlin-Zeitkonstruktion (Pflicht 7, DST-fest)', () => {
     const afterMidnight = berlinDateTimeToUtc('2026-09-02', 0, 30);
     expect(isSameBerlinDay(lateEvening, afterMidnight)).toBe(false);
     expect(isSameBerlinDay(lateEvening, berlinDateTimeToUtc('2026-09-01', 8, 0))).toBe(true);
+  });
+
+  it('Phase 16: berlinLocalTimeExists – nur die Sprunglücke der Sommerzeit existiert nicht', () => {
+    // 28.03.2027: 02:00–02:59 gibt es in Berlin nicht.
+    expect(berlinLocalTimeExists('2027-03-28', 2, 0)).toBe(false);
+    expect(berlinLocalTimeExists('2027-03-28', 2, 30)).toBe(false);
+    expect(berlinLocalTimeExists('2027-03-28', 2, 59)).toBe(false);
+    expect(berlinLocalTimeExists('2027-03-28', 1, 59)).toBe(true);
+    expect(berlinLocalTimeExists('2027-03-28', 3, 0)).toBe(true);
+    // 25.10.2026: 02:30 gibt es zweimal – existiert.
+    expect(berlinLocalTimeExists('2026-10-25', 2, 30)).toBe(true);
+    expect(berlinLocalTimeExists('2026-12-12', 0, 0)).toBe(true);
+    expect(berlinLocalTimeExists('2026-12-12', 23, 59)).toBe(true);
   });
 });
 

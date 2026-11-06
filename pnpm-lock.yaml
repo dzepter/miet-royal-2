@@ -89,6 +89,9 @@ importers:
       qrcode:
         specifier: 1.5.4
         version: 1.5.4
+      sharp:
+        specifier: 0.35.4
+        version: 0.35.4(@types/node@26.4.0)
       web-push:
         specifier: 3.6.7
         version: 3.6.7
@@ -126,6 +129,9 @@ importers:
       '@mietroyal/offline':
         specifier: workspace:*
         version: link:../../packages/offline
+      '@mietroyal/validation':
+        specifier: workspace:*
+        version: link:../../packages/validation
       next:
         specifier: 16.3.3
         version: 16.3.3(@playwright/test@1.62.1)(@types/node@26.4.0)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
@@ -3339,8 +3345,7 @@ snapshots:
 
   '@humanwhocodes/retry@0.4.3': {}
 
-  '@img/colour@1.1.0':
-    optional: true
+  '@img/colour@1.1.0': {}
 
   '@img/sharp-darwin-arm64@0.35.4':
     optionalDependencies:
@@ -4793,7 +4798,6 @@ snapshots:
       '@img/sharp-win32-ia32': 0.35.4
       '@img/sharp-win32-x64': 0.35.4
       '@types/node': 26.4.0
-    optional: true
 
   shebang-command@2.0.0:
     dependencies:

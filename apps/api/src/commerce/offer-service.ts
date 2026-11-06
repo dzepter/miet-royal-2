@@ -27,8 +27,8 @@ import {
   offerExpiresAt,
   priceOffer,
   PricingError,
+  resolvePricingInput, // Phase 16 (PUBLIC): Auswahl ⇒ PricingInput (eine Stelle)
   type PricingResult,
-  type PricingSelection,
   type SpecialPriceEntry,
   isVoucherExpired,
   maskVoucherCode,
@@ -566,39 +566,20 @@ export class OfferService {
       .from(offerVersionSelections)
       .where(eq(offerVersionSelections.offerVersionId, version.id));
 
-    const machine =
-      version.machineProductId === null
-        ? null
-        : {
-            product: await this.productService.pricingProduct(
-              version.machineProductId,
-              at,
-              executor,
-            ),
-            quantity: version.machineQuantity,
-          };
-    const pricingSelections: PricingSelection[] = [];
-    for (const selection of selections) {
-      pricingSelections.push({
-        product: await this.productService.pricingProduct(selection.productId, at, executor),
-        role: selection.role,
-        quantity: selection.quantity,
-      });
-    }
-    const cups = await this.productService
-      .pricingProductBySlug('becher-25', at, executor)
-      .catch(() => null);
-    const straws = await this.productService
-      .pricingProductBySlug('strohhalme-25', at, executor)
-      .catch(() => null);
-
     const specialPrices = (version.specialPrices ?? []) as SpecialPriceEntry[];
-    try {
-      return priceOffer({
-        machine,
-        cupsProduct: cups,
-        strawsProduct: straws,
-        selections: pricingSelections,
+    // Phase 16 (PUBLIC): Auswahl ⇒ PricingInput über den gemeinsamen Domain-Helfer
+    // (Produkte per ID zum Zeitpunkt `at`; Becher/Strohhalme per Domain-Slug, fehlend ⇒ null).
+    const input = await resolvePricingInput(
+      {
+        machine:
+          version.machineProductId === null
+            ? null
+            : { ref: version.machineProductId, quantity: version.machineQuantity },
+        selections: selections.map((selection) => ({
+          ref: selection.productId,
+          role: selection.role,
+          quantity: selection.quantity,
+        })),
         fulfillment: version.fulfillment,
         deliveryPriceCents: version.deliveryPriceCents,
         discount:
@@ -607,7 +588,15 @@ export class OfferService {
             : { type: version.discountType, value: version.discountValue },
         specialPrices,
         voucher: version.voucherId === null ? null : { discountPercent: VOUCHER_DISCOUNT_PERCENT },
-      });
+      },
+      {
+        product: (productId) => this.productService.pricingProduct(productId, at, executor),
+        includedPack: (slug) =>
+          this.productService.pricingProductBySlug(slug, at, executor).catch(() => null),
+      },
+    );
+    try {
+      return priceOffer(input);
     } catch (error) {
       if (error instanceof PricingError) throw new AuthError('VALIDATION', error.message);
       throw error;

@@ -637,6 +637,12 @@ export function AuthGuard({ children }: { children: ReactNode }) {
                 )}
                 {hasPermission(me, 'customer.view') && <Link href="/kunden">Kunden</Link>}
                 {hasPermission(me, 'product.view') && <Link href="/produkte">Produkte</Link>}
+                {/* Phase 16 (STAFF): Website-CMS – sichtbar mit cms.edit ODER cms.publish. */}
+                {(hasPermission(me, 'cms.edit') || hasPermission(me, 'cms.publish')) && (
+                  <Link href="/website" data-testid="nav-website">
+                    Website
+                  </Link>
+                )}
                 {hasPermission(me, 'employee.manage') && (
                   <Link href="/mitarbeiter">Mitarbeiter</Link>
                 )}

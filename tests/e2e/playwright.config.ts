@@ -167,6 +167,13 @@ import {
  *   (Order §48/§49). Keine bestehende Demo-Spec prüft den Origin von Mail-Links.
  * - portal-demo.spec.ts läuft nur im Projekt `demo-communication`.
  *
+ * Phase 16 (E2E, neue Website + CMS + Konfigurator – Szenarien A–M):
+ * - website-flow.spec.ts (A–G, L, M) und website-cms.spec.ts (H–J) laufen im Projekt
+ *   `chromium` gegen Haupt-Web 3100 / Haupt-API 3101 (Vorschau-Links über die bereits
+ *   gesetzte MAIL_PUBLIC_WEB_BASE_URL = Haupt-Web). Bewertungen dort `disabled`.
+ * - website-demo.spec.ts (K) nur im Projekt `demo-communication`; die Demo-API bekommt
+ *   zusätzlich `REVIEWS_PROVIDER=fake` (synthetische DEMO-Bewertungen, nie Google, kein Key).
+ *
  * In Umgebungen mit vorinstalliertem Chromium kann CHROMIUM_PATH auf die
  * Browser-Binärdatei zeigen; sonst nutzt Playwright seine eigene Installation
  * (npx playwright install chromium).
@@ -308,6 +315,8 @@ export default defineConfig({
         /training-gates\.spec\.ts$/,
         // Phase 15 (E2E): Szenario N (Demo-Portal + Reset) nur gegen Demo-API/Demo-Web.
         /portal-demo\.spec\.ts$/,
+        // Phase 16 (E2E): Szenario K (Website in der Demo) nur gegen Demo-API/Demo-Web.
+        /website-demo\.spec\.ts$/,
       ],
     },
     ...(WEBKIT_ENABLED
@@ -341,8 +350,9 @@ export default defineConfig({
       // Phase 14 (E2E): demo-environment.spec.ts (A/C/Q, D1–D7; der Live-Gegentest darin läuft in
       // `chromium`) und training-demo.spec.ts (B, D–K, O, P).
       // Phase 15 (E2E): portal-demo.spec.ts (Szenario N – Demo-Portal + Reset) über die Demo-Web-Instanz.
+      // Phase 16 (E2E): website-demo.spec.ts (Szenario K – neue Website/Konfigurator in der Demo).
       testMatch:
-        /(communication-demo|tours-demo|demo-environment|training-demo|portal-demo)\.spec\.ts$/,
+        /(communication-demo|tours-demo|demo-environment|training-demo|portal-demo|website-demo)\.spec\.ts$/,
     },
     {
       // Phase 14 (E2E, Training): Szenarien L–N (Live-Trainingssperren) gegen die Production-
@@ -494,6 +504,9 @@ export default defineConfig({
         // Phase 15 (E2E): Mail-Links der Demo (Magic Link des Demo-Portals, Angebots-/Dokument-
         // links) zeigen auf die Demo-WEB-Instanz – nie auf die Haupt-Web-Instanz (Order §48/§49).
         MAIL_PUBLIC_WEB_BASE_URL: `http://127.0.0.1:${DEMO_WEB_PORT}`,
+        // Phase 16 (E2E, Szenario K): synthetische DEMO-Bewertungen (FakeReviewGateway, nur
+        // demo/development zulässig) – nie Google, KEIN GOOGLE_PLACES_API_KEY (Demo + Key = Startfehler).
+        REVIEWS_PROVIDER: 'fake',
       },
     },
     {

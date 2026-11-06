@@ -130,8 +130,19 @@ export function hasMachineSpecialPrice(lineItems: readonly PricedLineItem[]): bo
   return lineItems.some((item) => item.kind === 'machine' && item.priceSource === 'special');
 }
 
+/**
+ * Phase 16 (PUBLIC): maschinenlesbarer Grund einer Regelverletzung – die öffentliche
+ * Preisvorschau meldet Verstöße als Hinweise, statt die Übersicht abzubrechen.
+ * Die Meldungstexte und das Verhalten (Wurf) bleiben unverändert.
+ */
+export type PricingErrorCode =
+  'FREE_SYRUP_BUDGET_EXCEEDED' | 'CANISTER_LIMIT_EXCEEDED' | 'PRICING_INVALID';
+
 export class PricingError extends Error {
-  constructor(message: string) {
+  constructor(
+    message: string,
+    readonly code: PricingErrorCode = 'PRICING_INVALID',
+  ) {
     super(message);
     this.name = 'PricingError';
   }
@@ -146,8 +157,29 @@ export const CANISTERS_PER_CONTAINER_LIMIT = 2;
 export const CANISTER_SLUG = 'mischkanister-6l';
 export const FREE_CUPS_PACKS_PER_RENTAL = 1;
 export const FREE_STRAWS_PACKS_PER_RENTAL = 1;
+/**
+ * Phase 16 (PUBLIC): Slugs der Becher-/Strohhalm-Packs (25 Stück) – eine Wahrheit für
+ * Angebot (Inklusiv-Positionen), öffentlichen Katalog und Konfigurator.
+ */
+export const CUPS_PACK_SLUG = 'becher-25';
+export const STRAWS_PACK_SLUG = 'strohhalme-25';
+/** Phase 16 (PUBLIC): inklusive Stückzahl je Mietvorgang (1 Pack à 25, MASTER_SPEC §4). */
+export const FREE_CUPS_PER_RENTAL = 25;
+export const FREE_STRAWS_PER_RENTAL = 25;
+/** Phase 16 (PUBLIC): Gratis-Sirup je gebuchtem Maschinenbehälter (Liter, MASTER_SPEC §4). */
+export const FREE_SYRUP_LITERS_PER_CONTAINER = 1;
 export const LARGE_EVENT_GUEST_THRESHOLD = 250;
 export const LARGE_EVENT_NOTE = 'Großveranstaltung – individuelles Angebot / persönliche Prüfung';
+
+/** Phase 16 (PUBLIC): Gratis-Sirup-Kontingent (Liter) für eine Behälteranzahl – genutzt von priceOffer und der Vorschau. */
+export function freeSyrupBudgetFor(containersTotal: number): number {
+  return containersTotal * FREE_SYRUP_LITERS_PER_CONTAINER;
+}
+
+/** Phase 16 (PUBLIC): maximale Anzahl Mischkanister für eine Behälteranzahl. */
+export function canisterLimitFor(containersTotal: number): number {
+  return containersTotal * CANISTERS_PER_CONTAINER_LIMIT;
+}
 
 function snapshotOf(product: PricingProduct): Record<string, unknown> {
   return {
@@ -244,7 +276,7 @@ export function priceOffer(input: PricingInput): PricingResult {
   }
 
   // ── Gratis-Sirup (1 L je Behälter, frei auf Sorten verteilbar) ──────────
-  const freeSyrupBudgetLiters = containersTotal;
+  const freeSyrupBudgetLiters = freeSyrupBudgetFor(containersTotal);
   const freeSelections = input.selections.filter((s) => s.role === 'free');
   let freeLitersUsed = 0;
   for (const selection of freeSelections) {
@@ -257,6 +289,7 @@ export function priceOffer(input: PricingInput): PricingResult {
   if (freeLitersUsed > freeSyrupBudgetLiters) {
     throw new PricingError(
       `Das Gratis-Sirup-Kontingent beträgt ${freeSyrupBudgetLiters} L (1 L je gebuchtem Behälter).`,
+      'FREE_SYRUP_BUDGET_EXCEEDED',
     );
   }
   for (const selection of freeSelections) {
@@ -291,13 +324,13 @@ export function priceOffer(input: PricingInput): PricingResult {
         key: 'included:cups',
         product: input.cupsProduct,
         packs: FREE_CUPS_PACKS_PER_RENTAL,
-        label: '25 Becher',
+        label: `${FREE_CUPS_PER_RENTAL} Becher`,
       },
       {
         key: 'included:straws',
         product: input.strawsProduct,
         packs: FREE_STRAWS_PACKS_PER_RENTAL,
-        label: '25 Strohhalme',
+        label: `${FREE_STRAWS_PER_RENTAL} Strohhalme`,
       },
     ];
     for (const entry of included) {
@@ -366,10 +399,11 @@ export function priceOffer(input: PricingInput): PricingResult {
   }
 
   // Kanisterlimit ZENTRAL in der Domainlogik (nicht nur UI):
-  const canisterLimit = containersTotal * CANISTERS_PER_CONTAINER_LIMIT;
+  const canisterLimit = canisterLimitFor(containersTotal);
   if (canisterCount > canisterLimit) {
     throw new PricingError(
       `Maximal ${canisterLimit} Mischkanister möglich (${CANISTERS_PER_CONTAINER_LIMIT} je gebuchtem Behälter).`,
+      'CANISTER_LIMIT_EXCEEDED',
     );
   }
 

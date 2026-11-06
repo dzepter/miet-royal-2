@@ -47,7 +47,8 @@
     "push:generate-vapid-keys": "pnpm --filter @mietroyal/api push:generate-vapid-keys",
     "routing:smoke": "pnpm --filter @mietroyal/api routing:smoke",
     "demo:seed": "pnpm --filter @mietroyal/api demo:seed",
-    "demo:reset": "pnpm --filter @mietroyal/api demo:reset"
+    "demo:reset": "pnpm --filter @mietroyal/api demo:reset",
+    "cms:bootstrap": "pnpm --filter @mietroyal/api cms:bootstrap"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",

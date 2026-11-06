@@ -1,7 +1,9 @@
 /**
  * Produktionsnaher Check: stellt sicher, dass zwei Umgebungs-Konfigurationen
  * (z. B. production und demo) nicht still auf dieselbe Datenbank oder
- * denselben Storage zusammenfallen.
+ * denselben Storage zusammenfallen und keine Provider-Zugangsdaten teilen
+ * (Lexware, WhatsApp, Push, GraphHopper; Phase 16: GOOGLE_PLACES_API_KEY –
+ * Details in src/isolation.ts).
  *
  * Aufruf:
  *   pnpm check:env-isolation -- <env-datei-a> <env-datei-b>

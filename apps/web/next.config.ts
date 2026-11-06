@@ -4,6 +4,12 @@ const API_ORIGIN = process.env.WEB_API_ORIGIN ?? 'http://127.0.0.1:3101';
 
 const nextConfig: NextConfig = {
   reactStrictMode: true,
+  // Phase 16 (WEB, Design §11.2.10): beim Build verwendeter API-Origin (Ziel des Rewrites unten,
+  // ins routes-manifest gebacken). `lib/site-api.ts` vergleicht ihn zur Laufzeit mit
+  // WEB_API_ORIGIN (SSR); bei Abweichung bleiben Konfigurator-Absenden, Vorschau und Bewertungen
+  // gesperrt.
+  // Nur serverseitig referenziert – nie in Client-Komponenten verwenden.
+  env: { MR_BUILD_API_ORIGIN: API_ORIGIN },
   poweredByHeader: false,
   allowedDevOrigins: ['127.0.0.1'],
   // Phase 14 (E2E-Fix): optional eigenes Build-/Dev-Verzeichnis je Instanz (z. B. `.next/demo`
@@ -45,11 +51,25 @@ const nextConfig: NextConfig = {
       { key: 'X-Frame-Options', value: 'DENY' },
       { key: 'X-Content-Type-Options', value: 'nosniff' },
     ];
+    // Phase 16 (WEB, Design §2.4.5): CMS-Vorschau (Entwürfe hinter einem Vorschau-Cookie) –
+    // nie cachen, nie indexieren/archivieren, kein Referer, keine Einbettung.
+    const previewPageHeaders = [
+      { key: 'Cache-Control', value: 'private, no-store, max-age=0' },
+      { key: 'X-Robots-Tag', value: 'noindex, nofollow, noarchive' },
+      { key: 'Referrer-Policy', value: 'no-referrer' },
+      { key: 'X-Frame-Options', value: 'DENY' },
+      { key: 'X-Content-Type-Options', value: 'nosniff' },
+    ];
     return [
       { source: '/kontakt/:token', headers: tokenPageHeaders },
       { source: '/dokument/:token', headers: tokenPageHeaders },
+      // Phase 16 (WEB, Design §1.7): Angebotslink wie /dokument/:token – auch wenn die neue
+      // Website später indexierbar wird, bleibt der Token-Link privat, no-store und ohne Referer.
+      { source: '/angebot/:token', headers: tokenPageHeaders },
       { source: '/konto', headers: portalPageHeaders },
       { source: '/konto/:path*', headers: portalPageHeaders },
+      { source: '/vorschau', headers: previewPageHeaders },
+      { source: '/vorschau/:path*', headers: previewPageHeaders },
     ];
   },
 };

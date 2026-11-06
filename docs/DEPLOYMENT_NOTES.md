@@ -55,6 +55,12 @@ gewünscht ist, wird das als eigene Entscheidung in TECH_DECISIONS.md ergänzt.
    Demo-Banner nur, wenn die konfigurierte API über `GET /health`
    `environment: 'demo'` meldet (docs/ENVIRONMENTS.md). Das Serverlog nach dem
    Start auf diese Meldung prüfen.
+6c. Website/CMS (Phase 16): jede Web-Instanz mit ihrem eigenen
+   `WEB_API_ORIGIN` BAUEN und mit demselben Wert starten (Serverlog auf
+   „WEB_API_ORIGIN weicht vom Build-Origin ab …“ prüfen). `pnpm cms:bootstrap`
+   nur bewusst und manuell nach `pnpm db:migrate` (nie automatisch im
+   Deployment); veröffentlicht wird ausschließlich im Staff. Details:
+   Abschnitt „Website, CMS, Konfigurator, Bewertungen (Phase 16)“.
 7. Prozesse neu starten, dann Smoke Test: `/health` muss 200 liefern,
    `/ready` muss 200 liefern (prüft die Datenbankverbindung).
 8. Bei Fehlern: Rollback auf vorherigen Stand + Backup-Restore-Pfad.
@@ -569,3 +575,106 @@ Port, kein neues Secret, keine Pflichtvariable. Migration 0032
   `communication.scan_due` (alle 2 min, Worker; Einstieg
   `@mietroyal/api/jobs/portal`) auf – keine zusätzliche Cron-/Timer-
   Konfiguration, keine unbegrenzt wachsenden Tabellen (Order §52).
+
+## Website, CMS, Konfigurator, Bewertungen (Phase 16)
+
+Die neue Website (apps/web), das CMS (API `/staff/cms/*`, `/public/site/*`,
+`/public/cms/*`; Staff `/website`), der Konfigurator mit Website-Anfrage
+(`/public/configurator/*`, `/public/inquiries`) und die Bewertungs-Route
+(`/public/reviews`) laufen in den bestehenden Web-, API-, Worker- und
+Staff-Prozessen: keine neue Instanz, kein neuer Port, kein neues Pflicht-Secret.
+Migration 0033 (`cms_*`, `public_inquiry_submissions`) wird wie üblich mit
+`pnpm db:migrate` vor dem Start angewendet. Die bisherige Live-Website bleibt
+unverändert online; DNS-/Domain-Umschaltung und Redirects sind nicht Teil von
+Phase 16. Details: docs/WEBSITE_CMS.md, docs/WEBSITE_CONFIGURATOR.md,
+docs/GOOGLE_REVIEWS_API_NOTES.md.
+
+- **Web je Umgebung bauen:** `apps/web/next.config.ts` backt das Rewrite-Ziel
+  `/api/:path*` → `WEB_API_ORIGIN` beim BUILD ins Routes-Manifest und legt
+  denselben Wert als `MR_BUILD_API_ORIGIN` (nur Server-Bundle) ab. Server-
+  Komponenten lesen `WEB_API_ORIGIN` dagegen zur LAUFZEIT. Weicht der
+  Laufzeitwert vom Build-Origin ab (Schema, Host oder Port), loggt der
+  Web-Server einmal „WEB_API_ORIGIN weicht vom Build-Origin ab …“ (nur
+  Hostnamen) und sperrt fail-closed das Absenden im Konfigurator und die
+  CMS-Vorschau und blendet die Bewertungs-Sektion aus – sonst könnten
+  Browser-Aufrufe (Rewrite) und SSR-Lesen (Laufzeit) verschiedene Umgebungen
+  treffen (z. B. Demo-Seite schreibt Live oder löst Live-Google-Abrufe aus).
+  Zusätzlich verwirft das Web eine Bewertungsantwort, deren Modus nicht dem
+  Modus der Seite entspricht. Deshalb:
+  Demo-Web und Live-Web je eigener Build mit ihrem `WEB_API_ORIGIN`; nie ein
+  Build-Artefakt zwischen Umgebungen kopieren.
+- **`pnpm cms:bootstrap` manuell, nie automatisch:** nach `pnpm db:migrate`
+  einmal bewusst mit der vollständigen Server-Konfiguration der Zielumgebung
+  ausführen (`APP_ENV` Pflicht). Legt nur fehlende Standard-Einträge als Entwurf
+  an, überschreibt nie Redaktionsarbeit, veröffentlicht ohne Flag nichts und
+  wendet keine Migrationen an. Weder API-Start noch Migration noch Deployment
+  rufen es auf. `--publish-demo` nur in development/demo (production/staging:
+  Abbruch mit Exit 2 VOR jeder Änderung) – es veröffentlicht auch die
+  Rechtstext-Entwürfe mit Platzhaltern, also nur für Demo-/Testinhalte.
+  Production veröffentlicht ausschließlich über den Staff-Bereich (`cms.publish`).
+  Ausgabe nur Pfade/Zähler/Fehlercodes; Exit 1 bei ungültigen Einträgen.
+- **`MAIL_PUBLIC_WEB_BASE_URL` je Umgebung (Pflicht für die CMS-Vorschau):** Der
+  Vorschau-Link ist `<MAIL_PUBLIC_WEB_BASE_URL>/vorschau#token=…` (Token im
+  Fragment, erreicht nie einen Server-Log); ohne Wert antwortet „Vorschau
+  öffnen“ mit 409 `CMS_PREVIEW_UNAVAILABLE` – kein localhost-Fallback. Die
+  Variable zeigt auf die Web-App DERSELBEN Umgebung (Demo ⇒ Demo-Web).
+- **Reverse-Proxy-Body-Limit vor der Staff-App ≥ 9 MiB:** Medien-Upload
+  `POST /api/staff/cms/media` sendet bis 6 MiB Rohbytes als Base64-JSON
+  (≈ 8 MiB; Routen-Limit der API 9 MiB, Rewrite-Puffer der Staff-App 10 MiB
+  Next-Default). nginx z. B. `client_max_body_size 9m;` für die Staff-Origin
+  (Default 1 MiB würde jeden Upload mit 413 ablehnen); ein bereits höherer Wert
+  (z. B. für den Offline-Sync) genügt.
+- **Places-API-Key nur dem API-Prozess:** `GOOGLE_PLACES_API_KEY` (Secret)
+  ausschließlich in der Umgebung des API-Prozesses setzen, nie Web, Staff,
+  Browser oder Repository. Der Worker lädt dieselbe Konfiguration, ruft Google
+  aber nie auf: dort `REVIEWS_PROVIDER` weglassen bzw. `disabled` (mit
+  `google` verlangt die Konfiguration auch beim Worker Key, Place ID und
+  Bestätigung). Der Key ist in API- und Worker-Logs redigiert. Demo bekommt nie
+  einen Key (Startabbruch). Production bis zum geklärten Go-live
+  `REVIEWS_PROVIDER=disabled` (docs/GOOGLE_REVIEWS_API_NOTES.md „Go-live“).
+- **Kein Proxy-/CDN-Cache auf** `/api/public/reviews` (Google verbietet das
+  Cachen von Bewertungen; jede Antwort `no-store`), `/api/public/cms/preview*`
+  (Vorschau-Einlösen, -Seite, -Medien: `private, no-store`) und `/vorschau*`
+  (Entwürfe; `private, no-store`, `noindex`, `no-referrer`). Ebenso keine
+  HTML-Caches für Website-Seiten mit Bewertungen. Die übrigen öffentlichen
+  Routen (`/api/public/site/*`, Katalog, Anfrage) sind ohnehin `no-store`.
+- **Veröffentlichte Medien `immutable`:** `GET /api/public/cms/media/<id>/<breite>`
+  liefert `Cache-Control: public, max-age=31536000, immutable` – Browser (und
+  ein etwaiges CDN) dürfen ein veröffentlichtes Bild bis zu ein Jahr halten, auch
+  nach dem Zurückziehen einer Seite. Ein CDN vor dieser Route nur mit
+  Purge-Möglichkeit betreiben; nie Inhalte veröffentlichen, die nicht öffentlich
+  sein dürfen.
+- **Cookies und Logs:** Das Vorschau-Cookie heißt außerhalb development
+  `__Host-mr_cms_preview` (Secure, Path=/, kein Domain) – Proxy/CDN dürfen es wie
+  das Portal-Cookie nicht umschreiben (Abschnitt „Kundenportal“). Vorschau-Token
+  stehen nur im URL-Fragment bzw. im POST-Body von
+  `/api/public/cms/preview/consume`, Kontaktdaten der Website-Anfrage nur im
+  POST-Body von `/api/public/inquiries`: Proxy-Access-Logs NIE mit Bodies,
+  `Cookie`-/`Set-Cookie`-Headern oder Query-Strings. Die neuen öffentlichen Pfade
+  enthalten keine Tokens.
+- **IP-Limits und Proxy:** Website-Anfrage 5/min + 20/h, Konfigurator-Vorschau
+  60/min, Vorschau-Einlösen 20/min, Bewertungen 10/min je IP – prozesslokal
+  (mehrere API-Prozesse vervielfachen das effektive Limit) und nur mit
+  korrektem `API_TRUST_PROXY_HOPS` je Client wirksam (Abschnitt „Öffentliche
+  Token-Links hinter Proxy“). Die SSR-Leserouten (`/public/site/*`, Katalog)
+  haben bewusst kein IP-Limit (alle Aufrufe kommen vom Web-Server). Die
+  Tagesgrenze der Google-Abrufe ist dagegen global je Umgebung
+  (`integration_rate_limits`).
+- **Indexierung:** `WEB_INDEXING_ENABLED` (nur Web-Server) bleibt bis Phase 17/
+  Go-live ungesetzt ⇒ jede Seite `noindex`. Token-Seiten (jetzt auch
+  `/angebot/:token` mit denselben Headern wie `/dokument/:token`), `/konto`,
+  `/vorschau`, die Fallback-Startseite und „Gleich wieder da“ bleiben immer
+  `noindex`; die Demo-Web-Instanz ebenso, unabhängig vom Schalter.
+- **Demo:** Demo-Web mit Demo-`WEB_API_ORIGIN` bauen; Demo-Inhalte per
+  `pnpm cms:bootstrap --publish-demo` in der Demo-Umgebung; optional
+  `REVIEWS_PROVIDER=fake` (synthetische, als DEMO gekennzeichnete Bewertungen).
+  Der Business-Reset löscht Website-Anfragen, das CMS (inkl. Medien) bleibt;
+  CMS-Mutationen und `/public/*`-POSTs warten während eines Resets (503
+  `DEMO_RESET`).
+- **Smoke nach dem Deployment:** `/health`/`/ready` wie bisher; zusätzlich
+  `GET /api/public/site/settings` über die Web-Origin (200, `reviews.mode` wie
+  erwartet) und das Web-Serverlog auf die Origin-Meldung prüfen. Kein echter
+  Google-Aufruf im Smoke. `/api/public/reviews` kennt nur GET (HEAD ⇒ 404 ohne
+  Google-Abruf) – Uptime-/Link-Checker nicht auf diese Route richten; im
+  Google-Modus ist jeder GET ein bezahlter Abruf und zählt gegen die
+  Tagesgrenze.

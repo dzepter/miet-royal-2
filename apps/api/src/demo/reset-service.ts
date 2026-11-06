@@ -107,8 +107,8 @@ export const DEMO_RESET_WIPE_LOCK_TIMEOUT_MS = 30_000;
 
 /**
  * Business-Tabellen in Löschreihenfolge (Kinder vor Eltern, Code-Map B §3.3):
- * 71 FK-gebundene + 4 FK-freie = 75 Tabellen (Phase 15: + customer_portal_magic_links,
- * customer_portal_sessions – Order §46). Zusammen mit der Behalten-Liste
+ * 72 FK-gebundene + 4 FK-freie = 76 Tabellen (Phase 15: + customer_portal_magic_links,
+ * customer_portal_sessions – Order §46; Phase 16: + public_inquiry_submissions). Zusammen mit der Behalten-Liste
  * unten decken sie alle Tabellen der Datenbank ab (Review-Prüfung R7).
  * Bewusst NICHT enthalten (Order §18, Code-Map B §3.5): staff_* (inkl.
  * Sessions, bekannte Geräte, Security-Events – Ausnahme Phase 15 (Review R10):
@@ -119,7 +119,9 @@ export const DEMO_RESET_WIPE_LOCK_TIMEOUT_MS = 30_000;
  * machines, inventory_items (nur UPDATE), staff_substitutions (Staff-Bindung,
  * in Order §17/§18 nicht genannt – bleibt konservativ erhalten), demo_*
  * (Zustand/Registry: Registry wird geleert, nicht gelöscht) und
- * integration_jobs (nur Business-Jobtypen, siehe unten).
+ * integration_jobs (nur Business-Jobtypen, siehe unten). Phase 16: CMS-Tabellen
+ * (cms_entries, cms_revisions, cms_media, cms_media_variants, cms_revision_media,
+ * cms_preview_access) bleiben – Redaktionsinhalt überlebt den Business-Reset.
  */
 export const DEMO_BUSINESS_TABLES_DELETE_ORDER: readonly string[] = [
   // 1. Blätter – Rückgabe/Schäden
@@ -161,6 +163,9 @@ export const DEMO_BUSINESS_TABLES_DELETE_ORDER: readonly string[] = [
   'tour_delay_incidents',
   'tour_live_locations',
   // 1. Blätter – Angebote/Anfragen
+  // Phase 16 (PUBLIC, Design §3.5): Website-Anfrage-Metadaten (FK auf inquiries/processes/
+  // customers/cms_revisions) VOR inquiries; CMS-Tabellen bleiben bewusst draußen (überleben).
+  'public_inquiry_submissions',
   'offer_deliveries',
   'offer_line_items',
   'offer_version_selections',
