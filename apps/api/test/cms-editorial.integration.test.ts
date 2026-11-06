@@ -675,16 +675,16 @@ describe('Phase 16 – CMS Redaktion', () => {
       { content: faqContent(), metaTitle: 'Häufige Fragen | Miet-Royal' },
     );
     for (const address of [
-      'Heiligkreuzweg 90 55130 Mainz',
-      '55130 Mainz, Heiligkreuzweg 90',
-      'Miet-Royal, Heiligkreuzweg 90, 55130 Mainz',
+      'Lindenhainweg 90 55130 Mainz',
+      '55130 Mainz, Lindenhainweg 90',
+      'Miet-Royal, Lindenhainweg 90, 55130 Mainz',
     ]) {
       await setStringSetting(ctx.db, world.adminId, PICKUP_EXACT_ADDRESS_KEY, address);
       for (const answer of [
-        'Abholung am Heiligkreuzweg 90 in Mainz-Hechtsheim',
-        'Abholung am Heiligkreuzweg Nr. 90.',
-        'Abholung: Heiligkreuzweg90',
-        'Abholung am Heiligkreuz-Weg 90.',
+        'Abholung am Lindenhainweg 90 in Mainz-Hechtsheim',
+        'Abholung am Lindenhainweg Nr. 90.',
+        'Abholung: Lindenhainweg90',
+        'Abholung am Lindenhain-Weg 90.',
       ]) {
         const saved = await saveDraft(world.editor.cookie, faq, faqContent(answer));
         expect(saved.statusCode, `${address} / ${answer}`).toBe(400);
@@ -692,7 +692,7 @@ describe('Phase 16 – CMS Redaktion', () => {
         expect(saved.json().error.issues).toEqual([
           { path: 'content.blocks.0.items.0.answer', message: 'Enthält die genaue Abholadresse.' },
         ]);
-        expect(saved.body.toLowerCase()).not.toContain('heiligkreuz');
+        expect(saved.body.toLowerCase()).not.toContain('lindenhain');
       }
       const mapsLink = await saveDraft(world.editor.cookie, faq, {
         ...faqContent(),
@@ -701,7 +701,7 @@ describe('Phase 16 – CMS Redaktion', () => {
           {
             type: 'cta',
             heading: 'Route',
-            primary: { label: 'Karte', href: 'https://maps.google.com/?q=Heiligkreuzweg%2090' },
+            primary: { label: 'Karte', href: 'https://maps.google.com/?q=Lindenhainweg%2090' },
           },
         ],
       });
@@ -713,7 +713,7 @@ describe('Phase 16 – CMS Redaktion', () => {
       const fine = await saveDraft(
         world.editor.cookie,
         faq,
-        faqContent('Du holst die Maschine in Mainz-Hechtsheim ab (nicht am Heiligkreuzweg 12).'),
+        faqContent('Du holst die Maschine in Mainz-Hechtsheim ab (nicht am Lindenhainweg 12).'),
         { metaTitle: 'Häufige Fragen | Miet-Royal' },
       );
       expect(fine.statusCode, `${address}: ${fine.body}`).toBe(200);
@@ -732,7 +732,7 @@ describe('Phase 16 – CMS Redaktion', () => {
               items: [
                 {
                   question: 'Wie läuft die Abholung?',
-                  answer: 'Abholung am Heiligkreuzweg 90 in Mainz-Hechtsheim',
+                  answer: 'Abholung am Lindenhainweg 90 in Mainz-Hechtsheim',
                 },
               ],
             },
@@ -745,7 +745,7 @@ describe('Phase 16 – CMS Redaktion', () => {
     const published = await publish(world.publisher.cookie, faq.id, bypass.revisionId);
     expect(published.statusCode).toBe(400);
     expect(published.json().error.code).toBe('CMS_EXACT_ADDRESS_FORBIDDEN');
-    expect(published.body.toLowerCase()).not.toContain('heiligkreuz');
+    expect(published.body.toLowerCase()).not.toContain('lindenhain');
   });
 
   it('C17. Steuer-/Formatzeichen (C1, Bidi, Zero-Width, U+2028) in Titel, Meta-Titel und Redaktionsnotiz ⇒ 400 VALIDATION_ERROR (Review cms-3)', async () => {

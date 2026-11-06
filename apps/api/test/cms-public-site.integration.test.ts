@@ -358,11 +358,11 @@ describe('Phase 16 – öffentliche Site-Routen', () => {
           title: 'Häufige Fragen',
           blocks: [
             { type: 'text', body: 'Du holst die Maschine in Mainz-Hechtsheim ab.' },
-            { type: 'text', body: 'Abholung am Heiligkreuz-Weg 90.' },
+            { type: 'text', body: 'Abholung am Lindenhain-Weg 90.' },
             {
               type: 'cta',
               heading: 'Route',
-              primary: { label: 'Karte', href: 'https://maps.google.com/?q=Heiligkreuzweg%2090' },
+              primary: { label: 'Karte', href: 'https://maps.google.com/?q=Lindenhainweg%2090' },
             },
           ],
         },
@@ -370,9 +370,9 @@ describe('Phase 16 – öffentliche Site-Routen', () => {
       },
     );
     for (const address of [
-      'Heiligkreuzweg 90 55130 Mainz',
-      '55130 Mainz, Heiligkreuzweg 90',
-      'Miet-Royal, Heiligkreuzweg 90, 55130 Mainz',
+      'Lindenhainweg 90 55130 Mainz',
+      '55130 Mainz, Lindenhainweg 90',
+      'Miet-Royal, Lindenhainweg 90, 55130 Mainz',
     ]) {
       await setStringSetting(ctx.db, world.adminId, PICKUP_EXACT_ADDRESS_KEY, address);
       logBuffer = '';
@@ -386,10 +386,10 @@ describe('Phase 16 – öffentliche Site-Routen', () => {
       expect(site.json().settings?.businessName, address).toBe('Miet-Royal');
       expect(site.json().pages.map((item: { path: string }) => item.path)).toEqual(['/faq']);
       for (const body of [page.body, site.body]) {
-        expect(body.toLowerCase()).not.toContain('heiligkreuz');
+        expect(body.toLowerCase()).not.toContain('lindenhain');
       }
       expect(logBuffer).toContain(faq.entryId);
-      expect(logBuffer.toLowerCase()).not.toContain('heiligkreuz');
+      expect(logBuffer.toLowerCase()).not.toContain('lindenhain');
     }
   });
 

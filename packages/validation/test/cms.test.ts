@@ -277,40 +277,40 @@ describe('Preis- und Adress-Schutz', () => {
     expect(containsExactAddress('beliebig', [])).toBe(false);
     expect(normalizeForAddressComparison('Haupt-Str. 5')).toBe('haupt str 5');
     expect(normalizeForAddressComparison('Hauptstraße 5')).toBe('hauptstr 5');
-    expect(normalizeForAddressComparison('Heilig\u00ADkreuz\u200Bweg%2090')).toBe(
-      'heiligkreuzweg 90',
+    expect(normalizeForAddressComparison('Linden\u00ADhain\u200Bweg%2090')).toBe(
+      'lindenhainweg 90',
     );
   });
 
   it('Fragmente: Straße + Hausnummer auch ohne Komma; Teile ohne Ziffer und „PLZ Ort“ nie (Review cms-1/pricing-2)', () => {
     const cases: Array<[string, string[]]> = [
-      ['Heiligkreuzweg 90, 55130 Mainz', ['heiligkreuzweg 90 55130 mainz', 'heiligkreuzweg 90']],
-      ['Heiligkreuzweg 90 55130 Mainz', ['heiligkreuzweg 90 55130 mainz', 'heiligkreuzweg 90']],
-      ['55130 Mainz, Heiligkreuzweg 90', ['55130 mainz heiligkreuzweg 90', 'heiligkreuzweg 90']],
+      ['Lindenhainweg 90, 55130 Mainz', ['lindenhainweg 90 55130 mainz', 'lindenhainweg 90']],
+      ['Lindenhainweg 90 55130 Mainz', ['lindenhainweg 90 55130 mainz', 'lindenhainweg 90']],
+      ['55130 Mainz, Lindenhainweg 90', ['55130 mainz lindenhainweg 90', 'lindenhainweg 90']],
       [
-        'Mainz-Hechtsheim, Heiligkreuzweg 99',
-        ['mainz hechtsheim heiligkreuzweg 99', 'heiligkreuzweg 99'],
+        'Mainz-Hechtsheim, Lindenhainweg 99',
+        ['mainz hechtsheim lindenhainweg 99', 'lindenhainweg 99'],
       ],
       [
-        'Miet-Royal, Heiligkreuzweg 90, 55130 Mainz',
-        ['miet royal heiligkreuzweg 90 55130 mainz', 'heiligkreuzweg 90'],
+        'Miet-Royal, Lindenhainweg 90, 55130 Mainz',
+        ['miet royal lindenhainweg 90 55130 mainz', 'lindenhainweg 90'],
       ],
-      ['Heiligkreuzweg 90\n55130 Mainz', ['heiligkreuzweg 90 55130 mainz', 'heiligkreuzweg 90']],
+      ['Lindenhainweg 90\n55130 Mainz', ['lindenhainweg 90 55130 mainz', 'lindenhainweg 90']],
       [
-        'Heiligkreuzweg 128, 55130 Mainz (Links neben der HEM-Tankstelle)',
-        ['heiligkreuzweg 128 55130 mainz links neben der hem tankstelle', 'heiligkreuzweg 128'],
+        'Lindenhainweg 128, 55130 Mainz (Links neben der Tankstelle)',
+        ['lindenhainweg 128 55130 mainz links neben der tankstelle', 'lindenhainweg 128'],
       ],
     ];
     for (const [address, expected] of cases) {
       expect(exactAddressFragments(address), address).toEqual(expected);
     }
     // PLZ vorn ohne Komma: auch die kürzeren Endstücke (Straße + Hausnummer).
-    expect(exactAddressFragments('55130 Mainz Heiligkreuzweg 90')).toContain('heiligkreuzweg 90');
+    expect(exactAddressFragments('55130 Mainz Lindenhainweg 90')).toContain('lindenhainweg 90');
     // Öffentliche Region, Firmenname und „PLZ Ort“ werden nie zum Sperrfragment.
     for (const address of [
-      'Mainz-Hechtsheim, Heiligkreuzweg 99',
-      'Miet-Royal, Heiligkreuzweg 90, 55130 Mainz',
-      '55130 Mainz, Heiligkreuzweg 90',
+      'Mainz-Hechtsheim, Lindenhainweg 99',
+      'Miet-Royal, Lindenhainweg 90, 55130 Mainz',
+      '55130 Mainz, Lindenhainweg 90',
     ]) {
       const fragments = exactAddressFragments(address);
       for (const publicText of [
@@ -328,37 +328,37 @@ describe('Preis- und Adress-Schutz', () => {
 
   it('erkennt Schreibvarianten der Adresse (Nr., ohne Leerzeichen, Bindestrich, Formatzeichen, URL-Kodierung)', () => {
     for (const address of [
-      'Heiligkreuzweg 90, 55130 Mainz',
-      'Heiligkreuzweg 90 55130 Mainz',
-      '55130 Mainz, Heiligkreuzweg 90',
-      'Mainz-Hechtsheim, Heiligkreuzweg 90',
-      'Miet-Royal, Heiligkreuzweg 90, 55130 Mainz',
-      '55130 Mainz Heiligkreuzweg 90',
+      'Lindenhainweg 90, 55130 Mainz',
+      'Lindenhainweg 90 55130 Mainz',
+      '55130 Mainz, Lindenhainweg 90',
+      'Mainz-Hechtsheim, Lindenhainweg 90',
+      'Miet-Royal, Lindenhainweg 90, 55130 Mainz',
+      '55130 Mainz Lindenhainweg 90',
     ]) {
       const fragments = exactAddressFragments(address);
       for (const text of [
-        'Abholung am Heiligkreuzweg 90 in Mainz-Hechtsheim',
-        'Abholung am Heiligkreuzweg Nr. 90',
-        'Heiligkreuzweg Hausnummer 90',
-        'Heiligkreuzweg90',
-        'Heiligkreuz-Weg 90',
-        'HEILIGKREUZWEG 90',
-        'Heilig\u00ADkreuzweg 90',
-        'Heiligkreuz\u200Bweg 90',
-        'https://maps.google.com/?q=Heiligkreuzweg%2090',
-        'https://maps.google.com/?q=Heiligkreuzweg+90',
-        'https://maps.example/?q=Heiligkreuzweg%252090',
+        'Abholung am Lindenhainweg 90 in Mainz-Hechtsheim',
+        'Abholung am Lindenhainweg Nr. 90',
+        'Lindenhainweg Hausnummer 90',
+        'Lindenhainweg90',
+        'Lindenhain-Weg 90',
+        'LINDENHAINWEG 90',
+        'Linden\u00ADhainweg 90',
+        'Lindenhain\u200Bweg 90',
+        'https://maps.google.com/?q=Lindenhainweg%2090',
+        'https://maps.google.com/?q=Lindenhainweg+90',
+        'https://maps.example/?q=Lindenhainweg%252090',
       ]) {
         expect(containsExactAddress(text, fragments), `${address} / ${text}`).toBe(true);
       }
-      expect(containsExactAddress('Heiligkreuzweg 12', fragments), address).toBe(false);
+      expect(containsExactAddress('Lindenhainweg 12', fragments), address).toBe(false);
     }
     const legacy = exactAddressFragments(
-      'Heiligkreuzweg 128, 55130 Mainz (Links neben der HEM-Tankstelle)',
+      'Lindenhainweg 128, 55130 Mainz (Links neben der Tankstelle)',
     );
-    expect(containsExactAddress('Heiligkreuzweg Nr. 128', legacy)).toBe(true);
-    expect(containsExactAddress('Heiligkreuzweg128', legacy)).toBe(true);
-    expect(containsExactAddress('Heiligkreuzweg 12', legacy)).toBe(false);
+    expect(containsExactAddress('Lindenhainweg Nr. 128', legacy)).toBe(true);
+    expect(containsExactAddress('Lindenhainweg128', legacy)).toBe(true);
+    expect(containsExactAddress('Lindenhainweg 12', legacy)).toBe(false);
     expect(containsExactAddress('Abholung in Mainz-Hechtsheim', legacy)).toBe(false);
     const muster = exactAddressFragments('Musterstraße 5, 55129 Mainz');
     for (const text of [
@@ -377,17 +377,17 @@ describe('Preis- und Adress-Schutz', () => {
   it('Zusatz ohne Komma vor der Straße, Hausnummer mit Buchstabe, weitere unsichtbare Zeichen (Prüfung FIX-A P1–P3)', () => {
     // P1: Zusatz (Region, Firma, Gewerbegebiet) ohne Komma vor Straße + Hausnummer.
     for (const address of [
-      'Mainz-Hechtsheim Heiligkreuzweg 128',
-      'Miet-Royal Heiligkreuzweg 128 55130 Mainz',
-      'Gewerbegebiet Hechtsheim Heiligkreuzweg 128',
+      'Mainz-Hechtsheim Lindenhainweg 128',
+      'Miet-Royal Lindenhainweg 128 55130 Mainz',
+      'Gewerbegebiet Hechtsheim Lindenhainweg 128',
     ]) {
       const fragments = exactAddressFragments(address);
-      expect(fragments, address).toContain('heiligkreuzweg 128');
+      expect(fragments, address).toContain('lindenhainweg 128');
       for (const text of [
-        'Abholung am Heiligkreuzweg 128',
-        'Heiligkreuz-Weg 128',
-        'Heiligkreuzweg Nr. 128',
-        'https://maps.google.com/?q=Heiligkreuzweg%20128',
+        'Abholung am Lindenhainweg 128',
+        'Lindenhain-Weg 128',
+        'Lindenhainweg Nr. 128',
+        'https://maps.google.com/?q=Lindenhainweg%20128',
       ]) {
         expect(containsExactAddress(text, fragments), `${address} / ${text}`).toBe(true);
       }
@@ -395,7 +395,7 @@ describe('Preis- und Adress-Schutz', () => {
         'Abholung in Mainz-Hechtsheim',
         'Miet-Royal',
         'Gewerbegebiet Hechtsheim',
-        'Heiligkreuzweg 12',
+        'Lindenhainweg 12',
       ]) {
         expect(containsExactAddress(publicText, fragments), `${address} / ${publicText}`).toBe(
           false,
@@ -410,17 +410,21 @@ describe('Preis- und Adress-Schutz', () => {
     expect(containsExactAddress('Picknick auf der Wiese 3 Stunden lang', wiese)).toBe(false);
     expect(containsExactAddress('Abholung: Dalheimer Wiese 3', wiese)).toBe(true);
     // P2: Hausnummer mit Buchstabe ⇒ auch die reine Zahl ist gesperrt.
-    const withLetter = exactAddressFragments('Heiligkreuzweg 128a, 55130 Mainz');
-    expect(withLetter).toContain('heiligkreuzweg 128a');
-    expect(withLetter).toContain('heiligkreuzweg 128');
-    expect(containsExactAddress('Abholung am Heiligkreuzweg 128', withLetter)).toBe(true);
-    expect(containsExactAddress('Heiligkreuzweg 12', withLetter)).toBe(false);
+    const withLetter = exactAddressFragments('Lindenhainweg 128a, 55130 Mainz');
+    expect(withLetter).toContain('lindenhainweg 128a');
+    expect(withLetter).toContain('lindenhainweg 128');
+    expect(containsExactAddress('Abholung am Lindenhainweg 128', withLetter)).toBe(true);
+    expect(containsExactAddress('Lindenhainweg 12', withLetter)).toBe(false);
     // P3: weitere unsichtbare Zeichen (Default Ignorable, Braille-Leerzeichen) umgehen nichts.
-    const fragments = exactAddressFragments('Heiligkreuzweg 128, 55130 Mainz');
-    for (const text of ['Heiligㅤkreuzweg 128', 'Heilig͏kreuzweg 128', 'Heiligkreuzweg️ 128']) {
+    const fragments = exactAddressFragments('Lindenhainweg 128, 55130 Mainz');
+    for (const text of [
+      'Linden\u3164hainweg 128',
+      'Linden\u034Fhainweg 128',
+      'Lindenhainweg\uFE0F 128',
+    ]) {
       expect(containsExactAddress(text, fragments), JSON.stringify(text)).toBe(true);
     }
-    for (const text of ['60͏ €', '60️€', '60ㅤ€', '60⠀€', '€⠀ 60']) {
+    for (const text of ['60\u034F €', '60\uFE0F€', '60\u3164€', '60\u2800€', '€\u2800 60']) {
       expect(containsPriceText(text), JSON.stringify(text)).toBe(true);
     }
   });

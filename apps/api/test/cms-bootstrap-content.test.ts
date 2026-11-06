@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import {
   CMS_FIXED_PAGE_PATHS,
@@ -65,10 +66,7 @@ const APP_PATHS: readonly string[] = ['/', '/konfigurator', '/konto'];
 
 /** Design §11.2.13 – Test-Sperrliste (Groß-/Kleinschreibung egal), gilt für ALLE Texte. */
 const BLOCKLIST: readonly string[] = [
-  'heiligkreuzweg',
   '55130',
-  'hem-tankstelle',
-  'schinnergraben',
   'techremedys',
   'becher pro stunde',
   'jetzt buchen',
@@ -77,6 +75,33 @@ const BLOCKLIST: readonly string[] = [
   ' eur',
   'euro',
 ];
+
+/**
+ * Design §11.2.13 – Anschriften der bisherigen Website (exakter Abholort, Impressum-Anschrift,
+ * Ortsbeschreibung) gehören auf die Sperrliste, sollen aber selbst NICHT im Repo stehen
+ * (Order §5: exakte Abholadresse nie öffentlich). Deshalb nur als SHA-256 der
+ * kleingeschriebenen Zeichenkette; geprüft wird jedes Teilstück gleicher Länge.
+ */
+const HASHED_BLOCKLIST: ReadonlyArray<{ length: number; sha256: string }> = [
+  { length: 14, sha256: 'a047eae74ed4e0fb989d9a0c2479c67aae87fe22612a553aab11b359ea31fbdb' },
+  { length: 14, sha256: '1422db01683507f0cb97c704ee1fac203f8301e21a501b686805f152b4d26b24' },
+  { length: 14, sha256: '2b91f81cd7b30836d19c863c4539cf3e638f075302cc6ccdf6d39a4303ace7bc' },
+];
+
+function hashedBlocklistHits(text: string): string[] {
+  const lower = text.toLowerCase();
+  const hits: string[] = [];
+  for (const { length, sha256 } of HASHED_BLOCKLIST) {
+    for (let start = 0; start + length <= lower.length; start += 1) {
+      const window = lower.slice(start, start + length);
+      if (createHash('sha256').update(window).digest('hex') === sha256) {
+        hits.push(`gesperrte Alt-Anschrift (sha256 ${sha256.slice(0, 8)}…)`);
+        break;
+      }
+    }
+  }
+  return hits;
+}
 
 /**
  * Altlasten der bisherigen Website (docs/WEBSITE_MIGRATION_NOTES.md „Nicht übernehmen“) und
@@ -202,7 +227,7 @@ describe('Phase 16 (CONTENT): CMS-Bootstrap-Inhalte', () => {
     for (const entry of CMS_BOOTSTRAP_ENTRIES) {
       const hits = allStrings(entry).flatMap((text) => {
         const lower = text.toLowerCase();
-        return BLOCKLIST.filter((term) => lower.includes(term));
+        return [...BLOCKLIST.filter((term) => lower.includes(term)), ...hashedBlocklistHits(text)];
       });
       expect(hits, targetOf(entry)).toEqual([]);
     }

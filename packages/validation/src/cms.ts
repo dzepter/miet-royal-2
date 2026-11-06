@@ -385,7 +385,7 @@ export function containsPriceText(text: string): boolean {
   return PRICE_TEXT_PATTERNS.some((pattern) => pattern.test(comparable));
 }
 
-/** Prozent-Kodierung (z. B. in https-Links „…?q=Heiligkreuzweg%2090“) dekodieren – nie werfen. */
+/** Prozent-Kodierung (z. B. in https-Links „…?q=Lindenhainweg%2090“) dekodieren – nie werfen. */
 function decodePercentEncoding(text: string): string {
   let current = text;
   // Mehrfach kodierte Werte („%2520“) bis zu dreimal auflösen.
@@ -422,7 +422,7 @@ export function normalizeForAddressComparison(text: string): string {
     .trim();
 }
 
-/** Wörter, die beim kompakten Vergleich wegfallen („Heiligkreuzweg Nr. 90“ = „Heiligkreuzweg 90“). */
+/** Wörter, die beim kompakten Vergleich wegfallen („Lindenhainweg Nr. 90“ = „Lindenhainweg 90“). */
 const HOUSE_NUMBER_WORDS: ReadonlySet<string> = new Set([
   'nr',
   'no',
@@ -511,10 +511,10 @@ function isPostalCityPart(tokens: readonly string[]): boolean {
 
 /**
  * Straße + Hausnummer aus einem normalisierten Adressteil – auch ohne Komma
- * („heiligkreuzweg 90 55130 mainz“ ⇒ „heiligkreuzweg 90“). Es zählen IMMER auch die kürzeren
+ * („lindenhainweg 90 55130 mainz“ ⇒ „lindenhainweg 90“). Es zählen IMMER auch die kürzeren
  * Endstücke vor der Hausnummer (Prüfung FIX-A, P1: Zusatz ohne Komma davor, z. B.
- * „Mainz-Hechtsheim Heiligkreuzweg 128“ oder „55130 Mainz Heiligkreuzweg 90“ ⇒ auch
- * „heiligkreuzweg 128“) – außer Endstücke nur aus Straßenart/Füllwörtern („wiese 3“, „der weg 5“).
+ * „Mainz-Hechtsheim Lindenhainweg 128“ oder „55130 Mainz Lindenhainweg 90“ ⇒ auch
+ * „lindenhainweg 128“) – außer Endstücke nur aus Straßenart/Füllwörtern („wiese 3“, „der weg 5“).
  * Hausnummer mit Buchstabe („128a“) ergibt zusätzlich das Fragment mit der reinen Zahl (P2).
  */
 function streetNumberFragments(tokens: readonly string[]): string[] {
@@ -574,7 +574,7 @@ export function exactAddressFragments(exactAddress: string | null | undefined): 
 /**
  * Enthält ein Text die exakte Abholadresse (Order §5: niemals öffentlich)? Vergleich auf der
  * normalisierten UND der kompakten Form (ohne Leerzeichen/Bindestriche/Punkte, ohne „Nr.“) –
- * erkennt „Heiligkreuzweg Nr. 90“, „Heiligkreuzweg90“, „Heiligkreuz-Weg 90“, „Musterstr.5“.
+ * erkennt „Lindenhainweg Nr. 90“, „Lindenhainweg90“, „Lindenhain-Weg 90“, „Musterstr.5“.
  */
 export function containsExactAddress(text: string, fragments: readonly string[]): boolean {
   if (fragments.length === 0) return false;
