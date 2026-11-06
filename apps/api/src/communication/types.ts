@@ -33,7 +33,12 @@ export type MailDeliveryKind =
   | 'appointment_changed'
   | 'voucher_delivery'
   | 'invoice_delivery'
-  | 'manual_customer_reply';
+  | 'manual_customer_reply'
+  // Phase 15 (Kundenportal, Order §30)
+  | 'customer_portal_magic_link'
+  | 'customer_portal_reply_notice'
+  | 'customer_portal_reauth'
+  | 'customer_portal_email_change';
 
 export type MailDeliveryStatus =
   'pending' | 'sending' | 'sent' | 'retry' | 'failed' | 'blocked' | 'outcome_unknown';
@@ -193,7 +198,9 @@ export type PushKind =
   // Phase 12 (push): kurzfristige Neuzuweisung am Durchführungstag (Order §31, Phase-4-Feld assignmentNotifiedAt).
   | 'assignment_reassigned'
   // Phase 13 (tours-live): drohende Verspätung eines Tourstopps – genau ein Push je Incident (Order §53/§54).
-  | 'tour_delay_risk';
+  | 'tour_delay_risk'
+  // Phase 15 (portal): neue Kundennachricht im Kundenportal – Admin + effektiv zuständige Person, ohne Nachrichtentext (Order §28).
+  | 'portal_message';
 
 /** Datenminimierung: keine Kundennamen/Telefon/Adresse/Schäden/Beträge. */
 export interface PushPayload {

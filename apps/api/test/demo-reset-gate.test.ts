@@ -29,6 +29,36 @@ describe('Demo-Reset-Gate (Phase 14, Unit)', () => {
     }
   });
 
+  it('E8a. Phase 15 (portal, Order §47): sperrt ALLE Portal-Mutationen unter /portal – Login-Request/-Consume, Logout, Reauth, E-Mail-Wechsel, Profil, Chat, Foto, Storno (keine Ausnahme; Lesezugriffe frei)', () => {
+    for (const [method, url] of [
+      ['POST', '/portal/auth/request'],
+      ['POST', '/portal/auth/consume'],
+      ['POST', '/portal/auth/logout'],
+      ['POST', '/portal/auth/reauth/request'],
+      ['POST', '/portal/auth/reauth/consume'],
+      ['POST', '/portal/auth/email-change/request'],
+      ['POST', '/portal/auth/email-change/consume'],
+      ['PATCH', '/portal/profile'],
+      ['POST', '/portal/bookings/abc/messages'],
+      ['POST', '/portal/bookings/abc/messages/photos'],
+      ['POST', '/portal/bookings/abc/cancellation'],
+      ['DELETE', '/portal/anything'],
+      ['post', '/portal/auth/request?x=1'],
+    ] as const) {
+      expect(isDemoGatedRequest(method, url), `${method} ${url}`).toBe(true);
+    }
+    for (const [method, url] of [
+      ['GET', '/portal/me'],
+      ['GET', '/portal/bookings'],
+      ['GET', '/portal/bookings/abc/documents/def'],
+      ['HEAD', '/portal/me'],
+      ['OPTIONS', '/portal/me'],
+      ['POST', '/portalx/auth/request'], // kein Präfixtreffer ohne Pfadtrenner
+    ] as const) {
+      expect(isDemoGatedRequest(method, url), `${method} ${url}`).toBe(false);
+    }
+  });
+
   it('D-G2. lässt Lesezugriffe, Auth, Demo-Verwaltung, Push-Geräte und die Offline-Lease passieren', () => {
     for (const [method, url] of [
       ['GET', '/staff/customers'],

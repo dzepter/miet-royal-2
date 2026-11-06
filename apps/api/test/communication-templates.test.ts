@@ -119,6 +119,23 @@ const SAMPLES: Record<
     },
     secrets: {},
   },
+  // Phase 15 (Kundenportal): Token NUR im Fragment, nie im Kontext.
+  customer_portal_magic_link: {
+    context: { salutation: 'Hallo Max Mustermann,', validMinutes: 15 },
+    secrets: { portalToken: 'portal-token-ABCDEFGH123456' },
+  },
+  customer_portal_reply_notice: {
+    context: { salutation: 'Hallo Max Mustermann,', processNumber: 'MR-2026-0001' },
+    secrets: {},
+  },
+  customer_portal_reauth: {
+    context: { salutation: 'Hallo Max Mustermann,', validMinutes: 15 },
+    secrets: { portalToken: 'portal-token-ABCDEFGH123456' },
+  },
+  customer_portal_email_change: {
+    context: { salutation: 'Hallo Max Mustermann,', validMinutes: 15 },
+    secrets: { portalToken: 'portal-token-ABCDEFGH123456' },
+  },
 };
 
 const URL_PATTERN = /https?:\/\/[^\s"'<>]+/g;

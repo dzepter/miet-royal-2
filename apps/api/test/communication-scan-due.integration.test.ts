@@ -145,14 +145,18 @@ describe('Self-Re-Enqueue mit Bucket-Schlüssel', () => {
     );
   });
 
-  it('Der produktive Scan enthält Reminder-, Push-, Gutschein-, Rechnungs- und Tour-Delay-Scanner (Reminder zuerst)', () => {
+  it('Der produktive Scan enthält Reminder-, Push-, Gutschein-, Rechnungs-, Tour-Delay- und Portal-Scanner (Reminder zuerst)', () => {
     // Phase 13 (tours-live): `tour_delay` bewertet aktive Touren mit frischem Live-Standort (Design §9).
+    // Phase 15 (Kundenportal, Order §52/§43): Session-/Magic-Link-Cleanup und Backstop der
+    // automatischen Stornobestätigung laufen im selben Scan (keine eigene Scheduler-Infrastruktur).
     expect(ctx.scan.scanners.map((scanner) => scanner.name)).toEqual([
       'reminders',
       'push_rules',
       'voucher_sweep',
       'invoice_sweep',
       'tour_delay',
+      'portal_auth_cleanup',
+      'portal_cancellation_mail_backstop',
     ]);
   });
 });

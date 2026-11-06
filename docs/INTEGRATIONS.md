@@ -110,6 +110,16 @@ Schaden-/Fehlteil-Vorinfo, Storno, Gutschein, Kundenchat-Hinweis.
 
 Antworten möglichst über eindeutige Reply-Referenz dem Vorgang zuordnen.
 
+Phase 15 (Kundenportal): vier weitere Outbox-Arten über dieselbe Phase-12-Outbox
+(keine zweite Mailqueue): `customer_portal_magic_link` (Anmeldelink),
+`customer_portal_reauth` (Bestätigung einer Profiländerung),
+`customer_portal_email_change` (Bestätigungslink an die NEUE Adresse) – Token
+jeweils nur im verschlüsselten Secret-Payload, Link
+`MAIL_PUBLIC_WEB_BASE_URL + /konto/… #token=<Token>` (Fragment) –, sowie
+`customer_portal_reply_notice` („Du hast eine neue Nachricht von Miet-Royal.“ +
+fester Link `/konto`, nie der Chattext). Demo: Whitelist + `[DEMO]` wie alle
+Arten. Kunden-Selbststorno reiht `cancellation_confirmation` automatisch ein.
+
 ## WhatsApp Business
 Nur offizielle Business-Anbindung.
 Nachrichten in den Vorgang, Antworten aus Staff.
@@ -129,6 +139,11 @@ Kritisch:
 
 Geschäftskritische Pushs nicht abschaltbar.
 Kein Notification Center.
+
+Phase 15: neue Kundennachricht im Kundenportal → Push `portal_message` an
+aktive Systemadmins und die effektiv zuständige Person des Vorgangs
+(Zuweisung + Vertretung); Titel „Neue Kundennachricht – MR-…“, fester Body ohne
+Nachrichtentext, keine Fotovorschau. Keine Push an Kunden.
 
 ## Kalender
 Miet-Royal ist Source of Truth.
@@ -170,6 +185,10 @@ Keine Lieferpreisformel: `DeliveryPriceSuggestion` ist eine leere Grenze.
 Serverseitige Templates:
 Angebot, AB, Lieferschein, Übergabeprotokoll, Rückgabeprotokoll.
 Finale signierte PDFs immutable + Hash.
+Phase 15: Das Kundenportal liefert finalisierte, kundenrelevante Dokumente der
+aktuellen Buchung über eine authentifizierte Route (Session + Eigentum +
+Finalität, sonst 404; `Cache-Control: private, no-store`, `nosniff`). Kein neues
+Rechnungs-PDF – die Rechnung bleibt Lexware/`invoice_delivery`.
 
 ## QR
 QR enthält sichere Maschinenreferenz, keine sensiblen Daten.

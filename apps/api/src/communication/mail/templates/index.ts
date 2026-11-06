@@ -38,6 +38,11 @@ export const MAIL_TEMPLATE_VERSIONS: Record<MailDeliveryKind, number> = {
   voucher_delivery: 1,
   invoice_delivery: 1,
   manual_customer_reply: 1,
+  // Phase 15 (Kundenportal)
+  customer_portal_magic_link: 1,
+  customer_portal_reply_notice: 1,
+  customer_portal_reauth: 1,
+  customer_portal_email_change: 1,
 };
 
 export type MailRenderErrorCode =
@@ -382,6 +387,115 @@ function manualCustomerReply(ctx: Parsed<'manual_customer_reply'>): TemplateOutp
   };
 }
 
+// ── Phase 15 (Kundenportal, Order §7/§30/§32/§34) ────────────────────────────
+// Portal-Links tragen den Token NUR im URL-Fragment (`#token=`), damit Mail-
+// Scanner und Proxys ihn nicht per GET verbrauchen können; der Browser sendet
+// Fragmente nie an den Server. Basis ist ausschließlich MAIL_PUBLIC_WEB_BASE_URL.
+export const PORTAL_LOGIN_PATH = '/konto/anmelden';
+export const PORTAL_REAUTH_PATH = '/konto/profil/bestaetigen';
+export const PORTAL_EMAIL_CHANGE_PATH = '/konto/profil/e-mail-bestaetigen';
+export const PORTAL_HOME_PATH = '/konto';
+
+function portalFragmentLink(o: MailRenderOptions, path: string, token: string): string {
+  return publicLink(o, `${path}#token=${encodeURIComponent(token)}`);
+}
+
+function customerPortalMagicLink(
+  ctx: Parsed<'customer_portal_magic_link'>,
+  s: ParsedSecrets<'customer_portal_magic_link'>,
+  o: MailRenderOptions,
+): TemplateOutput {
+  return {
+    subject: 'Dein Anmeldelink für den Miet-Royal Kundenbereich',
+    blocks: [
+      { type: 'paragraph', text: ctx.salutation },
+      {
+        type: 'paragraph',
+        text: `mit dem folgenden Link öffnest du deinen Kundenbereich. Der Link ist ${ctx.validMinutes} Minuten gültig und funktioniert nur einmal.`,
+      },
+      {
+        type: 'link',
+        label: 'Kundenbereich öffnen',
+        url: portalFragmentLink(o, PORTAL_LOGIN_PATH, s.portalToken),
+      },
+      {
+        type: 'paragraph',
+        text: 'Wenn du diese Anmeldung nicht angefordert hast, kannst du diese E-Mail einfach ignorieren.',
+      },
+    ],
+  };
+}
+
+function customerPortalReauth(
+  ctx: Parsed<'customer_portal_reauth'>,
+  s: ParsedSecrets<'customer_portal_reauth'>,
+  o: MailRenderOptions,
+): TemplateOutput {
+  return {
+    subject: 'Bestätige deine Änderung im Miet-Royal Kundenbereich',
+    blocks: [
+      { type: 'paragraph', text: ctx.salutation },
+      {
+        type: 'paragraph',
+        text: `du möchtest deine Daten im Kundenbereich ändern. Bitte bestätige das mit dem folgenden Link – er ist ${ctx.validMinutes} Minuten gültig und funktioniert nur einmal.`,
+      },
+      {
+        type: 'link',
+        label: 'Änderung bestätigen',
+        url: portalFragmentLink(o, PORTAL_REAUTH_PATH, s.portalToken),
+      },
+      {
+        type: 'paragraph',
+        text: 'Wenn du keine Änderung angestoßen hast, ignoriere diese E-Mail – es wird nichts geändert.',
+      },
+    ],
+  };
+}
+
+function customerPortalEmailChange(
+  ctx: Parsed<'customer_portal_email_change'>,
+  s: ParsedSecrets<'customer_portal_email_change'>,
+  o: MailRenderOptions,
+): TemplateOutput {
+  return {
+    subject: 'Bestätige deine neue E-Mail-Adresse für den Miet-Royal Kundenbereich',
+    blocks: [
+      { type: 'paragraph', text: ctx.salutation },
+      {
+        type: 'paragraph',
+        text: `diese Adresse soll künftig für deinen Miet-Royal Kundenbereich gelten. Bitte bestätige das mit dem folgenden Link – er ist ${ctx.validMinutes} Minuten gültig und funktioniert nur einmal. Bis zur Bestätigung bleibt deine bisherige Adresse aktiv.`,
+      },
+      {
+        type: 'link',
+        label: 'Neue E-Mail-Adresse bestätigen',
+        url: portalFragmentLink(o, PORTAL_EMAIL_CHANGE_PATH, s.portalToken),
+      },
+      {
+        type: 'paragraph',
+        text: 'Wenn du diese Änderung nicht angestoßen hast, ignoriere diese E-Mail – es wird nichts geändert.',
+      },
+    ],
+  };
+}
+
+function customerPortalReplyNotice(
+  ctx: Parsed<'customer_portal_reply_notice'>,
+  o: MailRenderOptions,
+): TemplateOutput {
+  return {
+    subject: `Neue Nachricht von Miet-Royal – Vorgang ${ctx.processNumber}`,
+    blocks: [
+      { type: 'paragraph', text: ctx.salutation },
+      { type: 'paragraph', text: 'Du hast eine neue Nachricht von Miet-Royal.' },
+      {
+        type: 'link',
+        label: 'Nachricht im Kundenbereich lesen',
+        url: publicLink(o, PORTAL_HOME_PATH),
+      },
+    ],
+  };
+}
+
 function buildTemplate(
   kind: MailDeliveryKind,
   context: unknown,
@@ -440,6 +554,27 @@ function buildTemplate(
       return invoiceDelivery(ctx as Parsed<'invoice_delivery'>);
     case 'manual_customer_reply':
       return manualCustomerReply(ctx as Parsed<'manual_customer_reply'>);
+    // Phase 15 (Kundenportal)
+    case 'customer_portal_magic_link':
+      return customerPortalMagicLink(
+        ctx as Parsed<'customer_portal_magic_link'>,
+        s as ParsedSecrets<'customer_portal_magic_link'>,
+        options,
+      );
+    case 'customer_portal_reauth':
+      return customerPortalReauth(
+        ctx as Parsed<'customer_portal_reauth'>,
+        s as ParsedSecrets<'customer_portal_reauth'>,
+        options,
+      );
+    case 'customer_portal_email_change':
+      return customerPortalEmailChange(
+        ctx as Parsed<'customer_portal_email_change'>,
+        s as ParsedSecrets<'customer_portal_email_change'>,
+        options,
+      );
+    case 'customer_portal_reply_notice':
+      return customerPortalReplyNotice(ctx as Parsed<'customer_portal_reply_notice'>, options);
   }
 }
 
@@ -466,6 +601,11 @@ function placeholderSecretsFor(kind: MailDeliveryKind): Record<string, string> {
       return { documentToken: 'placeholder-token' };
     case 'voucher_delivery':
       return { voucherCode: 'MR20AAAAAAAAAAAA' };
+    // Phase 15 (Kundenportal): Platzhalter nur für den Betreff – nie ein echter Token.
+    case 'customer_portal_magic_link':
+    case 'customer_portal_reauth':
+    case 'customer_portal_email_change':
+      return { portalToken: 'placeholder-token' };
     default:
       return {};
   }

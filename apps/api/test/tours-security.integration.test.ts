@@ -421,7 +421,8 @@ describe('115.–116. Offline', () => {
     expect(first!.state).toBe('open');
     const text = JSON.stringify(snapshot);
     expect(text).not.toMatch(/latitude|longitude|liveLocation|49\.912345|8\.261234/);
-    expect(text).not.toMatch(/Klara|Kommerz|0171|customer/);
+    // Telefon der Testkundin über den eindeutigen Teil „9998877“ (das Paket trägt UUIDs, „0171“ traf dort zufällig).
+    expect(text).not.toMatch(/Klara|Kommerz|9998877|customer/);
     expect(text).not.toMatch(KEY_PATTERN);
     // Zustand folgt dem Termin: „Angekommen“ ⇒ arrived.
     expect(

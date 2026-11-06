@@ -1,6 +1,14 @@
-import { customers, processes, type Customer, type Database } from '@mietroyal/database';
+import {
+  customerPortalMagicLinks,
+  customerPortalSessions,
+  customers,
+  processes,
+  type Customer,
+  type Database,
+} from '@mietroyal/database';
 import { and, asc, eq, gte, isNull, isNotNull, ne, or, sql, type SQL } from 'drizzle-orm';
 import { AuthError } from '../auth/service.ts';
+import { lockPortalCustomerAuth } from '../portal/auth/locks.ts';
 import { normalizeEmailAddress, normalizePhoneNumber } from './normalize.ts';
 
 export interface CustomerInput {
@@ -163,6 +171,49 @@ export class CustomerService {
     return customer;
   }
 
+  /**
+   * Phase 15 (portal): Profiländerung aus dem Kundenportal. Dieselbe
+   * `toRow`-Validierung/Normalisierung wie bei Mitarbeitern (Pflichtfelder,
+   * Telefon, Trim), aber `type` UND `email` bleiben IMMER unverändert (der
+   * E-Mail-Wechsel hat einen eigenen verifizierten Pfad, Order §31/§34).
+   * Buchungs-Snapshots werden nie berührt (Order §17).
+   */
+  async updateCustomerFromPortal(
+    customerId: string,
+    patch: Omit<CustomerInput, 'type' | 'email'>,
+    now = new Date(),
+  ): Promise<Customer> {
+    const existing = await this.getActiveCustomer(customerId);
+    // Phase 15 (Review R7): `email` wird hier weder übernommen noch geschrieben – ein
+    // parallel committeter, verifizierter E-Mail-Wechsel darf nie überschrieben werden.
+    const merged: CustomerInput = {
+      type: existing.type,
+      firstName: patch.firstName ?? existing.firstName ?? undefined,
+      lastName: patch.lastName ?? existing.lastName ?? undefined,
+      organizationName: patch.organizationName ?? existing.organizationName ?? undefined,
+      contactPerson: patch.contactPerson ?? existing.contactPerson ?? undefined,
+      phone: patch.phone ?? existing.phone ?? undefined,
+      billingStreet: patch.billingStreet ?? existing.billingStreet ?? undefined,
+      billingPostalCode: patch.billingPostalCode ?? existing.billingPostalCode ?? undefined,
+      billingCity: patch.billingCity ?? existing.billingCity ?? undefined,
+      billingCountry: patch.billingCountry ?? existing.billingCountry ?? undefined,
+      vatId: patch.vatId ?? existing.vatId ?? undefined,
+      department: patch.department ?? existing.department ?? undefined,
+      costCenter: patch.costCenter ?? existing.costCenter ?? undefined,
+      orderReference: patch.orderReference ?? existing.orderReference ?? undefined,
+    };
+    // Phase 15 (Review R7): `type` und `email` stehen NIE im UPDATE-Set (kein Lost Update).
+    const { type: _type, email: _email, ...profileFields } = toRow(merged);
+    const updated = await this.db
+      .update(customers)
+      .set({ ...profileFields, updatedAt: now })
+      .where(and(eq(customers.id, customerId), isNull(customers.deletedAt)))
+      .returning();
+    const customer = updated[0];
+    if (customer === undefined) throw new AuthError('NOT_FOUND', 'Kunde nicht gefunden.');
+    return customer;
+  }
+
   async getActiveCustomer(customerId: string): Promise<Customer> {
     const rows = await this.db
       .select()
@@ -202,12 +253,19 @@ export class CustomerService {
    * Nur Kunden OHNE Vorgänge dürfen in den Papierkorb – Geschäftsvorgänge
    * werden niemals gelöscht. Kein Hard Delete; Wiederherstellung möglich
    * (Frist 30 Tage, siehe listTrash).
+   * Phase 15 (Review R9): Die Löschung beendet in derselben Transaktion alle
+   * Portal-Sessions und offenen Magic Links des Kunden endgültig – eine spätere
+   * Wiederherstellung belebt sie nicht (neuer Login nötig).
    */
   async moveToTrash(actorId: string, customerId: string): Promise<void> {
     // Transaktion mit Zeilensperre (FOR UPDATE): kollidiert mit dem
     // FOR-KEY-SHARE-Lock der Vorgangserstellung – kein Rennen „Kunde wird
     // gelöscht, während ihm gerade ein Vorgang angelegt wird“.
     await this.db.transaction(async (tx) => {
+      // Phase 15 (Review R9): Sperrreihenfolge wie die Portal-Auth (Review R6) – zuerst der
+      // Kunden-Auth-Lock, dann die customers-Zeile, dann Session-/Link-Zeilen (kein Deadlock
+      // mit einem parallelen E-Mail-Wechsel- oder Login-Consume).
+      await lockPortalCustomerAuth(tx, customerId);
       const rows = await tx
         .select({ id: customers.id })
         .from(customers)
@@ -229,6 +287,27 @@ export class CustomerService {
         .update(customers)
         .set({ deletedAt: new Date(), deletedBy: actorId, updatedAt: new Date() })
         .where(and(eq(customers.id, customerId), isNull(customers.deletedAt)));
+      // Phase 15 (Review R9): Portal-Zugang endgültig beenden (Order §12).
+      const revokedAt = new Date();
+      await tx
+        .update(customerPortalSessions)
+        .set({ revokedAt })
+        .where(
+          and(
+            eq(customerPortalSessions.customerId, customerId),
+            isNull(customerPortalSessions.revokedAt),
+          ),
+        );
+      await tx
+        .update(customerPortalMagicLinks)
+        .set({ revokedAt })
+        .where(
+          and(
+            eq(customerPortalMagicLinks.customerId, customerId),
+            isNull(customerPortalMagicLinks.consumedAt),
+            isNull(customerPortalMagicLinks.revokedAt),
+          ),
+        );
     });
   }
 

@@ -77,6 +77,8 @@ import {
 } from '../src/jobs/demo.ts';
 // Phase 14 Final (Reset-Barrier): eine Barrier je Testkontext (App-Hooks, API-Runner, Test-Runner, Reset-Service).
 import { DemoResetBarrier } from '../src/demo/reset-barrier.ts';
+import { createPortalScanners } from '../src/portal/scanners.ts'; // Phase 15 (portal)
+import { createCancellationService } from '../src/cancellation/cancellation-service.ts'; // Phase 15 (portal)
 
 // Phase 14 (demo): feste Test-Schlüssel der Demo-Konfiguration (nur Tests; nie echte Werte).
 // APP_ENV=demo kennt keine Defaults – Storage/Schlüssel müssen explizit gesetzt sein.
@@ -357,6 +359,36 @@ export async function createTestContext(
     auth,
     logger: testLogger,
   });
+  const transfersFor = (workerId = 'test-direct') =>
+    createAccountingTransferService({
+      db,
+      queue,
+      accountingGateway: gateway,
+      lexware,
+      lexwareConnection,
+      workerId,
+    });
+  // Phase 12 (transactional): Listener (AB/Pakete/Kundeninformation/Storno/
+  // Gutschein/Rechnung) + voucher.delivery/invoice.delivery im Test-Runner.
+  // Phase 15 (portal): vor dem Scan-Lauf aufgebaut, weil der Portal-Backstop den
+  // Storno-Bestätigungs-Mailer braucht.
+  const transactional = createTransactionalMailModule({
+    communication,
+    db,
+    config,
+    queue,
+    lexware,
+    transfers: transfersFor('test-listener'),
+    logger: testLogger,
+  });
+  const testCancellationService = createCancellationService({
+    db,
+    config,
+    storage,
+    transfers: transfersFor('test-portal-backstop'),
+    confirmations: transactional.cancellationMailer,
+    logger: testLogger,
+  });
   const scan = registerScanDueJobHandlers(jobs, {
     db,
     config,
@@ -376,27 +408,16 @@ export async function createTestContext(
       },
       // Phase 13 (tours-live): Verspätungsbewertung aktiver Touren mit frischem Standort.
       testTourLive.scanner,
+      // Phase 15 (portal): Portal-Cleanup/-Backstop wie in App und Worker (Storno-
+      // Bestätigungs-Backstop mit derselben Storno-Komposition wie app.ts).
+      ...createPortalScanners({
+        db,
+        config,
+        queue,
+        logger: testLogger,
+        cancellationConfirmations: testCancellationService,
+      }),
     ],
-  });
-  const transfersFor = (workerId = 'test-direct') =>
-    createAccountingTransferService({
-      db,
-      queue,
-      accountingGateway: gateway,
-      lexware,
-      lexwareConnection,
-      workerId,
-    });
-  // Phase 12 (transactional): Listener (AB/Pakete/Kundeninformation/Storno/
-  // Gutschein/Rechnung) + voucher.delivery/invoice.delivery im Test-Runner.
-  const transactional = createTransactionalMailModule({
-    communication,
-    db,
-    config,
-    queue,
-    lexware,
-    transfers: transfersFor('test-listener'),
-    logger: testLogger,
   });
   registerTransactionalJobHandlers(jobs, { communication, db, config, logger: testLogger });
   // Phase 14 (reset): demo.storage_cleanup im Test-Runner (nur demo, wie Worker/API-Runner).

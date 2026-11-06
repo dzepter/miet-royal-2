@@ -60,12 +60,20 @@ Vorschlag:
 - app.miet-royal.de → Staff
 - demo.miet-royal.de → Demo
 - kunden.miet-royal.de oder /konto → Kundenbereich
+  (Phase 15 entschieden: `/konto` in der öffentlichen Web-App `apps/web`, kein
+  eigenes Frontend-Projekt; Details docs/CUSTOMER_PORTAL.md)
 
 ## Auth
 Staff: E-Mail+Passwort, optional 2FA, Geräte/Sessions, 15min App-Lock,
 Session-Ablauf nach 30 Tagen Inaktivität (keine zusätzliche absolute
 Maximaldauer für regelmäßig aktive Sessions), Biometrie als Gerätekomfort.
 Customer: Magic Link 15min, 30 Tage Gerätesession.
+Phase 15: Kunden-Auth ist vollständig von der Staff-Auth getrennt – eigene
+Tabellen (`customer_portal_sessions`, `customer_portal_magic_links`), eigenes
+Cookie `__Host-mr_customer_session` (außerhalb development), Präfix `/portal`.
+Die Gerätesession läuft ABSOLUT 30 Tage ab Anmeldung (kein Sliding);
+Profiländerungen verlangen eine Reauth ≤ 15 min. Web → API ausschließlich über
+den Same-Origin-Rewrite `/api/*` der Web-App (kein CORS).
 
 ## Storage
 Private Object Storage für Fotos/PDFs.
@@ -105,3 +113,5 @@ Rechtliche Dokumente separat nach definierter Aufbewahrung.
 ## Feature Flags
 Einfache interne Flags für neue Module, z. B.
 whatsapp_enabled, customer_portal_enabled, offline_returns_enabled.
+(Phase 15: das Kundenportal hat kein Feature-Flag – es ist für Kunden optional,
+weil der Zugang nur über einen angeforderten Magic Link entsteht.)

@@ -222,7 +222,9 @@ function expectOnlyTourSnapshot(
   const text = JSON.stringify(packageJson);
   // Keine Phase-8-Sichten, keine Kunden-/Kontakt-/Finanzdaten, kein Maschinenstamm.
   expect(text).not.toMatch(NON_TOUR_DATA_PATTERN);
-  expect(text).not.toMatch(/Klara|Kommerz|0171/);
+  // Telefonnummer der Testkundin („0171 9998877“): eindeutiger Teil statt „0171“ – das kurze
+  // Muster traf zufällige Hex-Folgen in UUIDs und übersah die normalisierte Form 491719998877.
+  expect(text).not.toMatch(/Klara|Kommerz|9998877/);
   for (const booking of bookings) {
     // Der Vorgang selbst (Kunde, Übergabe, Rückgabe) liegt nicht im Paket – nur Tour-Stopp-Referenzen.
     expect(text).not.toContain(booking.customerId);
@@ -560,7 +562,9 @@ function expectCalendarOnly(packageJson: PackageJson): void {
   expect(packageJson).not.toHaveProperty('activeTour');
   const text = JSON.stringify(packageJson);
   expect(text).not.toMatch(NON_TOUR_DATA_PATTERN);
-  expect(text).not.toMatch(/Klara|Kommerz|0171/);
+  // Telefonnummer der Testkundin („0171 9998877“): eindeutiger Teil statt „0171“ – das kurze
+  // Muster traf zufällige Hex-Folgen in UUIDs und übersah die normalisierte Form 491719998877.
+  expect(text).not.toMatch(/Klara|Kommerz|9998877/);
 }
 
 /**

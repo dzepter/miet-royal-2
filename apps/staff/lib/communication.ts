@@ -56,6 +56,9 @@ export interface ConversationView {
   messages: ConversationMessage[];
   canReplyEmail: boolean;
   canReplyWhatsApp: boolean;
+  // Phase 15 (portal): Portalantwort möglich (bestätigte, offene Buchung + Recht) / Kunde nutzt das Portal.
+  canReplyPortal?: boolean;
+  portalActive?: boolean;
   whatsapp: {
     mode: 'disabled' | 'live' | 'mock';
     /** true = es gibt eine WhatsApp-Kundennachricht in diesem Vorgang. */
@@ -89,6 +92,8 @@ export const WHATSAPP_MOCK_LABEL = 'DEMO / simuliert';
 export const BODY_DELETED_TEXT = 'Inhalt gemäß Aufbewahrungsfrist gelöscht';
 /** Server-Limit MANUAL_REPLY_MAX_CHARS (communication-conversation.ts). */
 export const REPLY_MAX_CHARS = 5000;
+/** Phase 15 (portal): Badge-Text, wenn der Kunde eine gültige Portal-Session hat. */
+export const PORTAL_ACTIVE_LABEL = 'Kundenportal aktiv';
 
 export function fetchConversation(processId: string): Promise<ApiResult<ConversationView>> {
   return apiFetch<ConversationView>(`/staff/processes/${processId}/conversation`);
@@ -96,14 +101,16 @@ export function fetchConversation(processId: string): Promise<ApiResult<Conversa
 
 export function sendReply(
   processId: string,
-  channel: 'email' | 'whatsapp',
+  channel: ConversationChannel, // Phase 15 (portal): zusätzlich 'portal'
   body: string,
 ): Promise<
   ApiResult<{
     messageId: string;
-    channel: 'email' | 'whatsapp';
+    channel: ConversationChannel;
     deliveryState: string;
     mailDeliveryId?: string | null;
+    /** Phase 15 (portal): Status des E-Mail-Hinweises an den Kunden. */
+    noticeStatus?: 'queued' | 'blocked' | 'unavailable';
   }>
 > {
   return apiFetch(`/staff/processes/${processId}/conversation/reply`, {
@@ -160,6 +167,7 @@ const KIND_ORDER = [
   'cancellation_confirmation',
   'voucher_delivery',
   'manual_customer_reply',
+  'customer_portal_reply_notice', // Phase 15 (portal)
 ];
 
 export function sortDeliveriesByKind(deliveries: MailDeliverySummary[]): MailDeliverySummary[] {

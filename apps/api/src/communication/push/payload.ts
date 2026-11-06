@@ -21,6 +21,8 @@ const PROCESS_NUMBER_PATTERN = /^MR-\d{4}-\d{4,}$/;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export const PUSH_CHECK_HINT = 'in Miet-Royal prüfen';
+/** Phase 15 (portal): fester Push-Text für neue Portalnachrichten (nie Nachrichtentext). */
+export const PORTAL_MESSAGE_PUSH_BODY = `Im Kundenportal eingegangen – ${PUSH_CHECK_HINT}`;
 
 export type PushPayloadInput =
   | {
@@ -49,7 +51,9 @@ export type PushPayloadInput =
       tourId: string;
       incidentId: string;
       audience: 'driver' | 'planning';
-    };
+    }
+  // Phase 15 (portal): neue Kundennachricht – nur Vorgangsnummer, NIE Nachrichtentext/Foto (Order §28).
+  | { kind: 'portal_message'; processId: string; processNumber: string };
 
 function assertProcessNumber(value: string): string {
   // Nur das kanonische Format MR-YYYY-NNNN – kein freier Text.
@@ -69,7 +73,7 @@ export function appointmentKindLabel(kind: PushAppointmentKind): string {
 }
 
 /** Staff-Pfad eines Vorgangs (Terminseite für Terminhinweise). */
-export function processPath(processId: string, section?: 'termine'): string {
+export function processPath(processId: string, section?: 'termine' | 'kommunikation'): string {
   const base = `/vorgaenge/${assertProcessId(processId)}`;
   return section === undefined ? base : `${base}/${section}`;
 }
@@ -163,6 +167,18 @@ export function buildPushPayload(input: PushPayloadInput): PushPayload {
         tag: `tour-delay:${incidentId}`,
       };
     }
+    case 'portal_message': {
+      // Phase 15 (portal, Order §28): fester Text ohne Nachrichteninhalt; Ziel ist die
+      // Kommunikationsseite des Vorgangs. Tag je Vorgang: mehrere Nachrichten ersetzen sich.
+      const number = assertProcessNumber(input.processNumber);
+      return {
+        kind: input.kind,
+        title: `Neue Kundennachricht – ${number}`,
+        body: PORTAL_MESSAGE_PUSH_BODY,
+        url: processPath(input.processId, 'kommunikation'),
+        tag: `portal-message:${input.processId}`,
+      };
+    }
   }
 }
 
@@ -193,4 +209,5 @@ export const PUSH_KINDS: readonly PushKind[] = [
   'substitution_started',
   'assignment_reassigned',
   'tour_delay_risk',
+  'portal_message', // Phase 15 (portal)
 ];

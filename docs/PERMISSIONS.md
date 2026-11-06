@@ -445,3 +445,42 @@ Serverseitige Umsetzung (Phase 14, W2, Order §55–§66, §97–§100):
   verlangt die Fachrechte der beteiligten Aktionen (`TRAINING_PERMISSION_MISSING`),
   die Fachrouten prüfen ihre Rechte unverändert (§55).
 
+## Kundenportal (Phase 15)
+
+- **Kunden haben kein Rechtesystem.** Es gibt keine Portal-Rollen, keine Portal-
+  Rechte im Katalog und kein Portal-Konto: Die Identität ist der `customers`-
+  Datensatz (Order §3); die Portal-Grenze ist ausschließlich die Portal-Session
+  (`customer_portal_sessions`, HttpOnly-Cookie `__Host-mr_customer_session`,
+  absolut 30 Tage, Magic-Link-Anmeldung). Jede `/portal/*`-Route ermittelt den
+  Kunden serverseitig aus der Session (`requirePortalSession`); der Client sendet
+  nie eine Kunden-ID als Autorität (Order §12). Ein Kunde sieht und ändert nur,
+  was über Buchung/Vorgang/Konversation an SEINE `customer_id` gebunden und
+  laut Sichtbarkeitsregel „aktuell“ ist; fremde oder unbekannte IDs ⇒ neutrales
+  `404 NOT_FOUND` (nie 403, kein Orakel). Es gibt kein „mehr Rechte“ im Portal –
+  auch keine Historie, keine Staff-Daten, keine internen Notizen/IDs.
+- **Staff-Session ≠ Portal-Session, Angebots-Token ≠ Portal-Session:** Das Staff-
+  Cookie `mr_staff_session` wird an der Portal-Grenze nie gelesen (Staff im
+  Portal ⇒ 401 `PORTAL_UNAUTHENTICATED`); ein öffentlicher Angebots-/Aktions-
+  Token (`/public/*`) ist keine Portal-Anmeldung. Umgekehrt öffnet eine Portal-
+  Session keine `/staff/*`-Route (Order §10).
+- **Sicherheitsstufe statt Recht:** Profiländerungen und E-Mail-Wechsel verlangen
+  zusätzlich eine frische Reauth (Magic Link an die aktuelle Adresse, ≤ 15 min,
+  an die Session gebunden; Order §32) – kein Recht, sondern eine Bestätigung.
+- **Staff-Seite:** Portalnachrichten erscheinen in der normalen Vorgangs-
+  kommunikation (Kanal `portal`); die Antwort auf `channel = portal` verlangt
+  wie jede Kundenantwort `message.reply_customer` („Kunden antworten“, Order
+  §29) – kein neues Recht, ohne Recht 403 mit dem bestehenden Hinweistext.
+  Unabhängig vom Recht ist die Portalantwort fachlich nur bei offenem/
+  wiedereröffnetem Vorgang mit Buchung OHNE Stornozeile möglich, sonst 409 und
+  `canReplyPortal = false` (Phase 15, Review R1; docs/CUSTOMER_PORTAL.md §7).
+  Mitarbeitende können Portal-Sessions eines Kunden weder einsehen noch gezielt
+  beenden (kein Admin-Endpunkt, Order §55); der Kunde beendet seine Session per
+  Logout, ein E-Mail-Wechsel widerruft alle seine Sessions. Einzige Staff-Aktion
+  mit dieser Wirkung: Das Verschieben des Kunden in den Papierkorb (bestehendes
+  Recht `trash.manage`) widerruft alle seine Portal-Sessions und offenen
+  Magic Links; eine Wiederherstellung belebt sie nicht (Review R9).
+- **Demo:** `demo.manage` und Reset wie Phase 14; der Reset löscht Portal-Sessions
+  und Magic Links aller Demo-Kunden (sie melden sich neu an) sowie die
+  Portal-Auth-Ereignisse `portal.*` in `staff_security_events` (Review R10),
+  `/portal/*`-Mutationen unterliegen Reset-Gate und Reset-Barrier.
+

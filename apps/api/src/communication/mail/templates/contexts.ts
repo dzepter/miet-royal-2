@@ -116,6 +116,22 @@ export const manualCustomerReplyContextSchema = z.object({
 
 const noSecrets = z.object({});
 
+// Phase 15 (Kundenportal, Order §6/§30): Der Magic-Link-Token ist IMMER ein Secret
+// (verschlüsselter Outbox-Payload); der Kontext trägt nur Anrede und Gültigkeit.
+export const customerPortalMagicLinkContextSchema = z.object({
+  salutation,
+  /** Gültigkeit in Minuten (Anzeige im Text). */
+  validMinutes: z.number().int().min(1).max(1440).default(15),
+});
+export const customerPortalLinkSecretsSchema = z.object({
+  /** Magic-Link-Token: 32 Zufallsbytes base64url (43 Zeichen). */
+  portalToken: z.string().regex(/^[A-Za-z0-9_-]{16,128}$/),
+});
+export const customerPortalReplyNoticeContextSchema = z.object({
+  salutation,
+  processNumber,
+});
+
 export const MAIL_CONTEXT_SCHEMAS = {
   offer: offerContextSchema,
   order_confirmation: orderConfirmationContextSchema,
@@ -129,6 +145,11 @@ export const MAIL_CONTEXT_SCHEMAS = {
   voucher_delivery: voucherDeliveryContextSchema,
   invoice_delivery: invoiceDeliveryContextSchema,
   manual_customer_reply: manualCustomerReplyContextSchema,
+  // Phase 15 (Kundenportal)
+  customer_portal_magic_link: customerPortalMagicLinkContextSchema,
+  customer_portal_reply_notice: customerPortalReplyNoticeContextSchema,
+  customer_portal_reauth: customerPortalMagicLinkContextSchema,
+  customer_portal_email_change: customerPortalMagicLinkContextSchema,
 } as const satisfies Record<MailDeliveryKind, z.ZodTypeAny>;
 
 export const MAIL_SECRET_SCHEMAS = {
@@ -144,6 +165,11 @@ export const MAIL_SECRET_SCHEMAS = {
   voucher_delivery: voucherDeliverySecretsSchema,
   invoice_delivery: noSecrets,
   manual_customer_reply: noSecrets,
+  // Phase 15 (Kundenportal)
+  customer_portal_magic_link: customerPortalLinkSecretsSchema,
+  customer_portal_reply_notice: noSecrets,
+  customer_portal_reauth: customerPortalLinkSecretsSchema,
+  customer_portal_email_change: customerPortalLinkSecretsSchema,
 } as const satisfies Record<MailDeliveryKind, z.ZodTypeAny>;
 
 /** Eingabe-Typen (vor Defaults) – das füllen die Fachmodule. */

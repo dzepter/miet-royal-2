@@ -33,9 +33,11 @@ development: `APP_ENV`, `DATABASE_URL`, `AUTH_SECRET_KEY` (≥ 32 Zeichen,
 verschlüsselt u. a. TOTP-Secrets im Ruhezustand; je Umgebung ein eigener
 Zufallswert – der Isolations-Check erzwingt das), `STORAGE_DRIVER` (+ die zum
 Treiber gehörenden `STORAGE_*`-Variablen). Optional: `AUTH_ALLOWED_ORIGINS`
-(CSRF-Legacy-Fallback, meist leer). Optional mit Defaults: `API_HOST` (127.0.0.1),
+(CSRF-Legacy-Fallback für Clients ohne `Sec-Fetch-Site`-Header, meist leer;
+seit Phase 15 in `.env.example` dokumentiert). Optional mit Defaults: `API_HOST` (127.0.0.1),
 `API_PORT` (3001), `LOG_LEVEL` (debug in development, sonst info),
-`WORKER_POLL_INTERVAL_MS` (2000).
+`WORKER_POLL_INTERVAL_MS` (2000). Optional ohne Default (Phase 15, Kundenportal):
+`PORTAL_NEW_INQUIRY_URL`, `COMPANY_PHONE_NUMBER` – Abschnitt „Kundenportal“.
 
 ## Lokale Entwicklung
 
@@ -214,6 +216,22 @@ Beispieldomain. Die Whitelist-Domain wirkt erst mit dem nächsten
 `pnpm demo:seed`/`demo:reset`; bestehende Kunden behalten ihre Adresse. Details:
 docs/TECH_DECISIONS.md („Demo-Testadressen im Seed“).
 
+Phase 15 (Kundenportal): Auch die Portal-Mails (`customer_portal_magic_link`,
+`customer_portal_reauth`, `customer_portal_email_change`,
+`customer_portal_reply_notice`) unterliegen Whitelist und „[DEMO]“-Betreff –
+ohne Sink-Domain kann sich in der Demo KEIN Kunde anmelden (die Anforderung
+antwortet neutral 202, die Zustellung bleibt `blocked`/`DEMO_NOT_WHITELISTED`).
+Für die Portal-Übung eignen sich die Übungskunden mit Whitelist-Adresse UND
+bestätigter Buchung: `process.return.damage` (`miriam.demoperson@…`),
+`process.return.missing_part` (`jana.beispielhaft@…`) und
+`process.settlement.review` (`einkauf@…`); `customer.private.basic` hat nur eine
+Anfrage und `customer.org.basic` nur einen Angebotsentwurf (im Portal „keine
+aktuelle Buchung“ – ebenfalls ein Übungsfall). Die DB-Versanddrossel gilt auch in
+der Demo (höchstens 5 Login-Links je 15 min je Kunde, Phase 15 Review R4): Teilen
+sich mehrere Teilnehmende denselben Übungskunden, bleiben weitere Anforderungen
+in diesem Fenster still ohne Mail – für parallele Portal-Übungen verschiedene
+Übungskunden verwenden.
+
 ### Demo-Kennzeichnung der Staff-App
 
 Die Staff-App kennt ihre Umgebung über `GET /auth/me` (`environment`, auch im
@@ -227,9 +245,12 @@ zusätzliche Staff-Variable nötig.
 
 In `APP_ENV=demo` weist die API während eines laufenden Demo-Resets
 (`demo_dataset_state.reset_in_progress`) alle Business-Mutationen
-(`POST/PUT/PATCH/DELETE` unter `/staff/*`, `/public/*`, `/webhooks/*`) mit
-`503 DEMO_RESET` und `retry-after: 15` ab; ausgenommen sind `/auth/*`,
-`/staff/demo/*`, `/staff/push/*` und `/staff/offline/lease*`. Der Worker legt
+(`POST/PUT/PATCH/DELETE` unter `/staff/*`, `/public/*`, `/webhooks/*` und – seit
+Phase 15 – `/portal/*`) mit `503 DEMO_RESET` und `retry-after: 15` ab;
+ausgenommen sind `/auth/*`, `/staff/demo/*`, `/staff/push/*` und
+`/staff/offline/lease*`. Für das Kundenportal gibt es bewusst KEINE Ausnahme:
+Auch Magic-Link-Anforderung, -Einlösung und Logout warten (ein Consume würde
+sonst eine Session in den gerade gelöschten Datensatz schreiben; Order §47). Der Worker legt
 Business-Jobs (alle außer `system.heartbeat`) in dieser Zeit um 15 s zurück,
 ohne einen Versuch zu verbrauchen. In allen anderen Umgebungen existieren
 weder Gate noch Demo-Routen (`/staff/demo/*` ⇒ 404).
@@ -257,4 +278,73 @@ weder Gate noch Demo-Routen (`/staff/demo/*` ⇒ 404).
 - **PDFs:** In demo tragen Angebot, Auftragsbestätigung, Lieferschein und die
   Protokolle die Zeile „DEMO – keine echten Kundendaten“ (jede Seite) und den
   Titelpräfix „DEMO · “; keine Staff-/Web-Variable nötig (Quelle `APP_ENV`).
+- **Kundenportal (Phase 15):** Der Reset löscht `customer_portal_magic_links` und
+  `customer_portal_sessions` (Order §46; damit auch offene E-Mail-Wechsel-Links)
+  – Demo-Kunden müssen sich danach neu anmelden; ein vor dem Reset erzeugter
+  Magic Link ist danach ungültig (401) und legt keine Session im neuen Seed an.
+  Phase 15 (Review R10): Zusätzlich löscht der Reset in derselben Transaktion die
+  Portal-Auth-Ereignisse `staff_security_events` mit `type LIKE 'portal.%'`
+  (`portal.login`, `portal.logout`, `portal.email_changed`,
+  `portal.sessions_revoked` – sie tragen Kunden-/Session-IDs des alten
+  Datensatzes; Zähler `staff_security_events:portal` im Reset-Ergebnis).
+  Staff-Sessions, Geräte, Training und alle übrigen Security-Ereignisse
+  (Staff-Auth, `demo.reset_*`, `training.*`) bleiben unberührt.
+
+## Kundenportal (Phase 15)
+
+Das Kundenportal (`/konto/*` in apps/web, API-Routen `/portal/*`) läuft in jeder
+Umgebung in den vorhandenen Web-/API-/Worker-Prozessen – keine eigene Instanz,
+keine eigene Datenbank, kein eigenes Secret, keine Pflichtvariable. Details zur
+Fachlogik: docs/CUSTOMER_PORTAL.md.
+
+- **Variablen (optional, keine Secrets):** `PORTAL_NEW_INQUIRY_URL` (Ziel von
+  „Neue Anfrage starten“; absolute http(s)-URL, in production nur https) und
+  `COMPANY_PHONE_NUMBER` (Anruf-Button; Ziffern mit optional führendem `+`,
+  Leerzeichen, `-`, `/`, Klammern). Beide ohne Default: `config.portal =
+  { newInquiryUrl: null, phoneNumber: null }`, `GET /portal/me` liefert sie als
+  `links`. Ungültige Werte brechen den Start ab (Konfigurationsfehler nennt nur
+  den Variablennamen); ein LEERER Wert ist ebenfalls ein Fehler (wie bei
+  `MAIL_PUBLIC_WEB_BASE_URL`) – die Variable dann weglassen. Produktivwerte
+  fehlen noch (docs/OPEN_ITEMS.md „Phase 15“).
+- **Portal-Basis = `MAIL_PUBLIC_WEB_BASE_URL`:** Anmelde-, Reauth- und E-Mail-
+  Wechsel-Links werden ausschließlich aus dieser Variable und festen Pfaden
+  gebildet (`/konto/anmelden`, `/konto/profil/bestaetigen`,
+  `/konto/profil/e-mail-bestaetigen`, Hinweis-Mail `/konto`), Token im URL-
+  Fragment (`#token=…`, erreicht den Server nie). Host-Header,
+  `X-Forwarded-Host`, Query oder Body haben keinen Einfluss. Sie muss auf die
+  Web-App DERSELBEN Umgebung zeigen (Demo-Links auf die Demo-Web-Instanz; der
+  Isolations-Check vergleicht sie). Ohne `MAIL_ENABLED=true` gibt es keinen
+  Portal-Login.
+- **Web → API:** Same-Origin-Rewrite `/api/:path*` → `WEB_API_ORIGIN` (wie die
+  Staff-App); das Portal ruft `/api/portal/...` mit `credentials: 'same-origin'`.
+  Kein CORS, kein neues Proxy-Ziel; der globale CSRF-Hook (`Sec-Fetch-Site`,
+  Fallback `AUTH_ALLOWED_ORIGINS`) gilt für alle Portal-Mutationen.
+  Phase 15 (Review R3): Der Rewrite puffert Request-Bodies bis 13 MiB
+  (`experimental.proxyClientMaxBodySize` in `apps/web/next.config.ts`, keine
+  Variable; Next-Default 10 MiB schnitt Foto-Nachrichten ab) – über dem
+  API-Limit der Portal-Nachrichten von 12 MiB. Phase 15 (Review R4): Der
+  Rewrite reicht ein vom Client gesendetes `X-Forwarded-For` unverändert weiter
+  und hängt selbst nichts an – Web-Next und API nie direkt erreichbar machen,
+  der vorgeschaltete Proxy hängt die Client-IP an, `API_TRUST_PROXY_HOPS=1`
+  (docs/DEPLOYMENT_NOTES.md „Öffentliche Token-Links hinter Proxy“).
+- **Portal-Cookie:** außerhalb development `__Host-mr_customer_session`
+  (HttpOnly, Secure, Path=/, kein Domain, SameSite=Strict, Max-Age bis zum
+  ABSOLUTEN Ablauf 30 Tage nach Anmeldung – kein Sliding), in development
+  `mr_customer_session` (kein Secure, weil `__Host-` HTTPS verlangt). Token nie
+  im Client-Storage. Staff-Cookie `mr_staff_session` und Portal-Cookie sind
+  getrennte Sessions: Staff-Sessions öffnen keine Portal-Route (401) und
+  umgekehrt.
+- **Isolation (Order §48):** Sessions und Magic Links liegen in
+  `customer_portal_sessions`/`customer_portal_magic_links` der jeweiligen
+  Datenbank – ein Demo-Cookie oder -Token ist in production/development
+  unbekannt (401) und umgekehrt; es gibt keine Cross-Environment-URL.
+- **Demo:** Banner über das Root-Layout der Web-App (`WEB_APP_ENV=demo`, gilt für
+  `/konto/*`); Portal-Mails nur an die Whitelist, Betreff „[DEMO]“ (Abschnitt
+  „Demo-Mail“); Gate-/Barrier-Präfix `/portal` (Abschnitt „Demo-Reset-Gate“);
+  Reset löscht Portal-Sessions, Magic Links und Portal-Auth-Ereignisse
+  (`portal.*`, Phase 15 Review R10; Abschnitt „Reset-Folgen“).
+- **Cleanup:** Abgelaufene/widerrufene Sessions und verbrauchte/abgelaufene Magic
+  Links räumt der bestehende Scan-Lauf `communication.scan_due` (alle 2 min,
+  Worker; API-Testrunner identisch) über Portal-Scanner auf – keine neue
+  Scheduler-Konfiguration (Order §52).
 

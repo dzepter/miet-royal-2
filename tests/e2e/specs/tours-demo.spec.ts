@@ -29,6 +29,7 @@ import {
 } from '../helpers/demo-env.ts';
 import { resetRoutingFake, routingRequests } from '../helpers/routing.ts';
 import { seedTours, todayWindow, type ToursSeedResult } from '../helpers/tours.ts';
+import { demoApiLogin } from '../helpers/training.ts';
 
 test.describe.configure({ mode: 'serial' });
 
@@ -63,16 +64,10 @@ test.beforeAll(async () => {
   await resetRoutingFake();
   const health = await demo<{ environment: string }>('GET', '/health');
   expect(health.data.environment).toBe('demo');
-  const login = await fetch(`${DEMO_API_ORIGIN}/auth/login`, {
-    method: 'POST',
-    headers: { connection: 'close', 'content-type': 'application/json' },
-    body: JSON.stringify({ email: DEMO_ADMIN_EMAIL, password: DEMO_ADMIN_PASSWORD }),
-  });
-  expect(login.status).toBe(200);
-  const setCookie = login.headers.get('set-cookie') ?? '';
-  const match = /(__Host-)?mr_staff_session=([^;]+)/.exec(setCookie);
-  expect(match, 'Demo-Session-Cookie').not.toBeNull();
-  cookie = `${match![1] ?? ''}mr_staff_session=${match![2]}`;
+  // Phase 15: Vorangehende Demo-Specs (u. a. portal-demo) melden denselben Demo-Admin an; das
+  // Login-Limit (10 je Minute je IP + E-Mail) gilt auch hier ⇒ 429-toleranter Helfer (wartet
+  // `retry-after` ab, wie die Training-Specs seit Phase 14).
+  cookie = await demoApiLogin(DEMO_ADMIN_EMAIL, DEMO_ADMIN_PASSWORD);
   const o1Window = todayWindow(90, 150);
   seed = seedTours(
     {

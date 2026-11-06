@@ -4481,3 +4481,242 @@ Vom Auftraggeber bestätigt (2026-10-31, Phase 13 Final §6) – nicht mehr offe
   Katalogausfall 503). Bestandstest RF4 prüft
   jetzt, dass Phase B unabhängig von jeder Zeitspanne auf das Ende eines
   Shared-Inhabers wartet.
+
+## Phase 15: Kundenportal (2026-11-05)
+
+Gesamtdarstellung: docs/CUSTOMER_PORTAL.md. Hier die technischen Entscheidungen
+(Stand nach den Review-Fixes R1–R13).
+
+- **Ort und Topologie**: Portal unter `/konto` in `apps/web` (kein neues
+  Frontend-Projekt). Alle Seiten sind Client-Komponenten, Daten kommen nur per
+  `fetch('/api/portal/…', { credentials: 'same-origin', cache: 'no-store' })` über
+  den bestehenden Same-Origin-Rewrite `/api/:path*` → `WEB_API_ORIGIN`. Damit
+  funktionieren HttpOnly-Cookies mit `SameSite=Strict` ohne CORS; der globale
+  `csrfRejects`-Hook schützt die Portal-Mutationen unverändert. `next.config.ts`
+  setzt für `/konto` und `/konto/:path*` `Cache-Control: private, no-store`,
+  `X-Robots-Tag: noindex`, `Referrer-Policy: no-referrer`, `X-Frame-Options: DENY`,
+  `nosniff`; das Root-Layout ist dynamisch (`connection()`), es gibt kein SSG/ISR
+  für Kontoseiten.
+- **Body-Limit-Kette (Review R3)**: `experimental.proxyClientMaxBodySize:
+  13 * 1024 * 1024` in `apps/web/next.config.ts` (Bytezahl statt `'13mb'`). Next
+  klont Bodies beim Rewrite und puffert sie nur bis zu diesem Wert (Default
+  10 MiB); darüber kam ein gekürztes JSON mit unverändertem `Content-Length` bei
+  der API an (Timeout statt Ablehnung). Kette: Client-Vorprüfung 8 MiB Rohbytes
+  (Base64-JSON ≈ 10,7 MiB) < API-Limit Portal-Chat 12 MiB ≤ Rewrite-Puffer
+  13 MiB; nginx `client_max_body_size 13m;`. Über dem API-Limit antwortet die API
+  413, über den Rewrite kommt das aber oft als 500 an (EPIPE im Proxy,
+  DEPLOYMENT_NOTES) – eine verständliche Meldung liefert nur die Vorprüfung.
+- **Client-IP (Review R4)**: Der Next-Rewrite hängt kein `X-Forwarded-For` an
+  und reicht ein vom Client gesendetes unverändert weiter. Richtig ist deshalb
+  `API_TRUST_PROXY_HOPS=1` hinter einem vorgeschalteten Proxy, der
+  `$proxy_add_x_forwarded_for` anhängt; Next und API sind nie direkt erreichbar.
+  Die frühere Doku-Angabe „nginx → Next → API = 2“ machte die IP-Limits
+  fälschbar und ist korrigiert (DEPLOYMENT_NOTES „Öffentliche Token-Links hinter
+  Proxy“, Test `portal-review-web`).
+- **Identität**: kein Konto-Fachobjekt. `customer_portal_sessions` und
+  `customer_portal_magic_links` (Migration 0032) referenzieren `customers.id`.
+  Gelöschte Kunden (`deleted_at`) ⇒ jede Session ungültig; `moveToTrash`
+  widerruft zusätzlich in derselben Transaktion alle Sessions und offenen Links
+  (Review R9), damit eine Wiederherstellung keine alte Session belebt. Kein
+  Security-Event dafür (bewusst minimal, OPEN_ITEMS).
+- **Magic Link**: 32 Zufallsbytes base64url (`generateToken`), DB nur
+  `sha256Hex`; Klartext ausschließlich im verschlüsselten Secret-Payload der
+  Outbox (Purpose `mail-secret-payload`) und im Mail-Link
+  `MAIL_PUBLIC_WEB_BASE_URL + /konto/anmelden#token=…` (Fragment – nie an Server,
+  Proxy oder Mail-Scanner übertragen; kein GET-Consume). 15 min, one-time per
+  `UPDATE … WHERE consumed_at IS NULL AND revoked_at IS NULL AND expires_at > now
+  RETURNING` (genau ein Gewinner bei parallelem Consume). Neue Login-Anforderung
+  widerruft ältere offene Login-Links. Treffer nur bei genau EINEM aktiven Kunden
+  mit der normalisierten Adresse; 0 oder > 1 ⇒ kein Link. Antwort immer
+  `202` mit identischem Text und einer Mindestdauer von 150 ms. Unter dem
+  Kunden-Lock liest `requestLogin` den Kunden frisch und verlangt, dass er noch
+  aktiv ist UND noch genau die angefragte Adresse trägt (sonst kein Link –
+  Rennen mit E-Mail-Wechsel bzw. Papierkorb, Review R6/R9). Login-Consume,
+  Session-Anlage und Audit laufen in einer Transaktion unter demselben Lock.
+- **Sperrreihenfolge (Review R6)**: neue Datei `apps/api/src/portal/auth/locks.ts`
+  mit `lockPortalCustomerAuth(executor, customerId)` =
+  `pg_advisory_xact_lock(hashtext('portal-customer-auth:' + id))`. Die
+  Link-Anforderungen (Login, Reauth, E-Mail-Wechsel), Login- und
+  E-Mail-Wechsel-Consume und `moveToTrash` nehmen ZUERST diesen Lock. Den
+  Adress-Lock `portal-email-change:<adresse>` nimmt danach nur der
+  E-Mail-Wechsel-Consume; dann folgen Link-/Session-Zeilen und
+  `customers FOR UPDATE`. Login- und E-Mail-Wechsel-Consume lesen die Link-Zeile
+  vorher OHNE Sperre, nur um die Kunden-ID zu kennen. Ergebnis: nie zwei offene
+  Wechsel-Links (vorher möglich), kein Deadlock 40P01 ⇒ 500 bei parallelen
+  Consumes. Logout und Reauth-Consume bleiben ohne Lock und ohne Transaktion
+  (Einzelstatements, kein Deadlock möglich).
+- **Drosselung**: HTTP-Rate-Limits (In-Memory je Prozess, wie Staff-Auth):
+  Anforderung 10/min je `ip|sha256(mail)[0..32]` + 30/min je IP, Consume 10/min je IP,
+  Reauth-/E-Mail-Wechsel-Anforderung 5/15 min je `ip|Sessionhash`, Chat-Senden
+  20/min je `ip|Sessionhash`, Storno 10/min je Session (Review R5, Schlüssel =
+  Hash des Sessiontokens ohne IP, ohne Cookie die IP). Zusätzlich eine DB-basierte
+  Versanddrossel (Review R4, `PORTAL_LINK_THROTTLE_MAX = 5`,
+  `PORTAL_LINK_THROTTLE_WINDOW_MS = 15 min` in `portal/auth/constants.ts`):
+  Login- und E-Mail-Wechsel-Links je Kunde, Reauth-Links je Session; gezählt
+  werden alle im Fenster erzeugten Zeilen (auch verbrauchte/widerrufene), unter
+  dem Kunden-Lock exakt. Darüber still kein Link, kein Widerruf, keine Mail
+  (Log `portal.magic_link.skipped`, `reason: 'throttled'`), Antwort unverändert.
+  Sie wirkt unabhängig von IP und `X-Forwarded-For` – Schutz vor Mailbombing,
+  falls die IP-Limits hinter Proxys falsch konfiguriert sind.
+- **Session**: Token 32 Bytes, DB nur Hash; `expires_at = created_at + 30 Tage`
+  absolut (CHECK `expires_at > created_at`), `last_seen_at` gedrosselt (60 s) und
+  ohne Wirkung auf den Ablauf. Cookie `__Host-mr_customer_session` (HttpOnly,
+  Secure, Path=/, kein Domain, SameSite=Strict, Max-Age = Restlaufzeit) außerhalb
+  development, `mr_customer_session` in development. Eine Staff-Session oder ein
+  Angebots-Token gilt an der Portal-Grenze nie.
+- **Reauth**: Profilmutationen verlangen `now − reauthenticated_at ≤ 15 min`
+  (Login setzt den Wert). Reauth-Link an die aktuelle Adresse, an Kunde UND
+  Session gebunden, verlängert die Session nicht.
+- **E-Mail-Wechsel**: Anforderung nur mit frischer Reauth, Antwort immer neutral
+  (Review R8): `202` mit `PORTAL_MESSAGES.EMAIL_CHANGE_REQUESTED` und derselben
+  Mindestdauer von 150 ms – auch bei einer Adresse, die einem anderen aktiven
+  Kunden gehört (vorher `400 PORTAL_EMAIL_UNAVAILABLE` = Existenz-Orakel).
+  Ausnahmen bleiben: eigene aktuelle Adresse und ungültiges Format 400, ohne
+  frische Reauth 403. Belegt ⇒ kein Link, keine Mail, aber eine nie versandte,
+  sofort widerrufene **Platzhalterzeile** `email_change` (zufälliger Token-Hash,
+  `insertLink(…, { revoked: true })`), die das Drosselkontingent genau wie eine
+  freie Anforderung verbraucht – sonst hätte eine Kontrollmail aus einer zweiten
+  Session verraten, ob die Adresse vergeben ist. Wegen des CHECK-Constraints
+  trägt sie die angefragte Adresse in `proposed_email` bis zum Cleanup (keine
+  Schemaänderung; OPEN_ITEMS). Ältere offene Wechsel-Links werden in beiden
+  Fällen widerrufen. Link an die NEUE Adresse; `customers.email` ändert sich
+  erst beim Consume, der unter Kunden- und Adress-Sperre die Eindeutigkeit
+  erneut prüft (fail-closed 409), die Adresse setzt und alle Sessions und
+  offenen Links des Kunden widerruft. Der Consume braucht kein Cookie
+  (Bestätigung auf einem anderen Gerät möglich); gebunden ist er an Token, Kunde
+  und die noch gültige anfordernde Session. Das Web zeigt nach 2xx immer den
+  neutralen Text (`PORTAL_UI.EMAIL_CHANGE_SENT` entfernt).
+- **Profil-PATCH (Review R7)**: `updateCustomerFromPortal` übernimmt `email`
+  nicht mehr und entfernt `type`/`email` aus dem UPDATE-Set (`toRow`-Ergebnis
+  ohne diese Felder). Ein parallel committeter, verifizierter E-Mail-Wechsel kann
+  so nicht mehr zurückgeschrieben werden (vorher Lost Update: alte Adresse
+  zurück, alle Sessions widerrufen, Kunde ausgesperrt).
+- **Sichtbarkeit**: einzige Regel `CustomerPortalVisibilityPolicy`
+  (`apps/api/src/portal/visibility.ts`), Tabelle in CUSTOMER_PORTAL.md §4. Die
+  Stornozeile wird vor dem Vorgangsstatus geprüft: Eine Buchung mit Stornozeile
+  ist nie `active`, auch wenn der Vorgang danach wieder geöffnet wurde (Review
+  R1; Phase 9 reaktiviert die alte Buchung nicht). Storno-Block
+  (`buildPortalCancellationInfo`) und Rechnungsstatus (`portalInvoiceStatus`)
+  hängen an `cancellation !== null`, nicht am Zustand. Die 24-h-
+  Bestätigungsansicht eines kostenfreien Stornos gilt nur für
+  `cancelerType === 'customer'` und nur für `GET /portal/bookings/:id` und den
+  Storno-POST (`resolve(…, { confirmationWindow: true })`, Default aus); Dokumente,
+  Download, Vorschau, Travel-Status, Nachrichten und Fotos lösen ohne Fenster auf
+  ⇒ 404 (Review R12). Ein kostenfreier Staff-Storno ist sofort unsichtbar.
+- **Web nach kostenfreiem Storno (Review R12)**: Die Detailseite zeigt bei
+  `portalState === 'cancelled_free'` weiter die Buchungsansicht aus dem Snapshot
+  mit dem Storno-Block; Dokument- und Nachrichtenbereich werden nicht gerendert
+  (`confirmationOnly`; die API liefert dort 404), der Storno-Bereich nur bei
+  `active`, der Rechnungsbereich entfällt bei 0 € („keine Rechnung“). Der
+  Nachrichtenbereich trägt `key={portalState}` und lädt nach jedem Storno neu
+  (kostenpflichtig: Hinweis `BOOKING_CLOSED` statt Formular). Eine stornierte
+  Buchung ohne Termine zeigt keinen Termine-Bereich.
+- **DTOs**: explizite Builder (`portal/views.ts`, `portal/auth/views.ts`,
+  `portal/chat/views.ts`), nie Zeilen-Spreads oder Staff-Views. Ein Deep-Scan-
+  Test prüft jede Portal-Antwort auf eine Liste verbotener Schlüssel
+  (Staff-IDs, Notizen, Rabattgrund, Storage-Keys, Buchhaltungsreferenzen, Tokens …).
+- **Dokumente**: feste Regel statt Spalte „kunden-sichtbar“ (angenommene
+  Angebotsversion, freigegebene AB, Lieferschein/Übergabeprotokoll finalisierter
+  Übergaben, Rückgabeprotokoll finalisierter Rückgaben); Download nur über die
+  Buchungsroute mit erneuter Prüfung, `private, no-store`, `nosniff`.
+- **Chat**: `conversation_channel = portal` der Phase-12-Konversation;
+  `createInbound` akzeptiert jetzt `portal`. Fotos per base64-JSON, Prüfung mit
+  `acceptImageAttachment` (8 MiB, Magic Bytes, JPEG/PNG/WebP), max. 5 je
+  Nachricht, Body-Limit 12 MiB; Foto-Route zusätzlich
+  `Content-Security-Policy: default-src 'none'; sandbox` (Defense in Depth gegen
+  Polyglot-Dateien; Dokument-PDFs bewusst ohne). Push `portal_message` an aktive
+  Mitglieder einer Systemadmin-Rolle (`staff_roles.is_system_admin`) und die
+  effektiv zuständige Person (`resolveEffectiveAssigneeId` mit Vertretungen),
+  Schlüssel `portal_message:<messageId>:<userId>`, nie Nachrichtentext.
+  Staff-Antwort `ConversationService.replyByPortal` (Recht
+  `message.reply_customer`) speichert die outbound-Nachricht und reiht danach
+  `customer_portal_reply_notice` ein; scheitert die Mail, bleibt die Nachricht.
+- **Staff-Portalantwort-Sperre bei Stornozeile (Review R1, Nachbesserung)**: Nach
+  R1 ist eine Buchung mit Stornozeile im Portal nie `active`; vorher konnte Staff
+  bei einem wiedereröffneten Vorgang trotzdem per Portal antworten und eine
+  Hinweis-Mail zu einer Nachricht auslösen, die der Kunde nicht sehen (0 €) bzw.
+  nicht erwidern (kostenpflichtig) kann. `replyByPortal` liest die Stornozeile
+  per `LEFT JOIN cancellations` in derselben Abfrage unter `FOR UPDATE OF
+  processes` und wirft bei vorhandener Zeile `AuthError('CONFLICT')` ⇒ 409 ohne
+  Nachricht und ohne Hinweis-Mail; `portalReplyPossible`
+  (`portal/chat/staff-hints.ts`) verlangt `cancellations.id IS NULL` ⇒
+  `canReplyPortal = false`, die Staff-UI zeigt das Radio „Portal“ dann nicht.
+  Ein parallel laufendes Storno fängt die bestehende Statusprüfung ab (dieselbe
+  Vorgangssperre, danach `main_status = cancelled`). Gesperrt sind bewusst beide
+  Fälle (0 € und kostenpflichtig); der kostenpflichtige Fall ist eine offene
+  Fachentscheidung. Die E-Mail-Antwort bleibt möglich.
+- **Storno**: ausschließlich `CancellationService` (Actor
+  `{ type: 'customer', id: null }` ⇒ `canceler_type = customer`,
+  `canceler_staff_id = NULL`). Die Bestätigung ist an die gezeigte Gebühr
+  gebunden (Review R2): Body `z.strictObject({ confirm: z.literal(true),
+  expectedFeeCents: z.number().int().min(0).max(100_000_000) })`; der Service
+  nimmt additiv `options.expectedFeeCents` entgegen und prüft direkt nach
+  `calculate()` unter der Prozesssperre, vor jeder Schreiboperation
+  (`CancellationFeeChangedError` ⇒ Portal `409 PORTAL_CANCELLATION_FEE_CHANGED`).
+  Blocker werden vorher geprüft (409 `PORTAL_CANCELLATION_BLOCKED`), der
+  idempotente Zweig (bereits storniert) ignoriert den Prüfwert, Staff-Routen
+  übergeben nichts und bleiben unverändert. Das Web sendet `preview.feeCents ??
+  0`, lädt bei FEE_CHANGED die Vorschau neu und zeigt den Hinweis im Dialog.
+  Kundenstorno reiht `cancellation_confirmation` sofort ein – an die aktuelle
+  `customers.email` des aktiven Kunden, Rückfall Snapshot, Anrede aus dem
+  Snapshot (Review R11; Staff-Storno unverändert Snapshot) – und ein
+  Backstop-Scanner (`portal_cancellation_mail_backstop`, Status `prepared` älter
+  als 2 min) holt verlorene Einreihungen nach. Ein wiederholter Klick oder der
+  Race-Zweig reiht nur nach, solange die Bestätigung `prepared` ist, nie nach
+  `failed`/`blocked` (Review R5; vorher je Klick eine neue Zustellung
+  `:retry:<id>`).
+- **Rechnungsstatus**: nur `Offen/Bezahlt/Überfällig` aus `payment_status` der
+  übertragenen Abrechnung bzw. des kostenpflichtigen Stornos; davor „Rechnung wird
+  vorbereitet“ – auch bei abgeschlossenem Vorgang ohne Abrechnung (Review R13,
+  vorher „Keine Rechnung vorhanden“ neben „Abgeschlossen – Rechnung offen“);
+  finaler Betrag erst ab `locked_at`. Mit Stornozeile immer aus dem Storno. Kein
+  eigenes Rechnungs-PDF.
+- **Demo**: `/portal` ist ein gegateter Präfix (Reset-Gate + Barrier für alle
+  Mutationen inkl. Login-Consume und Logout); Portal-Tabellen in
+  `DEMO_BUSINESS_TABLES_DELETE_ORDER` (75 Tabellen), zusätzlich löscht Phase B in
+  derselben Transaktion die `portal.*`-Sicherheitsereignisse aus
+  `staff_security_events` (Review R10, Zähler `staff_security_events:portal`);
+  übrige Staff-Ereignisse bleiben.
+- **Config**: optionale `PORTAL_NEW_INQUIRY_URL` (absolute URL, production nur
+  https) und `COMPANY_PHONE_NUMBER` ⇒ `config.portal`; fehlen sie, blendet das
+  Portal „Neue Anfrage starten“-Link bzw. Anrufen aus (Go-live-Punkt). Leer oder
+  ungültig ⇒ Konfigurationsfehler.
+- **Cleanup**: Scanner `portal_auth_cleanup` im bestehenden Scan-Lauf (Links mehr
+  als 1 Tag nach Ablauf/Verbrauch/Widerruf, Sessions mehr als 7 Tage nach
+  Ablauf/Widerruf).
+- **Tests**: Pflichttests §56–§65 und Review-Regressionstests R1–R13 siehe
+  TEST_PLAN „Kundenportal (Phase 15)“. Magic-Link-Testtokens nur in-process (im
+  Integrationstest aus dem verschlüsselten Outbox-Secret, im E2E aus der Mail der
+  SMTP-Senke) – keine Reveal-Route, kein stdout, keine Klartextdatei.
+
+### Bewusst offen (Deferred, Phase 15)
+- Manuell abgeschlossene Vorgänge ohne Abrechnung bleiben „Abgeschlossen –
+  Rechnung offen“ sichtbar, bis eine Abrechnung bezahlt ist (Order §14 B;
+  Fachregel für das Ende dieser Sichtbarkeit fehlt).
+- Staff-Portalantwort nach kostenpflichtigem Storno und Reopen: konservativ
+  gesperrt, Fachentscheidung offen.
+- R8-Platzhalterzeile speichert die belegte Adresse bis zum Cleanup in
+  `proposed_email` (Alternative nur per Schemaänderung).
+- Drossel: Ein Dritter kann das Login-Kontingent einer bekannten Adresse
+  verbrauchen; geteilte Demo-Übungskunden treffen die Drossel gemeinsam.
+- Kein Security-Event beim Papierkorb-Widerruf; eine von Staff geänderte, nicht
+  verifizierte Adresse gilt für die Stornobestätigung als „aktuell“; Staff-PATCH
+  mit veraltetem Formular (optimistische Sperre, spätere Phase).
+- Optionale Härtungen R5-TOCTOU (`prepared` unter `FOR UPDATE` in
+  `sendConfirmation` prüfen) und R1-Wettlauf Storno + Reopen gegen Portalantwort.
+- Staff-Fotoroute ohne CSP; `apps/staff` behält den Next-Default 10 MiB beim
+  Rewrite, `/staff/offline/sync` erlaubt 12 MiB (vorbestehend).
+- Consume-Limit 10/min je IP trifft Kunden hinter gemeinsamer NAT-IP.
+- Portalnachrichten werden nicht automatisch als „Kundenantwort“ der
+  Abrechnungsklärung gewertet.
+- Mehrdeutige Adressen (mehrere aktive Kunden) erhalten keinen Link; ein
+  Staff-Hinweis dafür ist nicht definiert.
+- Produktivwerte `PORTAL_NEW_INQUIRY_URL`, `COMPANY_PHONE_NUMBER`,
+  `pickup_exact_address`.
+
+Details und Begründungen: docs/OPEN_ITEMS.md „Phase 15“.
+
+### Bewusst nicht gebaut
+Buchungshistorie, Passwort-/Social-Login, Kunden-2FA, WhatsApp-Button, Live-GPS,
+ETA, Fahrername, Online-Payment, Rechnungs-PDF, Konfigurator, CMS, Push an Kunden,
+Admin-Oberfläche für Portal-Sessions.

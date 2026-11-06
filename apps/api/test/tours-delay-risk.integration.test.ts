@@ -591,7 +591,8 @@ describe('87.–94. Push, Spam, Auflösung, keine Kundenkommunikation, PII', () 
       expect(payload.title).toBe('Tour droht Termin zu verpassen');
       expect(payload.body).toBe(`Lieferung ${processNumber}`);
       const text = JSON.stringify(payload);
-      expect(text).not.toMatch(/Klara|Kommerz|Lieferweg|55129|Mainz|0171|49\.9|8\.2|€|EUR/);
+      // Telefon der Testkundin über den eindeutigen Teil „9998877“ (Tag/URL tragen UUIDs, „0171“ traf dort zufällig).
+      expect(text).not.toMatch(/Klara|Kommerz|Lieferweg|55129|Mainz|9998877|49\.9|8\.2|€|EUR/);
       expect(text).not.toMatch(/latitude|longitude|key=/i);
     }
   });

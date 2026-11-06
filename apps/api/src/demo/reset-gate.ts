@@ -18,8 +18,14 @@ export const DEMO_RESET_RETRY_AFTER_SECONDS = 15;
 export const DEMO_RESET_GATE_CACHE_TTL_MS = 1000;
 
 const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
-/** Pfadbereiche mit Business-Mutationen (Design §7). */
-const GATED_PREFIXES = ['/staff', '/public', '/webhooks'] as const;
+/**
+ * Pfadbereiche mit Business-Mutationen (Design §7). Phase 15 (portal, Order §47):
+ * `/portal` – alle Kundenportal-Mutationen (Login-Request/-Consume, Logout,
+ * Reauth, E-Mail-Wechsel, Profil, Chat, Foto, Storno) laufen während eines
+ * Resets auf 503 DEMO_RESET; die Barrier-Hooks nutzen dieselbe Entscheidung
+ * (Shared-Lock über die gesamte Mutation). Es gibt keine Portal-Ausnahme.
+ */
+const GATED_PREFIXES = ['/staff', '/public', '/webhooks', '/portal'] as const;
 /**
  * Ausnahmen: Anmeldung/Sperre/Abmeldung, die Demo-Verwaltung selbst (Status,
  * erneuter Reset nach Abbruch), Push-Geräte (keine Business-Daten) und die

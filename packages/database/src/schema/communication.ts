@@ -48,6 +48,11 @@ export const mailDeliveryKind = pgEnum('mail_delivery_kind', [
   'voucher_delivery',
   'invoice_delivery',
   'manual_customer_reply',
+  // Phase 15 (Kundenportal, Order §30)
+  'customer_portal_magic_link',
+  'customer_portal_reply_notice',
+  'customer_portal_reauth',
+  'customer_portal_email_change',
 ]);
 
 export const mailDeliveryStatus = pgEnum('mail_delivery_status', [

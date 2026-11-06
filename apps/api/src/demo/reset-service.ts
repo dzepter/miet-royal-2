@@ -6,6 +6,7 @@ import {
   integrationJobs,
   inventoryItems,
   machines,
+  staffSecurityEvents,
   type Database,
   type DatabaseExecutor,
   type DatabaseTransaction,
@@ -106,10 +107,12 @@ export const DEMO_RESET_WIPE_LOCK_TIMEOUT_MS = 30_000;
 
 /**
  * Business-Tabellen in Löschreihenfolge (Kinder vor Eltern, Code-Map B §3.3):
- * 69 FK-gebundene + 4 FK-freie = 73 Tabellen. Zusammen mit der Behalten-Liste
+ * 71 FK-gebundene + 4 FK-freie = 75 Tabellen (Phase 15: + customer_portal_magic_links,
+ * customer_portal_sessions – Order §46). Zusammen mit der Behalten-Liste
  * unten decken sie alle Tabellen der Datenbank ab (Review-Prüfung R7).
  * Bewusst NICHT enthalten (Order §18, Code-Map B §3.5): staff_* (inkl.
- * Sessions, bekannte Geräte, Security-Events), push_subscriptions,
+ * Sessions, bekannte Geräte, Security-Events – Ausnahme Phase 15 (Review R10):
+ * Ereignisse `portal.*` werden in `wipe()` gezielt gelöscht), push_subscriptions,
  * calendar_feed_tokens, offline_access_leases, system_settings,
  * accounting_tax_config, lexware_integration_state, terms_versions,
  * integration_rate_limits, inbound_mail_state, products, product_prices,
@@ -203,6 +206,11 @@ export const DEMO_BUSINESS_TABLES_DELETE_ORDER: readonly string[] = [
   'offers',
   // 8.
   'processes',
+  // Phase 15 (portal, Order §46): Portal-Auth-Daten des Kunden – Magic Links
+  // referenzieren Sessions (session_id), Sessions referenzieren Kunden.
+  // Staff-Auth und Training bleiben unberührt; kein CASCADE.
+  'customer_portal_magic_links',
+  'customer_portal_sessions',
   'customers',
   // Ohne FK-Bindung (Fingerprints, Cache, Webhook-Ereignisse, Offline-Quittungen)
   'appointment_conflict_suppressions',
@@ -682,6 +690,15 @@ export class DemoResetService implements DemoResetRunner {
         const result = await tx.execute(sql`DELETE FROM ${sql.identifier(table)}`);
         deleted[table] = rowCount(result);
       }
+      // Phase 15 (Review R10): Portal-Auth-Ereignisse (`portal.login/logout/email_changed/
+      // sessions_revoked`, auth/audit.ts) liegen in der Staff-Tabelle, tragen aber Kunden-/Session-
+      // IDs des alten Datensatzes – „sonstige portalgebundene Customer-Auth-Daten“ (Order §46).
+      // Gleiche Transaktion wie die übrigen Löschungen; Staff-Ereignisse (Auth, Training,
+      // demo.reset_*) bleiben unangetastet.
+      const portalEvents = await tx.execute(
+        sql`DELETE FROM ${staffSecurityEvents} WHERE ${staffSecurityEvents.type} LIKE 'portal.%'`,
+      );
+      deleted['staff_security_events:portal'] = rowCount(portalEvents);
       // Business-Jobs (pending/dead/succeeded) entfernen; laufende (processing)
       // bleiben – ihre Handler enden bei fehlenden Daten still (idempotent).
       const jobs = await tx

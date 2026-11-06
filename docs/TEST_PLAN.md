@@ -172,6 +172,12 @@ Offline-Rückgabe + parallele Onlineänderung → Konflikt, kein stilles Übersc
 ## Customer
 Magic Link nach 15min ungültig.
 Profiländerung verändert laufenden Booking-Snapshot nicht.
+Phase-15-Stand (Kundenportal `/konto`, docs/CUSTOMER_PORTAL.md): beide Regeln sind
+Pflichttests (A7 in `portal-auth`, B3/P11 in `portal-booking`/`portal-profile`).
+Dazu u. a.: keine Enumeration (auch nicht beim E-Mail-Wechsel), Session absolut 30
+Tage, Reauth ≤ 15 min, Sichtbarkeit nur „aktueller“ Buchungen (Stornozeile schlägt
+Vorgangsstatus), Storno an die gezeigte Gebühr gebunden, IDOR ⇒ neutrales 404.
+Zuordnung aller Pflicht-, E2E- und Review-Tests: Abschnitt „Kundenportal (Phase 15)“.
 
 ## Website
 - freie Maschinenwahl trotz Empfehlung
@@ -203,6 +209,14 @@ Profiländerung verändert laufenden Booking-Snapshot nicht.
   assignment, route-changes, travel-status, security, end, active-gps,
   delay-risk), Domänentests `packages/domain/test/tours.test.ts`.
   Traceability: `docs/PHASE13_TEST_TRACEABILITY.md`.
+- Sperrfenster Integration (Berlin, festgestellt im Phase-15-Gate): Einige Touren-
+  Integrationstests legen Termine bei „jetzt + N Minuten“ an und verlangen das heutige
+  Berliner Tourdatum (`inMinutes` in `apps/api/test/tours-helpers.ts` klemmt nur negative
+  Versätze auf den Tagesbeginn). Größter Versatz: `tours-delay-risk` +240 min,
+  `tours-multi-active` und `offline-tour-lease` +200 min. Laufen diese Dateien ab etwa
+  20:00 Uhr, rutschen Termine auf den nächsten Tag (`APPOINTMENT_NOT_ON_TOUR_DATE`). Die
+  komplette Integrationssuite (Dauer etwa 45–60 min) deshalb nicht zwischen 19:00 und 00:00
+  Uhr starten, die genannten Dateien einzeln nicht zwischen 20:00 und 00:00 Uhr.
 - Keine echten Provider im Gate: `FakeRoutingGateway` in Integrationstests;
   in E2E der echte GraphHopper-Client gegen den lokalen Contract-Fake auf dem
   HTTPS-Dispatcher (4567, Präfix `/api/1`, Test-CA nur über
@@ -478,6 +492,99 @@ die App-Shell mit Service Worker brauchen.
   Mails an diese Adressen (plus `mail.send`-Jobs); ohne Worker verlässt nichts die Umgebung –
   erst `run-due-jobs` stellt sie an die Senke zu. Senken-Prüfungen filtern daher immer nach
   Empfänger + Betreff (`demo-environment.spec.ts` C/D4/C/D6, `training-demo.spec.ts` E/F7/J2/P).
+
+## Kundenportal (Phase 15)
+Fachdoku: docs/CUSTOMER_PORTAL.md. Testnamen tragen die Nummer bzw. den Fund am Anfang
+(„A7. …“, „R12. …“). Integration: `cd apps/api && TEST_DATABASE_URL=… pnpm vitest run --config
+vitest.integration.config.ts <Datei>`; A19 (`portal-auth`) läuft nur mit
+`TEST_DATABASE_URL_SECOND` (sonst übersprungen), E4 (`portal-demo`) nutzt die zweite Datenbank
+(Default `mietroyal_test7`). Web: `pnpm --filter @mietroyal/web test` (`node --test`), Config:
+`cd packages/config && pnpm vitest run`. Keine echten Provider (Fake-Mail-Gateway, SMTP-Senke).
+
+**Magic-Link-Testtokens nur in-process:** Integrationstests lesen den Token ausschließlich im
+Testprozess aus dem verschlüsselten Outbox-Secret (`decryptPortalMailToken` in
+`apps/api/test/portal-auth-helpers.ts`, PayloadCrypto); E2E nimmt ihn nur aus dem Link der
+echten Mail in der SMTP-Senke (`tests/e2e/helpers/portal.ts`) und vergleicht Tokens nur
+boolesch. Es gibt KEINE Reveal-Route, keine Ausgabe auf stdout, keine Klartextdatei, keine
+Debug-API; das Seed-Skript `apps/api/scripts/e2e-portal-seed.ts` gibt nur IDs/Nummern aus und
+legt keine Sessions oder Links an. Die DB-Drossel (5 Login-Links je 15 min je Kunde) umgehen
+die Helfer `requestMagicLinkToken`/`loginViaMagicLink` nur, wenn sie sonst greifen würde,
+indem sie `created_at` älterer Login-Links desselben Kunden aus dem Fenster verschieben
+(`releasePortalLoginThrottle`, `expires_at` bleibt); die R4-Tests nutzen diese Helfer nicht.
+
+Pflichttests (Order §56–§65):
+
+| Order | Thema | Datei (alle unter `apps/api/test/`, sofern nicht anders genannt) | Testnamen |
+| --- | --- | --- | --- |
+| §56 | Auth | `portal-auth.integration.test.ts` | A1–A26 (u. a. A1–A4 neutral/kein Link, A5/A6 Token und Hash, A7 15 min, A8 one-time, A9 paralleler Consume, A10/A25 kein Token im Log, A11 Secret-Payload, A12 Fragment, A12b strikter Consume-Body, A13/A14 Cookie, A15/A16 30 Tage ohne Sliding, A17 Logout, A18 Ablauf, A19/A19b Cross-Environment, A20 Host-Header, A23/A26 Rate-Limits, A24 Cleanup); Cross-Environment zusätzlich `portal-demo` E4 |
+| §57 | Visibility | `portal-visibility.integration.test.ts` | V1–V13 (V7: 0-€-Storno als Kundenstorno) |
+| §58 | Booking | `portal-booking.integration.test.ts` | B1–B8, B9.–B12. („Unterwegs“ ohne GPS/ETA/Fahrer) |
+| §59 | Dokumente | `portal-documents.integration.test.ts` | D1–D11 |
+| §60 | Chat | `portal-chat.integration.test.ts`, `portal-chat-staff.integration.test.ts` | M1–M16, M16b (Kunde, Fotos, Push, Retention, Rate-Limit), „Polyglot-CSP.“; M17–M24 (Staff-Antwort Kanal Portal, Recht, Hinweis-Mail, Terminal, `canReplyPortal`) |
+| §61 | Profil | `portal-profile.integration.test.ts` | P1–P19, P15b, P16b (P15: belegte Adresse ⇒ neutrale 202 ohne nutzbaren Link) |
+| §62 | Rechnung | `portal-invoice.integration.test.ts` | I1–I9 |
+| §63 | Storno | `portal-cancellation.integration.test.ts` | C1–C19, C14b (Backstop-Scanner); gültige Storno-POSTs senden `expectedFeeCents` (Helfer `cancelVia`) |
+| §64 | Security | `portal-security-dto.integration.test.ts`; ergänzend `portal-auth`, `portal-chat`, `apps/web/lib/portal.test.ts` | S1 Deep-Scan, S2 401, S3 Staff-Session, S4 IDOR, S5 Client-IDs; A10/A25 (Token nicht im Log), A12 (kein Token in der Query), A18b (Staff-Session/Angebots-Token), A20 (fremde Origin 403, Host-Header), M8 (Client-Felder 400); W6 (`same-origin` + `no-store`). Wildcard-CORS (es gibt kein CORS-Plugin), Open Redirect und Next-Cache: Code-Prüfung im Review §67, Header von `/konto` im E2E C |
+| §65 | Demo | `portal-demo.integration.test.ts` | E1–E12 (E5./E6./E7. Reset löscht Sessions/Links/offenen E-Mail-Wechsel, E8 503 während Reset, E9 Barrier, E10 alter Consume, E11 Production unverändert), R10 |
+| Config | Portal-Variablen | `packages/config/test/portal-config.test.ts` | E-C1–E-C5 |
+| Web | Formatierer, Fehler-Mapping, Client | `apps/web/lib/portal.test.ts` | W1–W9 |
+
+E2E (Order §66; `pnpm test:e2e`, `tests/e2e/playwright.config.ts`). `portal-flow.spec.ts` läuft im
+Projekt `chromium` (seriell; Web 3100 → Same-Origin-Proxy → API 3101, development, Cookie
+`mr_customer_session`), `portal-demo.spec.ts` nur im Projekt `demo-communication` (Demo-Web
+3108 → Demo-API 3106, Cookie `__Host-mr_customer_session`, Whitelist `@demo.test`). Daten:
+Basis-Seed + `apps/api/scripts/e2e-portal-seed.ts` (echte Fachservices).
+
+| Buchstabe | Spec (Projekt) | Inhalt |
+| --- | --- | --- |
+| A Magic Login | `portal-flow.spec.ts` (chromium) | Link nur aus der Mail, Fragment, Token weder in URL noch Storage, HttpOnly-Session, Einmal-Link |
+| B No Enumeration | `portal-flow.spec.ts` (chromium) | unbekannt/doppelt/gelöscht ⇒ identische neutrale Antwort ohne Link |
+| C Active Booking | `portal-flow.spec.ts` (chromium) | Snapshot-Ansicht, exakt vs. Fenster, Abholadresse + Navigation, Anrufen, keine Interna, Header |
+| D Multiple Current Bookings | `portal-flow.spec.ts` (chromium) | Liste nach Eventdatum, dann Vorgangsnummer |
+| E Documents | `portal-flow.spec.ts` (chromium) | Angebot, AB, Lieferschein, Übergabeprotokoll; private PDFs |
+| F Chat + Photo + Staff Reply | `portal-flow.spec.ts` (chromium) | Text + Foto, Push ohne Text, Antwort Kanal Portal, Mail-Hinweis ohne Chattext |
+| G „Unterwegs“ | `portal-flow.spec.ts` (chromium) | aktive Tour, kein GPS/ETA/Fahrer |
+| H Profile Reauth | `portal-flow.spec.ts` (chromium) | blockiert ⇒ Bestätigungslink ⇒ speichern; Ablauf und Snapshot unverändert |
+| I Email Change + Session Revoke | `portal-flow.spec.ts` (chromium) | Link an neue Adresse, alle Sessions widerrufen, Login nur neu |
+| J Free Cancellation | `portal-flow.spec.ts` (chromium) | 0 €, Bestätigung ohne Dokument- und Nachrichtenbereich, Wiederholungs-POST mit `expectedFeeCents: 0` idempotent, genau eine Mail, danach nicht im Dashboard |
+| K Paid Cancellation Fee | `portal-flow.spec.ts` (chromium) | 50 % der regulären Maschinenmiete, „Rechnung folgt“, Nachrichten lesbar ohne Formular |
+| L Cancellation Blocked | `portal-flow.spec.ts` (chromium) | Kundentext + Anrufen, POST (mit Prüfwert) 409 `PORTAL_CANCELLATION_BLOCKED` |
+| M No Active Booking | `portal-flow.spec.ts` (chromium) | „Neue Anfrage starten“ mit konfigurierter URL |
+| N Demo Portal + Reset | `portal-demo.spec.ts` (demo-communication) | Banner, Whitelist + „[DEMO]“, Login über Demo-Web; nach Reset Session ungültig, alter Link wirkungslos |
+| O 30-Day Session / no sliding | `portal-flow.spec.ts` (chromium) | Ablauf exakt 30 Tage, Aktivität verschiebt nichts |
+| P IDOR mit zwei Customers | `portal-flow.spec.ts` (chromium) | fremde Buchung/Dokument/Nachricht/Foto/Storno ⇒ 404, Client-IDs abgelehnt, Logout |
+
+- Sperrfenster (Berlin): `portal-flow.spec.ts` nicht zwischen 23:38 und 00:02 Uhr starten –
+  Szenario G legt eine Lieferung HEUTE an (`todayWindow(30, 90)`), sonst bricht `beforeAll`
+  mit „Resttag zu kurz“ ab (Kopfkommentar der Spec).
+- Einzige DB-Schreibhilfe im E2E ist die reine Zeitverschiebung von Session-Zeilen (H, O);
+  weitere Seed-Abkürzungen (Live-Standort für G per SQL, Kopie der Dokument-Bytes ins
+  Storage der E2E-API) stehen in OPEN_ITEMS „Phase 15“.
+
+Review-Regressionstests (adversarialer Review Order §67, Funde R1–R13; jeder vor dem Fix rot):
+
+| Fund | Inhalt | Datei | Tests |
+| --- | --- | --- | --- |
+| R1 | Stornozeile schlägt Vorgangsstatus (Reopen nie `active`); keine Staff-Portalantwort bei Stornozeile (409, `canReplyPortal` false, keine Hinweis-Mail), Gegenprobe ohne Storno | `portal-review-booking.integration.test.ts` | 6 × „R1. …“ |
+| R2 | Gebühr an die Vorschau gebunden (Mitternacht ⇒ 409 `PORTAL_CANCELLATION_FEE_CHANGED`, Pflichtfeld, Prüfung unter der Sperre) | `portal-review-booking.integration.test.ts`; Web `apps/web/lib/portal-review.test.ts` | 3 × „R2. …“; Web 3 (Texte, Body, Neuladen der Vorschau) |
+| R3 | Body-Limit-Kette Client-Vorprüfung 8 MiB Rohbytes < API 12 MiB ≤ Next-Rewrite-Puffer 13 MiB (der Testname gibt die Reihenfolge verkürzt als „Browser ≤ Next-Rewrite ≤ API“ wieder; geprüft wird Next ≥ API) | `apps/web/lib/portal-review.test.ts` | „R3. …“ |
+| R4 | DB-Versanddrossel (Login/E-Mail-Wechsel je Kunde, Reauth je Session, rotierendes `X-Forwarded-For`); Hop-Semantik und Doku | `portal-review-auth.integration.test.ts`; `portal-review-web.integration.test.ts` | 4 × „R4. …“; 2 × „R4. …“ |
+| R5 | keine weitere Bestätigungsmail nach `failed`; Rate-Limit 10/min je Session | `portal-review-booking.integration.test.ts` | 2 × „R5. …“ |
+| R6 | parallele E-Mail-Wechsel/Consumes ohne 500, Login-Rennen | `portal-review-auth.integration.test.ts` | 5 × „R6. …“ |
+| R7 | Profil-PATCH schreibt `email`/`type` nie | `portal-review-auth.integration.test.ts` | 2 × „R7. …“ |
+| R8 | E-Mail-Wechsel neutral 202, belegte Adresse verbraucht das Kontingent (Platzhalterzeile) | `portal-review-auth.integration.test.ts`; Web `apps/web/lib/portal-review.test.ts`; `portal-profile` P15 | 3 × „R8. …“; Web „R8. …“ und „R2./R8. …“ |
+| R9 | Papierkorb widerruft Sessions/Links, auch im Rennen | `portal-review-auth.integration.test.ts` | 3 × „R9. …“ |
+| R10 | Demo-Reset löscht `portal.*`-Security-Events | `portal-demo.integration.test.ts` | „R10. …“ |
+| R11 | Bestätigung des Kundenstornos an die aktuelle Adresse; Staff-Storno Snapshot | `portal-review-booking.integration.test.ts` | 2 × „R11. …“ |
+| R12 | 24-h-Fenster nur Kundenstorno, nur Detail/Storno-POST; Staff-0-€-Storno sofort unsichtbar | `portal-review-booking.integration.test.ts` | 2 × „R12. …“ |
+| R13 | abgeschlossen ohne (übertragene) Abrechnung ⇒ „Rechnung wird vorbereitet“ | `portal-review-booking.integration.test.ts` | 2 × „R13. …“ |
+| Polyglot-CSP | Foto-Route mit `default-src 'none'; sandbox` | `portal-chat.integration.test.ts` | „Polyglot-CSP. …“ |
+
+Wegen geänderter Verträge bewusst angepasste Bestandstests: `portal-cancellation` (Body mit
+`expectedFeeCents`, C15/C16 laden die Vorschau vorher, C19 strenge Payloads),
+`portal-security-dto` S1/S5, `portal-visibility` V7 (Kundenstorno statt Staff-Storno),
+`portal-profile` P12./P13./P15 (neutraler Text, kein nutzbarer Link), E2E J/L (Prüfwert im
+Storno-Body, Bestätigungsansicht ohne Dokumente/Nachrichten).
 
 ## Definition of Done
 Fachregel korrekt, Rechte serverseitig, Validierung, Fehlerfall,

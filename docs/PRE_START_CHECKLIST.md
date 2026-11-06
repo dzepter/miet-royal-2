@@ -68,6 +68,47 @@ Die jeweils benötigten Zugangsdaten/Stammdaten stehen in `OPEN_ITEMS.md`.
   bis 5 Wochen, Subprozessoren Geocoding) ergänzen; Depotadresse
   (`pickup_exact_address`) vollständig hinterlegen.
 
+## Production mit Kundenportal (ab Phase 15)
+- `MAIL_ENABLED=true` mit SMTP und `MAIL_PUBLIC_WEB_BASE_URL` (https, Web-App
+  derselben Umgebung): Sie ist zugleich die Portal-Basis aller Anmelde-/
+  Bestätigungslinks (`/konto/...`) – ohne Mailversand kann sich kein Kunde
+  anmelden (Magic Link ausschließlich per E-Mail).
+- Telefonnummer von Miet-Royal für den Anruf-Button festlegen
+  (`COMPANY_PHONE_NUMBER`, kein Secret, nur Ziffern, optional führendes `+`,
+  Leerzeichen, `-`, `/`, Klammern); ohne Wert zeigt das Portal keinen Anruf-
+  Button. Nichts erfinden.
+- Ziel-URL für „Neue Anfrage starten“ festlegen (`PORTAL_NEW_INQUIRY_URL`,
+  absolute URL, in production nur https) – es gibt keine öffentliche
+  Anfrage-Route; ohne Wert fehlt Kunden ohne aktuelle Buchung die Hauptaktion
+  (neutraler Hinweis statt Link).
+- Beide Variablen nur mit Wert setzen oder ganz weglassen: ein leerer oder
+  ungültiger Wert bricht den Start ab (Konfigurationsfehler). Produktivwerte:
+  docs/OPEN_ITEMS.md „Phase 15“.
+- Kanonische Abholadresse `pickup_exact_address` (Einstellungen) vollständig
+  gepflegt: Das Portal zeigt bei bestätigter Selbstabholung ausschließlich diese
+  Adresse und den Navigationslink; ungepflegt ⇒ keine Adresse, kein Link.
+- Web und API unter demselben Origin (Web-Rewrite `/api/*`, `WEB_API_ORIGIN`),
+  TLS vor den Prozessen terminiert; Reverse-Proxy reicht
+  `__Host-mr_customer_session` unverändert durch und loggt `/konto/*` sowie
+  `/api/portal/*` ohne Body/Cookies (docs/DEPLOYMENT_NOTES.md „Kundenportal“).
+- Client-IP hinter Proxy (Phase 15, Review R4): `API_TRUST_PROXY_HOPS=1` bei der
+  API; der vorgeschaltete Proxy (z. B. nginx) hängt die echte Client-IP an
+  `X-Forwarded-For` an (`proxy_set_header X-Forwarded-For
+  $proxy_add_x_forwarded_for;`); Web-Next, Staff-Next und API sind NIE direkt
+  aus dem Internet erreichbar (Ports nur auf localhost/internem Netz). Der
+  Next-Rewrite hängt selbst nichts an und zählt nicht als Hop; nur ein weiterer
+  Proxy, der selbst einen Eintrag anhängt (z. B. Load-Balancer vor nginx),
+  erhöht den Wert (docs/DEPLOYMENT_NOTES.md „Öffentliche Token-Links hinter
+  Proxy“).
+- Body-Limit des vorgeschalteten Proxys für `/api/portal/` mindestens 13 MiB
+  (nginx `client_max_body_size 13m;`, Default 1 MiB) – passend zum Rewrite-
+  Puffer der Web-App (13 MiB) und zum API-Limit der Portal-Nachrichten (12 MiB);
+  sonst scheitern Foto-Nachrichten (Review R3).
+- Demo-Deployment: `MAIL_DEMO_WHITELIST` mit Sink-Domain und Mail-Senke – sonst
+  ist in der Demo keine Portal-Anmeldung möglich (Mails bleiben `blocked`).
+- Kein neues Secret, keine neue Instanz; Migration 0032 angewendet
+  (`pnpm db:migrate`); `pnpm check:env-isolation` vor dem Release wie bisher.
+
 ## Sicherheitsregel
 Echte Zugangsdaten nie in Chat-Prompts oder Git-Dateien kopieren, wenn sie als
 Secrets/Environment-Variablen auf dem Zielsystem gesetzt werden können.

@@ -68,7 +68,9 @@ Zustellung erreicht das Fachobjekt über das Schlüsselpräfix `<art>:<id>`.
 Gutschein: bleibt `pending` mit Problemcode, „Gutschein jetzt senden“ ist
 gesperrt. Nach `failed`/`blocked` legt die bewusste Fach-Sendeaktion eine NEUE
 Zustellung `<schlüssel>:retry:<vorherige id>` an (AB, Kundeninformation,
-Stornobestätigung, Gutschein an die AKTUELLE Kundenadresse); eine
+Stornobestätigung; Gutschein an die AKTUELLE Kundenadresse; Stornobestätigung
+seit Phase 15, Review R11: Kundenstorno an die aktuelle Adresse, Staff-Storno an
+die Snapshot-Adresse – `CancellationService.sendConfirmation`); eine
 Deduplizierung meldet stets den echten Status (`existingStatus`).
 **Konversation (Härtung RA-14):** jede automatische Mail eines Vorgangs
 erscheint als kompaktes Systemereignis (bei `sent` sowie bei `failed`/
@@ -164,6 +166,13 @@ Gesprächsaufzeichnung, KI-Antworten/-Zusammenfassungen, Mahnwesen, Touren/
 GPS/ETA (nur die Grenze `tour.delay_risk` ist benannt, es gibt keinen
 Tour-Push), bidirektionaler Apple-Kalender, iCloud-Zugangsdaten,
 Notification-Center-Glocke, Social Media.
+
+Phase 15: Das Kundenportal (`/konto`, docs/CUSTOMER_PORTAL.md) ist inzwischen
+gebaut. Es nutzt die Phase-12-Konversation mit `channel = portal` (gleiche
+Tabelle, gleiche Retention, gleiche Medienprüfung), die Outbox (vier neue
+Portal-Mailarten) und Web Push (`portal_message`, ohne Nachrichtentext). Eine
+öffentliche Kundenchat-App außerhalb des Portals, Push an Kunden und ein
+WhatsApp-Button im Portal bleiben bewusst ungebaut.
 
 ## Web Push (Mitarbeitende, Phase 12 – verifiziert 2026-10-18)
 
