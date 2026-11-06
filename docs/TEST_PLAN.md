@@ -560,6 +560,15 @@ Basis-Seed + `apps/api/scripts/e2e-portal-seed.ts` (echte Fachservices).
 - Einzige DB-Schreibhilfe im E2E ist die reine Zeitverschiebung von Session-Zeilen (H, O);
   weitere Seed-Abkürzungen (Live-Standort für G per SQL, Kopie der Dokument-Bytes ins
   Storage der E2E-API) stehen in OPEN_ITEMS „Phase 15“.
+- Staff-Logins im Browser, die als Vorbedingung einloggen (`login` in `helpers/settlement.ts`,
+  `loginStaff` in `helpers/tours.ts`, Inline-Logins der Fachspecs), senden über
+  `submitStaffLogin` (`tests/e2e/helpers/staff-login.ts`) ab. Nur wenn `POST /auth/login` mit 429
+  antwortet UND die Seite „Rate limit exceeded, retry in N …“ zeigt, wartet der Helfer N + 1 s
+  (je Versuch max. 65 s, max. 6 Versuche, Wartezeit wird dem Test-Timeout gutgeschrieben) und
+  sendet erneut; jede andere Antwort prüft der Aufrufer unverändert. Grund: Login-Limit
+  10/min je IP + E-Mail – im Komplettlauf meldet `communication-ops.spec.ts` den Admin kurz
+  hintereinander mehrfach an, die Folgespecs sofort wieder. Muster wie Phase 14 `demoApiLogin`;
+  `staff-auth.spec.ts` (Login-Verhalten inkl. Fehlversuche) nutzt den Helfer bewusst nicht.
 
 Review-Regressionstests (adversarialer Review Order §67, Funde R1–R13; jeder vor dem Fix rot):
 

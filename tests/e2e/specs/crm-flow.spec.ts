@@ -6,6 +6,7 @@
  */
 import { expect, test, type Page } from '@playwright/test';
 import { resetE2eDatabase } from '../helpers/seed.ts';
+import { submitStaffLogin } from '../helpers/staff-login.ts';
 
 const ADMIN_EMAIL = 'admin@e2e.example';
 const ADMIN_PASSWORD = 'e2e-admin-passwort-1';
@@ -25,9 +26,7 @@ test.afterAll(async () => {
 
 test('Admin meldet sich an', async () => {
   await page.goto('/login');
-  await page.getByLabel('E-Mail').fill(ADMIN_EMAIL);
-  await page.getByLabel('Passwort', { exact: true }).fill(ADMIN_PASSWORD);
-  await page.getByRole('button', { name: 'Anmelden' }).click();
+  await submitStaffLogin(page, ADMIN_EMAIL, ADMIN_PASSWORD);
   await expect(page.getByRole('heading', { name: 'Heute' })).toBeVisible();
 });
 
