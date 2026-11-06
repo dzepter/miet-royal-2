@@ -78,9 +78,10 @@ Die jeweils benötigten Zugangsdaten/Stammdaten stehen in `OPEN_ITEMS.md`.
   Leerzeichen, `-`, `/`, Klammern); ohne Wert zeigt das Portal keinen Anruf-
   Button. Nichts erfinden.
 - Ziel-URL für „Neue Anfrage starten“ festlegen (`PORTAL_NEW_INQUIRY_URL`,
-  absolute URL, in production nur https) – es gibt keine öffentliche
-  Anfrage-Route; ohne Wert fehlt Kunden ohne aktuelle Buchung die Hauptaktion
-  (neutraler Hinweis statt Link).
+  absolute URL, in production nur https) – Stand Phase 15 gab es keine
+  öffentliche Anfrage-Route (seit Phase 16: Konfigurator `/konfigurator` der
+  neuen Website, siehe unten); ohne Wert fehlt Kunden ohne aktuelle Buchung die
+  Hauptaktion (neutraler Hinweis statt Link).
 - Beide Variablen nur mit Wert setzen oder ganz weglassen: ein leerer oder
   ungültiger Wert bricht den Start ab (Konfigurationsfehler). Produktivwerte:
   docs/OPEN_ITEMS.md „Phase 15“.
@@ -108,6 +109,65 @@ Die jeweils benötigten Zugangsdaten/Stammdaten stehen in `OPEN_ITEMS.md`.
   ist in der Demo keine Portal-Anmeldung möglich (Mails bleiben `blocked`).
 - Kein neues Secret, keine neue Instanz; Migration 0032 angewendet
   (`pnpm db:migrate`); `pnpm check:env-isolation` vor dem Release wie bisher.
+
+## Production mit neuer Website (ab Phase 16)
+Die neue Website ist bis zum Website-Go-live (DNS-/Domain-Umschaltung, nicht
+Teil von Phase 16) nicht öffentlich live; die bisherige Website bleibt online.
+Vor einer Live-Veröffentlichung der neuen Website:
+
+- **Migration und Bootstrap:** Migration 0033 angewendet (`pnpm db:migrate`);
+  danach BEWUSST einmal `pnpm cms:bootstrap` mit der Konfiguration der
+  Zielumgebung ausführen (legt nur fehlende Entwürfe an, überschreibt nichts,
+  veröffentlicht nichts). Nie automatisch; `--publish-demo` nie in
+  production/staging (bricht dort ab).
+- **Kontaktwerte bestätigen:** Telefon und E-Mail in Website → Website-
+  Einstellungen sind Entwürfe aus der bisherigen Website – bestätigen bzw.
+  korrigieren; Instagram-Link nur mit bestätigter URL; Logo nur mit geklärten
+  Rechten. Über-uns-Fakten und Einsatzgebiete vom Inhaber bestätigen lassen.
+- **Impressum:** Platzhalter „Anschrift: [vor Veröffentlichung eintragen]“
+  durch die ladungsfähige Anschrift ersetzen, Inhaberbezeichnung/Rechtsform und
+  ggf. USt-IdNr./Steuernummer klären, Text juristisch prüfen lassen – erst dann
+  veröffentlichen. Die exakte Abholadresse darf in keinem CMS-Text stehen (das
+  CMS lehnt sie ab, sobald `pickup_exact_address` gepflegt ist).
+- **Datenschutzhinweise:** juristisch an die neue Website anpassen
+  (Konfigurator/Website-Anfrage, Kundenbereich, technisch nötige Cookies,
+  Google-Bewertungen per Klick, Instagram-Link, Mailversand, Hoster/Logs,
+  Aufsichtsbehörde, Stand) und erst DANACH veröffentlichen. Die Veröffentlichung
+  von `/datenschutz` schaltet die Website-Anfragen frei (vorher fail-closed:
+  Absenden gesperrt, API 409 `PRIVACY_NOT_PUBLISHED`); Rechtstexte lassen sich
+  nicht zurückziehen, nur durch neue Revisionen ersetzen.
+- **Website-Inhalte im Staff veröffentlichen:** Website-Einstellungen,
+  Startseite, Slush, Ablauf, FAQ, Über uns, Kontakt, Impressum, Datenschutz
+  jeweils prüfen (Vorschau) und bewusst mit `cms.publish` veröffentlichen;
+  Regionsseiten erst nach lokaler Prüfung; Popcorn/Waffel erst mit echten
+  Geschäftsdaten. Rollen: `cms.edit` für Redaktion, `cms.publish` für die
+  Freigabe.
+- **Google-Bewertungen:** alle Punkte aus docs/GOOGLE_REVIEWS_API_NOTES.md
+  „Go-live“ (u. a. EWR-Nutzungszweck klären, Key je Umgebung mit API- und
+  IP-Restriction, Place ID, Tages-Quota + Budget-Alerts, Datenschutzerklärung,
+  Attribution-Abnahme, Staging-Smoke mit echtem Key). Bis dahin
+  `REVIEWS_PROVIDER=disabled` (Default; die Website blendet die Sektion aus).
+  Erst danach `GOOGLE_REVIEWS_TERMS_CONFIRMED=true` + `REVIEWS_PROVIDER=google`
+  (Key nur beim API-Prozess). Demo: nie Google, höchstens `fake`.
+- **Indexierung:** `WEB_INDEXING_ENABLED` erst mit Phase 17 bzw. zum Go-live
+  setzen (vorher überall `noindex`); Redirects, Sitemap, Robots, Canonicals und
+  strukturierte Daten sind Phase 17.
+- **CMS-Vorschau:** `MAIL_PUBLIC_WEB_BASE_URL` je Umgebung auf die Web-App
+  DERSELBEN Umgebung (sonst „Vorschau öffnen“ 409).
+- **Web je Umgebung bauen:** jede Web-Instanz mit ihrem eigenen
+  `WEB_API_ORIGIN` bauen und mit demselben Wert starten (sonst sind
+  Konfigurator-Absenden und Vorschau gesperrt und die Bewertungs-Sektion fehlt;
+  Serverlog prüfen).
+- **Proxy:** Body-Limit vor der Staff-App für `/api/staff/cms/media`
+  mindestens 9 MiB (Medien-Upload); kein Proxy-/CDN-Cache auf
+  `/api/public/reviews`, `/api/public/cms/preview*` und `/vorschau*`;
+  `API_TRUST_PROXY_HOPS` korrekt (IP-Limits der Website-Anfrage) –
+  docs/DEPLOYMENT_NOTES.md „Website, CMS, Konfigurator, Bewertungen (Phase 16)“.
+- **Kanonische Abholadresse** `pickup_exact_address` gepflegt (aktiviert den
+  Adressschutz im CMS); öffentlich erscheint nur `pickup_public_area`
+  („Mainz-Hechtsheim“).
+- `pnpm check:env-isolation` vor dem Release wie bisher (prüft zusätzlich den
+  Places-API-Key).
 
 ## Sicherheitsregel
 Echte Zugangsdaten nie in Chat-Prompts oder Git-Dateien kopieren, wenn sie als

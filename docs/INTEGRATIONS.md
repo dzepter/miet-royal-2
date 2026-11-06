@@ -181,6 +181,63 @@ Fahrzeit); Geocoding-Ergebnisse liegen in einem Cache mit Ablauf.
 Kartenlinks (Apple Maps, `geo:`, Google/OSM-Web) enthalten nur das Ziel.
 Keine Lieferpreisformel: `DeliveryPriceSuggestion` ist eine leere Grenze.
 
+## Google-Bewertungen (Phase 16)
+Echte Google-Bewertungen auf der Website über die Google Places API (New),
+serverseitig hinter der provider-neutralen Grenze `ReviewGateway`
+(`apps/api/src/reviews/`). Quellen, Felder, Attribution, Kosten,
+Speicher-/Caching-Verbot, EWR-Nutzungszweck, Datenschutz und Go-live-Punkte:
+docs/GOOGLE_REVIEWS_API_NOTES.md (geprüft 2026-11-06 gegen die offizielle
+Google-Dokumentation).
+
+- **Provider** (`REVIEWS_PROVIDER`, Default `disabled` in jeder Umgebung):
+  `DisabledReviewGateway` (Website blendet die Sektion komplett aus),
+  `FakeReviewGateway` (drei synthetische, eindeutig als „DEMO“ gekennzeichnete
+  Texte, nie „Google“, keine Fotos/Links; nur demo/development),
+  `GoogleReviewGateway` (echter Betrieb; nie in demo; nur mit
+  `GOOGLE_PLACES_API_KEY`, `GOOGLE_PLACE_ID` und
+  `GOOGLE_REVIEWS_TERMS_CONFIRMED=true`). Unzulässige Kombinationen brechen den
+  Start ab (Konfiguration, Fabrik und Laufzeitsperre `assertReviewGatewayAllowed`).
+  Production ohne geklärten EWR-Nutzungszweck bleibt `disabled` (fail-closed).
+- **Abruf:** `GET https://places.googleapis.com/v1/places/{placeId}?languageCode=de&regionCode=DE`
+  mit Header `X-Goog-Api-Key` und Feldmaske
+  `id,rating,userRatingCount,googleMapsUri,reviews`; Host fest (kein
+  Base-URL-Schalter), Timeout 3 s inklusive Body, Antwort ≤ 1 MiB,
+  `redirect: 'error'`, KEINE Wiederholung, KEIN Cache, nichts in der Datenbank.
+  Kein Google-JavaScript, kein Widget, kein Maps-Embed im Browser; der Key
+  existiert nur im API-Prozess.
+- **Klick-zum-Laden:** Die Website ruft `GET /api/public/reviews` erst nach
+  Klick auf „Bewertungen anzeigen“ (jeder Abruf ist kostenpflichtig;
+  Autorenfotos lädt der Browser von Google, `referrerPolicy="no-referrer"`).
+  Route: nur GET (keine automatische HEAD-Route – HEAD ⇒ 404 ohne Google-Abruf),
+  `Cache-Control: no-store`, 10/min je IP, `Sec-Fetch-Site:
+  cross-site|same-site` ⇒ 403 `CSRF_REJECTED`, `disabled` ⇒ 404
+  `REVIEWS_DISABLED`, jeder Provider-Fehler (Timeout, 4xx/5xx, Google-429,
+  Tagesgrenze, ungültige Antwort) ⇒ 503 `REVIEWS_UNAVAILABLE` mit neutraler
+  Meldung „Bewertungen sind gerade nicht verfügbar.“ – die übrige Website bleibt
+  verfügbar. Das Web verwirft eine Antwort, deren Modus nicht dem Modus der
+  Seite entspricht, und zeigt bei abweichendem Build-/Laufzeit-API-Origin keine
+  Bewertungs-Sektion (kein Live-Google-Abruf aus einer falsch gebauten
+  Demo-Website, keine Demo-Bewertungen auf Live).
+- **Abbildung:** höchstens 5 Bewertungen in Google-Reihenfolge, Text
+  unverändert; nur Bewertungen mit vollständiger Pflicht-Attribution (Name,
+  Profil-Link, Foto, Link zur Bewertung) und `https:`-Links auf erlaubte Hosts
+  (`*.googleusercontent.com`, `www.google.com`, `maps.google.com`, `google.com`),
+  sonst verworfen; Übersetzungshinweis „Von Google übersetzt“, Sortier- und
+  Richtlinienhinweis, Meldelink.
+- **Kostenschutz:** eigene GLOBALE Grenze je Umgebung
+  (`REVIEWS_DAILY_REQUEST_LIMIT`, Default 32 Abrufe je gleitendem 24-h-Fenster)
+  über `integration_rate_limits` (Provider `google_places_reviews`), zusätzlich
+  zur Tages-Quota in der Google Cloud Console; Google-429 ⇒ globale Pause
+  10 min.
+- **Logs:** nur `{ reviews: { provider, outcome, reason, httpStatus,
+  durationMs, reviewCount } }` – nie Key, URL, Antwortkörper, Texte oder
+  Autorennamen; der Key ist in API- und Worker-Logs unter allen bekannten Pfaden
+  redigiert. `pnpm check:env-isolation` meldet denselben Places-Key in zwei
+  Umgebungen (verglichen wird der wirksame Key, also bei
+  `REVIEWS_PROVIDER=google` in beiden Konfigurationen).
+- **Instagram** bleibt ein normaler externer Link aus den Website-Einstellungen –
+  keine API, kein Feed.
+
 ## Dokumente
 Serverseitige Templates:
 Angebot, AB, Lieferschein, Übergabeprotokoll, Rückgabeprotokoll.

@@ -357,6 +357,8 @@ export interface PublicReview {
   rating: number;
   text: string;
   translated?: boolean;
+  /** Nur Google, nur bei `translated`: Text in Originalsprache (optional aufklappbar). */
+  originalText?: string | null;
   relativeTime: string | null;
   publishTime: string | null;
   reviewUri: string | null;
@@ -370,5 +372,11 @@ export interface PublicReviewsResponse {
   placeUri: string | null;
   attribution: string;
   sortNote: string;
+  /** Beschriftung übersetzter Bewertungen (nur google; additiv, ältere APIs liefern nichts). */
+  translationNote?: string | null;
+  /** Hinweis auf Googles Richtlinie zu Bewertungen (nur google). */
+  policyNote?: string | null;
+  /** Link zur Google-Richtlinie (nur google, nur https wird verlinkt). */
+  policyUri?: string | null;
   reviews: PublicReview[];
 }

@@ -110,9 +110,19 @@ export function formatBerlinClock(iso: string): string {
   return formatTime(iso);
 }
 
-/** `tel:`-Link aus einer Anzeige-Telefonnummer (nur Ziffern und führendes +). */
+/**
+ * `tel:`-Link aus einer Anzeige-Telefonnummer (nur Ziffern und führendes +). Die deutsche
+ * Schreibweise mit geklammerter Verkehrsausscheidungsziffer nach der Ländervorwahl
+ * („+49 (0) 6131 …“, „0049 (0)6131 …“) wird ohne die 0 gewählt (Review web_security-3) – sonst
+ * entstünde die ungültige Wählnummer +4906131…. Eine ungeklammerte 0 bleibt unverändert (in
+ * manchen Ländern, z. B. Italien +39 06…, gehört sie zur Nummer).
+ */
 export function phoneHref(phone: string): string | null {
-  const trimmed = phone.trim();
+  // „+49 (0) 6131 …“ und „+49 (06131) …“: nationale 0 nach der Ländervorwahl entfällt.
+  const trimmed = phone
+    .trim()
+    .replace(/^(\+|00)\s*([0-9]{1,3})\s*\(\s*0\s*\)/, '$1$2')
+    .replace(/^(\+|00)\s*([0-9]{1,3})\s*\(\s*0\s*([0-9]+)\s*\)/, '$1$2$3');
   const digits = trimmed.replace(/[^0-9+]/g, '');
   const normalized = digits.startsWith('+')
     ? `+${digits.slice(1).replace(/\+/g, '')}`

@@ -1,6 +1,7 @@
 import type { Metadata } from 'next';
 import { notFound } from 'next/navigation';
-import { cmsPageMetadata, noindexMetadata } from '../../lib/site-meta';
+import { effectiveReviewsMode } from '../../lib/reviews';
+import { cmsRouteMetadataFor } from '../../lib/site-meta';
 import { publishedPathSet } from '../../lib/site-nav';
 import type {
   PublicPage,
@@ -9,7 +10,7 @@ import type {
   SitePageType,
 } from '../../lib/site-types';
 import { CmsBlocks } from './block-renderer';
-import { getSiteBootstrap, getSitePage } from './site-data';
+import { getApiOriginMismatch, getSiteBootstrap, getSitePage } from './site-data';
 import { SiteFrame } from './site-frame';
 import { SiteUnavailable } from './site-status';
 
@@ -20,7 +21,12 @@ import { SiteUnavailable } from './site-status';
  * (noindex), sonst Inhalt im gemeinsamen Renderer. Metadaten aus Meta-Titel/-Beschreibung.
  */
 
-/** Seiteninhalt im Renderer (öffentlich und Vorschau). */
+/**
+ * Seiteninhalt im Renderer (öffentlich und Vorschau). Der Seitentyp steuert kontextabhängige
+ * Blöcke (Kontaktblock auf `secondary_offer` ohne Abholzeile/Konfigurator, Review content_ux-2).
+ * Bewertungen fail-closed: weichen Build- und Laufzeit-Origin ab, bleibt die Sektion aus
+ * (Review demo_reviews-2 / web_security-1).
+ */
 export function CmsPageView({
   page,
   bootstrap,
@@ -39,26 +45,23 @@ export function CmsPageView({
         pages,
         published: publishedPathSet(pages),
         settings: settings !== undefined ? settings : (bootstrap?.settings ?? null),
-        reviewsMode: bootstrap?.reviews.mode ?? 'disabled',
+        reviewsMode: effectiveReviewsMode(bootstrap?.reviews.mode, getApiOriginMismatch()),
         pickupArea: bootstrap?.pickupArea ?? 'Mainz-Hechtsheim',
         title: page.title,
+        pageType: page.pageType,
       }}
     />
   );
 }
 
-/** `generateMetadata` einer CMS-Seite. */
+/** `generateMetadata` einer CMS-Seite („nicht erreichbar“ immer noindex, s. `cmsRouteMetadataFor`). */
 export async function cmsRouteMetadata(
   path: string,
   expectedTypes?: readonly SitePageType[],
 ): Promise<Metadata> {
-  const result = await getSitePage(path);
-  if (result.ok) {
-    if (expectedTypes !== undefined && !expectedTypes.includes(result.data.pageType)) notFound();
-    return cmsPageMetadata(result.data);
-  }
-  if (result.reason === 'not_found') notFound();
-  return noindexMetadata('Gleich wieder da');
+  const metadata = cmsRouteMetadataFor(await getSitePage(path), expectedTypes);
+  if (metadata === null) notFound();
+  return metadata;
 }
 
 /** Seite einer CMS-Route (Server-Komponente). */

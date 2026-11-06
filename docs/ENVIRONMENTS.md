@@ -38,6 +38,11 @@ seit Phase 15 in `.env.example` dokumentiert). Optional mit Defaults: `API_HOST`
 `API_PORT` (3001), `LOG_LEVEL` (debug in development, sonst info),
 `WORKER_POLL_INTERVAL_MS` (2000). Optional ohne Default (Phase 15, Kundenportal):
 `PORTAL_NEW_INQUIRY_URL`, `COMPANY_PHONE_NUMBER` – Abschnitt „Kundenportal“.
+Phase 16 (Website/CMS/Bewertungen): `REVIEWS_PROVIDER` (Default `disabled`),
+`GOOGLE_PLACES_API_KEY`, `GOOGLE_PLACE_ID`, `GOOGLE_REVIEWS_TERMS_CONFIRMED`,
+`REVIEWS_DAILY_REQUEST_LIMIT` (Default 32) für API/Worker sowie
+`WEB_INDEXING_ENABLED` nur für den Web-Server (Default aus) – Abschnitt
+„Website, CMS und Bewertungen (Phase 16)“.
 
 ## Lokale Entwicklung
 
@@ -348,3 +353,78 @@ Fachlogik: docs/CUSTOMER_PORTAL.md.
   Worker; API-Testrunner identisch) über Portal-Scanner auf – keine neue
   Scheduler-Konfiguration (Order §52).
 
+
+## Website, CMS und Bewertungen (Phase 16)
+
+Die neue Website (apps/web), das CMS (API + Staff `/website`) und der
+Konfigurator laufen in den vorhandenen Web-, API-, Worker- und Staff-Prozessen –
+keine neue Instanz, keine eigene Datenbank, kein neues Pflicht-Secret. Details:
+docs/WEBSITE_CMS.md, docs/WEBSITE_CONFIGURATOR.md,
+docs/GOOGLE_REVIEWS_API_NOTES.md.
+
+| Variable | Wo | Bedeutung |
+| --- | --- | --- |
+| `WEB_INDEXING_ENABLED` | NUR Web-Server (`next start`), zur Laufzeit gelesen | Default aus ⇒ jede Seite `noindex, nofollow` (Root-Metadata). Nur der exakte Wert `true` öffnet die Indexierung – und auch dann nur für veröffentlichte öffentliche Seiten; Token-Seiten, `/konto`, `/vorschau`, die Fallback-Startseite ohne veröffentlichten Inhalt, „Gleich wieder da“ (API nicht erreichbar) und `/konfigurator` ohne Katalog bzw. wählbare Maschine bleiben immer `noindex`. Die Demo-Web-Instanz ist immer `noindex`, unabhängig vom Wert. Erst in Phase 17/Go-live setzen. |
+| `REVIEWS_PROVIDER` | API (Worker lädt dieselbe Konfiguration) | `disabled` (Default in jeder Umgebung) \| `fake` \| `google`. Leere Werte gelten als nicht gesetzt. |
+| `GOOGLE_PLACES_API_KEY` | NUR API (Secret) | nur bei `google`; ≤ 512 Zeichen, sichtbares ASCII ohne Leerzeichen; reist nur im Header `X-Goog-Api-Key`; nie Web/Staff/Browser/DB/Log |
+| `GOOGLE_PLACE_ID` | API (kein Secret) | nur bei `google`; Zeichen `A–Z a–z 0–9 _ -`, ≤ 1024 |
+| `GOOGLE_REVIEWS_TERMS_CONFIRMED` | API (kein Secret) | `true`/`false`; `google` startet nur mit `true` (bewusste Bestätigung: EWR-Nutzungszweck, Attribution, Datenschutzerklärung, Kostenschutz geprüft) |
+| `REVIEWS_DAILY_REQUEST_LIMIT` | API | 1–100.000, Default 32: höchstens so viele Places-Abrufe in jedem gleitenden 24-h-Fenster, GLOBAL je Umgebung (`integration_rate_limits`, Provider `google_places_reviews`) |
+
+**Regeln je Umgebung (`packages/config`, Startabbruch bei Verstoß; Meldungen
+nennen nur Variablennamen):**
+- **production/staging:** `fake` verboten (nie Fake-Bewertungen auf einer
+  echten Website). `google` nur mit Key, Place ID und
+  `GOOGLE_REVIEWS_TERMS_CONFIRMED=true` (gilt in jeder Nicht-Demo-Umgebung,
+  auch development/staging). Production bis zum geklärten Go-live:
+  `REVIEWS_PROVIDER=disabled` (Default) – docs/GOOGLE_REVIEWS_API_NOTES.md
+  „Go-live“.
+- **demo:** `google` verboten, ein gesetzter `GOOGLE_PLACES_API_KEY` ebenfalls
+  (auch ohne `google`); `fake` erlaubt und immer als „DEMO – synthetische
+  Beispielbewertungen“ gekennzeichnet.
+- **development:** Default `disabled`; `fake` erlaubt.
+- Der Worker lädt dieselbe Konfiguration (und redigiert den Key im Log), ruft
+  Google aber nie auf: Worker-Umgebungen `REVIEWS_PROVIDER` weglassen bzw.
+  `disabled` setzen – dann braucht der Worker keinen Key (mit `google` müsste
+  er den Key ebenfalls haben, sonst startet er nicht).
+- **Isolation:** `pnpm check:env-isolation` meldet denselben
+  Places-API-Key in zwei Umgebungen als Kollision. Verglichen wird der wirksame
+  Key – er existiert in der Konfiguration nur bei `REVIEWS_PROVIDER=google`;
+  Place ID und Bestätigung sind keine Secrets und werden nicht verglichen.
+
+**CMS-Vorschau braucht `MAIL_PUBLIC_WEB_BASE_URL`:** Der Vorschau-Link wird
+ausschließlich aus dieser Variable gebildet
+(`<MAIL_PUBLIC_WEB_BASE_URL>/vorschau#token=…`; kein Fallback auf localhost,
+auch nicht in development). Sie muss in JEDER Umgebung, in der die Vorschau
+genutzt wird, auf die Web-App DERSELBEN Umgebung zeigen (Demo ⇒ Demo-Web);
+ohne Wert antwortet „Vorschau öffnen“ mit 409 `CMS_PREVIEW_UNAVAILABLE`.
+
+**Vorschau-Cookie:** außerhalb development `__Host-mr_cms_preview` (HttpOnly,
+Secure, SameSite=Strict, Path=/, kein Domain, Max-Age = Restlaufzeit des
+Zugangs, höchstens 30 min), in development `mr_cms_preview`. Getrennt von
+Staff- und Portal-Cookie; ein Demo-Zugang ist in production unbekannt und
+umgekehrt (eigene Datenbanken).
+
+**Web je Umgebung bauen:** `apps/web/next.config.ts` backt das Rewrite-Ziel
+`WEB_API_ORIGIN` beim Build ein und legt es als `MR_BUILD_API_ORIGIN` ab. Weicht
+`WEB_API_ORIGIN` zur Laufzeit davon ab, meldet der Web-Server das einmal (nur
+Hostnamen) und sperrt Konfigurator-Absenden und CMS-Vorschau und blendet die
+Bewertungs-Sektion aus (fail-closed).
+Demo-Web und Live-Web brauchen deshalb je einen eigenen Build mit ihrem
+`WEB_API_ORIGIN` (docs/DEPLOYMENT_NOTES.md).
+
+**Demo:** DEMO-Banner auf allen öffentlichen Seiten (wie bisher über
+`WEB_APP_ENV=demo` bzw. `/health`), Demo-Web immer `noindex`; Demo-CMS nur in
+Demo-DB/-Storage;
+Website-Anfragen erzeugen nur Demo-Kunden/-Vorgänge; der Business-Reset löscht
+`public_inquiry_submissions`, das CMS überlebt. `/public/*`-Mutationen
+(Website-Anfrage, Konfigurator-Vorschau, Vorschau-Einlösen) und
+`/staff/cms/*`-Mutationen unterliegen dem Reset-Gate (503 `DEMO_RESET`).
+Inhalte für die Demo: `pnpm cms:bootstrap --publish-demo` (nur
+development/demo) – veröffentlicht auch die Rechtstext-Entwürfe mit
+Platzhaltern.
+
+**CMS-Bootstrap:** `pnpm cms:bootstrap` braucht die vollständige
+Server-Konfiguration der Zielumgebung (`APP_ENV` Pflicht, wie
+`pnpm db:migrate`); ohne Flag legt es nur fehlende Entwürfe an.
+`--publish-demo` bricht in production/staging vor jeder Änderung ab (Exit 2).

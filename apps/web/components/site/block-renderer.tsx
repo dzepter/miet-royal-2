@@ -1,22 +1,15 @@
 import Link from 'next/link';
 import type { ReactNode } from 'react';
 import { reviewsSectionVisible } from '../../lib/reviews';
-import { SITE_BLOCK_LABELS, hasContactDetails, visibleBlocks } from '../../lib/site-blocks';
+import { SITE_BLOCK_LABELS, contactDetailsPlan, visibleBlocks } from '../../lib/site-blocks';
 import {
   formatNumber,
   isMachine,
   machineCapacityText,
-  phoneHref,
   productPriceText,
   textParagraphs,
 } from '../../lib/site-format';
-import {
-  CONFIGURATOR_PATH,
-  SECONDARY_CTA_LABEL,
-  pagesOfType,
-  regionHrefForArea,
-  safeInstagramUrl,
-} from '../../lib/site-nav';
+import { CONFIGURATOR_PATH, pagesOfType, regionHrefForArea } from '../../lib/site-nav';
 import type {
   ContactDetailsBlock,
   CtaBlock,
@@ -32,6 +25,7 @@ import type {
   PublicSiteSettings,
   ReviewMode,
   ServiceAreasBlock,
+  SitePageType,
   StepsBlock,
   TextBlock,
 } from '../../lib/site-types';
@@ -55,6 +49,8 @@ export interface BlockContext {
   pickupArea: string;
   /** Seitentitel – H1, wenn kein Hero-Block am Anfang steht. */
   title: string;
+  /** Seitentyp (öffentlich und Vorschau) – steuert kontextabhängige Blöcke (Kontakt). */
+  pageType: SitePageType | null;
 }
 
 function Paragraphs({ text }: { text: string }) {
@@ -430,55 +426,66 @@ function ContactDetailsSection({
   index: number;
   ctx: BlockContext;
 }) {
-  const settings = ctx.settings;
-  const phone = settings?.phone?.trim() ?? '';
-  const tel = phone === '' ? null : phoneHref(phone);
-  const email = settings?.email?.trim() ?? '';
-  const instagram = safeInstagramUrl(settings?.instagramUrl);
+  // Review content_ux-2: auf Popcorn-/Waffel-Seiten (secondary_offer) weder Abholzeile noch
+  // Konfigurator-Knopf – nur Telefon/E-Mail aus den Einstellungen.
+  const plan = contactDetailsPlan({
+    pageType: ctx.pageType,
+    settings: ctx.settings,
+    pickupArea: ctx.pickupArea,
+  });
   return (
     <Section block={block} index={index}>
       <BlockHeading heading={block.heading} intro={block.intro} />
-      {hasContactDetails(settings) ? (
+      {plan.emptyText === null ? (
         <ul className={styles.contactList} data-testid="contact-details">
-          {tel !== null ? (
+          {plan.phone !== null ? (
             <li>
               <span className={styles.contactLabel}>Telefon</span>
-              <a className={styles.contactValue} href={tel}>
-                {phone}
+              <a className={styles.contactValue} href={plan.phone.href}>
+                {plan.phone.text}
               </a>
             </li>
           ) : null}
-          {email !== '' ? (
+          {plan.email !== null ? (
             <li>
               <span className={styles.contactLabel}>E-Mail</span>
-              <a className={styles.contactValue} href={`mailto:${email}`}>
-                {email}
+              <a className={styles.contactValue} href={plan.email.href}>
+                {plan.email.text}
               </a>
             </li>
           ) : null}
-          {instagram !== null ? (
+          {plan.instagram !== null ? (
             <li>
               <span className={styles.contactLabel}>Instagram</span>
-              <a className={styles.contactValue} href={instagram} rel="noopener noreferrer">
+              <a className={styles.contactValue} href={plan.instagram} rel="noopener noreferrer">
                 Zu unserem Instagram-Profil
               </a>
             </li>
           ) : null}
-          <li>
-            <span className={styles.contactLabel}>Abholung</span>
-            <span className={styles.contactValue}>{ctx.pickupArea}</span>
-          </li>
+          {plan.pickupArea !== null ? (
+            <li data-testid="contact-pickup">
+              <span className={styles.contactLabel}>Abholung</span>
+              <span className={styles.contactValue}>{plan.pickupArea}</span>
+            </li>
+          ) : null}
         </ul>
       ) : (
-        <p className={styles.muted}>
-          Am schnellsten erreichst du uns mit einer unverbindlichen Anfrage über den Konfigurator.
+        <p className={styles.muted} data-testid="contact-details-empty">
+          {plan.emptyText}
         </p>
       )}
-      <div className={styles.buttonRow}>
-        <Link href={CONFIGURATOR_PATH} prefetch={false} className={styles.button}>
-          {SECONDARY_CTA_LABEL}
-        </Link>
-      </div>
+      {plan.inquiryCta !== null ? (
+        <div className={styles.buttonRow}>
+          <Link
+            href={plan.inquiryCta.href}
+            prefetch={false}
+            className={styles.button}
+            data-testid="contact-inquiry-cta"
+          >
+            {plan.inquiryCta.label}
+          </Link>
+        </div>
+      ) : null}
     </Section>
   );
 }

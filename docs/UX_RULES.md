@@ -115,6 +115,83 @@ Emotionaler als Staff, aber gleiche Marke.
 Primärer CTA: Angebot anfordern / Slush konfigurieren.
 Konfigurator mobile-first, kurze Schritte, laufende Preisübersicht.
 
+Umsetzung Phase 16 (`apps/web`, Details docs/WEBSITE_CMS.md und
+docs/WEBSITE_CONFIGURATOR.md):
+- Wirkung: individueller Event-/Vermietungsbetrieb – warm, hochwertig, direkt,
+  persönlich. Deutsch, Ansprache konsequent „du“. Kein generischer SaaS-/AI-Look:
+  keine Fake-Statistik-Zähler, kein Glassmorphism, keine großen Verläufe, keine
+  Emoji-Wände, keine Reihen gleichartiger Karten, keine Stock-/AI-/Fremdbilder.
+  Fehlt ein gesichertes eigenes Bild, bleibt die Sektion ohne Bild.
+- Farben aus dem bisherigen Auftritt (Tokens unter `.site`): Creme `#FFFCF2`
+  (Fläche), fast Schwarz `#1C1712` (Text), Bronze `#7B5426` (Textakzent und
+  Primär-CTA mit weißer Schrift), Gold `#BF9B30` nur dekorativ, `#E2C46E` auf
+  dunklem Grund. Kontraste nach WCAG AA (u. a. Text 17,3:1, Bronze auf Creme
+  6,5:1, Weiß auf Bronze 6,7:1). Systemschriften, Überschriften mit
+  Serifen-Stack; Wortmarke „Miet-Royal“ in Serifen-Versalien, bis im CMS ein
+  Logo gepflegt ist.
+- Navigation: Start, Slush, Ablauf, FAQ, Über uns, Kontakt, Kundenbereich
+  (`/konto`); CMS-Ziele erscheinen nur, wenn die Seite veröffentlicht ist.
+  Dominanter CTA „Slush konfigurieren“ (`/konfigurator`) immer sichtbar (schmal
+  als volle Zeile), sekundär „Unverbindlich anfragen“. Nie „Jetzt verbindlich
+  buchen“ – die Website erzeugt nur eine Anfrage. Kopf nicht sticky (der
+  DEMO-Banner bleibt oben). Mobile-Menü barrierefrei (`aria-expanded`,
+  Escape, schließt bei Navigation).
+- Fußzeile: Marke, Kurzbeschreibung, Kontakt aus den Website-Einstellungen,
+  Instagram nur als normaler externer Link (`rel="noopener noreferrer"`, kein
+  Feed, kein iframe), veröffentlichte sekundäre Angebote/Regionsseiten,
+  Impressum/Datenschutz nur, wenn veröffentlicht.
+- Bewegung nur kurze Übergänge (150 ms), `prefers-reduced-motion` schaltet ab;
+  sichtbarer Fokus (3 px; auf dunklen Flächen – CTA-Band, Fußzeile – in hellem
+  Gold `#E2C46E`, ca. 10,5:1 statt 2,7:1 mit Bronze), Skip-Link, Touchflächen
+  ≥ 44 px, genau eine H1 je Seite (Hero-Überschrift bzw. Seitentitel),
+  semantische Überschriften.
+- Zustände: Startseite ohne veröffentlichten Inhalt ⇒ schlichter Fallback
+  („Unsere neue Website wird gerade vorbereitet.“ + CTA „Slush konfigurieren“,
+  immer noindex); unveröffentlichte Seite ⇒ 404 mit Seitenrahmen; API nicht
+  erreichbar ⇒ „Gleich wieder da“ ohne technische Details (immer noindex).
+- Kontaktblock: Telefon als `tel:`-Link ohne „(0)“ (aus „+49 (0) …“ wird
+  `tel:+49…`); auf Popcorn-/Waffel-Seiten nur Telefon und E-Mail – ohne
+  Abholzeile, ohne Instagram und ohne den Knopf „Unverbindlich anfragen“ →
+  Konfigurator (der Konfigurator kann nur Slush).
+- Preise erscheinen nur aus dem Katalog („Mietpreis 60,00 €“ bzw.
+  „12,00 € je 1-L-Flasche · auf Kommission“) – nie als CMS-Text.
+- Bewertungen nur als Klick-zum-Laden („Bewertungen anzeigen“ mit Hinweis „Beim
+  Laden werden Bewertungen und Profilbilder von Google abgerufen.“), nur wenn ein
+  Provider aktiv ist; Demo eindeutig „DEMO – synthetische
+  Beispielbewertungen“; Fehler ⇒ „Bewertungen sind gerade nicht verfügbar.“
+  Google-Modus: Attribution „Google Maps“ (nicht übersetzbar, ohne
+  Zeilenumbruch), Richtlinienhinweis von Google mit Link, „Von Google übersetzt“
+  bei übersetzten Texten, Originaltext optional aufklappbar.
+- Keine Live-Verfügbarkeit, keine Bestandszahlen, kein WhatsApp-Widget, kein
+  Google-Maps-Embed, kein Newsletter, keine Marketing-Tracker, kein
+  Cookie-Banner (nur technisch nötige Cookies).
+- Konfigurator in sechs Schritten (Event, Maschine, Sirup & Zubehör, Abholung
+  oder Lieferung, Kontakt, Zusammenfassung) mit Fortschrittsanzeige, laufender
+  Übersicht ausschließlich aus der Server-Vorschau und dominantem Button
+  „Unverbindliches Angebot anfordern“; Bestätigung mit Vorgangsnummer und dem
+  klaren Hinweis „unverbindlich – noch keine Buchung“. Ab 250 Gästen nur ein
+  freundlicher Hinweis. Abholung nur „Mainz-Hechtsheim“ + „Die genaue
+  Abholadresse teilen wir dir rechtzeitig mit.“; Lieferung „wird individuell
+  geprüft“, Wunsch-Lieferzeitfenster am Veranstaltungstag (Ende nach dem
+  Beginn). Fehlertexte nennen den nächsten Schritt und stehen am Feld, nie
+  Codes. Eingaben sind erst nach dem Laden der Seite (Hydration) bedienbar –
+  keine still verlorenen Eingaben.
+
+Staff-Bereich „Website“ (Phase 16, Navigation bei `cms.edit` oder
+`cms.publish`, nach „Produkte“): Übersicht mit Gruppen (Einstellungen,
+Hauptseiten, Regionale Seiten, Sekundäre Angebote, Rechtliches) und Status als
+Text („Veröffentlicht“, „Entwurf mit Änderungen“, „Nicht veröffentlicht“);
+Editor mit einem Formular je Blocktyp, Zeichenzählern für Meta-Titel (70) und
+-Beschreibung (170), Bildwahl mit Alt-Text oder „dekorativ“, Hinweis bei
+ungespeicherten Änderungen; eine Hauptaktion je Schritt („Entwurf speichern“,
+„Vorschau öffnen“ im neuen Tab, „Veröffentlichen“ mit Bestätigung der
+Revisionsnummer); Nur-Publisher im Lesemodus; Konflikt ⇒ „Der Entwurf wurde
+inzwischen geändert – bitte neu laden.“; Prüfmeldungen am Feld mit lesbarem
+Pfad („Block 3 (Vorteile) › Eintrag 1 › Titel“), nie rohe Codes. „Produkte &
+Preise“ ist eine Lesesicht mit Link nach `/produkte`. Kasten „Website-Anfrage“
+in der Inquiry-Ansicht des Vorgangs: kompakt, nur bei Website-Anfragen, keine
+automatische Zusammenführung.
+
 ## Responsive / Accessibility
 - Smartphone, Tablet, Desktop direkt
 - große Touchflächen

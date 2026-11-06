@@ -1,19 +1,25 @@
 import type { Metadata } from 'next';
 import { connection } from 'next/server';
-import type { ReactNode } from 'react';
+import { cache, type ReactNode } from 'react';
 import { DEMO_BANNER_TEXT, resolveDemoBanner } from '../lib/environment';
 import { readIndexingEnabled, siteRobots } from '../lib/site-meta';
+
+/** Je Request EINE Entscheidung (Metadaten und Banner teilen sich die /health-Abfrage). */
+const getDemoBanner = cache(() => resolveDemoBanner());
 
 /**
  * Phase 16 (WEB, Design §1.7/§5/§11.2.9): schlanke Root-Metadaten – KEIN Titel-Template
  * (Portal-/Token-Titel bleiben unverändert; Website-Seiten setzen ihren Titel selbst).
  * Indexierung zur Laufzeit aus WEB_INDEXING_ENABLED (Default aus ⇒ noindex für alles);
- * Token-Seiten, /konto und /vorschau überschreiben `robots` in ihren Layouts immer mit noindex.
+ * die Demo-Instanz (WEB_APP_ENV=demo bzw. API meldet `demo`) ist IMMER noindex (Review
+ * demo_reviews-5). Token-Seiten, /konto und /vorschau überschreiben `robots` in ihren Layouts
+ * immer mit noindex.
  */
-export function generateMetadata(): Metadata {
+export async function generateMetadata(): Promise<Metadata> {
+  await connection();
   return {
     title: 'Miet-Royal',
-    robots: siteRobots(readIndexingEnabled()),
+    robots: siteRobots({ indexingEnabled: readIndexingEnabled(), demo: await getDemoBanner() }),
   };
 }
 
@@ -53,7 +59,7 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
   // Review F6: zusätzlich zählt `environment: 'demo'` aus GET <WEB_API_ORIGIN>/health
   // (Timeout 1 s, no-store; Fehler ⇒ nur WEB_APP_ENV) – nie ausblenden bei WEB_APP_ENV=demo.
   await connection();
-  const showDemoBanner = await resolveDemoBanner();
+  const showDemoBanner = await getDemoBanner();
   return (
     <html lang="de">
       <body

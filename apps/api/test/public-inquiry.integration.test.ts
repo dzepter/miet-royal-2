@@ -15,8 +15,12 @@ import {
 import { berlinDateTimeToUtc } from '@mietroyal/domain';
 import { CMS_PRIVACY_PATH } from '@mietroyal/validation/cms';
 import { eq } from 'drizzle-orm';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { PRIVACY_NOT_PUBLISHED_MESSAGE } from '../src/public/website-inquiry.ts';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  DELIVERY_WINDOW_ORDER_MESSAGE,
+  NONEXISTENT_LOCAL_TIME_MESSAGE,
+  PRIVACY_NOT_PUBLISHED_MESSAGE,
+} from '../src/public/website-inquiry.ts';
 import {
   ADMIN_EMAIL,
   ADMIN_PASSWORD,
@@ -72,6 +76,15 @@ beforeEach(async () => {
   adminId = (await bootstrapAdmin(ctx)).id;
   privacyRevisionId = (await publishPrivacyForTests(ctx.db)).revisionId;
 });
+
+afterEach(() => {
+  vi.useRealTimers();
+});
+
+/** Kalendertag nach `dateIso` (kalendarisch, TZ-unabhängig). */
+function dayAfter(dateIso: string): string {
+  return new Date(Date.parse(`${dateIso}T12:00:00Z`) + 86_400_000).toISOString().slice(0, 10);
+}
 
 const MR_NUMBER = /^MR-\d{4}-\d{4,}$/;
 
@@ -757,6 +770,180 @@ describe('Phase 16 – Website-Anfrage (POST /public/inquiries)', () => {
     await expect(
       ctx.pool.query(`UPDATE public_inquiry_submissions SET customer_match = 'new_customer'`),
     ).rejects.toThrow(/unveränderlich/);
+  });
+
+  it('PI21. Wiederholung nach Mitternacht (Eventdatum inzwischen vergangen): gleiche ID + gleicher Inhalt ⇒ 200 mit denselben Werten, anderer Inhalt ⇒ 409; neue ID ⇒ 400 (Review inquiry-1)', async () => {
+    const eventDate = berlinDateInDays(10);
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(berlinDateTimeToUtc(eventDate, 23, 59));
+    const body = inquiryBody({
+      event: {
+        date: eventDate,
+        startTime: '18:00',
+        endTime: '23:30',
+        guests: 40,
+        occasion: 'party',
+      },
+    });
+    const first = await created(body);
+    // Antwort ging verloren; „Erneut senden“ erst nach Mitternacht (Berlin).
+    vi.setSystemTime(berlinDateTimeToUtc(dayAfter(eventDate), 0, 1));
+    const retry = await postInquiry(ctx, body);
+    expect(retry.statusCode, retry.body).toBe(200);
+    expect(retry.json()).toEqual(first);
+    const changed = await postInquiry(ctx, { ...body, event: { ...body.event, guests: 41 } });
+    expect(changed.statusCode).toBe(409);
+    expect(changed.json().error).toMatchObject({
+      code: 'PUBLIC_INQUIRY_CONFLICT',
+      processNumber: first.processNumber,
+    });
+    // Eine NEUE Anfrage mit dem inzwischen vergangenen Datum bleibt abgelehnt.
+    const fresh = await postInquiry(ctx, { ...body, clientMutationId: randomUUID() });
+    expect(fresh.statusCode).toBe(400);
+    expect(fresh.json().error.issues).toEqual([
+      { path: 'body.event.date', message: 'Das Datum darf nicht in der Vergangenheit liegen.' },
+    ]);
+    expect(await countRows(ctx.pool, 'processes')).toBe(1);
+    expect(await countRows(ctx.pool, 'public_inquiry_submissions')).toBe(1);
+  });
+
+  it('PI22. Uhrzeit in der Sommerzeit-Lücke (28.03.2027, 02:00–02:59) ⇒ 400 am jeweiligen Feld, ohne Werte; gespeichertes Ende liegt immer nach dem Beginn (Review inquiry-2)', async () => {
+    const gap = '2027-03-28';
+    const cases: Array<[Record<string, unknown>, Record<string, unknown>, string[]]> = [
+      [
+        { date: gap, startTime: '02:30', endTime: '03:15' },
+        { type: 'pickup' },
+        ['body.event.startTime'],
+      ],
+      [
+        { date: gap, startTime: '01:00', endTime: '02:15' },
+        { type: 'pickup' },
+        ['body.event.endTime'],
+      ],
+      // Ende ≤ Beginn ⇒ Folgetag – und der Folgetag ist der Umstellungstag.
+      [
+        { date: '2027-03-27', startTime: '22:00', endTime: '02:30' },
+        { type: 'pickup' },
+        ['body.event.endTime'],
+      ],
+      [
+        { date: gap },
+        {
+          type: 'delivery',
+          street: 'Musterweg 12',
+          postalCode: '55116',
+          city: 'Mainz',
+          windowFrom: '02:00',
+          windowTo: '02:45',
+        },
+        ['body.fulfillment.windowFrom', 'body.fulfillment.windowTo'],
+      ],
+    ];
+    for (const [event, fulfillment, paths] of cases) {
+      const response = await postInquiry(
+        ctx,
+        inquiryBody({ event: { guests: 30, occasion: 'party', ...event }, fulfillment }),
+      );
+      expect(response.statusCode, JSON.stringify(event)).toBe(400);
+      expect(response.json().error.code).toBe('VALIDATION_ERROR');
+      expect(response.json().error.issues).toEqual(
+        paths.map((path) => ({ path, message: NONEXISTENT_LOCAL_TIME_MESSAGE })),
+      );
+      expect(response.body).not.toContain('02:');
+    }
+    expect(await countRows(ctx.pool, 'processes')).toBe(0);
+
+    // Gültig am Umstellungstag: 01:30–03:15 (real 45 Minuten).
+    const spring = await created(
+      inquiryBody({
+        event: { date: gap, startTime: '01:30', endTime: '03:15', guests: 30, occasion: 'party' },
+      }),
+    );
+    // Rückstellung 31.10.2027: 02:30–02:10 ⇒ Ende am Folgetag, positiv.
+    const autumn = await created(
+      inquiryBody({
+        event: {
+          date: '2027-10-31',
+          startTime: '02:30',
+          endTime: '02:10',
+          guests: 30,
+          occasion: 'party',
+        },
+      }),
+    );
+    for (const result of [spring, autumn]) {
+      const [inquiry] = await ctx.db
+        .select()
+        .from(inquiries)
+        .where(eq(inquiries.processId, (await processByNumber(result.processNumber)).id));
+      expect(inquiry!.eventEnd!.getTime()).toBeGreaterThan(inquiry!.eventStart!.getTime());
+    }
+    const [springInquiry] = await ctx.db
+      .select()
+      .from(inquiries)
+      .where(eq(inquiries.processId, (await processByNumber(spring.processNumber)).id));
+    expect(springInquiry!.eventStart!.toISOString()).toBe('2027-03-28T00:30:00.000Z');
+    expect(springInquiry!.eventEnd!.toISOString()).toBe('2027-03-28T01:15:00.000Z');
+  });
+
+  it('PI23. Wunsch-Lieferzeitfenster am Veranstaltungstag: Ende ≤ Beginn ⇒ 400 an body.fulfillment.windowTo (keine Folgetag-Regel); nur Ende ⇒ am Eventdatum gespeichert (Review inquiry-3)', async () => {
+    const date = berlinDateInDays(25);
+    const delivery = {
+      type: 'delivery',
+      street: 'Musterweg 12',
+      postalCode: '55116',
+      city: 'Mainz',
+    };
+    for (const [windowFrom, windowTo] of [
+      ['16:00', '10:00'],
+      ['10:00', '10:00'],
+    ]) {
+      const response = await postInquiry(
+        ctx,
+        inquiryBody({ fulfillment: { ...delivery, windowFrom, windowTo } }),
+      );
+      expect(response.statusCode, `${windowFrom}-${windowTo}`).toBe(400);
+      expect(response.json().error.code).toBe('VALIDATION_ERROR');
+      expect(response.json().error.issues).toEqual([
+        { path: 'body.fulfillment.windowTo', message: DELIVERY_WINDOW_ORDER_MESSAGE },
+      ]);
+      expect(response.body).not.toContain(windowFrom);
+      expect(response.body).not.toContain('Musterweg');
+    }
+    expect(await countRows(ctx.pool, 'processes')).toBe(0);
+    // Veranstaltungszeiten behalten die Folgetag-Regel (PI3); Lieferfenster nur „bis“.
+    const onlyEnd = await created(
+      inquiryBody({
+        event: { date, startTime: '20:00', endTime: '01:00', guests: 30, occasion: 'party' },
+        fulfillment: { ...delivery, windowTo: '12:00' },
+      }),
+    );
+    const [inquiry] = await ctx.db
+      .select()
+      .from(inquiries)
+      .where(eq(inquiries.processId, (await processByNumber(onlyEnd.processNumber)).id));
+    expect(inquiry!.deliveryWindowFrom).toBeNull();
+    expect(inquiry!.deliveryWindowTo?.toISOString()).toBe(
+      berlinDateTimeToUtc(date, 12, 0).toISOString(),
+    );
+    expect(inquiry!.eventEnd?.toISOString()).toBe(
+      berlinDateTimeToUtc(dayAfter(date), 1, 0).toISOString(),
+    );
+  });
+
+  it('PI24. Maschinen-Slug als Sirup ⇒ 400 am Sirupfeld (nicht body.machineSlug), nichts gespeichert (Review pricing-4)', async () => {
+    for (const role of ['free', 'extra'] as const) {
+      const syrups = { free: [], extra: [], [role]: [{ slug: 'slush-2x10', liters: 1 }] };
+      const response = await postInquiry(ctx, inquiryBody({ syrups }));
+      expect(response.statusCode, role).toBe(400);
+      expect(response.json().error.issues).toEqual([
+        {
+          path: `body.syrups.${role}.0.slug`,
+          message: 'Diese Sirupsorte ist gerade nicht wählbar.',
+        },
+      ]);
+    }
+    expect(await countRows(ctx.pool, 'processes')).toBe(0);
   });
 });
 

@@ -12,6 +12,7 @@ import {
   PricingError,
   berlinDateOf,
   berlinDateTimeToUtc,
+  berlinLocalTimeExists,
   priceOffer,
   resolvePricingInput,
 } from '@mietroyal/domain';
@@ -30,7 +31,8 @@ import type { PublicInquiryBody } from './schemas.ts';
  * Phase 16 (PUBLIC, Design §3.3/§11.2): öffentliche Website-Anfrage ⇒ genau EIN
  * zentraler Vorgang (source = website, created_by NULL). Gesamter Kern in EINER
  * Transaktion über EINE Verbindung (Pool max = 1 funktioniert; kein `this.db` innerhalb):
- * Advisory-Lock je clientMutationId ⇒ Wiederholung erkennen ⇒ Datenschutz-Revision ⇒
+ * Advisory-Lock je clientMutationId ⇒ Wiederholung erkennen ⇒ (nur neue Anfragen) Datum/
+ * Zeiten prüfen ⇒ Datenschutz-Revision ⇒
  * Auswahl erneut prüfen (Preview ist keine Autorität) ⇒ Advisory-Lock je E-Mail ⇒ Kunde
  * bestimmen/anlegen ⇒ Vorgang ⇒ Anfrage + Auswahl ⇒ unveränderliche Submission-Zeile.
  * Keine Verfügbarkeitsprüfung, keine Ablehnung ab 250 Gästen, keine Mail, kein Job.
@@ -40,6 +42,14 @@ import type { PublicInquiryBody } from './schemas.ts';
 export const PRIVACY_NOT_PUBLISHED_MESSAGE =
   'Anfragen sind gerade nicht möglich. Bitte versuche es später erneut oder kontaktiere uns direkt.';
 export const PUBLIC_INQUIRY_CONFLICT_MESSAGE = 'Deine Anfrage ist bereits bei uns eingegangen.';
+/** Review inquiry-2: Uhrzeit in der Sommerzeit-Sprunglücke (z. B. 28.03.2027, 02:30). */
+export const NONEXISTENT_LOCAL_TIME_MESSAGE =
+  'Diese Uhrzeit gibt es am gewählten Tag wegen der Zeitumstellung nicht.';
+/** Review inquiry-3: Wunsch-Lieferzeitfenster am Veranstaltungstag, Ende ≤ Beginn ⇒ 400. */
+export const DELIVERY_WINDOW_ORDER_MESSAGE =
+  'Das Ende des Wunsch-Lieferzeitfensters muss nach dem Beginn liegen.';
+/** Sicherung (nicht erreichbar, solange die Uhrzeiten existieren): nie Ende ≤ Beginn speichern. */
+export const EVENT_END_ORDER_MESSAGE = 'Das Ende muss nach dem Beginn liegen.';
 
 export type PublicInquiryErrorCode = 'PUBLIC_INQUIRY_CONFLICT' | 'PRIVACY_NOT_PUBLISHED';
 
@@ -143,23 +153,99 @@ function hourMinute(time: string): [number, number] {
   return [hour ?? 0, minute ?? 0];
 }
 
-/**
- * Zeitfenster am Veranstaltungstag (Europe/Berlin ⇒ timestamptz). Ende ≤ Beginn ⇒ Ende
- * am Folgetag (Design §11.2 Nr. 7) – kein 400, kein anderes Datum erfunden.
- */
-export function berlinWindow(
+/** Zeitfenster als timestamptz plus Feld-Issues (nur Pfad + Meldung, nie Werte). */
+export interface BerlinTimeWindow {
+  from: Date | null;
+  to: Date | null;
+  issues: ValidationIssue[];
+}
+
+/** „HH:MM“ an einem Berliner Kalendertag ⇒ Zeitpunkt; existiert die Uhrzeit nicht ⇒ Issue. */
+function berlinTimeOn(
   dateIso: string,
-  from: string | undefined,
-  to: string | undefined,
-): { from: Date | null; to: Date | null } {
-  const start = from === undefined ? null : berlinDateTimeToUtc(dateIso, ...hourMinute(from));
-  if (to === undefined) return { from: start, to: null };
-  const endDate = from !== undefined && to <= from ? nextIsoDate(dateIso) : dateIso;
-  return { from: start, to: berlinDateTimeToUtc(endDate, ...hourMinute(to)) };
+  time: string,
+  path: string,
+  issues: ValidationIssue[],
+): Date | null {
+  const [hour, minute] = hourMinute(time);
+  if (!berlinLocalTimeExists(dateIso, hour, minute)) {
+    issues.push({ path: `body.${path}`, message: NONEXISTENT_LOCAL_TIME_MESSAGE });
+    return null;
+  }
+  return berlinDateTimeToUtc(dateIso, hour, minute);
+}
+
+/**
+ * Veranstaltungszeiten (Europe/Berlin ⇒ timestamptz). Ende ≤ Beginn ⇒ Ende am Folgetag
+ * (Design §11.2 Nr. 7, kein 400). Uhrzeiten in der Sommerzeit-Sprunglücke des jeweiligen
+ * Tages ⇒ Issue an `body.event.startTime`/`body.event.endTime` (Review inquiry-2); ein
+ * berechnetes Ende ≤ Beginn wird nie zurückgegeben.
+ */
+export function eventTimeWindow(
+  dateIso: string,
+  startTime: string | undefined,
+  endTime: string | undefined,
+): BerlinTimeWindow {
+  const issues: ValidationIssue[] = [];
+  const from =
+    startTime === undefined ? null : berlinTimeOn(dateIso, startTime, 'event.startTime', issues);
+  let to: Date | null = null;
+  if (endTime !== undefined) {
+    const endDate =
+      startTime !== undefined && endTime <= startTime ? nextIsoDate(dateIso) : dateIso;
+    to = berlinTimeOn(endDate, endTime, 'event.endTime', issues);
+  }
+  if (issues.length === 0 && from !== null && to !== null && to.getTime() <= from.getTime()) {
+    issues.push({ path: 'body.event.endTime', message: EVENT_END_ORDER_MESSAGE });
+  }
+  return issues.length === 0 ? { from, to, issues } : { from: null, to: null, issues };
+}
+
+/**
+ * Wunsch-Lieferzeitfenster – beide Zeiten AM VERANSTALTUNGSTAG (Design §11.2 Nr. 7, „kein
+ * anderes Datum erfinden“; Review inquiry-3): keine Folgetag-Regel, Ende ≤ Beginn ⇒ Issue an
+ * `body.fulfillment.windowTo`; Uhrzeit in der Sprunglücke ⇒ Issue am jeweiligen Feld.
+ */
+export function deliveryTimeWindow(
+  dateIso: string,
+  windowFrom: string | undefined,
+  windowTo: string | undefined,
+): BerlinTimeWindow {
+  const issues: ValidationIssue[] = [];
+  const from =
+    windowFrom === undefined
+      ? null
+      : berlinTimeOn(dateIso, windowFrom, 'fulfillment.windowFrom', issues);
+  const to =
+    windowTo === undefined ? null : berlinTimeOn(dateIso, windowTo, 'fulfillment.windowTo', issues);
+  if (
+    issues.length === 0 &&
+    windowFrom !== undefined &&
+    windowTo !== undefined &&
+    (windowTo <= windowFrom || (from !== null && to !== null && to.getTime() <= from.getTime()))
+  ) {
+    issues.push({ path: 'body.fulfillment.windowTo', message: DELIVERY_WINDOW_ORDER_MESSAGE });
+  }
+  return issues.length === 0 ? { from, to, issues } : { from: null, to: null, issues };
 }
 
 function validationError(path: string, message: string): RequestValidationError {
   return new RequestValidationError([{ path: `body.${path}`, message }]);
+}
+
+/** Event- und Lieferzeiten prüfen (alle Feld-Issues gemeinsam ⇒ 400, ohne Werte). */
+function validatedTimes(body: PublicInquiryBody): {
+  eventTimes: BerlinTimeWindow;
+  deliveryWindow: BerlinTimeWindow;
+} {
+  const eventTimes = eventTimeWindow(body.event.date, body.event.startTime, body.event.endTime);
+  const deliveryWindow =
+    body.fulfillment.type === 'delivery'
+      ? deliveryTimeWindow(body.event.date, body.fulfillment.windowFrom, body.fulfillment.windowTo)
+      : { from: null, to: null, issues: [] };
+  const issues = [...eventTimes.issues, ...deliveryWindow.issues];
+  if (issues.length > 0) throw new RequestValidationError(issues);
+  return { eventTimes, deliveryWindow };
 }
 
 export class WebsiteInquiryService {
@@ -184,12 +270,12 @@ export class WebsiteInquiryService {
     options: { portalCustomerId: string | null; now?: Date },
   ): Promise<PublicInquiryOutcome> {
     const now = options.now ?? new Date();
-    // Reine Eingabeprüfung vor jeder Verbindung (Datum real und nicht in der Vergangenheit).
+    // Vor jeder Verbindung NUR die deterministische Formatprüfung (Kalenderdatum real).
+    // Alles, was von `now` abhängt oder früher erlaubt war (Vergangenheit, Zeitumstellung,
+    // Lieferfenster), erst NACH der Wiederholungserkennung – eine gespeicherte Anfrage mit
+    // derselben clientMutationId bekommt immer 200/409 (Review inquiry-1).
     if (!isValidIsoDate(body.event.date)) {
       throw validationError('event.date', 'Bitte ein gültiges Datum angeben.');
-    }
-    if (body.event.date < berlinDateOf(now)) {
-      throw validationError('event.date', 'Das Datum darf nicht in der Vergangenheit liegen.');
     }
     const payloadHash = publicInquiryPayloadHash(body);
     const snapshot = contactSnapshotOf(body.contact);
@@ -223,6 +309,12 @@ export class WebsiteInquiryService {
         };
       }
 
+      // Nur neue Anfragen: Datum nicht in der Vergangenheit (Berlin), Zeiten existieren.
+      if (body.event.date < berlinDateOf(now)) {
+        throw validationError('event.date', 'Das Datum darf nicht in der Vergangenheit liegen.');
+      }
+      const { eventTimes, deliveryWindow } = validatedTimes(body);
+
       const privacy = await loadPublishedPrivacyRevision(tx);
       if (privacy === null) {
         throw new PublicInquiryError('PRIVACY_NOT_PUBLISHED', PRIVACY_NOT_PUBLISHED_MESSAGE);
@@ -245,12 +337,7 @@ export class WebsiteInquiryService {
         { customerId, source: 'website', eventDate: body.event.date },
         now,
       );
-      const eventTimes = berlinWindow(body.event.date, body.event.startTime, body.event.endTime);
       const delivery = body.fulfillment.type === 'delivery' ? body.fulfillment : null;
-      const deliveryWindow =
-        delivery === null
-          ? { from: null, to: null }
-          : berlinWindow(body.event.date, delivery.windowFrom, delivery.windowTo);
       const inquiryId = await this.inquiries.upsertWithin(tx, null, process.id, {
         eventDate: body.event.date,
         eventStart: eventTimes.from,

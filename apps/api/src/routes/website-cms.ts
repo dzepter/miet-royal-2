@@ -294,7 +294,7 @@ export function registerWebsiteCmsRoutes(instance: FastifyInstance, deps: Websit
 
   instance.get('/staff/cms/catalog', async (request, reply) => {
     if ((await requireAny(request, reply, ['product.view'])) === null) return;
-    return buildPublicCatalog(db, new Date());
+    return buildPublicCatalog(db, new Date(), { logger: request.log });
   });
 
   // ── Öffentlich: veröffentlichte Website-Inhalte (SSR, ohne IP-Limit) ─────

@@ -226,8 +226,8 @@ export function checkApiOriginMismatch(
       reportedMismatch.add(key);
       (options.report ?? defaultReporter)(
         `WEB_API_ORIGIN weicht vom Build-Origin ab (Schema, Host oder Port; Build-Host ` +
-          `${originHost(build ?? '')}, Laufzeit-Host ${originHost(runtime)}) – Konfigurator-Absenden ` +
-          'und Vorschau sind deaktiviert. Die Web-App muss je Umgebung mit ihrem WEB_API_ORIGIN gebaut werden.',
+          `${originHost(build ?? '')}, Laufzeit-Host ${originHost(runtime)}) – Konfigurator-Absenden, ` +
+          'Vorschau und Bewertungen sind deaktiviert. Die Web-App muss je Umgebung mit ihrem WEB_API_ORIGIN gebaut werden.',
       );
     }
   }

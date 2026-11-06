@@ -67,8 +67,8 @@ export function registerPublicConfiguratorRoutes(
 
   // ── Katalog ───────────────────────────────────────────────────────────────
 
-  instance.get('/public/configurator/catalog', async (_request, reply) => {
-    const catalog = await buildPublicCatalog(db, new Date());
+  instance.get('/public/configurator/catalog', async (request, reply) => {
+    const catalog = await buildPublicCatalog(db, new Date(), { logger: request.log });
     void reply.header('cache-control', 'no-store');
     return catalog;
   });

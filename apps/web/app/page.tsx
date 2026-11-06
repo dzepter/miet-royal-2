@@ -4,7 +4,7 @@ import { CmsPageView } from '../components/site/cms-route';
 import { getSiteBootstrap, getSitePage } from '../components/site/site-data';
 import { SiteFrame } from '../components/site/site-frame';
 import { FallbackHome, SiteUnavailable } from '../components/site/site-status';
-import { cmsPageMetadata, noindexMetadata } from '../lib/site-meta';
+import { homeMetadata } from '../lib/site-meta';
 
 /**
  * Phase 16 (WEB, Order §3, Design §5): Startseite – ersetzt die technische Phase-0-Seite.
@@ -15,11 +15,9 @@ import { cmsPageMetadata, noindexMetadata } from '../lib/site-meta';
  */
 const PATH = '/';
 
+/** Fallback-Startseite und „nicht erreichbar“ sind immer noindex (Review web_security-2). */
 export async function generateMetadata(): Promise<Metadata> {
-  const page = await getSitePage(PATH);
-  if (page.ok) return cmsPageMetadata(page.data);
-  if (page.reason === 'not_found') return { title: 'Miet-Royal' };
-  return noindexMetadata('Gleich wieder da');
+  return homeMetadata(await getSitePage(PATH));
 }
 
 export default async function HomePage() {

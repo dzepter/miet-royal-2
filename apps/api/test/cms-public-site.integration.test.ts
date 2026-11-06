@@ -1,6 +1,6 @@
 import { PassThrough } from 'node:stream';
 import { productPrices, products } from '@mietroyal/database';
-import { eq } from 'drizzle-orm';
+import { eq, inArray } from 'drizzle-orm';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { PICKUP_EXACT_ADDRESS_KEY, setStringSetting } from '../src/crm/settings-service.ts';
 import type { PlaceReviewsResult, ReviewGateway } from '../src/reviews/types.ts';
@@ -345,5 +345,123 @@ describe('Phase 16 – öffentliche Site-Routen', () => {
     expect((await call(ctx, 'GET', '/public/site/page?path=/faq&extra=1')).statusCode).toBe(400);
     expect((await call(ctx, 'GET', '/public/site/page?path=/faq')).statusCode).toBe(404);
     expect((await call(ctx, 'GET', '/public/site/page?path=/gibt-es-nicht')).statusCode).toBe(404);
+  });
+
+  it('S7. Lesepfad bei Adresse ohne Komma bzw. „Firma, Straße, PLZ Ort“: Block mit Straßenvariante entfällt, Seiten/Einstellungen mit „Miet-Royal“ bleiben öffentlich (Review cms-1/pricing-2)', async () => {
+    // Direkt eingefügt (ohne Service-Prüfung) und erst DANACH Adresse gepflegt.
+    await publishCmsForTests(ctx.db, { kind: 'site_settings' }, { content: SETTINGS_CONTENT });
+    const faq = await publishCmsForTests(
+      ctx.db,
+      { kind: 'page', pageType: 'faq', path: '/faq' },
+      {
+        content: {
+          title: 'Häufige Fragen',
+          blocks: [
+            { type: 'text', body: 'Du holst die Maschine in Mainz-Hechtsheim ab.' },
+            { type: 'text', body: 'Abholung am Heiligkreuz-Weg 90.' },
+            {
+              type: 'cta',
+              heading: 'Route',
+              primary: { label: 'Karte', href: 'https://maps.google.com/?q=Heiligkreuzweg%2090' },
+            },
+          ],
+        },
+        metaTitle: 'Häufige Fragen | Miet-Royal',
+      },
+    );
+    for (const address of [
+      'Heiligkreuzweg 90 55130 Mainz',
+      '55130 Mainz, Heiligkreuzweg 90',
+      'Miet-Royal, Heiligkreuzweg 90, 55130 Mainz',
+    ]) {
+      await setStringSetting(ctx.db, world.adminId, PICKUP_EXACT_ADDRESS_KEY, address);
+      logBuffer = '';
+      const page = await call(ctx, 'GET', '/public/site/page?path=/faq');
+      expect(page.statusCode, address).toBe(200);
+      expect(page.json().metaTitle).toBe('Häufige Fragen | Miet-Royal');
+      expect(page.json().blocks).toEqual([
+        { type: 'text', body: 'Du holst die Maschine in Mainz-Hechtsheim ab.' },
+      ]);
+      const site = await call(ctx, 'GET', '/public/site/settings');
+      expect(site.json().settings?.businessName, address).toBe('Miet-Royal');
+      expect(site.json().pages.map((item: { path: string }) => item.path)).toEqual(['/faq']);
+      for (const body of [page.body, site.body]) {
+        expect(body.toLowerCase()).not.toContain('heiligkreuz');
+      }
+      expect(logBuffer).toContain(faq.entryId);
+      expect(logBuffer.toLowerCase()).not.toContain('heiligkreuz');
+    }
+  });
+
+  it('S8. Produkte mit exakter Adresse: Beschreibung ⇒ null, Produktname ⇒ Produkt entfällt (product_grid, included_items, Staff-Lesesicht); Log nur Slug (Review pricing-3)', async () => {
+    const touched = ['mischkanister-6l', 'sirup-kirsche', 'sirup-waldmeister'];
+    const originals = await ctx.db
+      .select({ slug: products.slug, name: products.name, description: products.description })
+      .from(products)
+      .where(inArray(products.slug, touched));
+    try {
+      await setStringSetting(
+        ctx.db,
+        world.adminId,
+        PICKUP_EXACT_ADDRESS_KEY,
+        CMS_TEST_EXACT_ADDRESS,
+      );
+      await ctx.db
+        .update(products)
+        .set({ description: 'Kauf direkt in der Teststraße 1.' })
+        .where(eq(products.slug, 'mischkanister-6l'));
+      await ctx.db
+        .update(products)
+        .set({ description: 'Abholung: Teststr.1' })
+        .where(eq(products.slug, 'sirup-kirsche'));
+      await ctx.db
+        .update(products)
+        .set({ name: 'Waldmeister (Teststrasse 1)' })
+        .where(eq(products.slug, 'sirup-waldmeister'));
+      await publishPage(
+        'slush',
+        '/slushmaschine-mieten',
+        {
+          title: 'Slushmaschine mieten',
+          blocks: [
+            {
+              type: 'product_grid',
+              heading: 'Sirup',
+              productSlugs: ['sirup-kirsche', 'sirup-waldmeister', 'sirup-wassermelone'],
+            },
+            { type: 'included_items', heading: 'Inklusive' },
+          ],
+        },
+        { metaTitle: 'Slushmaschine mieten' },
+      );
+      logBuffer = '';
+      const response = await call(ctx, 'GET', '/public/site/page?path=/slushmaschine-mieten');
+      expect(response.statusCode).toBe(200);
+      const page = response.json();
+      const grid = page.blocks[0].products as Array<{ slug: string; description: string | null }>;
+      expect(grid.map((product) => product.slug)).toEqual(['sirup-kirsche', 'sirup-wassermelone']);
+      expect(grid[0]!.description).toBeNull();
+      expect(page.blocks[1].canister).toMatchObject({
+        slug: 'mischkanister-6l',
+        description: null,
+      });
+      expect(page.blocks[1].syrups.map((item: { slug: string }) => item.slug)).not.toContain(
+        'sirup-waldmeister',
+      );
+      expect(response.body.toLowerCase()).not.toContain('teststr');
+      for (const slug of touched) expect(logBuffer, slug).toContain(slug);
+      expect(logBuffer.toLowerCase()).not.toContain('teststr');
+      const staff = await call(ctx, 'GET', '/staff/cms/catalog', { cookie: world.viewer.cookie });
+      expect(staff.statusCode).toBe(200);
+      expect(staff.json().canister.description).toBeNull();
+      expect(staff.body.toLowerCase()).not.toContain('teststr');
+    } finally {
+      for (const original of originals) {
+        await ctx.db
+          .update(products)
+          .set({ name: original.name, description: original.description })
+          .where(eq(products.slug, original.slug));
+      }
+    }
   });
 });

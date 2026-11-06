@@ -12,7 +12,9 @@ import {
   safeHttpsUrl,
 } from './reviews.ts';
 import {
+  CONTACT_DETAILS_TEXT,
   SITE_BLOCK_LABELS,
+  contactDetailsPlan,
   hasContactDetails,
   imageDefaultSrc,
   imageSrcSet,
@@ -157,6 +159,61 @@ describe('Block-Renderer (Phase 16)', () => {
     assert.equal(hasContactDetails(settings), false);
     assert.equal(hasContactDetails({ ...settings, email: 'info@example.org' }), true);
   });
+
+  it('W-B7. Review content_ux-2: Kontaktblock auf secondary_offer (Popcorn/Waffel) ohne Abholzeile und ohne Konfigurator-Knopf – nur Telefon/E-Mail; Slush-Seiten unverändert', () => {
+    const settings = {
+      businessName: 'Miet-Royal',
+      tagline: null,
+      phone: '+49 (0) 6131 123456',
+      email: 'info@example.org',
+      instagramUrl: 'https://www.instagram.com/mietroyal',
+      logo: null,
+      footerNote: null,
+    };
+    const pickupArea = 'Mainz-Hechtsheim';
+    const secondary = contactDetailsPlan({ pageType: 'secondary_offer', settings, pickupArea });
+    assert.deepEqual(secondary, {
+      phone: { text: '+49 (0) 6131 123456', href: 'tel:+496131123456' },
+      email: { text: 'info@example.org', href: 'mailto:info@example.org' },
+      instagram: null,
+      pickupArea: null,
+      inquiryCta: null,
+      emptyText: null,
+    });
+    // Ohne Telefon/E-Mail: Hinweis OHNE Konfigurator-Verweis, kein Knopf, keine Abholzeile.
+    const bare = contactDetailsPlan({
+      pageType: 'secondary_offer',
+      settings: { ...settings, phone: null, email: ' ' },
+      pickupArea,
+    });
+    assert.equal(bare.emptyText, CONTACT_DETAILS_TEXT.NO_DETAILS_DIRECT);
+    assert.doesNotMatch(bare.emptyText ?? '', /konfigurator/i);
+    assert.equal(bare.inquiryCta, null);
+    assert.equal(bare.pickupArea, null);
+    assert.equal(
+      contactDetailsPlan({ pageType: 'secondary_offer', settings: null, pickupArea }).emptyText,
+      CONTACT_DETAILS_TEXT.NO_DETAILS_DIRECT,
+    );
+    for (const plan of [secondary, bare]) {
+      assert.doesNotMatch(JSON.stringify(plan), /konfigurator|Hechtsheim|Unverbindlich anfragen/i);
+    }
+
+    // Alle anderen Seitentypen (Slush-Kontext): Kontaktwege + Abholung + „Unverbindlich anfragen“.
+    for (const pageType of ['home', 'slush', 'contact', 'region', 'about', null] as const) {
+      const plan = contactDetailsPlan({ pageType, settings, pickupArea });
+      assert.equal(plan.pickupArea, pickupArea, `Abholzeile auf ${String(pageType)}`);
+      assert.deepEqual(plan.inquiryCta, { href: '/konfigurator', label: 'Unverbindlich anfragen' });
+      assert.equal(plan.instagram, 'https://www.instagram.com/mietroyal');
+      assert.equal(plan.phone?.href, 'tel:+496131123456');
+      assert.equal(plan.emptyText, null);
+    }
+    const contactWithout = contactDetailsPlan({ pageType: 'contact', settings: null, pickupArea });
+    assert.equal(contactWithout.emptyText, CONTACT_DETAILS_TEXT.NO_DETAILS_INQUIRY);
+    assert.deepEqual(contactWithout.inquiryCta, {
+      href: '/konfigurator',
+      label: 'Unverbindlich anfragen',
+    });
+  });
 });
 
 describe('Bewertungen – Klick-zum-Laden (Phase 16)', () => {
@@ -232,7 +289,7 @@ describe('Bewertungen – Klick-zum-Laden (Phase 16)', () => {
 
   it('W-R4. Laden: GET /api/public/reviews no-store; 404/503/Formfehler/Netz ⇒ „nicht verfügbar“', async () => {
     const calls: Array<{ url: string; init: RequestInit }> = [];
-    const ok = await fetchReviews(async (url, init) => {
+    const ok = await fetchReviews('google', async (url, init) => {
       calls.push({ url, init });
       return new Response(JSON.stringify(GOOGLE), { status: 200 });
     });
@@ -245,10 +302,12 @@ describe('Bewertungen – Klick-zum-Laden (Phase 16)', () => {
       new Response('{"error":{"code":"REVIEWS_UNAVAILABLE"}}', { status: 503 }),
       new Response('{"mode":"google"}', { status: 200 }),
     ]) {
-      assert.deepEqual(await fetchReviews(async () => response), { kind: 'unavailable' });
+      assert.deepEqual(await fetchReviews('google', async () => response), {
+        kind: 'unavailable',
+      });
     }
     assert.deepEqual(
-      await fetchReviews(async () => {
+      await fetchReviews('google', async () => {
         throw new Error('offline');
       }),
       { kind: 'unavailable' },

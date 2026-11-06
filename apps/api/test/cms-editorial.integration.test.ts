@@ -4,6 +4,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { setStringSetting, PICKUP_EXACT_ADDRESS_KEY } from '../src/crm/settings-service.ts';
 import type { StaffCmsEntryDetail } from '../src/cms/cms-service.ts';
 import { destroyTestContext, type TestContext } from './auth-helpers.ts';
+import { publishCmsForTests } from './cms-helpers.ts';
 import {
   call,
   CMS_TEST_EXACT_ADDRESS,
@@ -605,5 +606,179 @@ describe('Phase 16 – CMS Redaktion', () => {
       cookie: world.editor.cookie,
     });
     expect(badId.statusCode).toBe(400);
+  });
+
+  it('C15. Preis-Strich-Schreibweisen („ab 60,- €“, „60,– €“, „60.- EUR“, „EUR60“) ⇒ 400 beim Speichern UND Veröffentlichen (Review pricing-1/cms-2/content_ux-1)', async () => {
+    const slush = await seedPage(
+      world,
+      { pageType: 'slush', path: '/slushmaschine-mieten' },
+      { content: { title: 'Slush', blocks: [] }, metaTitle: 'Slush' },
+    );
+    for (const body of [
+      'Unsere 1×8 L gibt es ab 60,- € pro Wochenende.',
+      'Ab 60,– € pro Wochenende.',
+      'Ab 60.- EUR.',
+      'Nur EUR60 fürs Wochenende.',
+      'Für 60 Euros.',
+      'Schon ab 60,-',
+    ]) {
+      const saved = await saveDraft(world.editor.cookie, slush, {
+        title: 'Slush',
+        blocks: [{ type: 'text', body }],
+      });
+      expect(saved.statusCode, body).toBe(400);
+      expect(saved.json().error.code, body).toBe('CMS_PRICE_TEXT_FORBIDDEN');
+      expect(saved.json().error.issues).toEqual([
+        { path: 'content.blocks.0.body', message: 'Enthält eine Preisangabe.' },
+      ]);
+      expect(saved.body).not.toContain(body);
+    }
+    const hero = await saveDraft(world.editor.cookie, slush, {
+      title: 'Slush',
+      blocks: [{ type: 'hero', heading: 'Slush', lead: 'Schon ab 60,- € fürs Wochenende' }],
+    });
+    expect(hero.json().error.code).toBe('CMS_PRICE_TEXT_FORBIDDEN');
+    expect(hero.json().error.issues).toEqual([
+      { path: 'content.blocks.0.lead', message: 'Enthält eine Preisangabe.' },
+    ]);
+    expect(hero.body).not.toContain('60,-');
+    // Am Speicher-Guard vorbei abgelegter Entwurf ⇒ auch das Veröffentlichen lehnt ab.
+    const bypass = await publishCmsForTests(
+      ctx.db,
+      { kind: 'page', pageType: 'slush', path: '/slushmaschine-mieten' },
+      {
+        content: { title: 'Slush', blocks: [{ type: 'text', body: 'Ab 60,– € pro Wochenende.' }] },
+        metaTitle: 'Slush',
+        publish: false,
+      },
+    );
+    const published = await publish(world.publisher.cookie, slush.id, bypass.revisionId);
+    expect(published.statusCode).toBe(400);
+    expect(published.json().error.code).toBe('CMS_PRICE_TEXT_FORBIDDEN');
+    expect(published.body).not.toContain('60,–');
+    const [entry] = await ctx.db.select().from(cmsEntries).where(eq(cmsEntries.id, slush.id));
+    expect(entry!.publishedRevisionId).toBeNull();
+    // Zeitangaben/Mengen bleiben erlaubt.
+    const fine = await saveDraft(world.editor.cookie, await world.cms.getEntry(slush.id), {
+      title: 'Slush',
+      blocks: [
+        { type: 'text', body: 'Abholung Sa., 12.-14. Juni, 10-12 Uhr; 2 Europaletten; 2×10 L.' },
+      ],
+    });
+    expect(fine.statusCode, fine.body).toBe(200);
+  });
+
+  it('C16. Exakte Abholadresse ohne Komma bzw. in Schreibvarianten ⇒ 400 beim Speichern UND Veröffentlichen; Firmenname/Region bleiben erlaubt (Review cms-1/pricing-2)', async () => {
+    let faq = await seedPage(
+      world,
+      { pageType: 'faq', path: '/faq' },
+      { content: faqContent(), metaTitle: 'Häufige Fragen | Miet-Royal' },
+    );
+    for (const address of [
+      'Heiligkreuzweg 90 55130 Mainz',
+      '55130 Mainz, Heiligkreuzweg 90',
+      'Miet-Royal, Heiligkreuzweg 90, 55130 Mainz',
+    ]) {
+      await setStringSetting(ctx.db, world.adminId, PICKUP_EXACT_ADDRESS_KEY, address);
+      for (const answer of [
+        'Abholung am Heiligkreuzweg 90 in Mainz-Hechtsheim',
+        'Abholung am Heiligkreuzweg Nr. 90.',
+        'Abholung: Heiligkreuzweg90',
+        'Abholung am Heiligkreuz-Weg 90.',
+      ]) {
+        const saved = await saveDraft(world.editor.cookie, faq, faqContent(answer));
+        expect(saved.statusCode, `${address} / ${answer}`).toBe(400);
+        expect(saved.json().error.code).toBe('CMS_EXACT_ADDRESS_FORBIDDEN');
+        expect(saved.json().error.issues).toEqual([
+          { path: 'content.blocks.0.items.0.answer', message: 'Enthält die genaue Abholadresse.' },
+        ]);
+        expect(saved.body.toLowerCase()).not.toContain('heiligkreuz');
+      }
+      const mapsLink = await saveDraft(world.editor.cookie, faq, {
+        ...faqContent(),
+        blocks: [
+          ...faqContent().blocks,
+          {
+            type: 'cta',
+            heading: 'Route',
+            primary: { label: 'Karte', href: 'https://maps.google.com/?q=Heiligkreuzweg%2090' },
+          },
+        ],
+      });
+      expect(mapsLink.json().error.code, address).toBe('CMS_EXACT_ADDRESS_FORBIDDEN');
+      expect(mapsLink.json().error.issues).toEqual([
+        { path: 'content.blocks.1.primary.href', message: 'Enthält die genaue Abholadresse.' },
+      ]);
+      // Region, Firmenname (Meta-Titel „… | Miet-Royal“) und eine andere Hausnummer bleiben erlaubt.
+      const fine = await saveDraft(
+        world.editor.cookie,
+        faq,
+        faqContent('Du holst die Maschine in Mainz-Hechtsheim ab (nicht am Heiligkreuzweg 12).'),
+        { metaTitle: 'Häufige Fragen | Miet-Royal' },
+      );
+      expect(fine.statusCode, `${address}: ${fine.body}`).toBe(200);
+      faq = await world.cms.getEntry(faq.id);
+    }
+    // Am Speicher-Guard vorbei abgelegter Entwurf ⇒ das Veröffentlichen lehnt ab.
+    const bypass = await publishCmsForTests(
+      ctx.db,
+      { kind: 'page', pageType: 'faq', path: '/faq' },
+      {
+        content: {
+          title: 'Häufige Fragen',
+          blocks: [
+            {
+              type: 'faq',
+              items: [
+                {
+                  question: 'Wie läuft die Abholung?',
+                  answer: 'Abholung am Heiligkreuzweg 90 in Mainz-Hechtsheim',
+                },
+              ],
+            },
+          ],
+        },
+        metaTitle: 'Häufige Fragen',
+        publish: false,
+      },
+    );
+    const published = await publish(world.publisher.cookie, faq.id, bypass.revisionId);
+    expect(published.statusCode).toBe(400);
+    expect(published.json().error.code).toBe('CMS_EXACT_ADDRESS_FORBIDDEN');
+    expect(published.body.toLowerCase()).not.toContain('heiligkreuz');
+  });
+
+  it('C17. Steuer-/Formatzeichen (C1, Bidi, Zero-Width, U+2028) in Titel, Meta-Titel und Redaktionsnotiz ⇒ 400 VALIDATION_ERROR (Review cms-3)', async () => {
+    const faq = await seedPage(world, { pageType: 'faq', path: '/faq' }, { content: faqContent() });
+    const title = await saveDraft(world.editor.cookie, faq, { ...faqContent(), title: 'A\u0085B' });
+    expect(title.statusCode).toBe(400);
+    expect(title.json().error.code).toBe('VALIDATION_ERROR');
+    expect(title.json().error.issues).toEqual([
+      { path: 'content.title', message: 'Unzulässige Steuerzeichen.' },
+    ]);
+    for (const metaTitle of ['Meta\u202Etitel', 'Meta\u200Btitel', 'Meta\u2028titel']) {
+      const meta = await saveDraft(world.editor.cookie, faq, faqContent(), { metaTitle });
+      expect(meta.statusCode, JSON.stringify(metaTitle)).toBe(400);
+      expect(meta.json().error.issues).toEqual([
+        { path: 'metaTitle', message: 'Unzulässige Steuerzeichen.' },
+      ]);
+    }
+    const note = await saveDraft(world.editor.cookie, faq, faqContent(), {
+      editorNote: 'Notiz\u00ADmit weichem Trennzeichen',
+    });
+    expect(note.statusCode).toBe(400);
+    expect(note.json().error.issues).toEqual([
+      { path: 'editorNote', message: 'Unzulässige Steuerzeichen.' },
+    ]);
+    const fine = await saveDraft(
+      world.editor.cookie,
+      faq,
+      faqContent('Zeile eins.\n\nZeile zwei.'),
+      {
+        editorNote: 'Notiz\nmit Zeilenumbruch',
+      },
+    );
+    expect(fine.statusCode, fine.body).toBe(200);
+    expect((await ctx.db.select().from(cmsRevisions)).length).toBe(2);
   });
 });

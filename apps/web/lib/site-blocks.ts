@@ -8,7 +8,13 @@
  * Seite bestimmt wird. Reine Funktionen (node --test).
  */
 import { reviewsSectionVisible } from './reviews.ts';
-import { pagesOfType } from './site-nav.ts';
+import { phoneHref } from './site-format.ts';
+import {
+  CONFIGURATOR_PATH,
+  SECONDARY_CTA_LABEL,
+  pagesOfType,
+  safeInstagramUrl,
+} from './site-nav.ts';
 import {
   SITE_BLOCK_TYPES,
   type PublicBlock,
@@ -16,6 +22,7 @@ import {
   type PublicSiteSettings,
   type ReviewMode,
   type SiteBlockType,
+  type SitePageType,
 } from './site-types.ts';
 
 /** Anzeigename je Blocktyp (data-Attribute/Test-IDs; jeder Typ MUSS hier stehen). */
@@ -54,6 +61,65 @@ export function hasContactDetails(settings: PublicSiteSettings | null): boolean 
       (settings.email ?? '').trim() !== '' ||
       (settings.instagramUrl ?? '').trim() !== '')
   );
+}
+
+export const CONTACT_DETAILS_TEXT = {
+  /** Ohne gepflegte Kontaktdaten auf Slush-Seiten: Anfrage über den Konfigurator. */
+  NO_DETAILS_INQUIRY:
+    'Am schnellsten erreichst du uns mit einer unverbindlichen Anfrage über den Konfigurator.',
+  /** Ohne gepflegte Kontaktdaten auf Popcorn-/Waffel-Seiten (kein Konfigurator-Verweis). */
+  NO_DETAILS_DIRECT: 'Unsere Kontaktdaten ergänzen wir hier in Kürze.',
+} as const;
+
+/** Was der Kontaktblock zeigt – vollständig aus Seitentyp, Einstellungen und Abholregion. */
+export interface ContactDetailsPlan {
+  phone: { text: string; href: string } | null;
+  email: { text: string; href: string } | null;
+  instagram: string | null;
+  /** Zeile „Abholung: …“ (nur Slush-Kontext). */
+  pickupArea: string | null;
+  /** Knopf „Unverbindlich anfragen“ → Konfigurator (nur Slush-Kontext). */
+  inquiryCta: { href: string; label: string } | null;
+  /** Hinweis statt der Liste, wenn kein Kontaktweg gepflegt ist; sonst null. */
+  emptyText: string | null;
+}
+
+/**
+ * Kontaktblock je Seitentyp (Review content_ux-2, Order §3/§10/§11): Der Konfigurator kann nur
+ * Slush, und der Abholort Mainz-Hechtsheim ist nur für Slush belegt (Popcorn-/Waffel-Transport
+ * offen). Auf `secondary_offer`-Seiten daher KEINE Abholzeile und KEIN „Unverbindlich
+ * anfragen“ → /konfigurator – nur Telefon/E-Mail aus den Einstellungen. Alle anderen
+ * Seitentypen unverändert: Kontaktwege + Abholung + Anfrage-Knopf.
+ */
+export function contactDetailsPlan(input: {
+  pageType: SitePageType | string | null | undefined;
+  settings: PublicSiteSettings | null;
+  pickupArea: string;
+}): ContactDetailsPlan {
+  const { settings } = input;
+  const phoneText = settings?.phone?.trim() ?? '';
+  const tel = phoneText === '' ? null : phoneHref(phoneText);
+  const phone = tel === null ? null : { text: phoneText, href: tel };
+  const emailText = settings?.email?.trim() ?? '';
+  const email = emailText === '' ? null : { text: emailText, href: `mailto:${emailText}` };
+  if (input.pageType === 'secondary_offer') {
+    return {
+      phone,
+      email,
+      instagram: null,
+      pickupArea: null,
+      inquiryCta: null,
+      emptyText: phone === null && email === null ? CONTACT_DETAILS_TEXT.NO_DETAILS_DIRECT : null,
+    };
+  }
+  return {
+    phone,
+    email,
+    instagram: safeInstagramUrl(settings?.instagramUrl),
+    pickupArea: input.pickupArea,
+    inquiryCta: { href: CONFIGURATOR_PATH, label: SECONDARY_CTA_LABEL },
+    emptyText: hasContactDetails(settings) ? null : CONTACT_DETAILS_TEXT.NO_DETAILS_INQUIRY,
+  };
 }
 
 /** Wird dieser Block dargestellt? */

@@ -25,6 +25,8 @@ neue Adresse).
 ### Process
 process_number, customer, source, main_status, assigned_user, event_date,
 created/completed/canceled/reopened.
+Phase 16: Website-Anfragen erzeugen Vorgänge mit `source = website` und
+`created_by` NULL (siehe „PublicInquirySubmission“).
 
 ### Inquiry
 Eventgrund, Start/Ende, Gästezahl, gewünschte Produkte, Fulfillment,
@@ -510,6 +512,11 @@ einer kurzen `FOR UPDATE`-Transaktion reserviert, gewartet wird außerhalb),
 null oder beide gesetzt – vom Provider verhängte Pause, die API, Worker und
 Replikate gleichermaßen sehen, fail-fast), `updated_at`. Enthält nie Keys,
 URLs oder Request-Inhalte.
+Phase 16: zusätzlich Provider `google_places_reviews` (globale Tagesgrenze der
+Google-Bewertungen, `REVIEWS_DAILY_REQUEST_LIMIT`; gleitendes 24-h-Fenster über
+`next_slot_at`, Pausen `credit_limited` bei leerem Kontingent bzw.
+`rate_limited` 10 min nach Google-429). Keine neue Tabelle, keine Migration; es
+werden nur Zeitpunkte gespeichert, nie Bewertungen.
 
 ### Kundenportal (Phase 15, Migration 0032)
 `customer_portal_sessions`: `customer_id` → customers, `token_hash` (SHA-256-
@@ -536,6 +543,69 @@ Business-Daten ihrer Umgebung (Demo-Reset-Löschliste) und werden vom
 Scan-Lauf aufgeräumt (Links mehr als 1 Tag nach Ablauf/Verbrauch/Widerruf,
 Sessions mehr als 7 Tage nach Ablauf/Widerruf). Das Verschieben eines Kunden in
 den Papierkorb widerruft seine Sessions und offenen Links (Review R9).
+
+### Website-CMS (Phase 16, Migration 0033)
+Schema `packages/database/src/schema/website.ts`, Migration
+`packages/database/migrations/0033_phase16_website_cms.sql`; Ablauf und Regeln:
+docs/WEBSITE_CMS.md. Enums `cms_entry_kind` (`site_settings` | `page`),
+`cms_page_type` (`home`, `slush`, `process`, `faq`, `about`, `contact`, `legal`,
+`region`, `secondary_offer`).
+- `cms_entries`: stabiler Eintrag – `kind`, `page_type`, `path` (CHECK
+  `cms_entries_kind_check`: `site_settings` ohne Typ/Pfad, `page` mit beiden;
+  CHECK `cms_entries_path_format`; Partial-Unique `cms_entries_path_unique`;
+  Singleton `cms_entries_site_settings_singleton`), Zeiger `draft_revision_id`
+  und `published_revision_id` (→ `cms_revisions`), `published_at`/
+  `published_by` (CHECK `cms_entries_published_consistency`: veröffentlichter
+  Zeiger und Zeitpunkt nur gemeinsam), `version` (+1 bei jedem Speichern,
+  Wiederherstellen, Veröffentlichen, Zurückziehen), `created_at`/`updated_at`.
+  Öffentliche Leser sehen ausschließlich `published_revision_id`.
+- `cms_revisions`: unveränderliche Revision – `entry_id`, `revision_number`
+  (≥ 1, eindeutig je Eintrag), `content` (JSON, Schema
+  `@mietroyal/validation/cms`, keine Preise, kein HTML), `meta_title`,
+  `meta_description`, `editor_note` (intern, nie öffentlich),
+  `based_on_revision_id` (Wiederherstellung), `created_by` (NULL beim
+  Bootstrap; ohne ON-DELETE-Aktion). Trigger `cms_revisions_no_update_delete`
+  verbietet UPDATE UND DELETE (Historie bleibt). UNIQUE `(id, entry_id)` als
+  Ziel des zusammengesetzten Vorschau-FK.
+- `cms_media`: Bezeichnung, Quell-MIME (CHECK nur JPEG/PNG/WebP), Breite/Höhe
+  nach EXIF-Ausrichtung, `source_sha256`, `default_alt`, `uploaded_by`. Kein
+  Original im Storage.
+- `cms_media_variants`: PK `(media_id, width)`, `mime_type` (CHECK nur
+  `image/webp`), `byte_size`, `storage_key` (UNIQUE, `cms-media/<id>/<breite>.webp`,
+  nie in DTOs/Logs).
+- `cms_revision_media`: PK `(revision_id, media_id)` – welche Revision welches
+  Medium nutzt; Grundlage der öffentlichen Medienfreigabe (nur Medien einer
+  aktuell veröffentlichten Revision).
+- `cms_preview_access`: `entry_id`, `revision_id`, `access_token_hash` und
+  `session_token_hash` (nur SHA-256, UNIQUE), `created_by`, `expires_at`
+  (CHECK > `created_at`; 30 min), `consumed_at` (CHECK: Sitzungs-Hash genau dann
+  gesetzt, wenn eingelöst). Zusammengesetzter FK `(revision_id, entry_id)` →
+  `cms_revisions(id, entry_id)`: der Zugang gehört immer zu einer Revision
+  desselben Eintrags. Abgelaufene Zugänge löscht das Erzeugen neuer Zugänge
+  (> 1 Tag nach Ablauf).
+- Die CMS-Tabellen gehören NICHT zur Demo-Business-Reset-Löschliste – der
+  Redaktionsinhalt (inkl. Medien-Storage) überlebt den Reset.
+
+### PublicInquirySubmission (Phase 16, `public_inquiry_submissions`)
+Metadaten einer Website-Anfrage (docs/WEBSITE_CONFIGURATOR.md): genau eine
+Zeile je über die Website erzeugtem Vorgang. `client_mutation_id` (UNIQUE,
+Idempotenz), `payload_hash` (SHA-256 über kanonisches JSON des validierten
+Bodys ohne `client_mutation_id`), `customer_id`, `process_id` (UNIQUE),
+`inquiry_id` (UNIQUE), `customer_match` (Enum `public_inquiry_customer_match`:
+`portal_session` | `email_unique` | `new_customer` |
+`new_customer_email_ambiguous`), `contact_snapshot` (JSON, genau die
+abgesendeten Kontaktfelder normalisiert: privat `type, firstName, lastName,
+email, phone|null`, Organisation `type, organizationName, contactPerson, email,
+phone|null`), `privacy_revision_id` (→ `cms_revisions`, die zum Zeitpunkt
+veröffentlichte Datenschutz-Revision – nicht der Text),
+`privacy_acknowledged_at`, `created_at`. Trigger
+`public_inquiry_submissions_no_update`: unveränderlich (kein UPDATE); DELETE
+nur für den Demo-Business-Reset, der die Tabelle VOR `inquiries` leert.
+Der zugehörige Vorgang trägt `source = website`; `processes.created_by` und
+`inquiries.created_by` sind für diese system-/kundenseitige Erzeugung NULL
+(kein künstlicher Website-Mitarbeiter). Bestehende Kunden werden nie
+überschrieben; Abweichungen zum CRM berechnet die Staff-Ansicht aus dem
+Snapshot.
 
 ### SystemSetting
 Nur sinnvolle veränderbare Betriebsparameter; keine komplette Fachlogik als freie JSON-Regel.

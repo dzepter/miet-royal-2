@@ -34,7 +34,9 @@ import { effectivePriceCentsAt } from '../commerce/product-service.ts';
  *   wie `ProductService.effectivePriceCents` ⇒ geplante Preise wirken ab `effective_from`);
  *   Produkte ohne wirksamen Preis werden weggelassen (nie 0 € erfinden);
  * - keine IDs, kein Bestand, keine Historie, keine internen Felder;
- * - Abholung nur als öffentliche Region – nie die exakte Adresse.
+ * - Abholung nur als öffentliche Region – nie die exakte Adresse; Produktname mit der exakten
+ *   Adresse ⇒ Produkt entfällt, Beschreibung mit ihr ⇒ `description: null` (Review pricing-3,
+ *   Log nur mit Slug).
  *
  * Konstanten (Gratis-Sirup je Behälter, 25 Becher/Strohhalme, Pack-Slugs, Kanisterlimit,
  * 250 Gäste) kommen ausschließlich aus packages/domain – keine zweite Wahrheit.
@@ -148,23 +150,77 @@ export async function publicPriceCents(
   }
 }
 
+/** Phase 16 (Review pricing-3): Logger für unterdrückte Produkttexte (nur Slug, nie Text). */
+export interface PublicCatalogLogger {
+  warn(details: Record<string, unknown>, message: string): void;
+}
+
+/** Optionen der öffentlichen Produktprojektion. */
+export interface PublicProjectionOptions {
+  logger?: PublicCatalogLogger | undefined;
+  /** Bereits geladene Prüffragmente der exakten Abholadresse (sonst einmal je Aufruf geladen). */
+  fragments?: readonly string[] | undefined;
+}
+
+/** Prüffragmente der exakten Abholadresse (`pickup_exact_address`) – einmal je Request laden. */
+export async function loadExactAddressFragments(executor: DatabaseExecutor): Promise<string[]> {
+  return exactAddressFragments(await getStringSetting(executor, PICKUP_EXACT_ADDRESS_KEY));
+}
+
+/**
+ * Phase 16 (Review pricing-3): Produktname mit der exakten Abholadresse ⇒ das Produkt ist
+ * öffentlich nicht vorhanden (Katalog, product_grid, Konfigurator, Empfehlung).
+ */
+export function productNameRevealsExactAddress(
+  product: Pick<Product, 'name'>,
+  fragments: readonly string[],
+): boolean {
+  return containsExactAddress(product.name, fragments);
+}
+
+interface ProjectionGuard {
+  fragments: readonly string[];
+  logger: PublicCatalogLogger | undefined;
+}
+
 async function projectProduct(
   product: Product,
   now: Date,
   executor: DatabaseExecutor,
+  guard: ProjectionGuard,
 ): Promise<PublicProduct | null> {
   const billingMode = billingModeOf(product);
   if (billingMode === null) return null;
   const priceCents = await publicPriceCents(executor, product.id, now);
   if (priceCents === null) return null;
+  // Exakte Abholadresse nie öffentlich (Order §5): Name ⇒ Produkt entfällt, Beschreibung ⇒ null.
+  if (productNameRevealsExactAddress(product, guard.fragments)) {
+    guard.logger?.warn({ productSlug: product.slug }, 'public.catalog.exact_address_suppressed');
+    return null;
+  }
+  let description = product.description;
+  if (description !== null && containsExactAddress(description, guard.fragments)) {
+    guard.logger?.warn({ productSlug: product.slug }, 'public.catalog.exact_address_suppressed');
+    description = null;
+  }
   return {
     slug: product.slug,
     name: product.name,
     category: product.category,
-    description: product.description,
+    description,
     priceCents,
     billingMode,
     unitLabel: product.saleUnit,
+  };
+}
+
+async function projectionGuard(
+  executor: DatabaseExecutor,
+  options: PublicProjectionOptions,
+): Promise<ProjectionGuard> {
+  return {
+    fragments: options.fragments ?? (await loadExactAddressFragments(executor)),
+    logger: options.logger,
   };
 }
 
@@ -181,26 +237,29 @@ export async function loadActiveProducts(executor: DatabaseExecutor): Promise<Pr
  * Öffentliche Abholregion – fail-closed: enthält der gepflegte Wert die exakte Adresse
  * (oder ihren Straßenteil), wird der Default „Mainz-Hechtsheim“ ausgegeben.
  */
-export async function publicPickupArea(executor: DatabaseExecutor): Promise<string> {
+export async function publicPickupArea(
+  executor: DatabaseExecutor,
+  fragments?: readonly string[],
+): Promise<string> {
   const area =
     (await getStringSetting(executor, PICKUP_PUBLIC_AREA_KEY)) ?? PICKUP_PUBLIC_AREA_DEFAULT;
-  const fragments = exactAddressFragments(
-    await getStringSetting(executor, PICKUP_EXACT_ADDRESS_KEY),
-  );
-  return containsExactAddress(area, fragments) ? PICKUP_PUBLIC_AREA_DEFAULT : area;
+  const checked = fragments ?? (await loadExactAddressFragments(executor));
+  return containsExactAddress(area, checked) ? PICKUP_PUBLIC_AREA_DEFAULT : area;
 }
 
 export async function buildPublicCatalog(
   executor: DatabaseExecutor,
   now: Date,
+  options: PublicProjectionOptions = {},
 ): Promise<PublicCatalog> {
+  const guard = await projectionGuard(executor, options);
   const rows = await loadActiveProducts(executor);
   const machines: PublicMachine[] = [];
   const syrups: PublicProduct[] = [];
   const accessories: PublicProduct[] = [];
   let canister: PublicCatalog['canister'] = null;
   for (const product of rows) {
-    const projected = await projectProduct(product, now, executor);
+    const projected = await projectProduct(product, now, executor, guard);
     if (projected === null) continue;
     if (isSlushMachineProduct(product)) {
       machines.push({
@@ -227,7 +286,7 @@ export async function buildPublicCatalog(
       cupsPerProcess: FREE_CUPS_PER_RENTAL,
       strawsPerProcess: FREE_STRAWS_PER_RENTAL,
     },
-    pickupArea: await publicPickupArea(executor),
+    pickupArea: await publicPickupArea(executor, guard.fragments),
     largeEventGuestThreshold: LARGE_EVENT_GUEST_THRESHOLD,
     occasions: publicOccasions(),
     priceNote: PUBLIC_PRICE_NOTE,
@@ -239,8 +298,10 @@ export async function buildPublicProducts(
   executor: DatabaseExecutor,
   slugs: readonly string[],
   now: Date,
+  options: PublicProjectionOptions = {},
 ): Promise<PublicProduct[]> {
   if (slugs.length === 0) return [];
+  const guard = await projectionGuard(executor, options);
   const rows = await executor
     .select()
     .from(products)
@@ -250,7 +311,7 @@ export async function buildPublicProducts(
   for (const slug of slugs) {
     const product = bySlug.get(slug);
     if (product === undefined) continue;
-    const projected = await projectProduct(product, now, executor);
+    const projected = await projectProduct(product, now, executor, guard);
     if (projected !== null) out.push(projected);
   }
   return out;

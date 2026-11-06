@@ -119,13 +119,13 @@ Google.“*), EEA-TOS 3.2.5 (*„Customer will comply with the Documentation“*
 
 | Pflicht (POL/FLAG) | Beleg | Umsetzung Miet-Royal |
 | --- | --- | --- |
-| „Google Maps“ (Logo bevorzugt, Text bei wenig Platz) ohne Karte | POL: *„Attribution should take the form of the Google Maps logo whenever possible. In cases where space is limited, the text Google Maps is acceptable.“* | DTO `attribution: 'Google Maps'`; Web zeigt Text (`translate="no"`, nowrap, Sans-Serif, keine Google Fonts). Logo-Entscheidung = Go-live-Punkt. |
+| „Google Maps“ (Logo bevorzugt, Text bei wenig Platz) ohne Karte | POL: *„Attribution should take the form of the Google Maps logo whenever possible. In cases where space is limited, the text Google Maps is acceptable.“* | DTO `attribution: 'Google Maps'`; Web zeigt Text „Google Maps“ in `<span translate="no">` ohne Umbruch (`white-space: nowrap`), Systemschrift Sans-Serif, keine Google Fonts – auch in den Links „Alle Bewertungen auf Google Maps“ und „Auf Google Maps ansehen“. Logo-Entscheidung = Go-live-Punkt. |
 | Autor: Avatar, Name, Profil-Link | POL: *„You must always credit the author when displaying photos or reviews.“*; *„For reviews, If space is limited, the minimum requirement is to display the author's avatar.“* | Bewertung ohne `displayName`/`uri`/`photoUri` wird verworfen; im DTO für `mode: 'google'` sind `authorUri`, `authorPhotoUri` immer gesetzt. |
 | Link zur einzelnen Bewertung | POL: *„end-users must always have access to view the individual source photo or review on Google Maps using the provided googleMapsUri.“* | ohne `googleMapsUri` keine Anzeige; DTO `reviewUri` immer gesetzt. |
 | Meldelink | FLAG: *„You must display the content reporting link when you display these objects“* (POL: „recommended“) | fail-safe anzeigen: DTO `flagUri`; ein gelieferter, aber unzulässiger Link verwirft die Bewertung. |
 | Sortier-/Filterhinweis | POL: *„Include a clear notice that describes how reviews are being ordered and filtered including any search criteria applied. By default, reviews are ordered by relevance.“* | DTO `sortNote`: Relevanz durch Google, keine Sternefilterung, unvollständige Bewertungen werden nicht angezeigt. |
 | Übersetzung kennzeichnen (recommended) | POL: *„Make end users aware when a review has been translated from its original language.“* | `translated` (Sprachcode `text` ≠ `originalText`), `translationNote`, `originalText`. |
-| Google-Richtlinie nennen (recommended) | POL: *„Reviews aren't verified by Google, but Google checks for and removes fake content when it's identified. Inform end users of Google's review policy when displaying reviews and average rating.“* | `policyNote` + `policyUri` (https://support.google.com/contributionpolicy/answer/7422880). |
+| Google-Richtlinie nennen (recommended) | POL: *„Reviews aren't verified by Google, but Google checks for and removes fake content when it's identified. Inform end users of Google's review policy when displaying reviews and average rating.“* | `policyNote` + `policyUri` (https://support.google.com/contributionpolicy/answer/7422880); Web zeigt im Google-Modus den Hinweis mit Link „Zur Richtlinie von Google für Bewertungen“ direkt unter Durchschnittsbewertung und Quelle (fehlen die Felder, lokaler Fallback mit demselben Wortlaut/derselben URL). |
 | Keine Fremdinhalte als Google ausgeben | POL: *„Don't misrepresent Google Maps by attributing it with non-Google Maps Platform content.“* | Demo/Fake: `attribution: 'DEMO – synthetische Beispielbewertungen'`, keine Links/Fotos, nie „Google“. |
 | Keine Karte daneben | EEA-SST 15.1: *„Other than latitude, longitude, and place_id, Customer must not use Google Maps Content from the Places API With any Map.“* | Kein Maps-Embed (Auftrag), Links auf `googleMapsUri` sind laut EEA-PL erlaubt. |
 
@@ -243,7 +243,8 @@ Inhalte, keinen Key, keine URL.
 - **Route** `GET /public/reviews` (Web ruft sie same-origin über `/api/public/reviews`):
   disabled ⇒ 404 `REVIEWS_DISABLED`; Fehler/Timeout/Grenze/429 ⇒ 503 `REVIEWS_UNAVAILABLE`
   („Bewertungen sind gerade nicht verfügbar.“); `Sec-Fetch-Site: cross-site|same-site` ⇒ 403
-  `CSRF_REJECTED`; 10/min je IP; `Cache-Control: no-store`; keine CORS-Header. DTO:
+  `CSRF_REJECTED`; 10/min je IP; nur GET – keine automatische HEAD-Route (`exposeHeadRoute:
+  false`, HEAD ⇒ 404 ohne Provider-Abruf); `Cache-Control: no-store`; keine CORS-Header. DTO:
   `{ mode, rating, total, placeUri, attribution, sortNote, translationNote, policyNote, policyUri,
   reviews: [{ authorName, authorUri, authorPhotoUri, rating, text, translated, originalText,
   relativeTime, publishTime, reviewUri, flagUri }] }`.

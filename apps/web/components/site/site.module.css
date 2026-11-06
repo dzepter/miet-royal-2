@@ -869,6 +869,14 @@
   background: rgba(226, 196, 110, 0.12);
 }
 
+/*
+ * Fokus auf dunklem Grund (Review content_ux-3, WCAG 2.1 SC 1.4.11): Bronze #7B5426 erreicht auf
+ * #1C1712 nur 2,66:1 – Gold #E2C46E dagegen 10,46:1 (wie im Fußbereich).
+ */
+.ctaBand :focus-visible {
+  outline-color: var(--mr-gold-light);
+}
+
 /* ── Hinweise ────────────────────────────────────────────────────────────── */
 
 .notice,
@@ -988,6 +996,26 @@
 .reviewText {
   margin: 0;
   white-space: pre-line;
+}
+
+/* Google-Attribution „Google Maps“ nie umbrechen (Review demo_reviews-4). */
+.noWrap {
+  white-space: nowrap;
+}
+
+.reviewOriginal {
+  font-size: 0.9rem;
+}
+
+.reviewOriginal summary {
+  cursor: pointer;
+  color: var(--mr-bronze);
+  font-weight: 600;
+}
+
+.reviewOriginal .reviewText {
+  margin-top: 0.4rem;
+  color: var(--mr-ink-soft);
 }
 
 .reviewLinks {

@@ -176,7 +176,11 @@ export class PublicSiteService {
     return {
       now,
       fragments,
-      catalog: () => (catalog ??= buildPublicCatalog(this.db, now)),
+      catalog: () =>
+        (catalog ??= buildPublicCatalog(this.db, now, {
+          fragments,
+          logger: this.options.logger,
+        })),
     };
   }
 
@@ -189,7 +193,7 @@ export class PublicSiteService {
       settings,
       pages: await this.publishedPages(ctx),
       reviews: { mode: this.options.reviewsMode },
-      pickupArea: await publicPickupArea(this.db),
+      pickupArea: await publicPickupArea(this.db, ctx.fragments),
     };
   }
 
@@ -380,7 +384,10 @@ export class PublicSiteService {
         const products =
           block.productSlugs === undefined
             ? (await ctx.catalog()).machines
-            : await buildPublicProducts(this.db, block.productSlugs, ctx.now);
+            : await buildPublicProducts(this.db, block.productSlugs, ctx.now, {
+                fragments: ctx.fragments,
+                logger: this.options.logger,
+              });
         return { ...block, products };
       }
       case 'included_items': {

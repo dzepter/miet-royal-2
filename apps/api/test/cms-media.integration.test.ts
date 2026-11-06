@@ -327,4 +327,22 @@ describe('Phase 16 – CMS-Medien', () => {
     expect(logBuffer).not.toContain('cms-media/');
     expect(logBuffer).not.toContain('dataBase64');
   });
+  it('M7. Bezeichnung/Standard-Alt-Text mit Steuer-/Formatzeichen (C1, Bidi, Zero-Width) ⇒ 400, nichts gespeichert (Review cms-3)', async () => {
+    const png = await testImage('png', 600, 300);
+    for (const label of ['Bild\u0085', 'Bild\u202Etxt', 'Bild\u200B', 'Bild\nzwei']) {
+      const response = await uploadMedia(ctx, world.editor.cookie, png, 'image/png', label);
+      expect(response.statusCode, JSON.stringify(label)).toBe(400);
+      expect(response.json().error.issues[0].path).toBe('label');
+    }
+    expect(await ctx.db.select().from(cmsMedia)).toHaveLength(0);
+    const media = await uploadOk(png, 'image/png');
+    for (const defaultAlt of ['Alt\u00ADtext', 'Alt\u2028text', 'Alt\u009Btext']) {
+      const patched = await call(ctx, 'PATCH', `/staff/cms/media/${media.id}`, {
+        cookie: world.editor.cookie,
+        payload: { defaultAlt },
+      });
+      expect(patched.statusCode, JSON.stringify(defaultAlt)).toBe(400);
+      expect(patched.json().error.issues[0].path).toBe('defaultAlt');
+    }
+  });
 });

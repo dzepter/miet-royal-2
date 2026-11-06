@@ -412,4 +412,22 @@ describe('Phase 16: GET /public/reviews', () => {
       await destroyTestContext(limited);
     }
   });
+  it('RV11. HEAD /public/reviews existiert nicht (404) und ruft nie das Gateway auf; GET-Limit bleibt bei 10 je Minute (Review demo_reviews-3)', async () => {
+    const gateway = new FakeReviewGateway();
+    const limited = await createTestContext({ rateLimitEnabled: true, reviewGateway: gateway });
+    try {
+      for (let i = 0; i < 12; i += 1) {
+        const head = await limited.app.inject({ method: 'HEAD', url: '/public/reviews' });
+        expect(head.statusCode, `HEAD ${i}`).toBe(404);
+      }
+      expect(gateway.calls).toBe(0);
+      for (let i = 0; i < 10; i += 1) {
+        expect((await getReviews(limited)).statusCode).toBe(200);
+      }
+      expect((await getReviews(limited)).statusCode).toBe(429);
+      expect(gateway.calls).toBe(10);
+    } finally {
+      await destroyTestContext(limited);
+    }
+  });
 });

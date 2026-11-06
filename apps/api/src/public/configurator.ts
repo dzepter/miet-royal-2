@@ -23,6 +23,8 @@ import { loadPublishedSiteSettings } from '../cms/published-content.ts';
 import {
   isSlushMachineProduct,
   loadActiveProducts,
+  loadExactAddressFragments,
+  productNameRevealsExactAddress,
   publicPriceCents,
   PUBLIC_PRICE_NOTE,
 } from './catalog.ts';
@@ -100,17 +102,35 @@ function mergeEntries(
 }
 
 /**
+ * Öffentlich wählbare (aktive) Produkte je Slug – ohne Produkte, deren Name die exakte
+ * Abholadresse enthält (Review pricing-3: sie existieren öffentlich nicht).
+ */
+async function publicActiveProducts(
+  executor: DatabaseExecutor,
+  fragments: readonly string[],
+): Promise<Product[]> {
+  return (await loadActiveProducts(executor)).filter(
+    (product) => !productNameRevealsExactAddress(product, fragments),
+  );
+}
+
+/**
  * Löst die Auswahl auf: nur AKTIVE Produkte mit wirksamem Preis zum Zeitpunkt `now`;
  * Maschinen nur über `isSlushMachineProduct`. Nicht wählbare Positionen werden nicht
- * berechnet, sondern als Hinweis (mit Feldpfad) gemeldet.
+ * berechnet, sondern als Hinweis (mit Feldpfad) gemeldet. `options.fragments` = bereits
+ * geladene Prüffragmente der exakten Abholadresse (sonst hier einmal geladen).
  */
 export async function resolveConfiguratorSelection(
   executor: DatabaseExecutor,
   productService: ProductService,
   selection: ConfiguratorSelection,
   now: Date,
+  options: { fragments?: readonly string[] } = {},
 ): Promise<ResolvedConfiguratorSelection> {
-  const activeBySlug = new Map((await loadActiveProducts(executor)).map((p) => [p.slug, p]));
+  const fragments = options.fragments ?? (await loadExactAddressFragments(executor));
+  const activeBySlug = new Map(
+    (await publicActiveProducts(executor, fragments)).map((p) => [p.slug, p]),
+  );
   const pricingProducts = new Map<string, PricingProduct>();
   const issues: ConfiguratorIssue[] = [];
 
@@ -118,10 +138,12 @@ export async function resolveConfiguratorSelection(
     slug: string,
     accepts: (product: Product) => boolean,
   ): Promise<PricingProduct | null> => {
-    const cached = pricingProducts.get(slug);
-    if (cached !== undefined) return cached;
+    // Review pricing-4: Kategorie IMMER vor dem Cache prüfen – sonst gälte z. B. die bereits
+    // aufgelöste Maschine auch als Sirup (falscher Feldpfad, leere Übersicht).
     const product = activeBySlug.get(slug);
     if (product === undefined || !accepts(product)) return null;
+    const cached = pricingProducts.get(slug);
+    if (cached !== undefined) return cached;
     let pricing: PricingProduct;
     try {
       pricing = await productService.pricingProductBySlug(slug, now, executor);
@@ -192,10 +214,14 @@ export async function resolveConfiguratorSelection(
       if (product === undefined) throw new Error('Produkt der Auswahl nicht aufgelöst.');
       return product;
     },
-    // Wie im Angebot: Inklusiv-Packs unabhängig von der Auswahl, fehlend ⇒ null.
-    includedPack: async (slug) =>
-      pricingProducts.get(slug) ??
-      productService.pricingProductBySlug(slug, now, executor).catch(() => null),
+    // Wie im Angebot: Inklusiv-Packs unabhängig von der Auswahl, fehlend ⇒ null; ein Pack,
+    // dessen Name die exakte Abholadresse enthält, gilt öffentlich als fehlend.
+    includedPack: async (slug) => {
+      const pack =
+        pricingProducts.get(slug) ??
+        (await productService.pricingProductBySlug(slug, now, executor).catch(() => null));
+      return pack !== null && productNameRevealsExactAddress(pack, fragments) ? null : pack;
+    },
   };
   return { machine, pricingProducts, request, resolver, requestedFreeLiters, issues };
 }
@@ -262,18 +288,22 @@ export interface ConfiguratorPreviewInput {
   selection: ConfiguratorSelection;
 }
 
-/** Empfehlung nur aus VERÖFFENTLICHTEN Regeln und nur für aktive Slush-Maschinen mit Preis. */
+/**
+ * Empfehlung nur aus VERÖFFENTLICHTEN Regeln und nur für öffentlich wählbare Slush-Maschinen
+ * mit Preis (Name mit exakter Abholadresse ⇒ nie empfohlen, Review pricing-3).
+ */
 async function recommendationFor(
   executor: DatabaseExecutor,
   guests: number | undefined,
   now: Date,
+  fragments: readonly string[],
 ): Promise<PublicConfiguratorPreview['recommendation']> {
   const fallback = { machineSlug: null, message: RECOMMENDATION_FALLBACK_MESSAGE };
   if (guests === undefined) return fallback;
   const published = await loadPublishedSiteSettings(executor);
   const rules = published?.settings.recommendationRules ?? [];
   if (rules.length === 0) return fallback;
-  const machines = (await loadActiveProducts(executor)).filter(isSlushMachineProduct);
+  const machines = (await publicActiveProducts(executor, fragments)).filter(isSlushMachineProduct);
   const selectable = new Map<string, Product>();
   for (const machine of machines) {
     if ((await publicPriceCents(executor, machine.id, now)) !== null) {
@@ -296,11 +326,13 @@ export async function buildConfiguratorPreview(
   input: ConfiguratorPreviewInput,
   now: Date,
 ): Promise<PublicConfiguratorPreview> {
+  const fragments = await loadExactAddressFragments(executor);
   const resolved = await resolveConfiguratorSelection(
     executor,
     productService,
     input.selection,
     now,
+    { fragments },
   );
   const pricingInput = await resolvePricingInput(resolved.request, resolved.resolver);
   const priced = priceLeniently(pricingInput);
@@ -348,7 +380,7 @@ export async function buildConfiguratorPreview(
   }));
 
   return {
-    recommendation: await recommendationFor(executor, input.guests, now),
+    recommendation: await recommendationFor(executor, input.guests, now, fragments),
     largeEvent: input.guests !== undefined && input.guests >= LARGE_EVENT_GUEST_THRESHOLD,
     quota: {
       freeSyrupLiters,

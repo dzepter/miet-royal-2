@@ -12,9 +12,11 @@ import {
   clearStoredMutationId,
   createClientMutationId,
   createInitialState,
+  deliveryWindowReversed,
   endsNextDay,
   ensureMutationId,
   fetchConfiguratorPreview,
+  fieldForIssuePath,
   firstInvalidStep,
   inquiryOutcomeMessage,
   interpretInquiryResponse,
@@ -22,6 +24,7 @@ import {
   isRetryableOutcome,
   isUuid,
   readStoredMutationId,
+  splitInquiryIssues,
   stepForIssuePath,
   submitInquiry,
   validateStep,
@@ -557,5 +560,123 @@ describe('Konfigurator: Schritte und Prüfung (Phase 16)', () => {
     assert.equal(firstInvalidStep(state, CTX), null);
     assert.equal(firstInvalidStep({ ...state, privacyAcknowledged: false }, CTX), 'summary');
     assert.equal(firstInvalidStep({ ...state, machineSlug: '' }, CTX), 'machine');
+  });
+});
+
+describe('Konfigurator: Review-Fixes Website-Anfrage (Phase 16)', () => {
+  const WINDOW_MESSAGE = 'Das Ende des Wunsch-Lieferzeitfensters muss nach dem Beginn liegen.';
+  const DST_MESSAGE = 'Diese Uhrzeit gibt es am gewählten Tag wegen der Zeitumstellung nicht.';
+
+  function deliveryWindow(windowFrom: string, windowTo: string): ConfiguratorState {
+    return {
+      ...filledState(),
+      fulfillment: 'delivery',
+      delivery: { street: 'Weg 1', postalCode: '55116', city: 'Mainz', windowFrom, windowTo },
+    };
+  }
+
+  it('W-C17. Wunsch-Lieferzeitfenster (am Veranstaltungstag): Ende ≤ Beginn blockiert „Abholung / Lieferung“ mit exakt der API-Meldung am Feld windowTo', () => {
+    assert.equal(CONFIGURATOR_TEXT.DELIVERY_WINDOW_ORDER, WINDOW_MESSAGE);
+    for (const [from, to] of [
+      ['18:00', '17:00'],
+      ['12:00', '12:00'],
+      ['23:30', '00:30'],
+    ] as const) {
+      const state = deliveryWindow(from, to);
+      assert.equal(deliveryWindowReversed(state.delivery), true, `${from}–${to}`);
+      assert.deepEqual(validateStep('fulfillment', state, CTX), { windowTo: WINDOW_MESSAGE });
+      assert.equal(firstInvalidStep(state, CTX), 'fulfillment');
+    }
+    // Gültig: Ende nach Beginn, oder nur eine/keine Angabe (beides optional).
+    for (const [from, to] of [
+      ['09:00', '12:00'],
+      ['', '12:00'],
+      ['09:00', ''],
+      ['', ''],
+    ] as const) {
+      assert.deepEqual(
+        validateStep('fulfillment', deliveryWindow(from, to), CTX),
+        {},
+        `${from}–${to}`,
+      );
+    }
+    // Formatfehler hat Vorrang (keine doppelte Meldung am selben Feld).
+    assert.deepEqual(validateStep('fulfillment', deliveryWindow('18:00', '7 Uhr'), CTX), {
+      windowTo: 'Bitte gib die Uhrzeit im Format HH:MM an.',
+    });
+    // Abholung: Lieferfelder spielen keine Rolle.
+    assert.deepEqual(
+      validateStep(
+        'fulfillment',
+        { ...deliveryWindow('18:00', '17:00'), fulfillment: 'pickup' },
+        CTX,
+      ),
+      {},
+    );
+    // Eventzeit bleibt anders: Ende ≤ Beginn ⇒ Ende am Folgetag, kein Fehler.
+    assert.deepEqual(validateStep('event', filledState(), CTX), {});
+  });
+
+  it('W-C18. 400 der API (Zeitumstellung/Lieferfenster): Pfad ⇒ richtiger Schritt UND richtiges Feld; Meldung genau einmal', () => {
+    for (const [path, step, field] of [
+      ['body.event.startTime', 'event', 'startTime'],
+      ['body.event.endTime', 'event', 'endTime'],
+      ['body.fulfillment.windowFrom', 'fulfillment', 'windowFrom'],
+      ['body.fulfillment.windowTo', 'fulfillment', 'windowTo'],
+      ['body.event.date', 'event', 'date'],
+      ['body.contact.email', 'contact', 'email'],
+      ['body.syrups.free.0.liters', 'syrup', 'freeSyrups'],
+      ['body.canisters', 'syrup', 'canisters'],
+      ['body.machineSlug', 'machine', 'machineSlug'],
+      ['body.privacyAcknowledged', 'summary', 'privacy'],
+    ] as const) {
+      assert.equal(stepForIssuePath(path), step, path);
+      assert.equal(fieldForIssuePath(path), field, path);
+    }
+    assert.equal(fieldForIssuePath('body.syrups.extra.0.liters'), null);
+    assert.equal(fieldForIssuePath('body.extras.cups25'), null);
+    assert.equal(fieldForIssuePath('body.fulfillment'), null);
+    assert.equal(fieldForIssuePath('body.event.unknown'), null);
+    assert.equal(fieldForIssuePath('body'), null);
+
+    for (const path of ['body.event.startTime', 'body.event.endTime']) {
+      const outcome = interpretInquiryResponse(400, {
+        error: { code: 'VALIDATION_ERROR', issues: [{ path, message: DST_MESSAGE }] },
+      });
+      assert.equal(outcome.kind, 'invalid');
+      const issues = outcome.kind === 'invalid' ? outcome.issues : [];
+      const split = splitInquiryIssues(issues);
+      assert.equal(split.step, 'event');
+      assert.deepEqual(split.fieldErrors, {
+        [path.endsWith('startTime') ? 'startTime' : 'endTime']: DST_MESSAGE,
+      });
+      assert.deepEqual(split.remaining, []);
+    }
+
+    const delivery = interpretInquiryResponse(400, {
+      error: {
+        code: 'VALIDATION_ERROR',
+        issues: [
+          { path: 'body.fulfillment.windowFrom', message: DST_MESSAGE },
+          { path: 'body.fulfillment.windowTo', message: WINDOW_MESSAGE },
+          { path: 'body.fulfillment.windowTo', message: DST_MESSAGE },
+          { path: 'body.contact.email', message: 'Bitte eine gültige E-Mail-Adresse angeben.' },
+          { path: 'body.extras.cups25', message: 'Zu viele Becher.' },
+        ],
+      },
+    });
+    assert.equal(delivery.kind, 'invalid');
+    const split = splitInquiryIssues(delivery.kind === 'invalid' ? delivery.issues : []);
+    assert.equal(split.step, 'fulfillment');
+    assert.deepEqual(split.fieldErrors, { windowFrom: DST_MESSAGE, windowTo: WINDOW_MESSAGE });
+    assert.deepEqual(
+      split.remaining.map((issue) => [issue.path, issue.message]),
+      [
+        ['body.fulfillment.windowTo', DST_MESSAGE],
+        ['body.contact.email', 'Bitte eine gültige E-Mail-Adresse angeben.'],
+        ['body.extras.cups25', 'Zu viele Becher.'],
+      ],
+    );
+    assert.deepEqual(splitInquiryIssues([]), { step: null, fieldErrors: {}, remaining: [] });
   });
 });

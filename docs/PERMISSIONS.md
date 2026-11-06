@@ -486,3 +486,40 @@ Serverseitige Umsetzung (Phase 14, W2, Order §55–§66, §97–§100):
   Portal-Auth-Ereignisse `portal.*` in `staff_security_events` (Review R10),
   `/portal/*`-Mutationen unterliegen Reset-Gate und Reset-Barrier.
 
+## Website / CMS (Phase 16)
+
+Keine neuen Rechte. Der Website-Bereich nutzt die bestehenden Rechte
+`cms.edit`, `cms.publish`, `product.view`, `product.manage`, `price.manage` und
+`inquiry.view`; jede Aktion prüft die Rechte serverseitig frisch (ein
+ausgeblendeter Knopf ist kein Schutz). Details: docs/WEBSITE_CMS.md,
+docs/WEBSITE_CONFIGURATOR.md.
+
+| Aktion | Recht |
+| --- | --- |
+| Website-Einträge, Revisionen, Historie und Medien lesen; Vorschau-Zugang erzeugen | `cms.edit` ODER `cms.publish` |
+| Entwurf speichern, alte Revision als neuen Entwurf übernehmen, regionale Seite anlegen, Medien hochladen und Bezeichnung/Standard-Alt-Text ändern | `cms.edit` |
+| Veröffentlichen; Zurückziehen (nur regionale Seiten und sekundäre Angebote) | `cms.publish` |
+| „Produkte & Preise“ im Website-Bereich (Lesesicht der öffentlichen Projektion, `GET /staff/cms/catalog`) | `product.view` |
+| Produkte ändern bzw. Preise ändern (weiterhin nur unter `/produkte` über die bestehenden Routen) | `product.manage` bzw. `price.manage` |
+| Kasten „Website-Anfrage“ am Vorgang (`GET /staff/processes/:id/website-submission`) | `inquiry.view` + `process.view_all` + Sichtbarkeitsfenster des Vorgangs (wie die Inquiry-Ansicht; unsichtbar ⇒ 404) |
+
+- **Trennung Bearbeiten/Veröffentlichen:** Wer nur `cms.publish` hat, sieht
+  alles (inkl. Entwurf), kann die Vorschau öffnen und bewusst veröffentlichen,
+  aber nichts bearbeiten (Staff-Editor im Lesemodus; `PUT …/draft`,
+  `POST …/restore`, `POST /staff/cms/entries`, Medien-Upload/-PATCH ⇒ 403). Wer
+  nur `cms.edit` hat, kann nicht veröffentlichen oder zurückziehen (403).
+- Fehlen beide CMS-Rechte, fehlt der Navigationseintrag „Website“;
+  die Routen antworten 403 („Dafür fehlt dir die erforderliche
+  Berechtigung.“).
+- Ein CMS-Inhalt kann nie einen Preis setzen oder übersteuern: Preise kommen
+  nur aus `product_prices`, Preisänderungen bleiben an `price.manage` gebunden.
+- **Öffentliche Seite ohne Rechtesystem:** Website, Konfigurator, Website-
+  Anfrage und Bewertungen sind öffentlich (keine Rollen, keine Staff-Session,
+  CSRF-Hook für POSTs, IP-Limits). Eine Portal-Session bindet eine
+  Website-Anfrage nur an den angemeldeten Kunden, sie gewährt keine weiteren
+  Rechte. Die CMS-Vorschau ist an ein eigenes, kurzlebiges, revisionsgebundenes
+  Cookie gebunden – keine Staff-Session in der Web-Origin.
+- **Audit:** `cms.published`, `cms.unpublished`, `cms.preview_created` in
+  `staff_security_events` (nur IDs, Revisionsnummern, Pfad, Quelle).
+- **Demo:** Rechte wie Live; in demo sperrt ein laufender Reset alle
+  CMS-Mutationen (503 `DEMO_RESET`).

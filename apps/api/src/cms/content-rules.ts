@@ -10,6 +10,7 @@ import {
   containsExactAddress,
   containsPriceText,
   exactAddressFragments,
+  hasForbiddenTextCharacters,
   type CmsPageContent,
   type CmsPageTypeName,
   type CmsSiteSettings,
@@ -235,12 +236,9 @@ export function parseEditorNote(value: string | null | undefined): string | null
   if (trimmed.length > CMS_EDITOR_NOTE_MAX) {
     issues.push({ path: 'editorNote', message: `Höchstens ${CMS_EDITOR_NOTE_MAX} Zeichen.` });
   }
-  for (let i = 0; i < trimmed.length; i += 1) {
-    const code = trimmed.charCodeAt(i);
-    if ((code < 0x20 && code !== 0x0a) || code === 0x7f) {
-      issues.push({ path: 'editorNote', message: 'Unzulässige Steuerzeichen.' });
-      break;
-    }
+  // Review cms-3: dieselbe Zeichenregel wie die CMS-Texte (Cc/Cf/U+2028/U+2029, nur \n erlaubt).
+  if (hasForbiddenTextCharacters(trimmed, { allowNewline: true })) {
+    issues.push({ path: 'editorNote', message: 'Unzulässige Steuerzeichen.' });
   }
   if (issues.length > 0) throw new RequestValidationError(issues);
   return trimmed;

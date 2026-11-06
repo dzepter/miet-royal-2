@@ -14,6 +14,7 @@ import type { WebsiteModuleDeps } from '../website/module.ts';
  *   unberührt.
  * - `Sec-Fetch-Site: cross-site|same-site` ⇒ 403 `CSRF_REJECTED` (fremde Seiten sollen keine
  *   bezahlten Abrufe auslösen); ohne Header (Server, Tests) erlaubt.
+ * - Nur GET – keine automatische HEAD-Route (HEAD ⇒ 404 ohne Provider-Abruf).
  * - 10 Abrufe je Minute und IP; `Cache-Control: no-store` auf JEDER Antwort (Google
  *   verbietet Caching); keine CORS-Header.
  * - Log nur `{ reviews: { provider, outcome, reason, httpStatus, durationMs, reviewCount } }` –
@@ -32,17 +33,23 @@ export function registerPublicReviewRoutes(
 
   instance.get(
     '/public/reviews',
-    rateLimitEnabled
-      ? {
-          config: {
-            rateLimit: {
-              max: PUBLIC_REVIEWS_MINUTE_LIMIT,
-              timeWindow: '1 minute',
-              keyGenerator: (request: FastifyRequest) => request.ip,
+    {
+      // Review demo_reviews-3: KEINE automatische HEAD-Route (Fastify-Default) – HEAD würde
+      // denselben Handler samt bezahltem Provider-Abruf ausführen und hätte einen eigenen
+      // Rate-Limit-Topf. HEAD /public/reviews ⇒ 404, das Gateway wird nie aufgerufen.
+      exposeHeadRoute: false,
+      ...(rateLimitEnabled
+        ? {
+            config: {
+              rateLimit: {
+                max: PUBLIC_REVIEWS_MINUTE_LIMIT,
+                timeWindow: '1 minute',
+                keyGenerator: (request: FastifyRequest) => request.ip,
+              },
             },
-          },
-        }
-      : {},
+          }
+        : {}),
+    },
     async (request, reply) => {
       void reply.header('cache-control', 'no-store');
       const site = request.headers['sec-fetch-site'];

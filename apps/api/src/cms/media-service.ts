@@ -9,6 +9,7 @@ import {
 } from '@mietroyal/database';
 import type { StorageProvider } from '@mietroyal/integrations';
 import { RequestValidationError } from '@mietroyal/validation';
+import { hasForbiddenTextCharacters, hasTagLikeText } from '@mietroyal/validation/cms';
 import { and, asc, desc, eq, exists, inArray, isNotNull, or } from 'drizzle-orm';
 import sharp from 'sharp';
 import { detectImageMime, normalizeDeclaredMime } from '../communication/inbound/content.ts';
@@ -78,12 +79,9 @@ export function cmsMediaStorageKey(mediaId: string, width: number): string {
   return `cms-media/${mediaId}/${width}.webp`;
 }
 
+/** Review cms-3: Steuer-/Formatzeichen (Cc/Cf/U+2028/U+2029, auch kein \n) und HTML-artige Tags. */
 function hasForbiddenText(value: string): boolean {
-  for (let i = 0; i < value.length; i += 1) {
-    const code = value.charCodeAt(i);
-    if (code < 0x20 || code === 0x7f) return true;
-  }
-  return /<\s*[a-zA-Z/!?]/.test(value);
+  return hasForbiddenTextCharacters(value, { allowNewline: false }) || hasTagLikeText(value);
 }
 
 function parseLabel(value: string): string {

@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import {
   CONFIGURATOR_STEPS,
   CONFIGURATOR_TEXT,
@@ -21,6 +21,7 @@ import {
   isRetryableOutcome,
   nextStep,
   previousStep,
+  splitInquiryIssues,
   stepIndex,
   submitInquiry,
   totalLiters,
@@ -84,6 +85,22 @@ type SubmitState =
 
 const CUPS_SLUG = 'becher-25';
 const STRAWS_SLUG = 'strohhalme-25';
+
+const subscribeNothing = () => () => {};
+
+/**
+ * false beim Server-Rendern und während der Hydration, danach true (ohne setState im Effekt).
+ * Bis dahin sind alle Eingaben gesperrt: der Wizard ist serverseitig vorgerendert, und
+ * Eingaben VOR der Hydration fänden keinen Weg in den React-Zustand (kontrollierte Felder) –
+ * sie gingen beim nächsten Rendern stillschweigend verloren (E2E-Beobachtung Phase 16).
+ */
+function useHydrated(): boolean {
+  return useSyncExternalStore(
+    subscribeNothing,
+    () => true,
+    () => false,
+  );
+}
 
 function sessionStore(): StorageLike | null {
   try {
@@ -213,6 +230,7 @@ export function Configurator({
   const [previewStatus, setPreviewStatus] = useState<PreviewStatus>('idle');
   const [submit, setSubmit] = useState<SubmitState>({ kind: 'idle' });
   const [privacyBlocked, setPrivacyBlocked] = useState(!privacyPublished);
+  const hydrated = useHydrated();
 
   const headingRef = useRef<HTMLHeadingElement>(null);
   const errorSummaryRef = useRef<HTMLDivElement>(null);
@@ -325,12 +343,16 @@ export function Configurator({
     }
     if (outcome.kind === 'privacy_unavailable') setPrivacyBlocked(true);
     if (outcome.kind === 'invalid') {
-      // Abgelehnte Eingaben: Payload verwerfen (nichts wurde gespeichert), zum Schritt springen.
+      // Abgelehnte Eingaben: Payload verwerfen (nichts wurde gespeichert), zum Schritt des
+      // ersten Fehlers springen und die Meldungen dieses Schritts am jeweiligen Feld zeigen
+      // (z. B. Lieferzeitfenster, Zeitumstellung); übrige Meldungen im Fehlerkasten.
       pendingPayloadRef.current = null;
-      const first = outcome.issues[0];
-      if (first !== undefined) {
-        setStep(first.step);
-        setVisited((current) => Math.max(current, stepIndex(first.step)));
+      const split = splitInquiryIssues(outcome.issues);
+      if (split.step !== null) {
+        const target = split.step;
+        setStep(target);
+        setVisited((current) => Math.max(current, stepIndex(target)));
+        setErrors(split.fieldErrors);
       }
     } else if (!isRetryableOutcome(outcome)) {
       pendingPayloadRef.current = null;
@@ -419,6 +441,8 @@ export function Configurator({
           className={styles.panel}
           onSubmit={step === 'summary' ? handleSubmit : handleNext}
           noValidate
+          aria-busy={!hydrated}
+          data-hydrated={hydrated ? 'true' : 'false'}
           data-testid={`cfg-step-${step}`}
         >
           <p className={site.eyebrow}>
@@ -447,7 +471,7 @@ export function Configurator({
             </div>
           ) : null}
 
-          <fieldset className={styles.fieldset} disabled={locked}>
+          <fieldset className={styles.fieldset} disabled={locked || !hydrated}>
             {step === 'event' ? (
               <EventStep
                 state={state}
@@ -505,6 +529,17 @@ export function Configurator({
           ) : null}
 
           <div className={styles.actions}>
+            {hydrated ? null : (
+              <p className={styles.hydrating} role="status" data-testid="cfg-hydrating">
+                {CONFIGURATOR_TEXT.HYDRATING}
+              </p>
+            )}
+            <noscript>
+              <p className={styles.hydrating} data-testid="cfg-noscript">
+                Der Konfigurator braucht JavaScript. Ohne JavaScript erreichst du uns über die
+                Kontaktdaten unten auf der Seite.
+              </p>
+            </noscript>
             {currentIndex > 0 ? (
               <button
                 type="button"
@@ -529,7 +564,12 @@ export function Configurator({
                   : CONFIGURATOR_TEXT.SUBMIT}
               </button>
             ) : (
-              <button type="submit" className={site.button} data-testid="cfg-next">
+              <button
+                type="submit"
+                className={site.button}
+                disabled={!hydrated}
+                data-testid="cfg-next"
+              >
                 Weiter
               </button>
             )}
@@ -1327,7 +1367,8 @@ function SubmitFailure({
 }) {
   const message = inquiryOutcomeMessage(outcome);
   if (message === null) return null;
-  const issues = outcome.kind === 'invalid' ? outcome.issues : [];
+  // Feldfehler stehen am Feld bzw. im Fehlerkasten des Schritts – hier nur die übrigen.
+  const issues = outcome.kind === 'invalid' ? splitInquiryIssues(outcome.issues).remaining : [];
   return (
     <div className={`${site.noticeError} ${site.spacedTop}`} role="alert" data-testid="cfg-error">
       <p>{message}</p>

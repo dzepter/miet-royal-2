@@ -210,6 +210,60 @@ Snapshot-Adresse.
 - Eine Portalnachricht ist nie automatisch die „Kundenantwort“ einer
   Abrechnungsklärung (siehe „Schaden-/Fehlteil-Vorinformation“).
 
+## Website / Konfigurator (Phase 16)
+Umsetzung der MASTER_SPEC §4–§8 und §30 auf der neuen Website (Details:
+docs/WEBSITE_CONFIGURATOR.md, docs/WEBSITE_CMS.md). Keine neue Fachregel – die
+Regeln oben gelten unverändert; hier steht, wie die Website sie anwendet.
+- Preise auf Website, im Konfigurator und in der Anfrage kommen ausschließlich
+  aus `products`/`product_prices` zum Abrufzeitpunkt (geplante Preise ab
+  `effective_from`) und der zentralen Preisengine (`priceOffer`). Das CMS
+  speichert keine Preise; Preis-Freitext im CMS wird abgelehnt (außer
+  Rechtstexte). Produkte ohne wirksamen Preis erscheinen nicht.
+- Inklusiv/Kommission/Kanister wie oben, als Domain-Konstanten
+  (`FREE_SYRUP_LITERS_PER_CONTAINER`, `FREE_CUPS_PER_RENTAL`,
+  `FREE_STRAWS_PER_RENTAL`, `CANISTERS_PER_CONTAINER_LIMIT`,
+  `freeSyrupBudgetFor`, `canisterLimitFor` in `packages/domain/src/pricing.ts`).
+  Weniger Gratis-Sirup als das Kontingent ist erlaubt („Sorte später
+  abstimmen“); der Kanister wird empfohlen, aber nicht vorausgewählt.
+- Maschinenempfehlung nur aus gepflegten, veröffentlichten, nicht
+  überlappenden Regeln (`guestMin`, `guestMax` optional, aktive Slush-Maschine);
+  Lücken erlaubt; keine Formel. Ohne passende Regel: „Wir prüfen persönlich,
+  welche Maschine am besten zu deinem Event passt.“ Der Kunde wählt immer frei;
+  keine Verfügbarkeitszusage.
+- Ab 250 Gästen nur ein freundlicher Großevent-Hinweis; die Anfrage geht
+  normal weiter.
+- Keine Verfügbarkeitsprüfung und keine Ablehnung bei der Website-Anfrage; keine
+  physischen Bestände, Sperren oder Lagerzahlen öffentlich.
+- Abholung öffentlich nur als Region (`pickup_public_area`, Default
+  „Mainz-Hechtsheim“); die exakte Abholadresse erscheint nie auf Website,
+  Konfigurator oder in CMS-Inhalten (Speichern/Veröffentlichen abgelehnt,
+  öffentlicher Lesepfad fail-closed). Der Abgleich ist normalisiert und erkennt
+  auch Schreibvarianten (ohne Komma, „Str.“/„Straße“, „Nr.“, ohne Leerzeichen
+  oder mit Bindestrich, unsichtbare Zeichen); Firmen-/Personennamen und „PLZ Ort“
+  allein lösen nie aus. Produktname/-beschreibung mit der Adresse: Beschreibung
+  entfällt öffentlich, ein Produkt mit der Adresse im Namen erscheint öffentlich
+  gar nicht (docs/WEBSITE_CMS.md „Prüfregeln“).
+- Lieferung: Adresse und optionales Wunsch-Lieferzeitfenster am
+  Veranstaltungstag (beide Zeiten an diesem Tag, Ende nach dem Beginn – keine
+  Folgetag-Regel); „wird individuell geprüft“ – kein Preis, keine km-Formel.
+- Veranstaltungszeiten: Ende ≤ Beginn ⇒ Ende am Folgetag. Uhrzeiten, die es
+  wegen der Zeitumstellung am jeweiligen Tag nicht gibt, werden abgelehnt (nie
+  stillschweigend verschoben).
+- Eine erfolgreich abgesendete Website-Anfrage erzeugt genau EINEN Vorgang
+  (`source = website`, ohne Mitarbeiter als Ersteller) mit Anfrage und Auswahl –
+  kein Angebot, keine Buchung, keine automatische Kundenmail. Dieselbe
+  `clientMutationId` erzeugt nie einen zweiten Vorgang; eine Wiederholung wird
+  vor allen datumsabhängigen Prüfungen erkannt (auch nach Ablauf des
+  Eventdatums 200 bzw. 409 mit Vorgangsnummer).
+- Kundenzuordnung: gültige Portal-Session ⇒ dieser Kunde; sonst genau ein
+  aktiver Kunde mit derselben normalisierten E-Mail ⇒ dieser Kunde ohne
+  Überschreiben der Stammdaten; kein Treffer ⇒ neuer Kunde; mehrere Treffer ⇒
+  neuer Kunde mit interner Dublettenwarnung. Keine automatische Zusammenführung,
+  keine öffentliche Aussage über vorhandene E-Mail-Adressen.
+- Ohne veröffentlichte Datenschutzhinweise ist keine Website-Anfrage möglich
+  (fail-closed); gespeichert werden Zeitpunkt und Revision der bestätigten
+  Datenschutzhinweise.
+
 ## Frühere Rückgabe
 Keine automatische Mietpreisminderung.
 

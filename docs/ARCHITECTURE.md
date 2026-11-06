@@ -115,3 +115,74 @@ Einfache interne Flags für neue Module, z. B.
 whatsapp_enabled, customer_portal_enabled, offline_returns_enabled.
 (Phase 15: das Kundenportal hat kein Feature-Flag – es ist für Kunden optional,
 weil der Zugang nur über einen angeforderten Magic Link entsteht.)
+
+## Website, CMS, Konfigurator (Phase 16)
+Neue öffentliche Website in `apps/web` mit schlankem internem CMS in API und
+Staff-App – kein externes CMS, keine neue Instanz, kein neues Secret (Details:
+docs/WEBSITE_CMS.md, docs/WEBSITE_CONFIGURATOR.md, docs/GOOGLE_REVIEWS_API_NOTES.md).
+
+- **API – ein Einhängepunkt:** `apps/api/src/website/module.ts`
+  (`registerWebsiteModule`, in `app.ts` registriert) bindet alle neuen Routen:
+  - CMS: `apps/api/src/routes/website-cms.ts` (`/staff/cms/*`, `/public/site/*`,
+    `/public/cms/*`), Logik `apps/api/src/cms/` (`cms-service.ts`,
+    `content-rules.ts` als EINE Stelle aller Prüfregeln, `media-service.ts`,
+    `preview-service.ts`, `public-site.ts`, `published-content.ts`,
+    `bootstrap.ts` + `bootstrap-content.ts`).
+  - Konfigurator/Website-Anfrage: `apps/api/src/routes/public-configurator.ts`
+    (`/public/configurator/*`, `/public/inquiries`,
+    `/staff/processes/:id/website-submission`), Logik `apps/api/src/public/`
+    (`catalog.ts` = einzige öffentliche Produkt-/Preisprojektion,
+    `configurator.ts`, `schemas.ts`, `website-inquiry.ts`).
+  - Bewertungen: `apps/api/src/routes/public-reviews.ts` (`GET /public/reviews`)
+    hinter der Provider-Grenze `ReviewGateway` (`apps/api/src/reviews/`:
+    `types.ts`, `factory.ts`, `budget.ts`, `google.ts`, `fake.ts`, `public.ts`,
+    `testing/fake-places-server.ts`), Gateway je API-Prozess aus der
+    Konfiguration (`createReviewGateway`) mit Laufzeitsperre
+    `assertReviewGatewayAllowed` (production/staging nie Fake, demo nie Google).
+- **Eine Preisquelle:** Website, Konfigurator, Vorschau und Anfrage nutzen
+  ausschließlich `products`/`product_prices` (`effectivePriceCentsAt`, dieselbe
+  Regel wie `ProductService.effectivePriceCents`) und die zentrale Preisengine
+  `priceOffer` mit dem gemeinsamen Helfer `resolvePricingInput`
+  (`packages/domain/src/pricing-input.ts`, auch vom `OfferService` genutzt).
+  Inklusiv-/Kontingentkonstanten liegen in `packages/domain/src/pricing.ts`.
+  Der Browser rechnet nie Geld.
+- **Website-Anfrage in EINER Transaktion:** `WebsiteInquiryService.submit`
+  arbeitet nur über den Transaktions-Executor (Pool max = 1 fest):
+  Advisory-Lock je `clientMutationId` ⇒ Wiederholungserkennung ⇒ erst dann
+  Datums-/Zeitprüfungen (Vergangenheit, Zeitumstellung, Lieferfenster) ⇒
+  Datenschutz-Revision ⇒ erneute Auswahlprüfung ⇒ Advisory-Lock je
+  normalisierter E-Mail ⇒
+  `CustomerService.createCustomerWithin` ⇒ `ProcessService.createProcessWithin(tx,
+  null, …)` ⇒ `InquiryService.upsertWithin(tx, null, …)` ⇒ unveränderliche
+  `public_inquiry_submissions`-Zeile. Die optionale Portal-Session wird VOR der
+  Transaktion ohne Touch gelesen. Die Staff-Pfade delegieren an dieselben
+  `…Within`-Methoden (keine duplizierte Fachlogik).
+- **Web (`apps/web`):** Server-Komponenten lesen `/public/site/*` und den Katalog
+  direkt an `WEB_API_ORIGIN` (`apps/web/lib/site-api.ts`, `cache: 'no-store'`,
+  Timeout 2,5 s, je Request per React `cache` dedupliziert) – diese GET-Routen
+  haben deshalb kein IP-Limit. Browser-Aufrufe (Vorschau-Übersicht, Anfrage,
+  Vorschau-Einlösen, Bewertungen) laufen über den Same-Origin-Rewrite `/api/*`
+  mit IP-Limits. Seitenrahmen `components/site/site-frame.tsx` nur auf
+  Website-Seiten (nicht auf `/konto`, Token-Seiten, `/vorschau`-Einlösung); EIN
+  Block-Renderer (`components/site/block-renderer.tsx`) für öffentliche Seiten
+  und CMS-Vorschau; Konfigurator `components/configurator/`. CSS Modules mit
+  Tokens unter `.site` – keine globalen Element-Selektoren, Portal und
+  Token-Seiten bleiben unberührt. Indexierung bis Phase 17 aus
+  (`WEB_INDEXING_ENABLED`). Der beim Build verwendete API-Origin wird als
+  `MR_BUILD_API_ORIGIN` eingebacken; weicht `WEB_API_ORIGIN` zur Laufzeit ab,
+  bleiben Konfigurator-Absenden und Vorschau gesperrt und die Bewertungs-Sektion
+  ausgeblendet („Web je Umgebung bauen“, docs/DEPLOYMENT_NOTES.md).
+- **Staff (`apps/staff`):** Bereich `/website` (Übersicht, Editor, Medien,
+  „Produkte & Preise“ als Lesesicht) und Kasten „Website-Anfrage“ in der
+  Inquiry-Ansicht; Inhaltsschema als Workspace-Paket `@mietroyal/validation/cms`
+  (Staff `transpilePackages`). Online-only.
+- **Vorschau ohne Session-Transfer:** Staff erzeugt einen kurzlebigen,
+  revisionsgebundenen Zugang; das Web löst ihn per POST ein und setzt ein eigenes
+  HttpOnly-Cookie (`__Host-mr_cms_preview`) – keine Staff-Session wandert in die
+  Web-Origin; jede Umgebung prüft gegen ihre eigene Datenbank.
+- **Medien:** über den bestehenden `StorageProvider`, ausschließlich neu
+  kodierte WebP-Varianten (`cms-media/<id>/<breite>.webp`), öffentlich nur über
+  die opake Medien-ID und nur für veröffentlichte Revisionen.
+- **Demo:** CMS-Tabellen überleben den Business-Reset; Website-Anfragen
+  (`public_inquiry_submissions`) werden gelöscht. Bewertungen in der Demo nur
+  synthetisch (`fake`), nie Google.

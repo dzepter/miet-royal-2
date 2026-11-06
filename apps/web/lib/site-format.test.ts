@@ -118,6 +118,30 @@ describe('Website-Formatierung (Phase 16)', () => {
     assert.equal(phoneHref('06131 / 00 00 00'), 'tel:06131000000');
     assert.equal(phoneHref('kein Telefon'), null);
   });
+
+  it('W-F7. Telefonlink (Review web_security-3): geklammerte 0 nach der Ländervorwahl wird nicht gewählt; andere Schreibweisen unverändert', () => {
+    // Deutsche Schreibweise mit Verkehrsausscheidungsziffer „(0)“ ⇒ gültige E.164-Wählnummer.
+    assert.equal(phoneHref('+49 (0) 6131 123456'), 'tel:+496131123456');
+    assert.equal(phoneHref('+49 (0)160 96663665'), 'tel:+4916096663665');
+    assert.equal(phoneHref('+49 (0)160/96663665'), 'tel:+4916096663665');
+    assert.equal(phoneHref('+49(0)6131-12345'), 'tel:+49613112345');
+    assert.equal(phoneHref(' +49 ( 0 ) 6131 12345 '), 'tel:+49613112345');
+    assert.equal(phoneHref('0049 (0) 6131 123456'), 'tel:00496131123456');
+    // Vorwahl samt nationaler 0 in Klammern („+49 (06131) …“) ⇒ 0 entfällt ebenfalls.
+    assert.equal(phoneHref('+49 (06131) 12345'), 'tel:+49613112345');
+    assert.equal(phoneHref('+49 (0160) 96663665'), 'tel:+4916096663665');
+    // Ohne „(0)“: wie bisher.
+    assert.equal(phoneHref('+49 160 96663665'), 'tel:+4916096663665');
+    assert.equal(phoneHref('0160 96663665'), 'tel:016096663665');
+    assert.equal(phoneHref('06131-12345'), 'tel:0613112345');
+    assert.equal(phoneHref('(06131) 12345'), 'tel:0613112345');
+    // Ungeklammerte 0 nach der Ländervorwahl gehört in manchen Ländern zur Nummer (Italien).
+    assert.equal(phoneHref('+39 06 1234 5678'), 'tel:+390612345678');
+    // Nie eine „+490…“-Wählnummer aus der „(0)“-Schreibweise.
+    for (const value of ['+49 (0) 6131 123456', '+49 (0)160 96663665', '+49(0)6131-12345']) {
+      assert.doesNotMatch(phoneHref(value) ?? '', /^tel:\+490/);
+    }
+  });
 });
 
 describe('Indexierungs-Entscheidung (Phase 16, Design §1.7)', () => {
@@ -130,8 +154,14 @@ describe('Indexierungs-Entscheidung (Phase 16, Design §1.7)', () => {
     assert.equal(readIndexingEnabled('yes'), false);
     assert.equal(readIndexingEnabled('true'), true);
     assert.equal(readIndexingEnabled(' true '), true);
-    assert.deepEqual(siteRobots(false), { index: false, follow: false });
-    assert.deepEqual(siteRobots(true), { index: true, follow: true });
+    assert.deepEqual(siteRobots({ indexingEnabled: false, demo: false }), {
+      index: false,
+      follow: false,
+    });
+    assert.deepEqual(siteRobots({ indexingEnabled: true, demo: false }), {
+      index: true,
+      follow: true,
+    });
   });
 
   it('W-I2. CMS-Metadaten aus Meta-Titel/-Beschreibung; Fehlerdarstellung immer noindex', () => {

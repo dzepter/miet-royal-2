@@ -9,7 +9,7 @@ import { SiteFrame } from '../../components/site/site-frame';
 import { SiteUnavailable } from '../../components/site/site-status';
 import styles from '../../components/site/site.module.css';
 import { berlinToday } from '../../lib/configurator';
-import { noindexMetadata } from '../../lib/site-meta';
+import { configuratorMetadata } from '../../lib/site-meta';
 import { CONFIGURATOR_PATH, SECONDARY_CTA_LABEL, isPrivacyPublished } from '../../lib/site-nav';
 
 /**
@@ -21,14 +21,9 @@ import { CONFIGURATOR_PATH, SECONDARY_CTA_LABEL, isPrivacyPublished } from '../.
 
 type Props = { searchParams: Promise<Record<string, string | string[] | undefined>> };
 
+/** Katalog weg oder keine wählbare Maschine ⇒ noindex (Review web_security-2). */
 export async function generateMetadata(): Promise<Metadata> {
-  const catalog = await getCatalog();
-  if (!catalog.ok) return noindexMetadata('Slush konfigurieren');
-  return {
-    title: 'Slush konfigurieren – Miet-Royal',
-    description:
-      'Stell dir in wenigen Schritten deine Slushmaschine mit Sirup und Zubehör zusammen und fordere ein unverbindliches Angebot an.',
-  };
+  return configuratorMetadata(await getCatalog());
 }
 
 export default async function ConfiguratorPage({ searchParams }: Props) {

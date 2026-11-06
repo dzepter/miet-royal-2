@@ -4804,3 +4804,225 @@ wieder als „Bestätigte Buchung“.
   Chat-Fotos, Staff-Fotoroute ohne CSP, Staff-Next-Rewrite 10 MiB gegenüber
   Offline-Sync 12 MiB, Login-CSRF bei Magic Links) bleiben dokumentiert, in
   Phase 15 werden sie nicht umgebaut.
+
+## Phase 16: Website, CMS, Konfigurator, Bewertungen (2026-11-06)
+
+Gesamtdarstellung: docs/WEBSITE_CMS.md, docs/WEBSITE_CONFIGURATOR.md,
+docs/GOOGLE_REVIEWS_API_NOTES.md. Hier die technischen Entscheidungen (Stand nach
+den Review-Fixes vom 2026-11-06). Die bestehende Live-Website bleibt unverändert;
+keine DNS-/Domain-Umschaltung.
+
+- **Eigenes schlankes CMS statt externem CMS** (Order §6): CMS in der bestehenden
+  API (`apps/api/src/cms/`, Routen `apps/api/src/routes/website-cms.ts`) und der
+  Staff-App (`/website`). Datenmodell (Migration 0033): stabile Einträge
+  `cms_entries` mit den Zeigern `draft_revision_id` und `published_revision_id`
+  sowie `version` (+1 je Speichern/Wiederherstellen/Veröffentlichen/Zurückziehen);
+  Inhalte nur in unveränderlichen Revisionen `cms_revisions` (Trigger
+  `cms_revisions_no_update_delete`). Speichern = neue Revision + Entwurfszeiger
+  (Konflikt über `baseRevisionId` ⇒ 409 `CMS_DRAFT_CONFLICT`, nie stilles
+  Überschreiben); Veröffentlichen = in EINER Transaktion `SELECT … FOR UPDATE`,
+  „erwartete Revision = aktueller Entwurf“ (sonst 409 `CMS_PUBLISH_STALE`),
+  Zeiger umsetzen, Audit `cms.published` (genau ein Gewinner bei parallelem
+  Publish); Wiederherstellen = Inhalt einer alten Revision als NEUE
+  Entwurfsrevision (`based_on_revision_id`). Öffentliche Routen lesen
+  ausschließlich `published_revision_id`.
+  Begründung: bestehende Rechte (`cms.edit`/`cms.publish`, keine neuen Rechte),
+  bestehendes Audit (`staff_security_events`), Demo-Isolation über die
+  Umgebungsdatenbank, kein weiteres System mit eigenen Secrets/Logins, Preise
+  bleiben im Produktbestand; die Historie ist strukturell garantiert statt per
+  Konvention. Verworfen: externes/Headless-CMS bzw. WordPress weiterbetreiben
+  (zweite Rechte-, Audit- und Demo-Welt, externe Secrets, Preisduplikate),
+  Status-Spalte `draft/published` auf einer veränderlichen Zeile (keine
+  Historie, kein atomarer Wechsel), Löschen von Einträgen oder Revisionen.
+- **Strukturierte Blöcke statt HTML**: 14 Blocktypen
+  (`packages/validation/src/cms.ts`, alle `strictObject`), Texte reiner Text
+  (Absätze an Leerzeilen), keine HTML-artigen Tags; verboten sind außerdem alle
+  Steuer- und Formatzeichen (`\p{Cc}` inkl. C1, `\p{Cf}` z. B. weiches
+  Trennzeichen, Zero-Width, Bidi, BOM, sowie U+2028/U+2029) – außer dem
+  Zeilenumbruch `\n` (in Medien-Bezeichnung/-Standard-Alt-Text auch dieser
+  nicht); gleiche Regel (`hasForbiddenTextCharacters`) für Blocktexte, Titel,
+  Meta-Felder, Alt-Texte, Medien-Bezeichnung/-Standard-Alt-Text und
+  Redaktionsnotiz (Review cms-3). Die Preis- und Adress-Sperre vergleicht
+  zusätzlich ohne Formatzeichen, damit unsichtbare Zeichen sie nicht umgehen.
+  Ein Renderer für öffentliche Seiten und Vorschau
+  (`apps/web/components/site/block-renderer.tsx`), Texte nur als React-Text,
+  kein `dangerouslySetInnerHTML`. Begründung: kein XSS-Pfad, Preise
+  und Adressen sind je Feld prüfbar, das Layout bleibt konsistent und
+  barrierearm. Verworfen: WYSIWYG/HTML mit Sanitizer (Angriffsfläche, Preis-/
+  Adressprüfung im Markup unzuverlässig), Markdown (zusätzlicher Parser,
+  eingebettetes HTML/Links), Drag-and-Drop-Builder.
+- **Vorschau ohne Session-Transfer**: Zugang = 32 Zufallsbytes base64url, in der
+  DB nur der SHA-256-Hash, 30 min, an genau EINE Revision des Eintrags gebunden
+  (zusammengesetzter FK). Das Token steht im URL-Fragment
+  (`<MAIL_PUBLIC_WEB_BASE_URL>/vorschau#token=…` – erreicht nie Server-, Proxy-
+  oder Referrer-Logs), die Web-Seite entfernt das Fragment und löst es per
+  `POST /api/public/cms/preview/consume` ein (atomar `UPDATE … WHERE
+  consumed_at IS NULL AND expires_at > now RETURNING` ⇒ einmalig). Danach trägt
+  ein Host-Cookie `__Host-mr_cms_preview` (development `mr_cms_preview`;
+  HttpOnly, SameSite=Strict, Path=/, ohne Domain) die Vorschau-Sitzung;
+  öffentliche Site-Routen lesen dieses Cookie nie (kein Entwurf über Caches).
+  Begründung: Muster der Phase-15-Magic-Links, keine Staff-Session auf der
+  Web-Origin. Verworfen: Staff-Session an die Web-Origin übertragen,
+  Token im Query-String bzw. GET-Consume (Logs, Referrer, Link-Scanner
+  verbrauchen den Zugang), Vorschau als Staff-Nachbildung des Renderers.
+- **Medien nur als neu kodierte WebP-Varianten**: Upload nur JPEG/PNG/WebP,
+  Magic Bytes passend zum deklarierten Typ VOR dem Decode, dann sharp
+  (`failOn: 'error'`, `limitInputPixels: 40_000_000`), EXIF-Ausrichtung
+  angewendet und als WebP (Qualität 82) in 480/960/1600 px (nur ≤ Originalbreite)
+  neu kodiert. Kein Original, keine Metadaten (EXIF/XMP/ICC/GPS entfallen).
+  Referenz ausschließlich über die opake Medien-ID (UUID); Storage-Keys
+  `cms-media/<id>/<breite>.webp` nie in DTOs, Logs oder URLs. Öffentlich nur
+  Medien einer aktuell veröffentlichten Revision (`cms_revision_media`), sonst
+  404; veröffentlichte Varianten `public, max-age=31536000, immutable`.
+  Verworfen: Original speichern/ausliefern (Metadaten, Polyglot-Dateien,
+  Größe), SVG/GIF/HEIC, Storage- bzw. Bucket-URLs im DTO, Medien-Löschen in
+  Phase 16 (die Historie referenziert sie).
+- **Preise nur aus der Katalog-Projektion**: Website, `product_grid`,
+  `included_items`, Konfigurator-Katalog und Staff-Lesesicht nutzen
+  `buildPublicCatalog`/`buildPublicProducts` (`apps/api/src/public/catalog.ts`);
+  Vorschau und Anfrage rechnen über `resolvePricingInput` + `priceOffer`. Die
+  Preisregel „wirksamer Preis zum Zeitpunkt“ gibt es genau einmal:
+  `effectivePriceCentsAt(executor, productId, at)`. **Abweichung von der
+  Dateizuständigkeit des Phase-16-Designs:** `apps/api/src/commerce/product-service.ts`
+  (dort nicht als zu ändernde Datei geführt) wurde additiv geändert – die
+  Funktion ist neu exportiert und `ProductService.effectivePriceCents`
+  delegiert mit unverändertem Verhalten dorthin, weil die
+  Projektion mit einem beliebigen Executor (Datenbank oder laufende Transaktion)
+  arbeitet und keine zweite Preisabfrage entstehen darf. Das CMS-Schema kennt
+  kein Preisfeld; Preis-Freitext wird abgelehnt (außer Rechtstexte).
+  Verworfen: Preise im CMS pflegen oder kopieren (zwei Wahrheiten), eine eigene
+  SQL-Preisabfrage im Katalog, Preisberechnung im Browser.
+- **Website-Anfrage in EINER Transaktion**
+  (`WebsiteInquiryService.submit`, `apps/api/src/public/website-inquiry.ts`): vor
+  der Verbindung nur die deterministische Datumsformat-Prüfung, Payload-Hash
+  (SHA-256 über kanonisches JSON des validierten Bodys OHNE `clientMutationId`)
+  und Kontakt-Snapshot; dann `pg_advisory_xact_lock(hashtext('public-inquiry:' ||
+  clientMutationId))` ⇒ Wiederholungserkennung (gleicher Hash 200, anderer 409
+  `PUBLIC_INQUIRY_CONFLICT` mit `processNumber`) ⇒ erst DANACH „Datum nicht in
+  der Vergangenheit“ und Zeitprüfungen (Review inquiry-1: eine gespeicherte
+  Anfrage bekommt auch nach Ablauf des Eventdatums 200/409) ⇒ Datenschutz-
+  Revision ⇒ Auswahl erneut über die Preisengine ⇒ zweiter Lock
+  `public-inquiry-email:<normalisierte E-Mail>` ⇒ Kunde, Vorgang
+  (`source = website`, `created_by` NULL), Anfrage, unveränderliche
+  `public_inquiry_submissions`-Zeile. Kundenzuordnung (`customer_match`):
+  Portal-Session, genau ein aktiver E-Mail-Treffer (Stammdaten werden NICHT
+  überschrieben), neuer Kunde, mehrdeutig ⇒ neuer Kunde + Dublettenwarnung; keine
+  Zusammenführung, keine öffentliche Aussage über vorhandene Adressen.
+  Begründung: kein Kunde ohne Vorgang, kein zweiter Vorgang bei Retry/
+  Doppelklick/Netzabbruch, gleichzeitige Erstanfragen derselben neuen E-Mail
+  ergeben einen Kunden; läuft auch mit Pool max = 1 (kein `this.db` in der
+  Transaktion). Verworfen: Idempotenz nur über einen Unique-Constraint (Race ⇒
+  Fehler statt 200), nur im Browser, Stammdaten-Übernahme aus dem Formular
+  (fremde Eingaben überschrieben das CRM), künstlicher „Website-Mitarbeiter“
+  als Ersteller, Bestätigungsmail an Kunden (neue Mail-Art, nicht Teil von
+  Phase 16).
+- **Zeitregeln der Anfrage** (Review inquiry-2/-3): Uhrzeiten gelten in
+  Europe/Berlin am Veranstaltungstag; Veranstaltungsende ≤ Beginn ⇒ Ende am
+  Folgetag (kein 400). Das Wunsch-Lieferzeitfenster hat KEINE Folgetag-Regel
+  (beide Zeiten am Veranstaltungstag, Ende ≤ Beginn ⇒ 400 an
+  `body.fulfillment.windowTo`). Uhrzeiten, die es wegen der Zeitumstellung am
+  jeweiligen Tag nicht gibt, ⇒ 400 am Feld
+  (`berlinLocalTimeExists`, `packages/domain/src/scheduling.ts`) – nie
+  stillschweigend verschoben, nie Ende vor Beginn gespeichert.
+- **Datenschutz-Nachweis fail-closed**: gespeichert werden
+  `privacy_revision_id` (veröffentlichte Revision von `/datenschutz`) und
+  `privacy_acknowledged_at`, nicht der Text (Revisionen sind unveränderlich, die
+  Referenz genügt). Ohne veröffentlichte, gültige Datenschutzhinweise 409
+  `PRIVACY_NOT_PUBLISHED` (Web sperrt das Absenden). Rechtstexte lassen sich
+  nicht zurückziehen, nur durch neue Revisionen ersetzen. Verworfen: Textkopie
+  je Anfrage, Anfrage ohne Nachweis.
+- **Exakte Abholadresse nie öffentlich** (Review cms-1/pricing-2/pricing-3):
+  Prüffragmente aus `pickup_exact_address` (ganze Adresse, Teile mit Ziffer,
+  Straße + Hausnummer auch ohne Komma; Teile ohne Ziffer und „PLZ Ort“ nie),
+  Vergleich normalisiert (NFKC, Formatzeichen entfernt, URL-dekodiert,
+  ß/Straße/Str. vereinheitlicht) und kompakt (ohne Leerzeichen/Bindestriche,
+  ohne „Nr.“). Speichern/Veröffentlichen ⇒ 400, öffentlicher Lesepfad
+  fail-closed; in der Katalog-Projektion ebenso: Beschreibung mit Adresse ⇒
+  `null`, Name mit Adresse ⇒ Produkt entfällt öffentlich (auch in Vorschau,
+  Anfrage und Empfehlung). Bewusst fail-closed: ein Teilstring-Treffer lehnt
+  lieber zu viel ab. Preis-Freitext analog nach NFKC und ohne Formatzeichen
+  (auch „60,- €“, „60,– €“, „EUR60“, Kurzform „60,-“; Review pricing-1).
+- **Bewertungen nur per Klick-zum-Laden**: Die Website ruft
+  `GET /api/public/reviews` erst nach Klick auf „Bewertungen anzeigen“; die API
+  fragt die Places API (New) bei JEDEM Abruf neu – kein Cache, keine Speicherung
+  (Google-Bedingungen), Antwort `no-store`. Nur GET – keine automatische
+  HEAD-Route (`exposeHeadRoute: false`, Review demo_reviews-3: HEAD ruft Google
+  nie auf und hat keinen eigenen Limit-Topf). Kostenschutz: GLOBALE Grenze je
+  Umgebung über die bestehende Tabelle `integration_rate_limits` (Provider
+  `google_places_reviews`, `apps/api/src/reviews/budget.ts`): GCRA auf
+  `next_slot_at` ⇒ in JEDEM gleitenden 24-h-Fenster höchstens
+  `REVIEWS_DAILY_REQUEST_LIMIT` (Default 32) Abrufe, Burst max(1, ⌊Limit/4⌋),
+  bei leerem Kontingent globale Pause `credit_limited`, Google-429 ⇒ Pause
+  10 min; geteilt von allen Replikaten. Provider: Default `disabled` (Sektion
+  fehlt); `fake` nur in demo/development (production/staging ⇒ Startabbruch);
+  `google` nie in demo und sonst nur mit Key, Place ID und
+  `GOOGLE_REVIEWS_TERMS_CONFIRMED=true` ⇒
+  production bleibt fail-closed `disabled` bis zur Go-live-Klärung
+  (EWR-Nutzungszweck). Verworfen: Laden beim Seitenaufruf (Kosten je Besuch,
+  Google-Anfrage ohne Nutzeraktion), Cache/DB-Kopie, Google-Widget bzw.
+  Maps-JavaScript, prozesslokale Tagesgrenze (Replikate vervielfachen sie),
+  Kalendertag-Grenze (Spitzen an der Tagesgrenze).
+- **Web je Umgebung bauen, Origin-Sperre**: Der Same-Origin-Rewrite `/api/*`
+  wird beim Build mit `WEB_API_ORIGIN` eingebacken (`apps/web/next.config.ts`,
+  abgelegt als `MR_BUILD_API_ORIGIN`); SSR liest zur Laufzeit `WEB_API_ORIGIN`.
+  Weichen beide ab, loggt der Web-Server nur die Hostnamen und sperrt
+  fail-closed alles, was über den eingebackenen Rewrite eine fremde Umgebung
+  erreichen würde (Konfigurator-Absenden, CMS-Vorschau, Bewertungs-Sektion).
+  Demo-Web und Live-Web brauchen je einen eigenen Build. Verworfen: ein
+  gemeinsamer Build für Demo und Live (das Rewrite-Ziel ist eine
+  Build-Konstante ⇒ eine Demo-Website könnte die Live-API ansprechen).
+- **Kein Titel-Template, Indexierung per Laufzeit-Schalter**: Das Root-Layout
+  setzt nur `title: 'Miet-Royal'` ohne Template (Portal- und Token-Titel bleiben
+  unverändert); Website-Seiten setzen ihren Titel selbst (`metaTitle` bzw.
+  `title`, + „ – Miet-Royal“ nur, wenn nicht enthalten). Indexierung über
+  `WEB_INDEXING_ENABLED` (nur Web-Server, Default aus, nur der Wert `true`
+  öffnet); Demo-Web (`siteRobots({ indexingEnabled, demo })`, Demo =
+  `WEB_APP_ENV=demo` oder `/health` meldet `demo`), Fallback-Startseite, „Gleich
+  wieder da“ und `/konfigurator` ohne wählbare Maschine sind immer `noindex`,
+  ebenso Token-Seiten, `/konto` und `/vorschau`. Verworfen:
+  Titel-Template im Root-Layout (änderte Portal-/Token-Titel), Robots/Sitemap/
+  Redirects in Phase 16 (Phase 17).
+- **429-Antworten folgen dem bestehenden App-Muster**: Minutenlimits über
+  `@fastify/rate-limit` (Anfrage 5/min, Konfigurator-Vorschau 60/min,
+  Vorschau-Einlösen 20/min, Bewertungen 10/min je IP) laufen durch die zentrale
+  Fehlerbehandlung (`apps/api/src/app.ts`) ⇒ Status 429, Code `BAD_REQUEST`,
+  englische Plugin-Meldung „Rate limit exceeded, retry in 1 minute“; eigene
+  Fenster (Stundenfenster 20/h der Website-Anfrage, wie die Portal-Anmeldung)
+  antworten `RATE_LIMITED` mit deutscher Meldung. Bewusst NICHT vereinheitlicht
+  in Phase 16: ein eigener `errorResponseBuilder` hätte alle bestehenden Routen
+  verändert; Web und Staff werten nur den Status aus (OPEN_ITEMS „Phase 16“).
+  Alle IP-Limits bleiben prozesslokal; global (DB) ist nur die Google-Grenze.
+- **Web-Härtungen aus dem Review** (`apps/web`): Die Bewertungs-Sektion verwirft
+  eine Antwort, deren `mode` nicht dem SSR-Modus der Seite entspricht, und
+  entfällt bei Origin-Abweichung (`effectiveReviewsMode`); Google-Modus mit
+  Richtlinienhinweis + Link, „Von Google übersetzt“, aufklappbarem Originaltext
+  und „Google Maps“ in `<span translate="no">` ohne Umbruch (Review
+  demo_reviews-1/-2/-4, web_security-1). `contact_details` auf
+  `secondary_offer`-Seiten nur mit Telefon/E-Mail (keine Abholzeile, kein
+  Instagram, kein Konfigurator-Knopf; `BlockContext.pageType`). `tel:`-Links ohne
+  geklammerte „(0)“ nach der Ländervorwahl. Fokusrahmen im CTA-Band in Gold
+  (10,5:1 statt 2,7:1). Der Konfigurator sperrt seine Felder und „Weiter“ bis
+  zur Hydration (`useHydrated` über `useSyncExternalStore`, Hinweis
+  „Konfigurator wird geladen …“); verworfen wurde, vor der Hydration gemachte
+  DOM-Eingaben nachträglich zu übernehmen (je Feldtyp fehleranfällig, deckt
+  einen frühen Klick auf „Weiter“ nicht ab).
+- **Konfigurator-Auflösung** (Review pricing-4): Produkt und Kategorie werden
+  vor dem Auflösungs-Cache geprüft ⇒ ein Maschinen-Slug als Sirup ergibt
+  `SYRUP_UNAVAILABLE` am Sirupfeld (Anfrage: 400 an
+  `body.syrups.<free|extra>.<i>.slug`), die Maschine wird normal berechnet.
+- **Tests:** Pflicht- und Regressionstests siehe TEST_PLAN „Website, CMS,
+  Konfigurator, Bewertungen (Phase 16)“.
+
+### Bewusst offen (Phase 16)
+Prozesslokale IP-Limits, 429-Code-Vereinheitlichung, Status „Nicht
+veröffentlicht“ auch für zurückgezogene Seiten, `immutable`-Bilder im
+Browser-Cache, keine Kundenmail, ungetestete echte Google-Antwort, kein
+Speicher-Guard für Produktname/-beschreibung (nur öffentlicher Lesepfad
+fail-closed), zusammengesetzte Emojis (ZWJ) im CMS nicht erlaubt – Details und
+alle offenen Business-Inhalte: docs/OPEN_ITEMS.md „Phase 16“.
+
+### Bewusst nicht gebaut
+Externes CMS, HTML-/WYSIWYG-Editor, Medien-Löschen, Preise im CMS,
+Verfügbarkeitsprüfung oder Ablehnung im Konfigurator, Lieferpreis, Online-
+Buchung/-Zahlung, Bestätigungsmail an Kunden, CAPTCHA, Google-Widget,
+Instagram-Feed, Redirects/Sitemap/strukturierte Daten (Phase 17).

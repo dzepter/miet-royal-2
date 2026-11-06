@@ -77,15 +77,36 @@ export function isValidCmsPathForPageType(pageType: CmsPageTypeName, path: strin
 
 // ── Bausteine ────────────────────────────────────────────────────────────────
 
-/** Steuerzeichen außer Zeilenumbruch und HTML-artige Tags sind in CMS-Texten verboten. */
+/**
+ * Phase 16 (Review cms-3): verbotene Zeichen in redaktionellen Texten – Unicode-Steuerzeichen
+ * (`\p{Cc}`: C0, DEL, C1 U+0080–U+009F), Formatzeichen (`\p{Cf}`: weiches Trennzeichen U+00AD,
+ * Zero-Width U+200B–U+200F, Bidi U+202A–U+202E/U+2066–U+2069, U+2060–U+2064, BOM U+FEFF …)
+ * sowie Zeilen-/Absatztrenner U+2028/U+2029. Erlaubt ist höchstens der Zeilenumbruch `\n`.
+ * Gemeinsame Prüfung für CMS-Texte, Meta-Felder, Alt-Texte, Medien-Bezeichnungen und die
+ * Redaktionsnotiz (unsichtbare Zeichen dürfen die Preis-/Adress-Sperre nicht umgehen).
+ */
+const FORBIDDEN_TEXT_CHARACTERS = /[\p{Cc}\p{Cf}\u2028\u2029]/u;
+const FORBIDDEN_TEXT_CHARACTERS_EXCEPT_NEWLINE = /[^\P{Cc}\n]|[\p{Cf}\u2028\u2029]/u;
+
+export function hasForbiddenTextCharacters(
+  value: string,
+  options: { allowNewline: boolean } = { allowNewline: false },
+): boolean {
+  return (
+    options.allowNewline ? FORBIDDEN_TEXT_CHARACTERS_EXCEPT_NEWLINE : FORBIDDEN_TEXT_CHARACTERS
+  ).test(value);
+}
+
+/** Steuer-/Formatzeichen außer Zeilenumbruch und HTML-artige Tags sind in CMS-Texten verboten. */
 function hasForbiddenControl(value: string): boolean {
-  for (let i = 0; i < value.length; i += 1) {
-    const code = value.charCodeAt(i);
-    if ((code < 0x20 && code !== 0x0a) || code === 0x7f) return true;
-  }
-  return false;
+  return hasForbiddenTextCharacters(value, { allowNewline: true });
 }
 const TAG_LIKE = /<\s*[a-zA-Z/!?]/;
+
+/** HTML-artiger Tag (`<b`, `</`, `<!`, `<?`) – in reinen Texten verboten. */
+export function hasTagLikeText(value: string): boolean {
+  return TAG_LIKE.test(value);
+}
 
 function cmsText(min: number, max: number) {
   return z
@@ -326,45 +347,244 @@ export function cmsPageTypeIssues(pageType: CmsPageTypeName, content: CmsPageCon
 // ── Schutzregeln für Texte (Order §5/§7) ────────────────────────────────────
 
 /**
- * Preise als Freitext sind im CMS verboten (außer in Rechtstexten): Preise kommen nur aus
- * products/product_prices. Erkennt „60 €“, „60,00 EUR“, „€ 60“, „12 Euro“.
+ * Vergleichsform für die Schutzregeln: Unicode-NFKC (Vollbreiten-Ziffern, NBSP …) und ohne
+ * Formatzeichen (`\p{Cf}`: weiches Trennzeichen, Zero-Width, Bidi, BOM) – unsichtbare Zeichen
+ * dürfen weder Preis- noch Adress-Sperre umgehen.
  */
-const PRICE_TEXT_PATTERNS = [/\d[\d.,]*\s*(€|eur\b|euro\b)/i, /(€|\beur\b|\beuro\b)\s*\d/i];
-
-export function containsPriceText(text: string): boolean {
-  return PRICE_TEXT_PATTERNS.some((pattern) => pattern.test(text));
+function guardComparable(text: string): string {
+  // Phase 16 (Prüfung FIX-A, P3): auch übrige „Default Ignorable“-Zeichen (CGJ U+034F,
+  // Variantenwähler U+FE00–U+FE0F, Hangul-Füller U+3164 …) entfernen und das
+  // Braille-Leerzeichen U+2800 wie ein Leerzeichen behandeln.
+  return text
+    .normalize('NFKC')
+    .replace(/[\p{Cf}\p{Default_Ignorable_Code_Point}]/gu, '')
+    .replace(/\u2800/g, ' ');
 }
 
-/** Normalisierung für den Adressabgleich: klein, „str.“/„strasse“ ⇒ „straße“, ohne Satzzeichen. */
+/** Bindestriche/Gedankenstriche (inkl. U+2010–U+2015, U+2212) für die Strich-Schreibweise. */
+const DASH = '[-\\u2010-\\u2015\\u2212]';
+
+/**
+ * Preise als Freitext sind im CMS verboten (außer in Rechtstexten): Preise kommen nur aus
+ * products/product_prices (Design §11.2.1, Review pricing-1/cms-2/content_ux-1). Erkennt
+ * „60 €“, „60€“, „60,00 EUR“, „€ 60“, „EUR60“, „12 Euro“, „60 Euros“, die Strich-Schreibweise
+ * „60,- €“, „60,– €“, „ab 60,-€“, „60.- EUR“ und die Kurzform ohne Währung „60,-“/„60.-“.
+ * Nicht: „Europa-Tour“, „2 Europaletten“, „10-12 Uhr“, „Sa., 12.-14. Juni“, „Tel. 0160-123“.
+ */
+const PRICE_TEXT_PATTERNS = [
+  // Betrag vor der Währung, optional mit Strich-Endung („60,- €“, „60.–EUR“).
+  new RegExp(`\\d[\\d.,]*\\s*(?:[.,]?\\s*${DASH}{1,2}\\s*)?(?:€|eur(?:os?)?\\b)`, 'iu'),
+  // Währung vor dem Betrag, auch ohne Leerzeichen („€ 60“, „EUR60“, „Euro 12“).
+  /(?:€|\beur(?:os?)?)\s*\d/iu,
+  // Strich-Kurzform ohne Währung („60,-“, „60,–“, „60.-“) – nicht vor einer Zahl („12.-14.“).
+  new RegExp(`\\d[.,]${DASH}{1,2}(?!\\s*\\d)`, 'u'),
+];
+
+export function containsPriceText(text: string): boolean {
+  const comparable = guardComparable(text);
+  return PRICE_TEXT_PATTERNS.some((pattern) => pattern.test(comparable));
+}
+
+/** Prozent-Kodierung (z. B. in https-Links „…?q=Heiligkreuzweg%2090“) dekodieren – nie werfen. */
+function decodePercentEncoding(text: string): string {
+  let current = text;
+  // Mehrfach kodierte Werte („%2520“) bis zu dreimal auflösen.
+  for (let round = 0; round < 3; round += 1) {
+    const next = current.replace(/(?:%[0-9a-f]{2})+/gi, (run) => {
+      try {
+        return decodeURIComponent(run);
+      } catch {
+        // Ungültige UTF-8-Folge: wenigstens die ASCII-Sequenzen (%20, %2C …) auflösen.
+        return run.replace(/%([0-7][0-9a-f])/gi, (_, hex: string) =>
+          String.fromCharCode(Number.parseInt(hex, 16)),
+        );
+      }
+    });
+    if (next === current) break;
+    current = next;
+  }
+  return current;
+}
+
+/**
+ * Normalisierung für den Adressabgleich (Review cms-1/pricing-2): NFKC, Formatzeichen ENTFERNT,
+ * Prozent-Kodierung dekodiert, klein, ß ⇒ ss, „Straße“/„Strasse“/„Str.“/„Str“ ⇒ „str“, alle
+ * übrigen Zeichen außer Buchstaben/Ziffern ⇒ ein Leerzeichen.
+ */
 export function normalizeForAddressComparison(text: string): string {
-  return text
+  const decoded = guardComparable(decodePercentEncoding(guardComparable(text)));
+  return decoded
     .toLowerCase()
-    .replace(/strasse/g, 'straße')
-    .replace(/str\./g, 'straße')
+    .replace(/ß/g, 'ss')
+    .replace(/(?:strasse|str)\.?(?!\p{L})/gu, 'str ')
     .replace(/[^\p{L}\p{N}]+/gu, ' ')
     .replace(/\s+/g, ' ')
     .trim();
 }
 
+/** Wörter, die beim kompakten Vergleich wegfallen („Heiligkreuzweg Nr. 90“ = „Heiligkreuzweg 90“). */
+const HOUSE_NUMBER_WORDS: ReadonlySet<string> = new Set([
+  'nr',
+  'no',
+  'nummer',
+  'hausnr',
+  'hausnummer',
+]);
+/** Straßenart allein ist nie ein Fragment („Weg 5“, „Platz 5“, „Wiese 3“). */
+const STREET_TYPE_WORDS: ReadonlySet<string> = new Set([
+  'str',
+  'weg',
+  'gasse',
+  'allee',
+  'platz',
+  'ring',
+  'ufer',
+  'damm',
+  'pfad',
+  'steig',
+  'stieg',
+  'markt',
+  'chaussee',
+  'wiese',
+  'berg',
+  'feld',
+  'hof',
+  'graben',
+  'garten',
+  'park',
+  'anger',
+  'winkel',
+  'zeile',
+  'kamp',
+  'grund',
+  'hoehe',
+  'höhe',
+  'aue',
+  'leite',
+  'wall',
+  'bogen',
+  'kai',
+  'tor',
+  'brücke',
+  'bruecke',
+]);
+/** Artikel/Präpositionen in Straßennamen („In der Dalheimer Wiese“) – allein nie ein Fragment. */
+const STREET_FILLER_WORDS: ReadonlySet<string> = new Set([
+  'am',
+  'an',
+  'auf',
+  'im',
+  'in',
+  'der',
+  'die',
+  'das',
+  'dem',
+  'den',
+  'zum',
+  'zur',
+  'beim',
+  'bei',
+  'vor',
+  'hinter',
+  'unter',
+  'ober',
+]);
+const MIN_FRAGMENT_LENGTH = 6;
+
+/** Kompakte Form: ohne Leerzeichen (also auch ohne Bindestriche/Punkte) und ohne „Nr.“-Wörter. */
+function compactAddress(normalized: string): string {
+  return normalized
+    .split(' ')
+    .filter((token) => !HOUSE_NUMBER_WORDS.has(token))
+    .join('');
+}
+
+const hasDigit = (token: string): boolean => /\p{N}/u.test(token);
+const isPostalCode = (token: string): boolean => /^\d{5}$/.test(token);
+const isHouseNumber = (token: string): boolean => /^\d{1,4}[a-z]?$/.test(token);
+
+/** „PLZ Ort“-Teil (einzige Ziffernangabe ist eine fünfstellige PLZ) – nie ein Fragment. */
+function isPostalCityPart(tokens: readonly string[]): boolean {
+  const numeric = tokens.filter(hasDigit);
+  return numeric.length === 1 && isPostalCode(numeric[0]!);
+}
+
 /**
- * Prüffragmente der exakten Abholadresse: die ganze Adresse und ihr Straßenteil (Text vor dem
- * ersten Komma, wenn mindestens 6 Zeichen). Leere/fehlende Adresse ⇒ keine Fragmente.
+ * Straße + Hausnummer aus einem normalisierten Adressteil – auch ohne Komma
+ * („heiligkreuzweg 90 55130 mainz“ ⇒ „heiligkreuzweg 90“). Es zählen IMMER auch die kürzeren
+ * Endstücke vor der Hausnummer (Prüfung FIX-A, P1: Zusatz ohne Komma davor, z. B.
+ * „Mainz-Hechtsheim Heiligkreuzweg 128“ oder „55130 Mainz Heiligkreuzweg 90“ ⇒ auch
+ * „heiligkreuzweg 128“) – außer Endstücke nur aus Straßenart/Füllwörtern („wiese 3“, „der weg 5“).
+ * Hausnummer mit Buchstabe („128a“) ergibt zusätzlich das Fragment mit der reinen Zahl (P2).
+ */
+function streetNumberFragments(tokens: readonly string[]): string[] {
+  const out: string[] = [];
+  let run: string[] = [];
+  tokens.forEach((token) => {
+    if (isHouseNumber(token) && run.length > 0) {
+      const numbers = [token];
+      const digitsOnly = /^(\d+)[a-z]$/.exec(token)?.[1];
+      if (digitsOnly !== undefined) numbers.push(digitsOnly);
+      for (let start = 0; start < run.length; start += 1) {
+        const words = run.slice(start).filter((word) => !HOUSE_NUMBER_WORDS.has(word));
+        if (words.length === 0) continue;
+        const onlyGeneric = words.every(
+          (word) => STREET_TYPE_WORDS.has(word) || STREET_FILLER_WORDS.has(word),
+        );
+        if (start > 0 && onlyGeneric) continue;
+        for (const number of numbers) out.push([...run.slice(start), number].join(' '));
+      }
+      run = [];
+    } else if (hasDigit(token)) {
+      run = [];
+    } else {
+      run.push(token);
+    }
+  });
+  return out;
+}
+
+/**
+ * Prüffragmente der exakten Abholadresse (Review cms-1/pricing-2): die ganze Adresse, jeder
+ * Teil (getrennt durch Komma, Semikolon oder Zeilenumbruch) MIT Ziffer und Straße +
+ * Hausnummer – auch ohne Komma oder mit PLZ vorn. Teile ohne Ziffer (Firmen-/Personennamen,
+ * „Mainz-Hechtsheim“) und reine „PLZ Ort“-Teile sind NIE Fragmente (sonst würden öffentliche
+ * Region bzw. Impressum überblockiert). Leere/fehlende Adresse ⇒ keine Fragmente.
  */
 export function exactAddressFragments(exactAddress: string | null | undefined): string[] {
   if (exactAddress === null || exactAddress === undefined) return [];
   const full = normalizeForAddressComparison(exactAddress);
   if (full === '') return [];
   const fragments = new Set<string>([full]);
-  const street = normalizeForAddressComparison(exactAddress.split(',')[0] ?? '');
-  if (street.length >= 6) fragments.add(street);
+  const candidates: string[] = [];
+  for (const rawPart of guardComparable(exactAddress).split(/[,;\n\r]/)) {
+    const part = normalizeForAddressComparison(rawPart);
+    const tokens = part.split(' ').filter((token) => token !== '');
+    if (!tokens.some(hasDigit) || isPostalCityPart(tokens)) continue;
+    candidates.push(part, ...streetNumberFragments(tokens));
+  }
+  for (const candidate of candidates) {
+    if (candidate.length >= MIN_FRAGMENT_LENGTH && /\p{L}/u.test(candidate)) {
+      fragments.add(candidate);
+    }
+  }
   return [...fragments];
 }
 
-/** Enthält ein Text die exakte Abholadresse (Order §5: niemals öffentlich)? */
+/**
+ * Enthält ein Text die exakte Abholadresse (Order §5: niemals öffentlich)? Vergleich auf der
+ * normalisierten UND der kompakten Form (ohne Leerzeichen/Bindestriche/Punkte, ohne „Nr.“) –
+ * erkennt „Heiligkreuzweg Nr. 90“, „Heiligkreuzweg90“, „Heiligkreuz-Weg 90“, „Musterstr.5“.
+ */
 export function containsExactAddress(text: string, fragments: readonly string[]): boolean {
   if (fragments.length === 0) return false;
   const normalized = normalizeForAddressComparison(text);
-  return fragments.some((fragment) => normalized.includes(fragment));
+  if (fragments.some((fragment) => normalized.includes(fragment))) return true;
+  const compact = compactAddress(normalized);
+  return fragments.some((fragment) => {
+    const compactFragment = compactAddress(fragment);
+    return compactFragment.length >= MIN_FRAGMENT_LENGTH && compact.includes(compactFragment);
+  });
 }
 
 // ── SEO-Metadaten (Order §23) ────────────────────────────────────────────────

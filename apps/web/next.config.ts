@@ -6,7 +6,8 @@ const nextConfig: NextConfig = {
   reactStrictMode: true,
   // Phase 16 (WEB, Design §11.2.10): beim Build verwendeter API-Origin (Ziel des Rewrites unten,
   // ins routes-manifest gebacken). `lib/site-api.ts` vergleicht ihn zur Laufzeit mit
-  // WEB_API_ORIGIN (SSR); bei Abweichung bleiben Konfigurator-Absenden und Vorschau gesperrt.
+  // WEB_API_ORIGIN (SSR); bei Abweichung bleiben Konfigurator-Absenden, Vorschau und Bewertungen
+  // gesperrt.
   // Nur serverseitig referenziert – nie in Client-Komponenten verwenden.
   env: { MR_BUILD_API_ORIGIN: API_ORIGIN },
   poweredByHeader: false,

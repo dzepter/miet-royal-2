@@ -63,6 +63,10 @@ export const CONFIGURATOR_TEXT = {
   PREVIEW_UNAVAILABLE:
     'Die Übersicht ist gerade nicht verfügbar. Du kannst trotzdem weitermachen – wir prüfen alles persönlich.',
   PREVIEW_RATE_LIMITED: 'Die Übersicht wird gleich wieder aktualisiert.',
+  /** Wortgleich mit der API (400 auf `body.fulfillment.windowTo`). */
+  DELIVERY_WINDOW_ORDER: 'Das Ende des Wunsch-Lieferzeitfensters muss nach dem Beginn liegen.',
+  /** Hinweis bis zur Hydration (Felder bis dahin gesperrt, keine Eingabe geht verloren). */
+  HYDRATING: 'Konfigurator wird geladen …',
 } as const;
 
 // ── Zustand ──────────────────────────────────────────────────────────────────
@@ -191,6 +195,19 @@ export function endsNextDay(event: { startTime: string; endTime: string }): bool
   );
 }
 
+/**
+ * Wunsch-Lieferzeitfenster gilt am Veranstaltungstag (Design §11.2.7) – anders als die
+ * Eventzeit gibt es KEIN „Ende am Folgetag“: Ende ≤ Beginn ist ein Fehler (API: 400 auf
+ * `body.fulfillment.windowTo`). Nur, wenn beide Zeiten gesetzt und gültig sind.
+ */
+export function deliveryWindowReversed(window: { windowFrom: string; windowTo: string }): boolean {
+  return (
+    isValidTimeOfDay(window.windowFrom) &&
+    isValidTimeOfDay(window.windowTo) &&
+    window.windowTo <= window.windowFrom
+  );
+}
+
 /** Großevent-Hinweis (Schwelle kommt aus dem Katalog der API); nie ein Fehler. */
 export function isLargeEvent(guests: string, threshold: number): boolean {
   const parsed = parseWholeNumber(guests);
@@ -298,6 +315,8 @@ export function validateStep(
         }
         if (windowTo !== '' && !isValidTimeOfDay(windowTo)) {
           errors.windowTo = 'Bitte gib die Uhrzeit im Format HH:MM an.';
+        } else if (deliveryWindowReversed(state.delivery)) {
+          errors.windowTo = CONFIGURATOR_TEXT.DELIVERY_WINDOW_ORDER;
         }
       }
       break;
@@ -459,14 +478,98 @@ export function stepForIssuePath(path: string): ConfiguratorStepId {
   }
 }
 
+const ISSUE_FIELDS: Readonly<Record<string, Readonly<Record<string, ConfiguratorField>>>> = {
+  event: {
+    date: 'date',
+    startTime: 'startTime',
+    endTime: 'endTime',
+    guests: 'guests',
+    occasion: 'occasion',
+  },
+  fulfillment: {
+    street: 'street',
+    postalCode: 'postalCode',
+    city: 'city',
+    windowFrom: 'windowFrom',
+    windowTo: 'windowTo',
+  },
+  contact: {
+    firstName: 'firstName',
+    lastName: 'lastName',
+    organizationName: 'organizationName',
+    contactPerson: 'contactPerson',
+    email: 'email',
+    phone: 'phone',
+  },
+};
+
+/**
+ * Feldpfad einer 400-Antwort ⇒ Eingabefeld des Konfigurators (oder null, wenn es kein
+ * einzelnes Feld gibt). Beispiel: `body.fulfillment.windowTo` ⇒ `windowTo`,
+ * `body.event.startTime` ⇒ `startTime` (z. B. „Diese Uhrzeit gibt es am gewählten Tag wegen
+ * der Zeitumstellung nicht.“).
+ */
+export function fieldForIssuePath(path: string): ConfiguratorField | null {
+  const parts = path.split('.');
+  const [group, key] = parts[0] === 'body' ? [parts[1], parts[2]] : [parts[0], parts[1]];
+  switch (group) {
+    case 'machineSlug':
+      return 'machineSlug';
+    case 'syrups':
+      return parts.includes('free') ? 'freeSyrups' : null;
+    case 'canisters':
+      return 'canisters';
+    case 'privacyAcknowledged':
+      return 'privacy';
+    case 'event':
+    case 'fulfillment':
+    case 'contact':
+      return key === undefined ? null : (ISSUE_FIELDS[group]?.[key] ?? null);
+    default:
+      return null;
+  }
+}
+
+export interface InquiryIssue {
+  path: string;
+  message: string;
+  step: ConfiguratorStepId;
+  field: ConfiguratorField | null;
+}
+
+/**
+ * 400-Fehler aufteilen: Schritt des ersten Fehlers, Feldfehler dieses Schritts (am Feld
+ * angezeigt, `aria-invalid`) und die übrigen Meldungen (gesammelt im Fehlerkasten) – jede
+ * Meldung erscheint genau einmal.
+ */
+export function splitInquiryIssues(issues: readonly InquiryIssue[]): {
+  step: ConfiguratorStepId | null;
+  fieldErrors: FieldErrors;
+  remaining: InquiryIssue[];
+} {
+  const first = issues[0];
+  if (first === undefined) return { step: null, fieldErrors: {}, remaining: [] };
+  const fieldErrors: FieldErrors = {};
+  const remaining: InquiryIssue[] = [];
+  for (const issue of issues) {
+    if (
+      issue.step === first.step &&
+      issue.field !== null &&
+      fieldErrors[issue.field] === undefined
+    ) {
+      fieldErrors[issue.field] = issue.message;
+    } else {
+      remaining.push(issue);
+    }
+  }
+  return { step: first.step, fieldErrors, remaining };
+}
+
 export type InquiryOutcome =
   | { kind: 'success'; processNumber: string; receivedAt: string | null; repeated: boolean }
   | { kind: 'already_received'; processNumber: string | null }
   | { kind: 'privacy_unavailable'; message: string }
-  | {
-      kind: 'invalid';
-      issues: Array<{ path: string; message: string; step: ConfiguratorStepId }>;
-    }
+  | { kind: 'invalid'; issues: InquiryIssue[] }
   | { kind: 'rate_limited' }
   | { kind: 'demo_reset' }
   | { kind: 'rejected' }
@@ -530,6 +633,7 @@ export function interpretInquiryResponse(status: number, body: unknown): Inquiry
         path: issue.path,
         message: issue.message,
         step: stepForIssuePath(issue.path),
+        field: fieldForIssuePath(issue.path),
       }));
     return { kind: 'invalid', issues };
   }

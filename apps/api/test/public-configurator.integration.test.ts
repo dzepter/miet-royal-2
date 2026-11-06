@@ -1,5 +1,5 @@
 import { cmsEntries, cmsRevisions, products, productPrices } from '@mietroyal/database';
-import { eq } from 'drizzle-orm';
+import { eq, inArray } from 'drizzle-orm';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { setStringSetting, PICKUP_PUBLIC_AREA_KEY } from '../src/crm/settings-service.ts';
 import { PUBLIC_PRICE_NOTE } from '../src/public/catalog.ts';
@@ -541,5 +541,79 @@ describe('Phase 16 – laufende Preisübersicht (POST /public/configurator/previ
       largeEvent: false,
       quota: { freeSyrupLiters: 0, canisterMax: 0 },
     });
+  });
+  it('PC17. Maschinen-Slug als Sirup (gratis oder extra) ⇒ SYRUP_UNAVAILABLE am Sirup, Maschine normal berechnet (Review pricing-4)', async () => {
+    for (const role of ['free', 'extra'] as const) {
+      const syrups = { free: [], extra: [], [role]: [{ slug: 'slush-2x8', liters: 1 }] };
+      const result = await preview({ machineSlug: 'slush-2x8', syrups });
+      expect(result.issues, role).toEqual([
+        { code: 'SYRUP_UNAVAILABLE', message: 'Diese Sirupsorte ist gerade nicht wählbar.' },
+      ]);
+      expect(result.fixed, role).toHaveLength(1);
+      expect(result.fixed[0]).toMatchObject({ quantity: 1, totalCents: 10000 });
+      expect(result.fixedTotalCents).toBe(10000);
+      expect(result.quota).toMatchObject({ freeSyrupLiters: 2, assignedFreeLiters: 0 });
+      expect(result.included).toHaveLength(3);
+    }
+  });
+
+  it('PC18. Exakte Abholadresse in Produktname/-beschreibung: Beschreibung ⇒ null, Produkt mit Adress-Namen nicht öffentlich, nicht wählbar und nie empfohlen (Review pricing-3)', async () => {
+    const touched = ['mischkanister-6l', 'slush-2x10'];
+    const originals = await ctx.db
+      .select({ slug: products.slug, name: products.name, description: products.description })
+      .from(products)
+      .where(inArray(products.slug, touched));
+    try {
+      await setPickupExactAddress(ctx, adminId);
+      await ctx.db
+        .update(products)
+        .set({ description: 'Kauf direkt in der Teststraße 1.' })
+        .where(eq(products.slug, 'mischkanister-6l'));
+      await ctx.db
+        .update(products)
+        .set({ name: 'Slushmaschine 2×10 L (Teststr. 1)' })
+        .where(eq(products.slug, 'slush-2x10'));
+      await publishCmsForTests(
+        ctx.db,
+        { kind: 'site_settings' },
+        {
+          content: {
+            businessName: 'Miet-Royal',
+            contact: {},
+            recommendationRules: [{ guestMin: 100, machineProductSlug: 'slush-2x10' }],
+          },
+        },
+      );
+      const { response, body } = await catalog();
+      expect(body.canister).toMatchObject({ slug: 'mischkanister-6l', description: null });
+      expect(body.machines.map((m: { slug: string }) => m.slug)).toEqual([
+        'slush-1x8',
+        'slush-2x8',
+        'slush-1x10',
+      ]);
+      expect(response.body.toLowerCase()).not.toContain('teststr');
+      const result = await preview({ guests: 300, machineSlug: 'slush-2x10' });
+      expect(result.recommendation).toEqual({
+        machineSlug: null,
+        message: RECOMMENDATION_FALLBACK_MESSAGE,
+      });
+      expect(result.issues.map((issue: { code: string }) => issue.code)).toEqual([
+        'MACHINE_UNAVAILABLE',
+      ]);
+      expect(JSON.stringify(result).toLowerCase()).not.toContain('teststr');
+      // Beschreibung ohne Adresse bleibt sichtbar.
+      await ctx.db
+        .update(products)
+        .set({ description: 'Zum Nachmischen.' })
+        .where(eq(products.slug, 'mischkanister-6l'));
+      expect((await catalog()).body.canister.description).toBe('Zum Nachmischen.');
+    } finally {
+      for (const original of originals) {
+        await ctx.db
+          .update(products)
+          .set({ name: original.name, description: original.description })
+          .where(eq(products.slug, original.slug));
+      }
+    }
   });
 });
