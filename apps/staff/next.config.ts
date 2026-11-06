@@ -15,7 +15,7 @@ const nextConfig: NextConfig = {
   // desselben Projekts brauchen daher getrennte Verzeichnisse. Ohne Variable bleibt `.next`.
   ...(process.env.STAFF_DIST_DIR === undefined ? {} : { distDir: process.env.STAFF_DIST_DIR }),
   // Phase 8: Offline-Kern und Fachregeln als Workspace-Pakete (reines TS) bündeln.
-  transpilePackages: ['@mietroyal/offline', '@mietroyal/domain'],
+  transpilePackages: ['@mietroyal/offline', '@mietroyal/domain', '@mietroyal/validation'],
   allowedDevOrigins: ['127.0.0.1'],
   async rewrites() {
     return [{ source: '/api/:path*', destination: `${apiOrigin}/:path*` }];

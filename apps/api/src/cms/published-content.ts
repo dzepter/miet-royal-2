@@ -7,6 +7,8 @@ import {
 } from '@mietroyal/database';
 import {
   CMS_PRIVACY_PATH,
+  cmsPageContentSchema,
+  cmsPageTypeIssues,
   cmsSiteSettingsSchema,
   type CmsSiteSettings,
 } from '@mietroyal/validation/cms';
@@ -56,12 +58,18 @@ export async function loadPublishedSiteSettings(
   return { revisionId: published.revision.id, settings: parsed.data };
 }
 
-/** Aktuell veröffentlichte Revision der Datenschutzhinweise (Order §17) – oder `null` (fail-closed). */
+/**
+ * Aktuell veröffentlichte Revision der Datenschutzhinweise (Order §17) – oder `null`
+ * (fail-closed): nicht veröffentlicht, kein Rechtstext-Eintrag oder Inhalt ungültig/leer.
+ */
 export async function loadPublishedPrivacyRevision(
   executor: DatabaseExecutor,
 ): Promise<{ revisionId: string; revisionNumber: number; publishedAt: Date } | null> {
   const published = await loadPublishedEntry(executor, { path: CMS_PRIVACY_PATH });
   if (published === null || published.entry.publishedAt === null) return null;
+  if (published.entry.kind !== 'page' || published.entry.pageType !== 'legal') return null;
+  const parsed = cmsPageContentSchema.safeParse(published.revision.content);
+  if (!parsed.success || cmsPageTypeIssues('legal', parsed.data).length > 0) return null;
   return {
     revisionId: published.revision.id,
     revisionNumber: published.revision.revisionNumber,

@@ -1,6 +1,7 @@
 import { sql } from 'drizzle-orm';
 import {
   check,
+  foreignKey,
   index,
   integer,
   jsonb,
@@ -9,6 +10,7 @@ import {
   primaryKey,
   text,
   timestamp,
+  unique,
   uniqueIndex,
   uuid,
   type AnyPgColumn,
@@ -110,7 +112,7 @@ export const cmsEntries = pgTable(
   ],
 );
 
-/** Immutable Revision eines Eintrags (DB-Trigger `cms_revisions_immutable` verbietet UPDATE). */
+/** Immutable Revision eines Eintrags (DB-Trigger `cms_revisions_immutable` verbietet UPDATE und DELETE). */
 export const cmsRevisions = pgTable(
   'cms_revisions',
   {
@@ -137,6 +139,8 @@ export const cmsRevisions = pgTable(
   },
   (table) => [
     uniqueIndex('cms_revisions_entry_number_unique').on(table.entryId, table.revisionNumber),
+    // Ziel des zusammengesetzten FK aus cms_preview_access (Revision gehört zum Eintrag).
+    unique('cms_revisions_id_entry_unique').on(table.id, table.entryId),
     check('cms_revisions_number_positive', sql`${table.revisionNumber} >= 1`),
   ],
 );
@@ -224,9 +228,8 @@ export const cmsPreviewAccess = pgTable(
     entryId: uuid('entry_id')
       .notNull()
       .references(() => cmsEntries.id, { onDelete: 'cascade' }),
-    revisionId: uuid('revision_id')
-      .notNull()
-      .references(() => cmsRevisions.id, { onDelete: 'cascade' }),
+    /** Gebunden an GENAU EINE Revision dieses Eintrags (zusammengesetzter FK unten). */
+    revisionId: uuid('revision_id').notNull(),
     accessTokenHash: text('access_token_hash').notNull().unique(),
     sessionTokenHash: text('session_token_hash').unique(),
     createdBy: uuid('created_by').references(() => staffUsers.id, { onDelete: 'set null' }),
@@ -236,6 +239,11 @@ export const cmsPreviewAccess = pgTable(
   },
   (table) => [
     index('cms_preview_access_expires_idx').on(table.expiresAt),
+    foreignKey({
+      name: 'cms_preview_access_revision_entry_fk',
+      columns: [table.revisionId, table.entryId],
+      foreignColumns: [cmsRevisions.id, cmsRevisions.entryId],
+    }).onDelete('cascade'),
     check('cms_preview_access_expiry_check', sql`${table.expiresAt} > ${table.createdAt}`),
     check(
       'cms_preview_access_session_check',
@@ -247,8 +255,9 @@ export const cmsPreviewAccess = pgTable(
 /**
  * Metadaten einer öffentlichen Website-Anfrage (Order §15–§17). Eine Zeile je
  * erfolgreich angelegtem Vorgang; `client_mutation_id` macht Retry/Doppelklick
- * idempotent. Der Kontakt-Snapshot ist unveränderlich (Staff sieht Abweichungen
- * zum CRM), der Datenschutz-Nachweis verweist auf die damals veröffentlichte
+ * idempotent. Die Zeile ist unveränderlich (DB-Trigger verbietet UPDATE; DELETE nur für
+ * den Demo-Business-Reset). Der Kontakt-Snapshot zeigt Staff Abweichungen
+ * zum CRM; der Datenschutz-Nachweis verweist auf die damals veröffentlichte
  * Revision der Datenschutzhinweise (nicht der Volltext).
  */
 export const publicInquirySubmissions = pgTable(

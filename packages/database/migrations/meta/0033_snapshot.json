@@ -1,5 +1,5 @@
 {
-  "id": "5c76672a-00ff-491a-a8e2-52a9c93a50ea",
+  "id": "e71f74d1-62ea-4336-aadf-ca3e5cf70226",
   "prevId": "14bf449d-e2d5-4e18-bcc9-e95e06cff437",
   "version": "7",
   "dialect": "postgresql",
@@ -17605,19 +17605,6 @@
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
-        "cms_preview_access_revision_id_cms_revisions_id_fk": {
-          "name": "cms_preview_access_revision_id_cms_revisions_id_fk",
-          "tableFrom": "cms_preview_access",
-          "tableTo": "cms_revisions",
-          "columnsFrom": [
-            "revision_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
         "cms_preview_access_created_by_staff_users_id_fk": {
           "name": "cms_preview_access_created_by_staff_users_id_fk",
           "tableFrom": "cms_preview_access",
@@ -17629,6 +17616,21 @@
             "id"
           ],
           "onDelete": "set null",
+          "onUpdate": "no action"
+        },
+        "cms_preview_access_revision_entry_fk": {
+          "name": "cms_preview_access_revision_entry_fk",
+          "tableFrom": "cms_preview_access",
+          "tableTo": "cms_revisions",
+          "columnsFrom": [
+            "revision_id",
+            "entry_id"
+          ],
+          "columnsTo": [
+            "id",
+            "entry_id"
+          ],
+          "onDelete": "cascade",
           "onUpdate": "no action"
         }
       },
@@ -17870,7 +17872,16 @@
         }
       },
       "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
+      "uniqueConstraints": {
+        "cms_revisions_id_entry_unique": {
+          "name": "cms_revisions_id_entry_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "id",
+            "entry_id"
+          ]
+        }
+      },
       "policies": {},
       "checkConstraints": {
         "cms_revisions_number_positive": {

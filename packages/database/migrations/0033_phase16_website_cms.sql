@@ -78,6 +78,7 @@ CREATE TABLE "cms_revisions" (
 	"based_on_revision_id" uuid,
 	"created_by" uuid,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	CONSTRAINT "cms_revisions_id_entry_unique" UNIQUE("id","entry_id"),
 	CONSTRAINT "cms_revisions_number_positive" CHECK ("cms_revisions"."revision_number" >= 1)
 );
 --> statement-breakpoint
@@ -104,8 +105,8 @@ ALTER TABLE "cms_entries" ADD CONSTRAINT "cms_entries_published_by_staff_users_i
 ALTER TABLE "cms_media" ADD CONSTRAINT "cms_media_uploaded_by_staff_users_id_fk" FOREIGN KEY ("uploaded_by") REFERENCES "public"."staff_users"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "cms_media_variants" ADD CONSTRAINT "cms_media_variants_media_id_cms_media_id_fk" FOREIGN KEY ("media_id") REFERENCES "public"."cms_media"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "cms_preview_access" ADD CONSTRAINT "cms_preview_access_entry_id_cms_entries_id_fk" FOREIGN KEY ("entry_id") REFERENCES "public"."cms_entries"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "cms_preview_access" ADD CONSTRAINT "cms_preview_access_revision_id_cms_revisions_id_fk" FOREIGN KEY ("revision_id") REFERENCES "public"."cms_revisions"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "cms_preview_access" ADD CONSTRAINT "cms_preview_access_created_by_staff_users_id_fk" FOREIGN KEY ("created_by") REFERENCES "public"."staff_users"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "cms_preview_access" ADD CONSTRAINT "cms_preview_access_revision_entry_fk" FOREIGN KEY ("revision_id","entry_id") REFERENCES "public"."cms_revisions"("id","entry_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "cms_revision_media" ADD CONSTRAINT "cms_revision_media_revision_id_cms_revisions_id_fk" FOREIGN KEY ("revision_id") REFERENCES "public"."cms_revisions"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "cms_revision_media" ADD CONSTRAINT "cms_revision_media_media_id_cms_media_id_fk" FOREIGN KEY ("media_id") REFERENCES "public"."cms_media"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "cms_revisions" ADD CONSTRAINT "cms_revisions_entry_id_cms_entries_id_fk" FOREIGN KEY ("entry_id") REFERENCES "public"."cms_entries"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
@@ -121,12 +122,23 @@ CREATE INDEX "cms_preview_access_expires_idx" ON "cms_preview_access" USING btre
 CREATE INDEX "cms_revision_media_media_idx" ON "cms_revision_media" USING btree ("media_id");--> statement-breakpoint
 CREATE UNIQUE INDEX "cms_revisions_entry_number_unique" ON "cms_revisions" USING btree ("entry_id","revision_number");--> statement-breakpoint
 CREATE INDEX "public_inquiry_submissions_customer_idx" ON "public_inquiry_submissions" USING btree ("customer_id");--> statement-breakpoint
--- Phase 16 (CMS, Order §6): Revisionen sind immutable – jede Änderung ist eine neue Revision.
+-- Phase 16 (CMS, Order §6): Revisionen sind immutable – weder UPDATE noch DELETE (Historie bleibt).
+-- TRUNCATE (nur Test-/E2E-Seeds) ist davon nicht betroffen; der Demo-Reset fasst CMS nicht an.
 CREATE FUNCTION cms_revisions_immutable() RETURNS trigger AS $$
 BEGIN
   RAISE EXCEPTION 'cms_revisions sind unveränderlich (Revision %)', OLD.id
     USING ERRCODE = 'restrict_violation';
 END;
 $$ LANGUAGE plpgsql;--> statement-breakpoint
-CREATE TRIGGER cms_revisions_no_update BEFORE UPDATE ON "cms_revisions"
-  FOR EACH ROW EXECUTE FUNCTION cms_revisions_immutable();
+CREATE TRIGGER cms_revisions_no_update_delete BEFORE UPDATE OR DELETE ON "cms_revisions"
+  FOR EACH ROW EXECUTE FUNCTION cms_revisions_immutable();--> statement-breakpoint
+-- Phase 16 (Website-Anfrage, Order §16/§17): Kontakt-Snapshot und Datenschutz-Nachweis sind
+-- unveränderlich – kein UPDATE. DELETE bleibt für den Demo-Business-Reset erlaubt.
+CREATE FUNCTION public_inquiry_submissions_immutable() RETURNS trigger AS $$
+BEGIN
+  RAISE EXCEPTION 'public_inquiry_submissions sind unveränderlich (Anfrage %)', OLD.id
+    USING ERRCODE = 'restrict_violation';
+END;
+$$ LANGUAGE plpgsql;--> statement-breakpoint
+CREATE TRIGGER public_inquiry_submissions_no_update BEFORE UPDATE ON "public_inquiry_submissions"
+  FOR EACH ROW EXECUTE FUNCTION public_inquiry_submissions_immutable();

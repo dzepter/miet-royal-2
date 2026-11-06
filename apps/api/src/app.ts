@@ -133,6 +133,12 @@ import { registerPortalModule } from './portal/module.ts';
 import { createPortalScanners } from './portal/scanners.ts';
 // Phase 16 (website): neue Website – CMS, Konfigurator, Website-Anfrage, Bewertungen.
 import { registerWebsiteModule } from './website/module.ts';
+import {
+  REVIEWS_LOG_REDACT_PATHS,
+  assertReviewGatewayAllowed,
+  createReviewGateway,
+} from './reviews/factory.ts';
+import type { ReviewGateway } from './reviews/types.ts';
 
 export const API_VERSION = '0.1.0';
 
@@ -210,6 +216,8 @@ export interface AppOptions {
   demoBarrier?: DemoResetBarrier;
   /** Phase 14 (reset fix F6): Test-Injection des Katalog-Syncs (Default: TrainingCatalogService auf db). */
   trainingCatalog?: TrainingCatalogService;
+  /** Phase 16 (reviews): Test-Injection der Bewertungs-Grenze (Default: aus config; Fake nie in production, Google nie in demo). */
+  reviewGateway?: ReviewGateway;
 }
 
 /**
@@ -247,6 +255,7 @@ export function buildApp({
   demoReset,
   demoBarrier, // Phase 14 Final (Reset-Barrier)
   trainingCatalog,
+  reviewGateway, // Phase 16 (reviews)
 }: AppOptions): FastifyInstance {
   // Phase 13 (routing): production startet nie mit Fake-/Mock-Routing (Order §5).
   if (
@@ -297,6 +306,8 @@ export function buildApp({
           '*.headers.authorization',
           // Phase 12 (mail): SMTP-/IMAP-Passwörter, WhatsApp-/Push-/Communication-Keys.
           ...COMMUNICATION_LOG_REDACT_PATHS,
+          // Phase 16 (reviews): Google-Places-API-Key unter keinem Pfad im Log.
+          ...REVIEWS_LOG_REDACT_PATHS,
           // Phase 13 (routing): GraphHopper-API-Key unter keinem Pfad im Log (Order §4/§64).
           'routing.graphhopper.apiKey',
           '*.routing.graphhopper.apiKey',
@@ -937,6 +948,10 @@ export function buildApp({
         logger: app.log,
         rateLimitEnabled, // Auth-Grenze: IP-/Mail-Hash-Limits wie die Staff-Anmeldung
       });
+      // Phase 16 (reviews): Bewertungs-Grenze – injiziert (Tests) oder aus der Konfiguration;
+      // Laufzeitsperre: production nie Fake, demo nie Google.
+      const websiteReviews = reviewGateway ?? createReviewGateway(config, { db });
+      assertReviewGatewayAllowed(config.appEnv, websiteReviews);
       // Phase 16 (website): alle neuen Website-Routen ausschließlich über das Website-Modul
       // (CMS, Konfigurator, Website-Anfrage, Bewertungen). Die Portal-Session dient nur der
       // optionalen Kundenbindung einer Website-Anfrage (Order §16).
@@ -947,6 +962,7 @@ export function buildApp({
         storage: storageProvider,
         logger: app.log,
         portalSessions: portalModule.sessions,
+        reviews: websiteReviews,
         rateLimitEnabled,
       });
       registerAccountingRoutes(instance, {

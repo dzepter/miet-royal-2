@@ -4,6 +4,7 @@ import type { StorageProvider } from '@mietroyal/integrations';
 import type { FastifyInstance } from 'fastify';
 import type { StaffAuthService } from '../auth/service.ts';
 import type { PortalSessionAuthenticator } from '../portal/guard.ts';
+import type { ReviewGateway } from '../reviews/types.ts';
 import { registerWebsiteCmsRoutes } from '../routes/website-cms.ts'; // Phase 16 (CMS)
 import { registerPublicConfiguratorRoutes } from '../routes/public-configurator.ts'; // Phase 16 (PUBLIC)
 import { registerPublicReviewRoutes } from '../routes/public-reviews.ts'; // Phase 16 (REVIEWS)
@@ -29,6 +30,8 @@ export interface WebsiteModuleDeps {
   logger: FastifyInstance['log'];
   /** Optionale Portal-Session (Kundenbindung einer Website-Anfrage, Order §16). */
   portalSessions: PortalSessionAuthenticator;
+  /** Bewertungs-Grenze (REVIEWS); `reviews.mode` liefert CMS in `/public/site/settings`. */
+  reviews: ReviewGateway;
   /** Rate-Limits öffentlicher Mutationen (Default: aktiv, wenn @fastify/rate-limit registriert ist). */
   rateLimitEnabled?: boolean | undefined;
 }

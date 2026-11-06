@@ -184,11 +184,24 @@ export const cmsStepsBlockSchema = z.strictObject({
   intro: intro.optional(),
   items: z.array(titledItem).min(1).max(8),
 });
-/** Maschinenübersicht – Produkte und Preise kommen beim Rendern aus dem Katalog, nie aus dem CMS. */
+const productSlug = z
+  .string()
+  .trim()
+  .min(1)
+  .max(80)
+  .regex(/^[a-z0-9]+(-[a-z0-9]+)*$/, 'Ungültiger Produkt-Slug.');
+
+/**
+ * Produktübersicht – Produkte und Preise kommen beim Rendern aus dem Katalog, nie aus dem
+ * CMS. Ohne `productSlugs` zeigt der Block die Slush-Maschinen; mit `productSlugs` genau diese
+ * (aktiven) Produkte mit aktuellem Preis – z. B. später Popcorn/Waffel (Order §30), ohne
+ * Neuprogrammierung.
+ */
 export const cmsProductGridBlockSchema = z.strictObject({
   type: z.literal('product_grid'),
   heading: heading.optional(),
   intro: intro.optional(),
+  productSlugs: z.array(productSlug).min(1).max(6).optional(),
 });
 /** Inklusivleistungen + Zubehör – Mengen/Preise aus Domain-Regeln und Katalog, nie aus dem CMS. */
 export const cmsIncludedItemsBlockSchema = z.strictObject({
@@ -302,8 +315,56 @@ export function cmsPageTypeIssues(pageType: CmsPageTypeName, content: CmsPageCon
         issues.push(`Block ${index + 1}: Rechtstexte bestehen nur aus Textblöcken.`);
       }
     });
+    // Ein leerer Rechtstext gilt nie als veröffentlichte Datenschutzhinweise (Order §17, fail-closed).
+    if (!content.blocks.some((block) => block.type === 'text')) {
+      issues.push('Rechtstexte brauchen mindestens einen Textblock.');
+    }
   }
   return issues;
+}
+
+// ── Schutzregeln für Texte (Order §5/§7) ────────────────────────────────────
+
+/**
+ * Preise als Freitext sind im CMS verboten (außer in Rechtstexten): Preise kommen nur aus
+ * products/product_prices. Erkennt „60 €“, „60,00 EUR“, „€ 60“, „12 Euro“.
+ */
+const PRICE_TEXT_PATTERNS = [/\d[\d.,]*\s*(€|eur\b|euro\b)/i, /(€|\beur\b|\beuro\b)\s*\d/i];
+
+export function containsPriceText(text: string): boolean {
+  return PRICE_TEXT_PATTERNS.some((pattern) => pattern.test(text));
+}
+
+/** Normalisierung für den Adressabgleich: klein, „str.“/„strasse“ ⇒ „straße“, ohne Satzzeichen. */
+export function normalizeForAddressComparison(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/strasse/g, 'straße')
+    .replace(/str\./g, 'straße')
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * Prüffragmente der exakten Abholadresse: die ganze Adresse und ihr Straßenteil (Text vor dem
+ * ersten Komma, wenn mindestens 6 Zeichen). Leere/fehlende Adresse ⇒ keine Fragmente.
+ */
+export function exactAddressFragments(exactAddress: string | null | undefined): string[] {
+  if (exactAddress === null || exactAddress === undefined) return [];
+  const full = normalizeForAddressComparison(exactAddress);
+  if (full === '') return [];
+  const fragments = new Set<string>([full]);
+  const street = normalizeForAddressComparison(exactAddress.split(',')[0] ?? '');
+  if (street.length >= 6) fragments.add(street);
+  return [...fragments];
+}
+
+/** Enthält ein Text die exakte Abholadresse (Order §5: niemals öffentlich)? */
+export function containsExactAddress(text: string, fragments: readonly string[]): boolean {
+  if (fragments.length === 0) return false;
+  const normalized = normalizeForAddressComparison(text);
+  return fragments.some((fragment) => normalized.includes(fragment));
 }
 
 // ── SEO-Metadaten (Order §23) ────────────────────────────────────────────────

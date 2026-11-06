@@ -12,6 +12,7 @@
   "dependencies": {
     "@mietroyal/domain": "workspace:*",
     "@mietroyal/offline": "workspace:*",
+    "@mietroyal/validation": "workspace:*",
     "next": "16.3.3",
     "qrcode": "1.5.4",
     "react": "19.2.8",

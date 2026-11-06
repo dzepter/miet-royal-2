@@ -1,4 +1,5 @@
 import { mkdtempSync } from 'node:fs';
+import type { ReviewGateway } from '../src/reviews/types.ts'; // Phase 16 (reviews)
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { loadConfig, type AppConfig } from '@mietroyal/config';
@@ -183,6 +184,8 @@ export async function createTestContext(
      * auf der Root-Instanz (unterliegen Gate und Barrier wie Fachrouten).
      */
     beforeReady?: (app: FastifyInstance) => void;
+    /** Phase 16 (reviews): Test-Injection der Bewertungs-Grenze (Default: aus der Konfiguration). */
+    reviewGateway?: ReviewGateway;
   } = {},
 ): Promise<TestContext> {
   const lexwareOptions =
@@ -296,6 +299,7 @@ export async function createTestContext(
     ...(options.logDestination === undefined ? {} : { logDestination: options.logDestination }),
     ...(options.demoReset === undefined ? {} : { demoReset: options.demoReset }), // Phase 14 (demo)
     ...(demoBarrier === null ? {} : { demoBarrier }), // Phase 14 Final (Reset-Barrier)
+    ...(options.reviewGateway === undefined ? {} : { reviewGateway: options.reviewGateway }), // Phase 16
   });
   options.beforeReady?.(app); // Phase 14 Final (Reset-Barrier)
   await app.ready();
