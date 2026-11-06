@@ -131,6 +131,8 @@ import { registerTrainingGateRoutes } from './routes/training-gates.ts';
 // (Session-/Magic-Link-Cleanup, Storno-Mail-Backstop).
 import { registerPortalModule } from './portal/module.ts';
 import { createPortalScanners } from './portal/scanners.ts';
+// Phase 16 (website): neue Website – CMS, Konfigurator, Website-Anfrage, Bewertungen.
+import { registerWebsiteModule } from './website/module.ts';
 
 export const API_VERSION = '0.1.0';
 
@@ -923,7 +925,7 @@ export function buildApp({
       // Storno-Instanz wie die Staff-Routen (genau eine Stornierung je Buchung), Mail-Outbox,
       // Push und Storage des Prozesses. In demo unterliegen die Routen Gate und Barrier
       // (Präfix /portal in reset-gate.ts).
-      registerPortalModule(instance, {
+      const portalModule = registerPortalModule(instance, {
         db,
         config,
         auth: authService,
@@ -934,6 +936,18 @@ export function buildApp({
         cancellationService,
         logger: app.log,
         rateLimitEnabled, // Auth-Grenze: IP-/Mail-Hash-Limits wie die Staff-Anmeldung
+      });
+      // Phase 16 (website): alle neuen Website-Routen ausschließlich über das Website-Modul
+      // (CMS, Konfigurator, Website-Anfrage, Bewertungen). Die Portal-Session dient nur der
+      // optionalen Kundenbindung einer Website-Anfrage (Order §16).
+      registerWebsiteModule(instance, {
+        db,
+        config,
+        auth: authService,
+        storage: storageProvider,
+        logger: app.log,
+        portalSessions: portalModule.sessions,
+        rateLimitEnabled,
       });
       registerAccountingRoutes(instance, {
         db,
