@@ -27,6 +27,14 @@ export interface ApiResult<T> {
   errorMessage: string | null;
   /** Phase 13 (UI): strukturierte Fehlerdetails des Servers (z. B. Zuständigkeit, offene Stopps) – optional. */
   errorDetails?: unknown;
+  /** Phase 16 (STAFF): Feldpfade der Validierungsfehler (`error.issues`, nie Werte) – optional. */
+  errorIssues?: ApiIssue[];
+}
+
+/** Phase 16 (STAFF): einzelner Validierungsfehler des Servers (Pfad + Meldung, ohne Wert). */
+export interface ApiIssue {
+  path: string;
+  message: string;
 }
 
 export type OfflineRouter = (
@@ -77,7 +85,7 @@ export async function apiFetch<T = unknown>(
   }
 
   const errorBody = payload as {
-    error?: { code?: string; message?: string; details?: unknown };
+    error?: { code?: string; message?: string; details?: unknown; issues?: unknown };
   } | null;
   const errorCode = errorBody?.error?.code ?? null;
 
@@ -101,7 +109,20 @@ export async function apiFetch<T = unknown>(
     errorCode,
     errorMessage,
     errorDetails: errorBody?.error?.details,
+    ...(response.ok ? {} : { errorIssues: issuesOf(errorBody?.error?.issues) }),
   };
+}
+
+/** Phase 16 (STAFF): `error.issues` defensiv lesen – nur `{ path, message }`-Strings. */
+function issuesOf(value: unknown): ApiIssue[] {
+  if (!Array.isArray(value)) return [];
+  const issues: ApiIssue[] = [];
+  for (const item of value) {
+    if (item === null || typeof item !== 'object') continue;
+    const { path, message } = item as { path?: unknown; message?: unknown };
+    if (typeof path === 'string' && typeof message === 'string') issues.push({ path, message });
+  }
+  return issues;
 }
 
 /** Phase 14 (demo): Antwort des 503-Reset-Gates (für gezielte Hinweise in Formularen). */

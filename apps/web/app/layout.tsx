@@ -2,12 +2,20 @@ import type { Metadata } from 'next';
 import { connection } from 'next/server';
 import type { ReactNode } from 'react';
 import { DEMO_BANNER_TEXT, resolveDemoBanner } from '../lib/environment';
+import { readIndexingEnabled, siteRobots } from '../lib/site-meta';
 
-export const metadata: Metadata = {
-  title: 'Miet-Royal 2.0 – Entwicklungsstand',
-  description: 'Technische Basis der neuen Miet-Royal-Website (Phase 0, kein Inhalt).',
-  robots: { index: false, follow: false },
-};
+/**
+ * Phase 16 (WEB, Design §1.7/§5/§11.2.9): schlanke Root-Metadaten – KEIN Titel-Template
+ * (Portal-/Token-Titel bleiben unverändert; Website-Seiten setzen ihren Titel selbst).
+ * Indexierung zur Laufzeit aus WEB_INDEXING_ENABLED (Default aus ⇒ noindex für alles);
+ * Token-Seiten, /konto und /vorschau überschreiben `robots` in ihren Layouts immer mit noindex.
+ */
+export function generateMetadata(): Metadata {
+  return {
+    title: 'Miet-Royal',
+    robots: siteRobots(readIndexingEnabled()),
+  };
+}
 
 /**
  * Phase 14 (Design §3): fester Demo-Banner auf ALLEN öffentlichen Seiten der

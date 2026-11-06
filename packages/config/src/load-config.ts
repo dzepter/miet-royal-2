@@ -50,6 +50,52 @@ export interface AppConfig {
   environmentLinks: EnvironmentLinksConfig;
   /** Phase 15 (Kundenportal): feste Kontakt-/Einstiegswerte des Portals (keine Secrets). */
   portal: PortalConfig;
+  /** Phase 16 (reviews): Bewertungs-Provider der Website (disabled | fake | google). */
+  reviews: ReviewsConfig;
+}
+
+export const REVIEWS_PROVIDERS = ['disabled', 'fake', 'google'] as const;
+export type ReviewsProvider = (typeof REVIEWS_PROVIDERS)[number];
+/**
+ * Phase 16 (reviews): Default der eigenen globalen Tagesgrenze für Places-Anfragen –
+ * Google-Rechenbeispiel für das Freikontingent der SKU „Place Details Enterprise +
+ * Atmosphere“ (1.000/Monat ÷ 31 ≈ 32,3 ⇒ 32/Tag, höchstens 992 im Monat;
+ * docs/GOOGLE_REVIEWS_API_NOTES.md „Kosten“).
+ */
+export const REVIEWS_DEFAULT_DAILY_REQUEST_LIMIT = 32;
+
+/**
+ * Phase 16 (Order §18/§21, Design §1.5/§4/§11.2.6): Google-Bewertungen der Website.
+ * - `disabled` (Default in JEDER Umgebung): keine Bewertungen, die Website blendet die
+ *   Sektion komplett aus.
+ * - `fake`: synthetische, eindeutig als DEMO gekennzeichnete Beispielbewertungen – NUR in
+ *   demo und development; in staging/production ein Konfigurationsfehler (nie
+ *   Fake-Bewertungen auf einer echten Website).
+ * - `google`: Places API (New) serverseitig – in demo ein Konfigurationsfehler (Demo ruft
+ *   nie Google; ein gesetzter GOOGLE_PLACES_API_KEY ist dort ebenfalls ein Fehler). Sonst
+ *   Pflicht: GOOGLE_PLACES_API_KEY, GOOGLE_PLACE_ID und GOOGLE_REVIEWS_TERMS_CONFIRMED=true
+ *   (bewusste Bestätigung, dass EWR-Nutzungszweck und Google-Bedingungen vor Go-live
+ *   geklärt sind – unklar ⇒ fail-closed; docs/GOOGLE_REVIEWS_API_NOTES.md „Go-live“).
+ *   Host fest https://places.googleapis.com (kein Base-URL-Schalter).
+ * - REVIEWS_DAILY_REQUEST_LIMIT (Default 32): eigene GLOBALE Grenze je Umgebung (Zeile
+ *   `google_places_reviews` in integration_rate_limits), zusätzlich zur Tages-Quota in der
+ *   Google Cloud Console.
+ * Leere Werte gelten als nicht gesetzt. Der API-Key existiert ausschließlich in diesem
+ * Objekt (nie Log/DB/Antwort/Browser) und nur bei provider `google`; Place ID und
+ * Bestätigung sind keine Secrets.
+ */
+export interface ReviewsConfig {
+  provider: ReviewsProvider;
+  /** GOOGLE_REVIEWS_TERMS_CONFIRMED=true (informativ – durchgesetzt beim Laden). */
+  termsConfirmed: boolean;
+  /** Höchstzahl Places-Anfragen je gleitendem 24-Stunden-Fenster (global je Umgebung). */
+  dailyRequestLimit: number;
+  google: {
+    /** Nur gesetzt, wenn provider === 'google'; nie serialisieren. */
+    apiKey: string | null;
+    /** Nur gesetzt, wenn provider === 'google'. */
+    placeId: string | null;
+  };
 }
 
 /**
@@ -268,6 +314,13 @@ export class ConfigError extends Error {
 
 const portSchema = z.coerce.number().int().min(1).max(65535);
 
+/** Phase 16 (reviews): leere bzw. nur aus Leerzeichen bestehende Werte gelten als nicht gesetzt. */
+const blankAsUnset = <T extends z.ZodType>(schema: T) =>
+  z.preprocess(
+    (value) => (typeof value === 'string' && value.trim() === '' ? undefined : value),
+    schema,
+  );
+
 const rawEnvSchema = z.object({
   APP_ENV: z.enum(APP_ENVIRONMENTS),
   DATABASE_URL: z
@@ -404,6 +457,26 @@ const rawEnvSchema = z.object({
       'muss eine Telefonnummer sein (Ziffern, +, Leerzeichen, -, /, Klammern)',
     )
     .optional(),
+  // Phase 16 (reviews) – Google-Bewertungen über die Places API (New), nur API-Prozess.
+  REVIEWS_PROVIDER: blankAsUnset(z.enum(REVIEWS_PROVIDERS).optional()),
+  // Secret; reist ausschließlich im Header X-Goog-Api-Key (sichtbares ASCII, kein Leerzeichen).
+  GOOGLE_PLACES_API_KEY: blankAsUnset(
+    z
+      .string()
+      .max(512)
+      .regex(/^[\x21-\x7e]+$/, 'darf nur sichtbare ASCII-Zeichen ohne Leerzeichen enthalten')
+      .optional(),
+  ),
+  // Kein Secret; Google nennt keine Höchstlänge – Zeichenklasse wie in allen Doku-Beispielen.
+  GOOGLE_PLACE_ID: blankAsUnset(
+    z
+      .string()
+      .max(1024)
+      .regex(/^[A-Za-z0-9_-]+$/, 'darf nur Buchstaben, Ziffern, _ und - enthalten')
+      .optional(),
+  ),
+  GOOGLE_REVIEWS_TERMS_CONFIRMED: blankAsUnset(z.enum(['true', 'false']).optional()),
+  REVIEWS_DAILY_REQUEST_LIMIT: blankAsUnset(z.coerce.number().int().min(1).max(100_000).optional()),
 });
 
 /**
@@ -550,6 +623,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   const routing = buildRoutingConfig(raw, problems);
   const environmentLinks = buildEnvironmentLinks(raw, problems); // Phase 14 (demo)
   const portal = buildPortalConfig(raw, problems); // Phase 15 (portal)
+  const reviews = buildReviewsConfig(raw, problems); // Phase 16 (reviews)
 
   if (problems.length > 0) {
     throw new ConfigError(problems);
@@ -604,6 +678,57 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     routing,
     environmentLinks,
     portal,
+    reviews,
+  };
+}
+
+/**
+ * Phase 16 (reviews): Bewertungs-Provider je Umgebung (fail-closed; Doc-Kommentar an
+ * `ReviewsConfig`). Meldungen nennen nur Variablennamen, nie Werte.
+ */
+function buildReviewsConfig(raw: RawEnv, problems: string[]): ReviewsConfig {
+  const provider: ReviewsProvider = raw.REVIEWS_PROVIDER ?? 'disabled';
+  const apiKey = raw.GOOGLE_PLACES_API_KEY ?? null;
+  const placeId = raw.GOOGLE_PLACE_ID ?? null;
+  const termsConfirmed = raw.GOOGLE_REVIEWS_TERMS_CONFIRMED === 'true';
+
+  if (provider === 'fake' && (raw.APP_ENV === 'production' || raw.APP_ENV === 'staging')) {
+    problems.push(
+      `REVIEWS_PROVIDER: fake ist in ${raw.APP_ENV} nicht zulässig (synthetische Bewertungen nur in demo/development – nie auf einer echten Website)`,
+    );
+  }
+  if (raw.APP_ENV === 'demo') {
+    if (provider === 'google') {
+      problems.push(
+        'REVIEWS_PROVIDER: google ist in demo nicht zulässig (Demo ruft nie Google – nur fake oder disabled)',
+      );
+    }
+    if (apiKey !== null) {
+      problems.push('GOOGLE_PLACES_API_KEY: in demo nicht zulässig (Demo ruft nie Google)');
+    }
+  } else if (provider === 'google') {
+    if (apiKey === null) {
+      problems.push('GOOGLE_PLACES_API_KEY: muss gesetzt sein, wenn REVIEWS_PROVIDER=google');
+    }
+    if (placeId === null) {
+      problems.push('GOOGLE_PLACE_ID: muss gesetzt sein, wenn REVIEWS_PROVIDER=google');
+    }
+    if (!termsConfirmed) {
+      problems.push(
+        'GOOGLE_REVIEWS_TERMS_CONFIRMED: REVIEWS_PROVIDER=google erfordert GOOGLE_REVIEWS_TERMS_CONFIRMED=true – erst nach Klärung des EWR-Nutzungszwecks und der Google-Bedingungen (docs/GOOGLE_REVIEWS_API_NOTES.md „Go-live“)',
+      );
+    }
+  }
+
+  const google = provider === 'google' && raw.APP_ENV !== 'demo';
+  return {
+    provider,
+    termsConfirmed,
+    dailyRequestLimit: raw.REVIEWS_DAILY_REQUEST_LIMIT ?? REVIEWS_DEFAULT_DAILY_REQUEST_LIMIT,
+    google: {
+      apiKey: google ? apiKey : null,
+      placeId: google ? placeId : null,
+    },
   };
 }
 

@@ -101,6 +101,14 @@ const logger = pino({
       '*.config.routing.graphhopper.apiKey',
       'GRAPHHOPPER_API_KEY',
       '*.GRAPHHOPPER_API_KEY',
+      // Phase 16 (reviews): Der Worker ruft Google nie auf, lädt aber dieselbe Konfiguration –
+      // der Places-API-Key darf auch hier unter keinem Pfad im Log stehen.
+      'reviews.google.apiKey',
+      '*.reviews.google.apiKey',
+      'config.reviews.google.apiKey',
+      '*.config.reviews.google.apiKey',
+      'GOOGLE_PLACES_API_KEY',
+      '*.GOOGLE_PLACES_API_KEY',
     ],
     censor: '[REDACTED]',
   },

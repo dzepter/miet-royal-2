@@ -5,6 +5,7 @@ import {
   processes,
   type Customer,
   type Database,
+  type DatabaseExecutor,
 } from '@mietroyal/database';
 import { and, asc, eq, gte, isNull, isNotNull, ne, or, sql, type SQL } from 'drizzle-orm';
 import { AuthError } from '../auth/service.ts';
@@ -99,7 +100,11 @@ export class CustomerService {
    * Organisation (pg_trgm). NUR Warnung – niemals Blockade oder
    * automatische Zusammenführung.
    */
-  async findDuplicates(input: CustomerInput, excludeId?: string): Promise<DuplicateWarning[]> {
+  async findDuplicates(
+    input: CustomerInput,
+    excludeId?: string,
+    executor: DatabaseExecutor = this.db, // Phase 16 (PUBLIC): transaktionsfähig
+  ): Promise<DuplicateWarning[]> {
     const email = normalizeEmailAddress(input.email);
     const phoneNormalized = normalizePhoneNumber(input.phone);
     const fullName = `${(input.firstName ?? '').trim()} ${(input.lastName ?? '').trim()}`.trim();
@@ -122,7 +127,7 @@ export class CustomerService {
 
     const conditions = [isNull(customers.deletedAt), or(...matchers) as SQL];
     if (excludeId !== undefined) conditions.push(ne(customers.id, excludeId));
-    const rows = await this.db
+    const rows = await executor
       .select()
       .from(customers)
       .where(and(...conditions))
@@ -144,14 +149,44 @@ export class CustomerService {
     _actorId: string,
     input: CustomerInput,
   ): Promise<{ customer: Customer; duplicates: DuplicateWarning[] }> {
-    const row = toRow(input);
+    toRow(input); // Validierung vor der Dublettensuche (Reihenfolge wie bisher)
     // Warnen, nicht blockieren: die Dubletten werden mitgeliefert, der
     // Mitarbeiter entscheidet später bewusst über eine Zusammenführung.
     const duplicates = await this.findDuplicates(input);
-    const inserted = await this.db.insert(customers).values(row).returning();
+    const customer = await this.createCustomerWithin(this.db, input);
+    return { customer, duplicates };
+  }
+
+  /**
+   * Phase 16 (PUBLIC): Kunde innerhalb einer laufenden Transaktion anlegen – dieselbe
+   * Validierung/Normalisierung (`toRow`) wie der Staff-Pfad, Insert über `executor`
+   * (kein zweiter Pool-Zugriff). Keine Dublettensuche (Aufrufer entscheidet).
+   */
+  async createCustomerWithin(executor: DatabaseExecutor, input: CustomerInput): Promise<Customer> {
+    const row = toRow(input);
+    const inserted = await executor.insert(customers).values(row).returning();
     const customer = inserted[0];
     if (customer === undefined) throw new AuthError('CONFLICT', 'Anlegen fehlgeschlagen.');
-    return { customer, duplicates };
+    return customer;
+  }
+
+  /**
+   * Phase 16 (PUBLIC, Order §16): IDs AKTIVER Kunden mit exakt dieser (bereits
+   * normalisierten) E-Mail – höchstens `limit` (Default 2: „genau einer“ vs. „mehrere“
+   * unterscheidbar, Vorbild Magic-Link-Zuordnung). Über `executor` transaktionsfähig.
+   */
+  async activeCustomerIdsByEmail(
+    executor: DatabaseExecutor,
+    normalizedEmail: string,
+    limit = 2,
+  ): Promise<string[]> {
+    const rows = await executor
+      .select({ id: customers.id })
+      .from(customers)
+      .where(and(eq(customers.email, normalizedEmail), isNull(customers.deletedAt)))
+      .orderBy(asc(customers.createdAt), asc(customers.id))
+      .limit(limit);
+    return rows.map((row) => row.id);
   }
 
   async updateCustomer(

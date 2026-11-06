@@ -36,7 +36,8 @@
     "whatsapp:smoke": "tsx scripts/whatsapp-smoke.ts",
     "routing:smoke": "tsx scripts/routing-smoke.ts",
     "demo:seed": "tsx scripts/demo-seed.ts",
-    "demo:reset": "tsx scripts/demo-reset.ts"
+    "demo:reset": "tsx scripts/demo-reset.ts",
+    "cms:bootstrap": "tsx scripts/cms-bootstrap.ts"
   },
   "dependencies": {
     "@fastify/cookie": "11.1.2",

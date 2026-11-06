@@ -88,10 +88,12 @@ export class ProcessService {
    * Anlegen innerhalb einer laufenden Transaktion (Phase 9: Folgevorgang
    * aus Storno – Verknüpfung und neuer Vorgang entstehen atomar). Die
    * Zuweisungsprüfung übernimmt der Aufrufer von createProcess.
+   * Phase 16 (PUBLIC): `actorId = null` ⇒ system-/kundenseitige Erzeugung
+   * (Website-Anfrage, `created_by` NULL – kein künstlicher Website-Mitarbeiter).
    */
   async createProcessWithin(
     tx: DatabaseTransaction,
-    actorId: string,
+    actorId: string | null,
     input: {
       customerId: string;
       source?: 'website' | 'whatsapp' | 'staff_manual' | 'other' | undefined;

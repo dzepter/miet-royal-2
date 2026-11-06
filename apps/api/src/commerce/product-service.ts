@@ -31,6 +31,30 @@ export interface ProductInput {
   carryPersons?: number | undefined;
 }
 
+/**
+ * Phase 16 (PUBLIC): wirksamer Preis zum Zeitpunkt `at` über einen beliebigen Executor
+ * (Datenbank ODER laufende Transaktion) – die EINE Implementierung der Preisregel;
+ * `ProductService.effectivePriceCents` delegiert hierher. Genutzt von der öffentlichen
+ * Katalog-Projektion (apps/api/src/public/catalog.ts), die nur einen Executor kennt.
+ */
+export async function effectivePriceCentsAt(
+  executor: DatabaseExecutor,
+  productId: string,
+  at: Date,
+): Promise<number> {
+  const rows = await executor
+    .select()
+    .from(productPrices)
+    .where(and(eq(productPrices.productId, productId), lte(productPrices.effectiveFrom, at)))
+    .orderBy(desc(productPrices.effectiveFrom))
+    .limit(1);
+  const row = rows[0];
+  if (row === undefined) {
+    throw new AuthError('CONFLICT', 'Für dieses Produkt ist kein Preis hinterlegt.');
+  }
+  return row.priceCents;
+}
+
 export class ProductService {
   constructor(private readonly db: Database) {}
 
@@ -150,17 +174,7 @@ export class ProductService {
     at = new Date(),
     executor: DatabaseExecutor = this.db,
   ): Promise<number> {
-    const rows = await executor
-      .select()
-      .from(productPrices)
-      .where(and(eq(productPrices.productId, productId), lte(productPrices.effectiveFrom, at)))
-      .orderBy(desc(productPrices.effectiveFrom))
-      .limit(1);
-    const row = rows[0];
-    if (row === undefined) {
-      throw new AuthError('CONFLICT', 'Für dieses Produkt ist kein Preis hinterlegt.');
-    }
-    return row.priceCents;
+    return effectivePriceCentsAt(executor, productId, at); // Phase 16 (PUBLIC): eine Implementierung
   }
 
   /** Sofortige Preisänderung: gilt nur für NEUE Preisermittlungen (Nr. 7). */

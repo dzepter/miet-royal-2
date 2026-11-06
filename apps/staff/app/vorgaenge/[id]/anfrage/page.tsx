@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { AuthGuard, useMe } from '../../../../components/auth-guard';
+import { WebsiteSubmissionBox } from '../../../../components/website-submission';
 import { apiFetch, hasPermission } from '../../../../lib/api';
 import { OCCASION_LABELS, type ProductRow } from '../../../../lib/commerce';
 import { fromBerlinInput, toBerlinInput } from '../../../../lib/scheduling';
@@ -190,6 +191,14 @@ function InquiryView() {
         <Link href={`/vorgaenge/${params.id}`}>← Vorgang</Link>
       </p>
       <h1>Anfrage</h1>
+      {/* Phase 16 (STAFF): Website-Anfrage (Snapshot, Abweichungen, Dublette, Datenschutz) – nur wenn vorhanden. */}
+      <WebsiteSubmissionBox
+        processId={params.id}
+        deliveryWindowRequested={
+          form.fulfillment === 'delivery' &&
+          (form.deliveryWindowFrom !== '' || form.deliveryWindowTo !== '')
+        }
+      />
       {error !== null && <p className="error">{error}</p>}
       {notice !== null && <p className="success">{notice}</p>}
       {notes.map((note) => (

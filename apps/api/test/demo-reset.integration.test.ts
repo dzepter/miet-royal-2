@@ -42,6 +42,8 @@ import {
   login,
   type TestContext,
 } from './auth-helpers.ts';
+import { publishCmsForTests, publishPrivacyForTests } from './cms-helpers.ts'; // Phase 16 (PUBLIC)
+import { inquiryBody } from './public-helpers.ts'; // Phase 16 (PUBLIC)
 import {
   createDemoTestContext,
   demoServicesFor,
@@ -227,6 +229,48 @@ describe('Phase 14 – Demo-Reset', () => {
         headers: { cookie: session.cookie },
       });
       expect(me.statusCode).toBe(200);
+    },
+    RESET_TIMEOUT_MS,
+  );
+
+  it(
+    'D-R2b. Phase 16 (PUBLIC): Reset löscht Website-Anfragen (public_inquiry_submissions samt Demo-Kunde/-Vorgang), CMS-Redaktionsinhalt bleibt (Zählungen unverändert)',
+    async () => {
+      await publishPrivacyForTests(ctx.db);
+      await publishCmsForTests(
+        ctx.db,
+        { kind: 'site_settings' },
+        { content: { businessName: 'Miet-Royal', contact: {}, recommendationRules: [] } },
+      );
+      const submitted = await ctx.app.inject({
+        method: 'POST',
+        url: '/public/inquiries',
+        payload: inquiryBody(),
+      });
+      expect(submitted.statusCode, submitted.body).toBe(201);
+      expect(await count('public_inquiry_submissions')).toBe(1);
+      const cmsTables = [
+        'cms_entries',
+        'cms_revisions',
+        'cms_media',
+        'cms_media_variants',
+        'cms_revision_media',
+        'cms_preview_access',
+      ];
+      const before = new Map<string, number>();
+      for (const table of cmsTables) before.set(table, await count(table));
+      expect(before.get('cms_revisions')).toBeGreaterThanOrEqual(2);
+
+      const result = await demo.reset.reset({ actorId: adminId, now });
+
+      expect(result.deleted.public_inquiry_submissions).toBe(1);
+      expect(await count('public_inquiry_submissions')).toBe(0);
+      const websiteProcesses = await ctx.pool.query(
+        `SELECT count(*)::int AS n FROM processes p
+         JOIN public_inquiry_submissions s ON s.process_id = p.id`,
+      );
+      expect(websiteProcesses.rows[0].n).toBe(0);
+      for (const table of cmsTables) expect(await count(table), table).toBe(before.get(table));
     },
     RESET_TIMEOUT_MS,
   );
