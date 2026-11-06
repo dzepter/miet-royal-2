@@ -1,6 +1,7 @@
 # Kundenportal (Phase 15)
 
-Stand: Phase 15 nach den Review-Fixes R1–R13 (2026-11-05). Das Kundenportal ist der optionale
+Stand: Phase 15 Final (2026-11-06) – Review-Fixes R1–R13 (2026-11-05) und Final-Korrektur
+„bezahlte Buchung nach Reopen“ (Tests R15, 2026-11-06). Das Kundenportal ist der optionale
 Kundenbereich unter `/konto` in der öffentlichen Web-App (`apps/web`). Es ist KEIN eigenes
 Frontend-Projekt und KEIN eigenes Fachobjekt: Der `customers`-Datensatz bleibt die Identität,
 das Portal ergänzt nur Authentifizierung (Magic Links, Sessions) und eine kundensichere Sicht auf
@@ -123,28 +124,50 @@ ausschließlich wiederverwendet, nie dupliziert.
 
 Einzige Stelle: `apps/api/src/portal/visibility.ts`. Eine Buchung erscheint nur mit echter
 `bookings`-Zeile des Kunden (Anfrage, Angebotsentwurf oder nur versendetes Angebot sind
-keine Portalbuchung); Buchung UND Vorgang müssen dem Kunden gehören. Die Stornozeile
-(`cancellations` der Buchung) wird ZUERST geprüft und schlägt den Vorgangsstatus (Review R1):
+keine Portalbuchung); Buchung UND Vorgang müssen dem Kunden gehören. Danach gilt eine feste
+Reihenfolge A → B → C (Review R1; Phase 15 Final-Korrektur, 2026-11-06):
 
-| Lage | Bedingung | Portalzustand |
-| --- | --- | --- |
-| Stornozeile vorhanden (jeder Vorgangsstatus, auch nach Reopen) | Gebühr 0 €, Kundenstorno, höchstens 24 h alt | nur Bestätigungsansicht `cancelled_free` („Storniert“) über die Detailroute und die Antwort des Storno-POST; nie in der Liste |
-| Stornozeile vorhanden | Gebühr 0 €, Staff-Storno oder älter als 24 h | unsichtbar |
-| Stornozeile vorhanden | Gebühr > 0 € und Finanzstatus ≠ `paid` | `cancelled_fee` („Storniert – Stornogebühr“) |
-| Stornozeile vorhanden | Gebühr > 0 € und Finanzstatus `paid` | unsichtbar |
-| `open` / `reopened` ohne Stornozeile | immer | `active` („Bestätigte Buchung“) |
-| `completed` | Abrechnung fehlt, nicht übertragen (`locked_at` NULL), oder Zahlungsstatus `open`/`overdue`/unbekannt | `completed_open` („Abgeschlossen – Rechnung offen“) |
-| `completed` | Zahlungsstatus `paid` | unsichtbar |
-| `cancelled` ohne Stornozeile | immer | unsichtbar |
+- **A – Stornozeile** (`cancellations` der Buchung) vorhanden ⇒ ausschließlich die
+  Storno-Regeln, unabhängig vom Vorgangsstatus (auch nach Reopen).
+- **B – reguläre Abrechnung final bezahlt** (keine Stornozeile, `settlements.locked_at` gesetzt
+  UND `settlements.payment_status = 'paid'`) ⇒ IMMER unsichtbar, unabhängig vom Vorgangsstatus:
+  `completed`, `reopened` und auch ein wieder auf `open` gesetzter Vorgang.
+- **C – erst danach der Vorgangsstatus**: `open`/`reopened` ⇒ `active`, `completed` ⇒
+  `completed_open` (final bezahlt ist bereits durch B unsichtbar), `cancelled` ⇒ unsichtbar.
 
+| Regel | Lage | Bedingung | Portalzustand |
+| --- | --- | --- | --- |
+| A | Stornozeile vorhanden (jeder Vorgangsstatus, auch nach Reopen) | Gebühr 0 €, Kundenstorno, höchstens 24 h alt | nur Bestätigungsansicht `cancelled_free` („Storniert“) über die Detailroute und die Antwort des Storno-POST; nie in der Liste |
+| A | Stornozeile vorhanden | Gebühr 0 €, Staff-Storno oder älter als 24 h | unsichtbar |
+| A | Stornozeile vorhanden | Gebühr > 0 € und Finanzstatus ≠ `paid` | `cancelled_fee` („Storniert – Stornogebühr“) |
+| A | Stornozeile vorhanden | Gebühr > 0 € und Finanzstatus `paid` | unsichtbar |
+| B | ohne Stornozeile, jeder Vorgangsstatus (`completed`, `reopened`, `open`) | Abrechnung übertragen (`locked_at` gesetzt) UND Zahlungsstatus `paid` | unsichtbar |
+| C | `open` / `reopened` | Abrechnung fehlt, nicht übertragen (`locked_at` NULL), oder Zahlungsstatus `open`/`overdue`/unbekannt | `active` („Bestätigte Buchung“) |
+| C | `completed` | Abrechnung fehlt, nicht übertragen (`locked_at` NULL), oder Zahlungsstatus `open`/`overdue`/unbekannt | `completed_open` („Abgeschlossen – Rechnung offen“) |
+| C | `cancelled` ohne Stornozeile | immer | unsichtbar |
+
+- **Reopen ist ein interner Arbeitsstatus (Phase 15 Final-Korrektur, 2026-11-06):** Ein Reopen
+  ist keine Reaktivierung einer finanziell abgeschlossenen Kundenbuchung. Er macht keine alte
+  bezahlte Vermietung wieder aktiv, bucht keine alte Maschine wieder, macht den alten Snapshot
+  nicht wieder kundenaktuell, den alten Chat nicht wieder beschreibbar (§7) und keine alte Tour
+  wieder aktiv. Ein neuer Mietvorgang ist eine neue Buchung bzw. ein neuer Vorgang. Es gibt
+  keine Portal-Historie über Reopen (MASTER_SPEC §26 „Keine alte Buchungshistorie“). Vorher
+  erschien ein abgeschlossener, final bezahlter Vorgang nach einem Reopen wieder als
+  „Bestätigte Buchung“, weil `reopened` ⇒ `active` vor der Zahlungsprüfung entschieden wurde.
+  Weil jede Portalroute über die Policy auflöst, gilt Regel B für Liste, Detailroute und alle
+  Unterrouten (neutrales 404). Nicht final bezahlte Lagen bleiben nach einem Reopen sichtbar
+  (`active`): Zahlungsstatus `open`, `overdue` oder unbekannt, Abrechnung nicht übertragen. Tests:
+  `apps/api/test/portal-review-reopen.integration.test.ts`, R15-1 … R15-10, R15-2b, R15-4b
+  (TEST_PLAN „Kundenportal (Phase 15)“).
 - **Reopen nach Storno (Review R1):** Ein wiedereröffneter Vorgang macht die stornierte
   Buchung nie wieder `active` (Phase 9: die alte Buchung wird nicht reaktiviert). Der Reopen
   löscht die Stornozeile nicht (er setzt nur `reopened_at`); Zustand, Storno-Block, Gebühr und
   Rechnungsstatus kommen weiter aus ihr (Tabelle oben). Ein 0-€-Staff-Storno bleibt nach dem
   Reopen unsichtbar. Ein 0-€-Kundenstorno zeigt auch nach einem Reopen innerhalb von 24 h nur
-  die Bestätigungsansicht (Detailroute bzw. Storno-POST) und ist danach unsichtbar. Tests:
-  R1 „Zustandsfunktion“ (alle Vorgangsstatus, auch Kundenstorno 0 €), R1 „Reopen nach
-  0-€-Storno“ (Staff-Storno).
+  die Bestätigungsansicht (Detailroute bzw. Storno-POST) und ist danach unsichtbar. Regel A hat
+  Vorrang vor Regel B: Für eine stornierte Buchung zählt nur die Stornozeile, nie eine Abrechnung.
+  Tests: R1 „Zustandsfunktion“ (alle Vorgangsstatus, auch Kundenstorno 0 €), R1 „Reopen nach
+  0-€-Storno“ (Staff-Storno), R15-6 (Storno + Reopen, Storno-Regeln unverändert).
 - **24-h-Bestätigungsfenster (Review R12):** gilt NUR für einen kostenfreien KUNDENstorno und
   NUR für `GET /portal/bookings/:id` und `POST /portal/bookings/:id/cancellation` (wiederholter
   Klick ⇒ idempotente Bestätigungsansicht). Dokumente, Dokument-Download, Storno-Vorschau,
@@ -160,7 +183,8 @@ keine Portalbuchung); Buchung UND Vorgang müssen dem Kunden gehören. Die Storn
 0 Buchungen ⇒ „Neue Anfrage starten“; 1 ⇒ direkt die Übersicht; mehrere ⇒ Liste „Aktuelle
 Buchungen“, sortiert nach nächstem Eventdatum, dann Vorgangsnummer. Es gibt KEINE Historien-
 oder Archivroute („No-history“-Entscheidung, MASTER_SPEC §26). Ein manuell abgeschlossener
-Vorgang ohne Abrechnung bleibt dauerhaft `completed_open` (Fachpunkt, OPEN_ITEMS „Phase 15“).
+Vorgang ohne Abrechnung bleibt dauerhaft `completed_open`, denn Regel B greift erst mit einer
+übertragenen UND bezahlten Abrechnung (offener Fachpunkt, OPEN_ITEMS „Phase 15“).
 
 ## 5 Buchungsansicht
 
@@ -204,7 +228,9 @@ Bestätigungsfenster auf: Nach einem kostenfreien Kundenstorno antworten beide 4
   false`), eine neue Nachricht ⇒ `409 PORTAL_BOOKING_CLOSED`. Nach einem kostenfreien Storno
   (`cancelled_free`) antworten Nachrichten und Fotos 404 – für den Chat gibt es kein
   Bestätigungsfenster. Die Web-Detailseite lädt den Nachrichtenbereich nach einem Storno neu
-  (dann Hinweis statt Formular) bzw. blendet ihn bei `cancelled_free` ganz aus.
+  (dann Hinweis statt Formular) bzw. blendet ihn bei `cancelled_free` ganz aus. Eine nach §4
+  unsichtbare Buchung (z. B. final bezahlt, auch nach einem Reopen) hat im Portal keinen Chat:
+  Nachrichten und Fotos antworten 404.
 - Kanal `conversation_channel = portal` der Phase-12-Konversation (gleiche Tabelle, gleiche
   Retention: Fotos beim Eintritt in abgeschlossen/storniert gelöscht, Text nach 12 Berliner
   Kalendermonaten). E-Mail- und WhatsApp-Historie erscheint nicht im Portal.
@@ -223,16 +249,27 @@ Bestätigungsfenster auf: Nach einem kostenfreien Kundenstorno antworten beide 4
   im Portal sichtbar) und löst eine separate E-Mail `customer_portal_reply_notice` („Du hast
   eine neue Nachricht von Miet-Royal.“ + fester Portal-Link) aus; scheitert die Mail, bleibt
   die Portalnachricht. Hinweis „Kundenportal aktiv“ zeigt, ob der Kunde eine gültige Session hat.
-- **Staff-Portalantwort gesperrt, sobald eine Stornozeile existiert (Review R1):** Möglich nur
-  bei Vorgang `open`/`reopened` mit Buchung UND ohne Stornozeile der Buchung.
-  `ConversationService.replyByPortal` prüft das unter der Vorgangssperre und antwortet sonst
-  `409` („Zu diesem Vorgang ist keine Portalnachricht möglich.“) – ohne Nachricht und ohne
-  Hinweis-Mail; die Staff-Ansicht liefert `canReplyPortal = false` (`portal/chat/staff-hints.ts`),
-  das Radio „Portal“ erscheint dann nicht. Das gilt auch nach einem Reopen und für beide
-  Fälle: 0 € (der Kunde sieht die Buchung nicht) und kostenpflichtig (der Kunde kann nur
-  lesen). Die E-Mail-Antwort bleibt möglich. Ob Staff bei einem kostenpflichtig stornierten und
-  wiedereröffneten Vorgang per Portal antworten darf, ist eine offene Fachentscheidung
-  (OPEN_ITEMS „Phase 15“); bis dahin ist es konservativ gesperrt.
+- **Staff-Portalantwort gesperrt bei Stornozeile oder final bezahlter Abrechnung (Review R1;
+  Phase 15 Final-Korrektur, 2026-11-06):** Möglich nur bei Vorgang `open`/`reopened` mit
+  Buchung, OHNE Stornozeile der Buchung UND ohne final bezahlte Abrechnung (`locked_at`
+  gesetzt und `payment_status = 'paid'`). `ConversationService.replyByPortal` prüft das unter
+  der Vorgangssperre und antwortet sonst `409` („Zu diesem Vorgang ist keine Portalnachricht
+  möglich.“) – ohne Nachricht und ohne Hinweis-Mail; die Staff-Ansicht liefert
+  `canReplyPortal = false` (`portal/chat/staff-hints.ts`), das Radio „Portal“ erscheint dann
+  nicht. Beide nutzen dasselbe Prädikat wie die Policy (`isSettlementFinallyPaid`). Die
+  E-Mail-Antwort bleibt möglich.
+  - **Stornozeile:** gesperrt auch nach einem Reopen und in beiden Fällen: 0 € (der Kunde sieht
+    die Buchung nicht) und kostenpflichtig (der Kunde kann nur lesen). **Fachentscheidung
+    bestätigt (2026-11-06):** Ein Reopen reaktiviert den Portal-Chat einer stornierten Buchung
+    nie – auch nicht bei kostenpflichtigem Storno. Tests R1, R15-7.
+  - **Final bezahlte Abrechnung:** gesperrt wie bei einer Stornozeile, auch nach einem Reopen.
+    Die Buchung ist nach §4 Regel B unsichtbar; Portalnachricht und Hinweis-Mail würden auf
+    eine Buchung verweisen, die der Kunde nicht öffnen kann. Test R15-2b.
+- **Portalnachricht und Abrechnungsklärung (Entscheidung 2026-11-06):** Eine Portalnachricht
+  zählt NIE automatisch als „Kundenantwort“ einer Abrechnungsklärung (Schaden-/Fehlteil-
+  Vorinformation, DOMAIN_RULES). Die Mitarbeitenden sehen sie in der Vorgangskommunikation und
+  entscheiden manuell, ob sie die Kundenantwort erfassen; der Portalchat ändert die Abrechnung
+  nie automatisch. Test R15-8.
 
 ## 8 Rechnungsstatus
 
@@ -252,7 +289,10 @@ bei „keine Rechnung“ aus).
 - **Abrechnung vorhanden, nicht übertragen** (`locked_at` NULL) ⇒ „Rechnung wird
   vorbereitet“, ohne Betrag.
 - **Übertragen** (`locked_at` gesetzt) ⇒ Status aus `payment_status` (NULL ⇒ „Offen“), finaler
-  Betrag `amount_due_cents`.
+  Betrag `amount_due_cents`. Bei `paid` ist die Buchung nach §4 Regel B allerdings unsichtbar –
+  unabhängig vom Vorgangsstatus, auch nach einem Reopen.
+- Der Portalchat ändert weder Abrechnung noch Rechnungsstatus; eine Portalnachricht ist nie
+  automatisch die Kundenantwort einer Abrechnungsklärung (§7, Entscheidung 2026-11-06).
 
 Nie: Buchhaltungsreferenz, Lexware-ID, Providerstatus, Übertragungsfehler,
 Steuerkonfiguration, ungeprüfte Schadens-/Fehlteilpositionen. Es gibt kein eigenes

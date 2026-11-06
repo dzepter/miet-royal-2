@@ -23,6 +23,7 @@ import {
   inboundMailReceipts,
   messagePhotos,
   processes,
+  settlements, // Phase 15 (Final-Korrektur)
   staffUsers,
   whatsappContacts,
   type ConversationMessageRow,
@@ -32,6 +33,7 @@ import {
 import { StorageObjectNotFoundError, type StorageProvider } from '@mietroyal/integrations';
 import { and, asc, desc, eq, gt, inArray, isNull, lte, sql, type SQL } from 'drizzle-orm';
 import { AuthError } from '../../auth/service.ts';
+import { isSettlementFinallyPaid } from '../../portal/visibility.ts'; // Phase 15 (Final-Korrektur)
 import { previewOf } from '../inbound/content.ts';
 import { renderMailSubject } from '../mail/templates/index.ts';
 import { mailSalutation } from '../transactional/keys.ts'; // Phase 15 (portal)
@@ -503,7 +505,9 @@ export class ConversationService {
   /**
    * Phase 15 (portal, Order §29/§55): Staff-Antwort auf dem Kanal `portal`.
    * Voraussetzung: der Vorgang hat eine bestätigte Buchung und ist offen bzw.
-   * wieder geöffnet (terminal ⇒ CONFLICT). Die Konversationszeile ist sofort
+   * wieder geöffnet (terminal ⇒ CONFLICT), die Buchung hat keine Stornozeile und
+   * – Phase 15 (Final-Korrektur) – kein final bezahltes Settlement (`locked_at`
+   * gesetzt UND `payment_status = 'paid'`). Die Konversationszeile ist sofort
    * „sent“ (im Portal unmittelbar sichtbar); die E-Mail-Benachrichtigung
    * `customer_portal_reply_notice` (fester Text + Portal-Link, NIE der Chattext)
    * wird NACH dem Commit über die Outbox eingereiht – scheitert oder blockiert
@@ -552,11 +556,14 @@ export class ConversationService {
           organizationName: customers.organizationName,
           bookingId: bookings.id,
           cancellationId: cancellations.id, // Phase 15 (Review R1)
+          settlementLockedAt: settlements.lockedAt, // Phase 15 (Final-Korrektur)
+          settlementPaymentStatus: settlements.paymentStatus, // Phase 15 (Final-Korrektur)
         })
         .from(processes)
         .innerJoin(customers, eq(customers.id, processes.customerId))
         .leftJoin(bookings, eq(bookings.processId, processes.id))
         .leftJoin(cancellations, eq(cancellations.bookingId, bookings.id)) // Phase 15 (Review R1)
+        .leftJoin(settlements, eq(settlements.bookingId, bookings.id)) // Phase 15 (Final-Korrektur)
         .where(eq(processes.id, input.processId))
         .for('update', { of: processes });
       const row = rows[0];
@@ -570,6 +577,17 @@ export class ConversationService {
       // bereits die Statusprüfung oben ab (Sperre auf denselben Vorgang, `main_status` wird
       // danach neu gelesen ⇒ `cancelled`); diese Prüfung deckt den späteren Reopen ab.
       if (row.cancellationId !== null) {
+        throw new AuthError('CONFLICT', 'Zu diesem Vorgang ist keine Portalnachricht möglich.');
+      }
+      // Phase 15 (Final-Korrektur): Settlement final bezahlt ⇒ die Buchung ist im Portal
+      // unsichtbar, auch nach einem Reopen (Policy-Regel B) – also keine Portalantwort und keine
+      // Hinweis-Mail. NULL in `locked_at`/`payment_status` (oder kein Settlement) sperrt nie.
+      if (
+        isSettlementFinallyPaid({
+          lockedAt: row.settlementLockedAt,
+          paymentStatus: row.settlementPaymentStatus,
+        })
+      ) {
         throw new AuthError('CONFLICT', 'Zu diesem Vorgang ist keine Portalnachricht möglich.');
       }
       await tx.insert(conversationMessages).values({
