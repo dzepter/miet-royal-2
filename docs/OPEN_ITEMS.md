@@ -269,7 +269,7 @@ Weiterhin offen (keine Blocker für Phase 15):
 - Go-live-Punkte früherer Phasen (Lexware, E-Mail/WhatsApp-Smokes, Routing-
   Terms, Hosting, Geschäftsdaten) bleiben wie in den Abschnitten oben.
 
-## Phase 15 – Stand nach Phase 15 (2026-11-05)
+## Phase 15 – Stand nach Phase 15 Final (2026-11-06)
 
 Kundenportal (`/konto`, API `/portal/*`, docs/CUSTOMER_PORTAL.md): Magic-Link-
 Anmeldung, aktuelle Buchung(en), Dokumente, Portalnachrichten, Rechnungsstatus,
@@ -302,11 +302,16 @@ Kundenstorno, Profil mit Reauth, Demo-Integration. Go-live-Punkte
   Variable weglassen. Bewusst keine Sonderbehandlung (Konsistenz mit den
   übrigen validierten URL-Variablen); bei Bedarf zentral ändern.
 
+Am 2026-11-06 vom Auftraggeber entschieden und damit KEINE offenen Punkte mehr
+(Regeln: docs/CUSTOMER_PORTAL.md §4/§7, TECH_DECISIONS „Phase 15
+Final-Korrektur: bezahlte Buchung nach Reopen (2026-11-06)“): bezahlter Vorgang
+nach Reopen (bleibt im Portal unsichtbar), Staff-Portalantwort nach Storno +
+Reopen (bleibt gesperrt, auch beim kostenpflichtigen Storno), Portalnachricht
+als Kundenantwort einer Abrechnungsklärung (nie automatisch).
+
 Offene Fachpunkte (konservativ umgesetzt, Entscheidung des Auftraggebers
 ausstehend – Design Phase 15 §7):
 
-- Eine Portalnachricht zählt NICHT automatisch als „Kundenantwort“ einer
-  Abrechnungsklärung – die Mitarbeitenden entscheiden weiterhin manuell.
 - Eine begonnene, nicht finalisierte Übergabe ist nach der Phase-9-Regel kein
   Storno-Blocker; das Portal folgt Phase 9 unverändert (keine neue Regel).
 - Ein abgeschlossener Vorgang ohne Abrechnung bleibt im Portal sichtbar
@@ -327,15 +332,10 @@ ausstehend – Design Phase 15 §7):
   (Order §2) – keine offenen Punkte, bewusst nicht gebaut.
 
 Offen nach den Review-Fixes R1–R13 (Phase 15, 2026-11-05; Details
-docs/CUSTOMER_PORTAL.md, TECH_DECISIONS „Phase 15: Kundenportal“):
+docs/CUSTOMER_PORTAL.md, TECH_DECISIONS „Phase 15: Kundenportal“). Alle
+folgenden Härtungen und Restrisiken sind KEINE Phase-15-Blocker (Phase 15 Final,
+2026-11-06): Sie bleiben dokumentiert, in Phase 15 wird nichts davon umgebaut.
 
-- **Fachentscheidung Staff-Portalantwort nach kostenpflichtigem Storno und
-  Reopen:** Sobald die Buchung eine Stornozeile hat, ist die Portalantwort der
-  Mitarbeitenden gesperrt (409, `canReplyPortal = false`, keine Hinweis-Mail) –
-  auch nach einem Reopen. Beim 0-€-Storno sieht der Kunde die Buchung nicht, die
-  Sperre ist zwingend. Beim kostenpflichtigen Storno könnte der Kunde eine Antwort
-  lesen, aber nicht erwidern; ob Staff dort per Portal antworten darf, ist offen.
-  Bis zur Entscheidung konservativ gesperrt, Kontaktweg ist die E-Mail-Antwort.
 - **E-Mail-Wechsel an eine belegte Adresse (R8):** Die nie versandte, sofort
   widerrufene Platzhalterzeile trägt wegen des CHECK-Constraints die angefragte,
   einem ANDEREN Kunden gehörende Adresse in `proposed_email` – bis der Cleanup
@@ -357,10 +357,13 @@ docs/CUSTOMER_PORTAL.md, TECH_DECISIONS „Phase 15: Kundenportal“):
   „aktuell“ gilt `customers.email` – auch eine von Mitarbeitenden im CRM
   geänderte, vom Kunden nicht verifizierte Adresse. Die Anrede kommt weiter aus
   dem Buchungs-Snapshot. Bewusst so umgesetzt; bei Bedarf fachlich nachschärfen.
-- **Staff-PATCH mit veraltetem Formular (vorbestehend, Nachbar von R7):** Speichert
-  eine Mitarbeiterin ein vor dem verifizierten Portal-Wechsel geladenes
-  Kundenformular, kann sie die Adresse zurückdrehen. Lösung wäre eine
-  optimistische Sperre (Versionsfeld) im CRM – spätere Phase, nicht Teil von Phase 15.
+- **Allgemeines CRM-Concurrency-Hardening – Staff-PATCH mit veraltetem Formular
+  (vorbestehend, Nachbar von R7; kein Phase-15-Blocker):** Mitarbeitende dürfen
+  die Kunden-E-Mail im CRM bewusst ändern (bleibt so). Speichert eine
+  Mitarbeiterin aber ein vor dem verifizierten Portal-Wechsel geladenes
+  Kundenformular, kann sie die Adresse unbemerkt zurückdrehen. Spätestens in
+  Phase 18 / Acceptance prüfen (möglicher Weg: optimistische Sperre); jetzt keine
+  CRM-Versionierungsarchitektur.
 - **Optionale Härtungen (theoretisch, nicht reproduziert):**
   - R5 (TOCTOU): Die Bedingung „Bestätigung nur bei `prepared` nachreihen“ wird
     vor dem Service-Aufruf geprüft; zusätzlich unter `FOR UPDATE` in
@@ -400,10 +403,6 @@ docs/CUSTOMER_PORTAL.md, TECH_DECISIONS „Phase 15: Kundenportal“):
     Berliner Kalendertage nach dem Endzustand; die Zeilen selbst bleiben. Die Menge
     begrenzen nur die IP-Limits und die DB-Versanddrossel (5 Links je 15 min je
     Kunde bzw. bei Reauth je Session).
-  - Ein abgeschlossener und bezahlter Vorgang OHNE Stornozeile erscheint nach einem
-    Reopen wieder als „Bestätigte Buchung“ (`reopened` ⇒ `active`, Order §14 A).
-    Für den Kunden womöglich irritierend; eine Fachregel dazu fehlt – fachlich
-    entscheiden.
 - **Uhrzeitabhängige Touren-Integrationstests (vorbestehend seit Phase 13, im
   Phase-15-Gate festgestellt):** `tours-delay-risk` (RF1), `tours-multi-active` (V6) und
   ggf. `offline-tour-lease` scheitern abends ab etwa 20:00 Uhr Berlin, weil Termine bei

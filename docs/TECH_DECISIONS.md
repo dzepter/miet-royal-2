@@ -4603,6 +4603,9 @@ Gesamtdarstellung: docs/CUSTOMER_PORTAL.md. Hier die technischen Entscheidungen
   Storno-POST (`resolve(…, { confirmationWindow: true })`, Default aus); Dokumente,
   Download, Vorschau, Travel-Status, Nachrichten und Fotos lösen ohne Fenster auf
   ⇒ 404 (Review R12). Ein kostenfreier Staff-Storno ist sofort unsichtbar.
+  Ergänzt am 2026-11-06 um Regel B (final bezahlte Abrechnung ⇒ immer
+  unsichtbar, auch nach Reopen): Abschnitt „Phase 15 Final-Korrektur: bezahlte
+  Buchung nach Reopen (2026-11-06)“.
 - **Web nach kostenfreiem Storno (Review R12)**: Die Detailseite zeigt bei
   `portalState === 'cancelled_free'` weiter die Buchungsansicht aus dem Snapshot
   mit dem Storno-Block; Dokument- und Nachrichtenbereich werden nicht gerendert
@@ -4643,8 +4646,11 @@ Gesamtdarstellung: docs/CUSTOMER_PORTAL.md. Hier die technischen Entscheidungen
   `canReplyPortal = false`, die Staff-UI zeigt das Radio „Portal“ dann nicht.
   Ein parallel laufendes Storno fängt die bestehende Statusprüfung ab (dieselbe
   Vorgangssperre, danach `main_status = cancelled`). Gesperrt sind bewusst beide
-  Fälle (0 € und kostenpflichtig); der kostenpflichtige Fall ist eine offene
-  Fachentscheidung. Die E-Mail-Antwort bleibt möglich.
+  Fälle (0 € und kostenpflichtig); der kostenpflichtige Fall war zunächst eine
+  offene Fachentscheidung und ist seit 2026-11-06 bestätigt (Abschnitt „Phase 15
+  Final-Korrektur: bezahlte Buchung nach Reopen (2026-11-06)“, dort auch die
+  zusätzliche Sperre bei final bezahlter Abrechnung). Die E-Mail-Antwort bleibt
+  möglich.
 - **Storno**: ausschließlich `CancellationService` (Actor
   `{ type: 'customer', id: null }` ⇒ `canceler_type = customer`,
   `canceler_staff_id = NULL`). Die Bestätigung ist an die gezeigte Gebühr
@@ -4693,30 +4699,108 @@ Gesamtdarstellung: docs/CUSTOMER_PORTAL.md. Hier die technischen Entscheidungen
 - Manuell abgeschlossene Vorgänge ohne Abrechnung bleiben „Abgeschlossen –
   Rechnung offen“ sichtbar, bis eine Abrechnung bezahlt ist (Order §14 B;
   Fachregel für das Ende dieser Sichtbarkeit fehlt).
-- Staff-Portalantwort nach kostenpflichtigem Storno und Reopen: konservativ
-  gesperrt, Fachentscheidung offen.
 - R8-Platzhalterzeile speichert die belegte Adresse bis zum Cleanup in
   `proposed_email` (Alternative nur per Schemaänderung).
 - Drossel: Ein Dritter kann das Login-Kontingent einer bekannten Adresse
   verbrauchen; geteilte Demo-Übungskunden treffen die Drossel gemeinsam.
 - Kein Security-Event beim Papierkorb-Widerruf; eine von Staff geänderte, nicht
   verifizierte Adresse gilt für die Stornobestätigung als „aktuell“; Staff-PATCH
-  mit veraltetem Formular (optimistische Sperre, spätere Phase).
+  mit veraltetem Formular (allgemeines CRM-Concurrency-Hardening, spätestens in
+  Phase 18 / Acceptance prüfen; kein Phase-15-Blocker).
 - Optionale Härtungen R5-TOCTOU (`prepared` unter `FOR UPDATE` in
   `sendConfirmation` prüfen) und R1-Wettlauf Storno + Reopen gegen Portalantwort.
 - Staff-Fotoroute ohne CSP; `apps/staff` behält den Next-Default 10 MiB beim
   Rewrite, `/staff/offline/sync` erlaubt 12 MiB (vorbestehend).
 - Consume-Limit 10/min je IP trifft Kunden hinter gemeinsamer NAT-IP.
-- Portalnachrichten werden nicht automatisch als „Kundenantwort“ der
-  Abrechnungsklärung gewertet.
 - Mehrdeutige Adressen (mehrere aktive Kunden) erhalten keinen Link; ein
   Staff-Hinweis dafür ist nicht definiert.
 - Produktivwerte `PORTAL_NEW_INQUIRY_URL`, `COMPANY_PHONE_NUMBER`,
   `pickup_exact_address`.
 
-Details und Begründungen: docs/OPEN_ITEMS.md „Phase 15“.
+Details und Begründungen: docs/OPEN_ITEMS.md „Phase 15“. Am 2026-11-06
+entschieden und nicht mehr offen: Staff-Portalantwort nach kostenpflichtigem
+Storno und Reopen (bleibt gesperrt), Portalnachricht als Kundenantwort der
+Abrechnungsklärung (nie automatisch), bezahlte Buchung nach Reopen (bleibt
+unsichtbar) – Abschnitt „Phase 15 Final-Korrektur: bezahlte Buchung nach Reopen
+(2026-11-06)“.
 
 ### Bewusst nicht gebaut
 Buchungshistorie, Passwort-/Social-Login, Kunden-2FA, WhatsApp-Button, Live-GPS,
 ETA, Fahrername, Online-Payment, Rechnungs-PDF, Konfigurator, CMS, Push an Kunden,
 Admin-Oberfläche für Portal-Sessions.
+
+## Phase 15 Final-Korrektur: bezahlte Buchung nach Reopen (2026-11-06)
+
+Anlass (Blocker vor der finalen Abnahme): `portalStateOf` in
+`apps/api/src/portal/visibility.ts` entschied `open`/`reopened` ⇒ `active`, BEVOR
+der Zahlungsstatus berücksichtigt wurde. Ablauf: Vorgang abgeschlossen →
+Abrechnung übertragen (`locked_at`) → `payment_status = 'paid'` ⇒ unsichtbar
+(korrekt) → Staff öffnet den Vorgang wieder ⇒ die alte, bezahlte Buchung erschien
+wieder als „Bestätigte Buchung“.
+
+- **Regel, feste Reihenfolge A → B → C** (`CustomerPortalVisibilityPolicy` bleibt
+  die EINZIGE Autorität; Tabelle in docs/CUSTOMER_PORTAL.md §4):
+  - A: Stornozeile vorhanden ⇒ die bestehenden Storno-Regeln (Review R1/R12)
+    haben unverändert Vorrang; eine Abrechnung der stornierten Buchung zählt nie.
+  - B: keine Stornozeile, reguläre Abrechnung final bezahlt
+    (`settlements.locked_at IS NOT NULL` UND `settlements.payment_status =
+    'paid'`) ⇒ IMMER portal-unsichtbar, unabhängig von `main_status`
+    (`completed`, `reopened`, auch ein versehentlich oder administrativ wieder
+    `open` gesetzter Vorgang).
+  - C: erst danach der Vorgangsstatus: `open`/`reopened` ⇒ `active`,
+    `completed` ⇒ `completed_open` (Abrechnung fehlt, nicht übertragen oder
+    Zahlungsstatus `open`/`overdue`/NULL), `cancelled` ohne Stornozeile ⇒
+    unsichtbar.
+  Das Prädikat für B ist genau einmal definiert (`isSettlementFinallyPaid` in
+  `visibility.ts`): kein Settlement, `locked_at` NULL oder `payment_status`
+  NULL/`open`/`overdue` ist nie „final bezahlt“ (NULL-Semantik des LEFT JOIN).
+  Liste, Detailroute und alle Unterrouten (Dokumente, Download, Storno-Vorschau
+  und -POST, Travel-Status, Nachrichten, Fotos) lösen über
+  `listVisibleBookings`/`resolveVisibleBooking` auf; Regel B gilt damit überall
+  (neutrales 404), ohne eigene Prüfung je Route.
+- **Begründung:** MASTER_SPEC §26 „Keine alte Buchungshistorie“. Ein Reopen ist
+  ein interner Arbeitsstatus der Mitarbeitenden, keine Reaktivierung einer
+  finanziell abgeschlossenen Kundenbuchung: keine alte bezahlte Vermietung wieder
+  aktiv, keine alte Maschine wieder gebucht, kein alter Snapshot wieder
+  kundenaktuell, kein alter Chat wieder beschreibbar, keine alte Tour wieder
+  aktiv. Ein neuer Mietvorgang ist eine neue Buchung bzw. ein neuer Vorgang;
+  über ein Reopen entsteht keine Portal-Historie. Regel B hängt bewusst nicht an
+  `main_status`, damit auch ein wieder `open` gesetzter Vorgang die bezahlte
+  Buchung nicht zurückbringt. Nicht final bezahlte Lagen bleiben nach einem
+  Reopen sichtbar (`active`): Zahlungsstatus `open` oder `overdue`, Abrechnung
+  nicht übertragen.
+- **Staff-Portalantwort:** `ConversationService.replyByPortal` (unter der
+  Vorgangssperre) und `portalReplyPossible` (`canReplyPortal`,
+  `portal/chat/staff-hints.ts`) sperren zusätzlich bei final bezahlter
+  Abrechnung (dasselbe Prädikat `isSettlementFinallyPaid`, Settlement per
+  `LEFT JOIN` in derselben Abfrage) – `409` ohne Nachricht und ohne Hinweis-Mail
+  `customer_portal_reply_notice`, wie bei einer Stornozeile; die E-Mail-Antwort
+  bleibt möglich. Grund: Die Buchung ist für den Kunden unsichtbar; Nachricht und
+  Hinweis-Mail würden auf eine Buchung verweisen, die er nicht öffnen kann.
+- **Entscheidungen des Auftraggebers (2026-11-06):**
+  - Storno + Reopen: Eine Buchung mit Stornozeile wird durch ein Reopen nicht
+    reaktiviert; die Staff-Portalantwort bleibt gesperrt, auch bei
+    kostenpflichtigem Storno. Keine Portal-Chat-Reaktivierung einer stornierten
+    Buchung durch Reopen (bisher „konservativ gesperrt, Fachentscheidung offen“;
+    der Code war bereits so).
+  - Portalnachricht und Abrechnung: Eine Portalnachricht zählt NICHT
+    automatisch als „Kundenantwort“ einer Abrechnungsklärung; die manuelle
+    Entscheidung der Mitarbeitenden bleibt, der Portalchat ändert die Abrechnung
+    nie automatisch (bisher offener Fachpunkt; der Code war bereits so).
+  - Staff-E-Mail-Änderung: Mitarbeitende dürfen die Kunden-E-Mail im CRM bewusst
+    ändern (bleibt). Ein veraltetes Staff-Formular nach einem verifizierten
+    Portal-Wechsel ist kein Phase-15-Blocker, sondern allgemeines
+    CRM-Concurrency-Hardening (OPEN_ITEMS „Phase 15“), spätestens in Phase 18 /
+    Acceptance zu prüfen; jetzt keine CRM-Versionierungsarchitektur.
+- **Keine Migration, keine neue Spalte:** Die Regel nutzt die vorhandenen
+  Spalten `settlements.locked_at` und `settlements.payment_status`.
+- **Tests:** `apps/api/test/portal-review-reopen.integration.test.ts`, R15-1 …
+  R15-10 sowie R15-2b (Staff-Portalantwort bei bezahltem, wiedereröffnetem
+  Vorgang gesperrt) und R15-4b (reopened + Abrechnung nicht übertragen ⇒
+  sichtbar); Übersicht in TEST_PLAN „Kundenportal (Phase 15)“.
+- **Weiter offen, keine Blocker:** Die Härtungen und Restrisiken aus OPEN_ITEMS
+  „Phase 15“ (u. a. Platzhalterzeile mit belegter Adresse, verbrauchbares
+  Login-Kontingent, Consume-Limit hinter NAT, kein Gesamtkontingent für
+  Chat-Fotos, Staff-Fotoroute ohne CSP, Staff-Next-Rewrite 10 MiB gegenüber
+  Offline-Sync 12 MiB, Login-CSRF bei Magic Links) bleiben dokumentiert, in
+  Phase 15 werden sie nicht umgebaut.

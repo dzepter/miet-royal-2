@@ -410,7 +410,7 @@ describe('R1. Nach einem Storno keine Staff-Portalantwort – auch nicht im wied
     expect(email.statusCode).toBe(201);
   });
 
-  it('R1. Kostenpflichtiger Staff-Storno, dann Reopen ⇒ ebenfalls keine Portalantwort (Kunde liest nur, canMessage false) – konservativ bis zur fachlichen Entscheidung', async () => {
+  it('R1. Kostenpflichtiger Staff-Storno, dann Reopen ⇒ ebenfalls keine Portalantwort (Kunde liest nur, canMessage false) – Fachentscheidung bestätigt (2026-11-06): keine Portal-Chat-Reaktivierung durch Reopen', async () => {
     const { admin, cookie } = await adminSession(ctx);
     const booked = await bookedProcess(ctx, admin.id, { eventInDays: 10 }); // 50 %
     const session = await portalSessionFor(ctx, booked.customerId);

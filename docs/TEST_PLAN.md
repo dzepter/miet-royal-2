@@ -586,6 +586,28 @@ Wegen geänderter Verträge bewusst angepasste Bestandstests: `portal-cancellati
 `portal-profile` P12./P13./P15 (neutraler Text, kein nutzbarer Link), E2E J/L (Prüfwert im
 Storno-Body, Bestätigungsansicht ohne Dokumente/Nachrichten).
 
+Phase 15 Final-Korrektur (2026-11-06; bezahlte Buchung nach Reopen, Entscheidungen Storno +
+Reopen und Portalnachricht – docs/CUSTOMER_PORTAL.md §4/§7, TECH_DECISIONS „Phase 15
+Final-Korrektur: bezahlte Buchung nach Reopen (2026-11-06)“). Datei
+`apps/api/test/portal-review-reopen.integration.test.ts`, Testnamen „R15-1. …“ bis „R15-10. …“
+sowie „R15-2b. …“ und „R15-4b. …“ (nicht zu verwechseln mit „R15. …“ in
+`handover-finalization` und `communication-retention-final`, andere Phasen):
+
+| Test | Inhalt |
+| --- | --- |
+| R15-1 | `completed` + Abrechnung final (`locked_at` gesetzt) + `payment_status = 'paid'` ⇒ unsichtbar |
+| R15-2 | derselbe Vorgang danach `reopened` ⇒ weiterhin unsichtbar |
+| R15-2b | Staff-Portalantwort bei bezahltem, wiedereröffnetem Vorgang gesperrt (409, `canReplyPortal` false, keine Hinweis-Mail) |
+| R15-3 | derselbe Vorgang danach wieder `open` (technisch simuliert) ⇒ weiterhin unsichtbar, solange die Abrechnung final und bezahlt ist |
+| R15-4 | `reopened` + übertragene Abrechnung mit Zahlungsstatus `open` bzw. NULL ⇒ weiterhin sichtbar (`active`), Staff-Portalantwort möglich |
+| R15-4b | `reopened` + Abrechnung nicht übertragen (`locked_at` NULL) ⇒ sichtbar |
+| R15-5 | `reopened` + Zahlungsstatus `overdue` ⇒ sichtbar |
+| R15-6 | Storno + Reopen ⇒ bestehende Storno-Regeln unverändert |
+| R15-7 | Storno + Reopen ⇒ Staff-Portalantwort weiterhin gesperrt |
+| R15-8 | Portalnachricht nach versandter Vorinformation: kein `customer_response_received_at`, keine Klärung `customer_response`, Abrechnung unverändert |
+| R15-9 | alte bezahlte, wiedereröffnete Buchung: `GET /portal/bookings` leer; Detailroute, Dokumente, Nachrichten, Travel-Status, Storno-Vorschau, Nachricht senden und Storno-POST ⇒ 404 |
+| R15-10 | mehrere Buchungen: alte bezahlte + wiedereröffnete unsichtbar, aktuelle offene sichtbar |
+
 ## Definition of Done
 Fachregel korrekt, Rechte serverseitig, Validierung, Fehlerfall,
 responsive, Tests ausgeführt, Doku aktualisiert, Staging geprüft.

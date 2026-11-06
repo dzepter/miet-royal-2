@@ -79,8 +79,9 @@ Keine Kundenantwort: danach automatisch weiter, falls keine anderen Blocker.
 Kundenantwort (auch normale Rückfrage): Auto-Lexware blockiert.
 Phase 15: Eine Nachricht im Kundenportal wird NICHT automatisch als
 „Kundenantwort“ der Abrechnungsklärung gewertet – Mitarbeitende sehen sie in der
-Vorgangskommunikation und erfassen die Kundenantwort wie bisher selbst (offener
-Fachpunkt, OPEN_ITEMS „Phase 15“).
+Vorgangskommunikation und entscheiden manuell, ob sie die Kundenantwort wie
+bisher selbst erfassen. Der Portalchat ändert die Abrechnung nie automatisch
+(entschieden 2026-11-06, kein offener Punkt mehr; docs/CUSTOMER_PORTAL.md §7).
 Mitarbeiter:
 - wie berechnet freigeben → Auto-Lexware
 - Betrag ändern → danach manueller Lexware-Klick
@@ -172,17 +173,26 @@ Mitarbeiter-Storno: Mail weiterhin bewusst über die Sendeaktion an die
 Snapshot-Adresse.
 
 ## Kundenportal (Phase 15)
-- „Aktuelle Buchung“ (einzige Regel, `CustomerPortalVisibilityPolicy`):
-  - Hat die Buchung eine Stornozeile, entscheidet AUSSCHLIESSLICH sie – auch
+- „Aktuelle Buchung“ (einzige Regel, `CustomerPortalVisibilityPolicy`), feste
+  Reihenfolge A → B → C (Phase 15 Final-Korrektur, 2026-11-06):
+  - A: Hat die Buchung eine Stornozeile, entscheidet AUSSCHLIESSLICH sie – auch
     wenn der Vorgang danach wieder geöffnet wurde (Review R1; die stornierte
     Buchung wird nie wieder „Bestätigte Buchung“): kostenpflichtig sichtbar bis
     bezahlt; kostenfrei unsichtbar, außer der Bestätigungsansicht direkt nach
     einem KUNDENstorno (24 h, nur Detailansicht und Storno-Antwort; Review
     R12). Ein kostenfreier Mitarbeiter-Storno ist sofort unsichtbar.
-  - Ohne Stornozeile: Vorgang open/reopened; oder abgeschlossen, solange
-    finanziell offen (keine übertragene Abrechnung oder Zahlungsstatus
+  - B: Ohne Stornozeile, aber mit final bezahlter Abrechnung (übertragen,
+    `locked_at` gesetzt, UND Zahlungsstatus bezahlt) ⇒ immer unsichtbar,
+    unabhängig vom Vorgangsstatus – auch nach einem Reopen oder wenn der
+    Vorgang wieder offen ist.
+  - C: Sonst Vorgang open/reopened; oder abgeschlossen, solange finanziell
+    offen (keine übertragene Abrechnung oder Zahlungsstatus
     offen/überfällig/unbekannt).
   - Bezahlte Buchungen erscheinen nie. Keine Buchungshistorie.
+- Reopen ist ein interner Arbeitsstatus der Mitarbeitenden, keine
+  Reaktivierung einer stornierten oder finanziell abgeschlossenen
+  Kundenbuchung (keine Portal-Historie über Reopen). Ein neuer Mietvorgang ist
+  eine neue Buchung bzw. ein neuer Vorgang.
 - Rechnungsstatus: abgeschlossen ohne (übertragene) Abrechnung ⇒ „Rechnung wird
   vorbereitet“ (Review R13); mit Stornozeile immer aus dem Storno. Wann die
   Sichtbarkeit eines abgeschlossenen Vorgangs ohne Abrechnung endet, ist
@@ -193,10 +203,12 @@ Snapshot-Adresse.
   kostenpflichtigem Storno nur noch lesbar (Retention wie Phase 12); nach
   kostenfreiem Storno nicht mehr erreichbar.
 - Mitarbeiter-Antwort im Kanal Portal nur bei offenem/wiedereröffnetem Vorgang
-  mit Buchung OHNE Stornozeile, sonst abgelehnt (keine Nachricht, keine
-  Hinweis-Mail; E-Mail-Antwort bleibt möglich). Ob nach kostenpflichtigem Storno
-  und Reopen per Portal geantwortet werden darf, ist eine offene
-  Fachentscheidung (bis dahin gesperrt).
+  mit Buchung OHNE Stornozeile und OHNE final bezahlte Abrechnung, sonst
+  abgelehnt (keine Nachricht, keine Hinweis-Mail; E-Mail-Antwort bleibt
+  möglich). Entschieden (2026-11-06): Ein Reopen reaktiviert den Portal-Chat
+  einer stornierten Buchung nie – auch nicht bei kostenpflichtigem Storno.
+- Eine Portalnachricht ist nie automatisch die „Kundenantwort“ einer
+  Abrechnungsklärung (siehe „Schaden-/Fehlteil-Vorinformation“).
 
 ## Frühere Rückgabe
 Keine automatische Mietpreisminderung.
