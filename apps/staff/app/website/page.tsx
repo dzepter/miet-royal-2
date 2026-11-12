@@ -5,16 +5,28 @@ import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useState } from 'react';
 import { AuthGuard, useMe } from '../../components/auth-guard';
 import { OfflineActionHint, useOfflineNow } from '../../components/communication';
-import { CmsNoAccess, CmsStatusBadge, WebsiteSubnav, canReadCms } from '../../components/website';
+import {
+  CmsNoAccess,
+  CmsStatusBadge,
+  SeoWarningsBox,
+  WebsiteSubnav,
+  canReadCms,
+} from '../../components/website';
 import { apiFetch, hasPermission } from '../../lib/api';
 import {
   CMS_GROUPS,
   CMS_PAGE_TYPE_LABELS,
   groupCmsEntries,
+  groupSeoWarningsByEntry,
   isValidRegionSlug,
   normalizeIssuePath,
   regionPathOf,
+  seoWarningCountLabel,
+  seoWarningsOf,
+  sortSeoWarnings,
   suggestRegionSlug,
+  type SeoCheckResponse,
+  type SeoWarning,
   type StaffCmsEntryDetail,
   type StaffCmsEntrySummary,
 } from '../../lib/cms';
@@ -25,9 +37,14 @@ import { formatBerlin } from '../../lib/handover';
  * (Einstellungen, Hauptseiten, Regionale Seiten, Sekundäre Angebote, Rechtliches) mit
  * Status, Revisionsnummern und Datum. „Regionale Seite anlegen“ (cms.edit) legt genau
  * EINE Seite mit leerem Entwurf an – keine Massenerzeugung, keine Ortsnamen-Vorlage.
+ *
+ * Phase 17 (Design D12): Zusätzlich die Hinweise zur Suchmaschinen-Darstellung aus
+ * `GET /staff/cms/seo-check` – als Kasten über den Gruppen und als Zähler je Eintrag.
+ * Reine Redaktionshinweise: nichts wird blockiert; schlägt der Abruf fehl (Recht, offline,
+ * Serverfehler), fehlt nur der Kasten – die Übersicht selbst ist davon unabhängig.
  */
 
-function EntryRow({ entry }: { entry: StaffCmsEntrySummary }) {
+function EntryRow({ entry, seoCount }: { entry: StaffCmsEntrySummary; seoCount: number }) {
   return (
     <div className="list-row" data-testid={`cms-entry-${entry.path ?? 'site-settings'}`}>
       <div>
@@ -50,6 +67,12 @@ function EntryRow({ entry }: { entry: StaffCmsEntrySummary }) {
             : ''}{' '}
           · Zuletzt geändert {formatBerlin(entry.updatedAt)}
         </div>
+        {seoCount > 0 && (
+          <div className="muted" data-testid="cms-entry-seo-count">
+            <span className="badge warn">Hinweis</span> {seoWarningCountLabel(seoCount)} zur
+            Suchmaschinen-Darstellung
+          </div>
+        )}
       </div>
       <Link href={`/website/eintrag/${entry.id}`} className="button-like">
         Öffnen
@@ -178,16 +201,24 @@ function WebsiteOverview() {
   const me = useMe();
   const [entries, setEntries] = useState<StaffCmsEntrySummary[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [seoWarnings, setSeoWarnings] = useState<SeoWarning[]>([]);
+
+  // SEO-Hinweise sind optional: jeder Fehler (403, offline, 500) ⇒ kein Kasten, keine Meldung.
+  const loadSeo = useCallback(async () => {
+    const result = await apiFetch<SeoCheckResponse>('/staff/cms/seo-check');
+    setSeoWarnings(result.ok ? sortSeoWarnings(seoWarningsOf(result.data)) : []);
+  }, []);
 
   const load = useCallback(async () => {
     const result = await apiFetch<{ entries: StaffCmsEntrySummary[] }>('/staff/cms/entries');
     if (result.ok && result.data !== null) {
       setEntries(result.data.entries);
       setError(null);
+      void loadSeo();
     } else {
       setError(result.errorMessage ?? 'Die Website-Inhalte konnten nicht geladen werden.');
     }
-  }, []);
+  }, [loadSeo]);
   const allowed = canReadCms(me);
   useEffect(() => {
     if (allowed) void load();
@@ -197,6 +228,7 @@ function WebsiteOverview() {
   if (!allowed) return <CmsNoAccess title="Website" />;
   const canEdit = hasPermission(me, 'cms.edit');
   const groups = groupCmsEntries(entries ?? []);
+  const seoByEntry = groupSeoWarningsByEntry(seoWarnings);
 
   return (
     <main className="page">
@@ -216,6 +248,18 @@ function WebsiteOverview() {
           </button>
         </p>
       )}
+      {entries !== null && (
+        <SeoWarningsBox
+          testId="cms-seo-warnings"
+          warnings={seoWarnings}
+          intro="Das sind Hinweise für die Redaktion – nichts wird blockiert."
+          // Phase 17 (Review RC-5): Katalog-Hinweise führen in die Produktverwaltung des
+          // Commerce-Moduls (`/produkte`, Recht product.view wie die Route selbst) – dort werden
+          // Name, Beschreibung und Verkaufseinheit gepflegt; die Lesesicht `/website/produkte`
+          // zeigt ausgeblendete Produkte gar nicht.
+          catalogHref={hasPermission(me, 'product.view') ? '/produkte' : undefined}
+        />
+      )}
       {entries !== null && entries.length === 0 && (
         <div className="card">
           <p className="muted">
@@ -233,7 +277,11 @@ function WebsiteOverview() {
               <h2>{group.title}</h2>
               {items.length === 0 && <p className="muted">Noch keine Seiten.</p>}
               {items.map((entry) => (
-                <EntryRow key={entry.id} entry={entry} />
+                <EntryRow
+                  key={entry.id}
+                  entry={entry}
+                  seoCount={seoByEntry.get(entry.id)?.length ?? 0}
+                />
               ))}
               {group.key === 'region' && canEdit && (
                 <div style={{ marginTop: '0.75rem' }}>

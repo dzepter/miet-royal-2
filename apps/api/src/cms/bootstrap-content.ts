@@ -212,7 +212,7 @@ const SLUSH: CmsBootstrapEntry = {
   kind: 'page',
   pageType: 'slush',
   path: '/slushmaschine-mieten',
-  metaTitle: 'Slushmaschine mieten – Maschinen, Sirup & Zubehör | Miet-Royal',
+  metaTitle: 'Slushmaschine mieten mit Sirup & Zubehör | Miet-Royal',
   metaDescription:
     'Slushmaschinen mit 8 oder 10 Litern, ein oder zwei Behälter: zuckerfreier Sirup aus Deutschland inklusive, Extras auf Kommission. Unverbindlich konfigurieren.',
   content: {

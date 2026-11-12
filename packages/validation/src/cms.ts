@@ -368,8 +368,10 @@ const DASH = '[-\\u2010-\\u2015\\u2212]';
  * Preise als Freitext sind im CMS verboten (außer in Rechtstexten): Preise kommen nur aus
  * products/product_prices (Design §11.2.1, Review pricing-1/cms-2/content_ux-1). Erkennt
  * „60 €“, „60€“, „60,00 EUR“, „€ 60“, „EUR60“, „12 Euro“, „60 Euros“, die Strich-Schreibweise
- * „60,- €“, „60,– €“, „ab 60,-€“, „60.- EUR“ und die Kurzform ohne Währung „60,-“/„60.-“.
- * Nicht: „Europa-Tour“, „2 Europaletten“, „10-12 Uhr“, „Sa., 12.-14. Juni“, „Tel. 0160-123“.
+ * „60,- €“, „60,– €“, „ab 60,-€“, „60.- EUR“, die Kurzform ohne Währung „60,-“/„60.-“ und
+ * Cent-Beträge „50 Cent“, „0,50 Cent je Becher“, „50 ct“ (Phase 17, Review RC-2).
+ * Nicht: „Europa-Tour“, „2 Europaletten“, „10-12 Uhr“, „Sa., 12.-14. Juni“, „Tel. 0160-123“,
+ * „5 Prozent“, „Vincent 3“, „Accent“, „Maße 60 × 40 cm“, „12,5 kg“, „2.000 Becher“.
  */
 const PRICE_TEXT_PATTERNS = [
   // Betrag vor der Währung, optional mit Strich-Endung („60,- €“, „60.–EUR“).
@@ -378,6 +380,9 @@ const PRICE_TEXT_PATTERNS = [
   /(?:€|\beur(?:os?)?)\s*\d/iu,
   // Strich-Kurzform ohne Währung („60,-“, „60,–“, „60.-“) – nicht vor einer Zahl („12.-14.“).
   new RegExp(`\\d[.,]${DASH}{1,2}(?!\\s*\\d)`, 'u'),
+  // Cent-Beträge nur mit Ziffer davor und Wortgrenze dahinter („50 Cent“, „0,50 Cent“, „50 ct“) –
+  // nicht „5 Prozent“, „Vincent 3“, „Accent“, „40 cm“, „Center“.
+  /\d[\d.,]*\s*(?:cents?|ct)\b/iu,
 ];
 
 export function containsPriceText(text: string): boolean {

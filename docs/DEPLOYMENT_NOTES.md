@@ -61,6 +61,33 @@ gewünscht ist, wird das als eigene Entscheidung in TECH_DECISIONS.md ergänzt.
    nur bewusst und manuell nach `pnpm db:migrate` (nie automatisch im
    Deployment); veröffentlicht wird ausschließlich im Staff. Details:
    Abschnitt „Website, CMS, Konfigurator, Bewertungen (Phase 16)“.
+6d. SEO-Smoke (Phase 17) nach dem Deploy einer Web-Instanz – auf der Live-Domain erst nach
+   der DNS-Umschaltung, vorher sinngemäß gegen den Staging-Origin (Header-Namen kommen von Node
+   klein geschrieben; Details und Reihenfolge docs/PRE_START_CHECKLIST.md „Website-Go-live SEO“):
+   - `curl -sI https://www.miet-royal.de/uber-uns` ⇒ `308`, `location: /ueber-uns` (relativ,
+     genau ein Hop – der Folgeaufruf `/ueber-uns` antwortet 200, `cache-control: public,
+     max-age=3600`);
+   - `curl -sI 'https://www.miet-royal.de/buchung/?next=https://evil.example/'` ⇒ `308`,
+     `location: /konfigurator` (Query verworfen);
+   - `curl -sI https://www.miet-royal.de/ablauf/` ⇒ `308`, `location: /ablauf`,
+     `cache-control: private, no-store` (Slash-Normalisierung);
+   - `curl -sI https://www.miet-royal.de/shop/` ⇒ `410`, `x-robots-tag: noindex, nofollow`,
+     Body „Diese Seite gibt es nicht mehr.“ (`curl -s … | grep -c 'gibt es nicht mehr'`);
+   - `curl -sI https://miet-royal.de/ablauf` ⇒ `308`, `location: https://www.miet-royal.de/ablauf`
+     (Apex → www im Reverse-Proxy); `curl -sI http://www.miet-royal.de/` ⇒ `308` auf https;
+   - `curl -sI --request-target http://evil.example/buchung/ https://www.miet-royal.de/` ⇒ KEIN
+     308 auf `evil.example` (Reverse-Proxy normalisiert absolute-form; Next allein würde dort
+     umleiten, Review RB-5);
+   - `curl -s https://www.miet-royal.de/robots.txt` ⇒ vor dem Einschalten `Allow: /`,
+     `Disallow: /api/` ohne Sitemap-Zeile; mit `WEB_INDEXING_ENABLED=true` zusätzlich
+     `Allow: /api/public/cms/media/` und `Sitemap: https://www.miet-royal.de/sitemap.xml`;
+   - `curl -s https://www.miet-royal.de/sitemap.xml` ⇒ vor dem Einschalten leere `urlset`,
+     danach nur veröffentlichte Seiten mit `https://www.miet-royal.de/…` (kein `http://`, kein
+     anderer Host, kein `/konto`, `/vorschau` oder Token-Pfad);
+   - `curl -s https://www.miet-royal.de/ | grep -o '<link rel="canonical"[^>]*>'` ⇒ genau ein
+     Canonical `https://www.miet-royal.de/` (nur mit Indexierung); Staging-/Demo-Instanz: kein
+     Canonical, `<meta name="robots" content="noindex, nofollow">`;
+   - `curl -sI https://www.miet-royal.de/favicon.ico` ⇒ `200`.
 7. Prozesse neu starten, dann Smoke Test: `/health` muss 200 liefern,
    `/ready` muss 200 liefern (prüft die Datenbankverbindung).
 8. Bei Fehlern: Rollback auf vorherigen Stand + Backup-Restore-Pfad.
@@ -678,3 +705,94 @@ docs/GOOGLE_REVIEWS_API_NOTES.md.
   Google-Abruf) – Uptime-/Link-Checker nicht auf diese Route richten; im
   Google-Modus ist jeder GET ein bezahlter Abruf und zählt gegen die
   Tagesgrenze.
+
+## Website SEO, Redirects, kanonischer Host (Phase 17)
+
+Alles läuft im vorhandenen Web-Prozess (`apps/web`, `next start`); keine neue Instanz, kein
+neuer Port, kein neues Secret, keine Migration. Details: docs/SEO_TECHNICAL.md,
+docs/REDIRECT_MATRIX.md; Go-live-Reihenfolge und Smokes: docs/PRE_START_CHECKLIST.md
+„Website-Go-live SEO (ab Phase 17)“ und Release-Ablauf 6d. Bis zur DNS-Umschaltung bleibt die
+bisherige Website unverändert online.
+
+- **Kanonischer Host nur im Reverse-Proxy (kein App-Code):** `www.miet-royal.de` ist
+  kanonisch. Der Proxy bedient nur konfigurierte `server_name`s, leitet Apex → www mit 308 und
+  HTTP → HTTPS weiter und bildet das Ziel aus festen Werten – nie aus dem `Host`-Header. Der
+  Anwendungscode enthält keinen Hostnamen; absolute SEO-URLs (Canonical, Sitemap, JSON-LD)
+  entstehen nur aus `MAIL_PUBLIC_WEB_BASE_URL` (`https://www.miet-royal.de`). Beispiel nginx
+  (Ports/Pfade an das Zielsystem anpassen; Next lauscht nur auf localhost):
+
+  ```nginx
+  # HTTP → HTTPS für beide Namen; Ziel fest, nicht aus $host
+  server {
+    listen 80;
+    listen [::]:80;
+    server_name www.miet-royal.de miet-royal.de;
+    return 308 https://www.miet-royal.de$request_uri;
+  }
+  # Apex → www (308; Pfad und Query bleiben erhalten)
+  server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    server_name miet-royal.de;
+    # ssl_certificate …  (Zertifikat muss beide Namen abdecken)
+    return 308 https://www.miet-royal.de$request_uri;
+  }
+  # Kanonischer Host → Web-Next
+  server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    server_name www.miet-royal.de;
+    # ssl_certificate …
+    location / {
+      proxy_pass http://127.0.0.1:3000;
+      proxy_set_header Host $host;
+      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+      proxy_set_header X-Forwarded-Proto https;
+    }
+  }
+  # Unbekannte Hosts nicht bedienen (kein Default auf die Website)
+  server {
+    listen 443 ssl default_server;
+    listen [::]:443 ssl default_server;
+    server_name _;
+    # ssl_certificate …  (beliebiges gültiges Zertifikat)
+    return 444;
+  }
+  ```
+
+  nginx normalisiert absolute-form Request-Targets (`GET http://evil.example/… HTTP/1.1`) auf
+  origin-form; Next selbst würde ein absolute-form Target mit 308 auf die fremde URL beantworten
+  (Next-Core, Review RB-5) – deshalb steht der Reverse-Proxy immer vor Next, und Next ist nie
+  direkt erreichbar. HSTS erst nach dem erfolgreichen Umzug setzen.
+- **Legacy-Redirects und 410 im Next-Proxy:** `apps/web/proxy.ts` entscheidet Alt-URLs in einem
+  Hop (308 mit relativer Location) und liefert 410 als eigenständiges HTML;
+  `skipTrailingSlashRedirect: true` in `apps/web/next.config.ts` ist dafür Voraussetzung (Nexts
+  eigener Slash-Redirect würde Ketten erzeugen). Der Reverse-Proxy darf keine eigenen
+  Redirect-Regeln für Alt-Pfade und keine Schluss-Slash-Normalisierung ergänzen (projektweit
+  EIN Verfahren). Cache-Header: Legacy-Tabellen-Redirects `public, max-age=3600`,
+  Slash-Normalisierungen `private, no-store` (sie treffen auch Token-/Portal-/Vorschau-Pfade),
+  410 `public, max-age=3600` mit `X-Robots-Tag: noindex, nofollow`.
+- **Rollback einer Redirect-/410-Regel:** Eintrag in `apps/web/lib/legacy-routes.ts`
+  (`LEGACY_REDIRECTS`/`LEGACY_GONE`) ändern, docs/REDIRECT_MATRIX.md anpassen (Konsistenztest in
+  `pnpm --filter @mietroyal/web test`), Web neu bauen und deployen. Browser/geteilte Caches
+  liefern die alte Antwort bis zu 1 h (max-age). Vollständiger Rollback = vorheriger Build.
+- **`apps/web/public/` wird von `next start` ausgeliefert:** dort liegt das offizielle
+  Google-Maps-Attributionslogo (`google-maps-logo-gray.svg`). Es gibt kein `output:
+  'standalone'`; sollte das Deployment je auf einen standalone-Build wechseln, `public/` (und
+  `.next/static`) mitkopieren, sonst fehlt die Attribution. Favicon und App-Icon liefert Next
+  über die Metadata-Routen `/favicon.ico` und `/icon.svg` (`apps/web/app/favicon.ico`,
+  `apps/web/app/icon.svg`, neutrale Platzhalter bis zum finalen Logo).
+- **robots.txt / sitemap.xml** sind dynamisch (Veröffentlichungen im Staff ändern die Sitemap
+  sofort). Kein Proxy-/CDN-Cache mit langer TTL; falls vorhanden kurze TTL und Purge beim
+  Deploy. Nicht indexierbare Instanzen (Staging, Demo, Schalter aus) liefern `Allow: /`,
+  `Disallow: /api/` ohne Sitemap-Zeile und `noindex` auf jeder Seite – bewusst kein
+  `Disallow: /` (robots.txt hält nichts aus dem Index; nur ein lesbares `noindex` tut das).
+- **Umgebungsvariablen des Web-Servers:** `WEB_INDEXING_ENABLED` (Default aus; `true` erst beim
+  Go-live), `WEB_API_ORIGIN` (Build = Laufzeit; Abweichung sperrt zusätzlich die Indexierung),
+  `WEB_DIST_DIR` (optional, nur bei mehreren Instanzen desselben Projekts auf einem Rechner),
+  `WEB_APP_ENV` (`production`/`staging`/`demo`; `production` erlaubt nur https-Basen, `demo` ist
+  immer noindex). API-Prozess: `MAIL_PUBLIC_WEB_BASE_URL=https://www.miet-royal.de` als
+  SEO-Basis (docs/ENVIRONMENTS.md „Website-SEO (Phase 17)“).
+- **Serverlog:** Der Proxy loggt nichts (Pfade können Token enthalten). Preis-Guard-Ereignisse
+  der API (`public.catalog.price_text_suppressed`, nur Slug und Feldname) weisen auf
+  Produkttexte mit Preisangabe hin – im Staff zeigt der SEO-Check denselben Hinweis.

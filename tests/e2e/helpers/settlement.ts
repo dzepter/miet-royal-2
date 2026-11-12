@@ -21,11 +21,24 @@ export const JPEG_1X1 = Buffer.from(
   'base64',
 );
 
+/**
+ * Phase 17 (§27 A): Die Startseite „Heute“ erscheint nach dem Login auf der Lexware-Staff-
+ * Instanz (`next dev`, Projekt `lexware`) beim ERSTEN Aufruf eines Laufs erst nach dem
+ * Turbopack-Kaltstart der Route `/` („○ Compiling / …“, mehrere Sekunden) – der Playwright-
+ * Default von 5 s reichte dafür nicht immer (Protokoll p17/flakes_lexware.log, Spec F).
+ * Projektübliche Obergrenze 30 s (kein Sleep); Prüfung unverändert.
+ */
+const LOGIN_LANDING_TIMEOUT_MS = 30_000;
+
 export async function login(page: Page, email: string, password: string, firstName: string) {
   await page.goto('/login');
   await submitStaffLogin(page, email, password);
-  await expect(page.getByRole('heading', { name: 'Heute' })).toBeVisible();
-  await expect(page.getByText(new RegExp(`Willkommen, ${firstName}`))).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Heute' })).toBeVisible({
+    timeout: LOGIN_LANDING_TIMEOUT_MS,
+  });
+  await expect(page.getByText(new RegExp(`Willkommen, ${firstName}`))).toBeVisible({
+    timeout: LOGIN_LANDING_TIMEOUT_MS,
+  });
 }
 
 const pad = (value: number) => String(value).padStart(2, '0');

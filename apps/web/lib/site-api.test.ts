@@ -51,6 +51,32 @@ describe('SSR-Lesezugriffe der Website (Phase 16)', () => {
     assert.deepEqual(calls[0]?.init.headers, { accept: 'application/json' });
   });
 
+  it('SEO-W16. Bootstrap-Form additiv (Phase 17): publicBaseUrl (string|null) und publishedAt (ISO) dürfen fehlen; falsche Typen ⇒ unavailable', async () => {
+    const load = (body: unknown) =>
+      loadSiteBootstrap({ origin: 'http://api.test', fetchImpl: async () => jsonResponse(body) });
+    // Antwort einer älteren API ohne die Felder bleibt gültig.
+    assert.equal((await load(BOOTSTRAP)).ok, true);
+    const extended = await load({
+      ...BOOTSTRAP,
+      publicBaseUrl: 'https://www.miet-royal.de',
+      pages: [{ ...BOOTSTRAP.pages[0], publishedAt: '2026-11-01T10:00:00.000Z' }],
+    });
+    assert.equal(extended.ok, true);
+    if (extended.ok) {
+      assert.equal(extended.data.publicBaseUrl, 'https://www.miet-royal.de');
+      assert.equal(extended.data.pages[0]?.publishedAt, '2026-11-01T10:00:00.000Z');
+    }
+    assert.equal((await load({ ...BOOTSTRAP, publicBaseUrl: null })).ok, true);
+    assert.deepEqual(await load({ ...BOOTSTRAP, publicBaseUrl: 42 }), {
+      ok: false,
+      reason: 'unavailable',
+    });
+    assert.deepEqual(
+      await load({ ...BOOTSTRAP, pages: [{ ...BOOTSTRAP.pages[0], publishedAt: 123 }] }),
+      { ok: false, reason: 'unavailable' },
+    );
+  });
+
   it('W-A2. Seite: Pfad wird kodiert; 404 ⇒ not_found; ungültiger Pfad ⇒ not_found OHNE Anfrage', async () => {
     const calls: Call[] = [];
     const fetchImpl = async (url: string, init: RequestInit) => {

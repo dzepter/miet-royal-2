@@ -27,6 +27,7 @@ import {
   completeAppointment,
   createToursWorld,
   destroyToursWorld,
+  pinMorningClockIfEvening,
   resetToursWorld,
   sendLocation,
   setLiveLocation,
@@ -38,16 +39,20 @@ import {
 } from './tours-helpers.ts';
 
 let world: ToursWorld;
+/** Phase 17 (§27 B): abends Testuhr auf 09:00 Berlin zurück – `inMinutes(+N)` bleibt am Tourtag. */
+let restoreClock: () => void = () => {};
 const MINUTES = 60_000;
 /** Fahrer-Position (Koordinate wird nur an das Fake-Gateway gegeben). */
 const DRIVER_POINT = { latitude: 49.99, longitude: 8.24 };
 const NEAR_POINT = { latitude: 49.9742, longitude: 8.2566 };
 
 beforeAll(async () => {
+  restoreClock = pinMorningClockIfEvening();
   world = await createToursWorld({ locationMinIntervalMs: 0 });
 });
 afterAll(async () => {
   await destroyToursWorld(world);
+  restoreClock();
 });
 beforeEach(async () => {
   await resetToursWorld(world);

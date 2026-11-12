@@ -42,7 +42,9 @@ Phase 16 (Website/CMS/Bewertungen): `REVIEWS_PROVIDER` (Default `disabled`),
 `GOOGLE_PLACES_API_KEY`, `GOOGLE_PLACE_ID`, `GOOGLE_REVIEWS_TERMS_CONFIRMED`,
 `REVIEWS_DAILY_REQUEST_LIMIT` (Default 32) für API/Worker sowie
 `WEB_INDEXING_ENABLED` nur für den Web-Server (Default aus) – Abschnitt
-„Website, CMS und Bewertungen (Phase 16)“.
+„Website, CMS und Bewertungen (Phase 16)“. Phase 17 (Website-SEO): `WEB_INDEXING_ENABLED`,
+`WEB_API_ORIGIN`, `WEB_DIST_DIR`, `WEB_APP_ENV` und `MAIL_PUBLIC_WEB_BASE_URL` als SEO-Basis –
+Abschnitt „Website-SEO (Phase 17)“.
 
 ## Lokale Entwicklung
 
@@ -364,7 +366,7 @@ docs/GOOGLE_REVIEWS_API_NOTES.md.
 
 | Variable | Wo | Bedeutung |
 | --- | --- | --- |
-| `WEB_INDEXING_ENABLED` | NUR Web-Server (`next start`), zur Laufzeit gelesen | Default aus ⇒ jede Seite `noindex, nofollow` (Root-Metadata). Nur der exakte Wert `true` öffnet die Indexierung – und auch dann nur für veröffentlichte öffentliche Seiten; Token-Seiten, `/konto`, `/vorschau`, die Fallback-Startseite ohne veröffentlichten Inhalt, „Gleich wieder da“ (API nicht erreichbar) und `/konfigurator` ohne Katalog bzw. wählbare Maschine bleiben immer `noindex`. Die Demo-Web-Instanz ist immer `noindex`, unabhängig vom Wert. Erst in Phase 17/Go-live setzen. |
+| `WEB_INDEXING_ENABLED` | NUR Web-Server (`next start`), zur Laufzeit gelesen | Default aus ⇒ jede Seite `noindex, nofollow` (Root-Metadata). Nur der exakte Wert `true` öffnet die Indexierung – und auch dann nur für veröffentlichte öffentliche Seiten; Token-Seiten, `/konto`, `/vorschau`, die Fallback-Startseite ohne veröffentlichten Inhalt, „Gleich wieder da“ (API nicht erreichbar) und `/konfigurator` ohne Katalog bzw. wählbare Maschine bleiben immer `noindex`. Die Demo-Web-Instanz ist immer `noindex`, unabhängig vom Wert. Seit Phase 17 zusätzlich an eine gültige öffentliche Basis (`MAIL_PUBLIC_WEB_BASE_URL`) und den Origin-Vergleich gebunden – Abschnitt „Website-SEO (Phase 17)“; erst zum Go-live setzen. |
 | `REVIEWS_PROVIDER` | API (Worker lädt dieselbe Konfiguration) | `disabled` (Default in jeder Umgebung) \| `fake` \| `google`. Leere Werte gelten als nicht gesetzt. |
 | `GOOGLE_PLACES_API_KEY` | NUR API (Secret) | nur bei `google`; ≤ 512 Zeichen, sichtbares ASCII ohne Leerzeichen; reist nur im Header `X-Goog-Api-Key`; nie Web/Staff/Browser/DB/Log |
 | `GOOGLE_PLACE_ID` | API (kein Secret) | nur bei `google`; Zeichen `A–Z a–z 0–9 _ -`, ≤ 1024 |
@@ -428,3 +430,35 @@ Platzhaltern.
 Server-Konfiguration der Zielumgebung (`APP_ENV` Pflicht, wie
 `pnpm db:migrate`); ohne Flag legt es nur fehlende Entwürfe an.
 `--publish-demo` bricht in production/staging vor jeder Änderung ab (Exit 2).
+
+## Website-SEO (Phase 17)
+
+Indexierung, Canonicals, Sitemap, robots.txt und Alt-URL-Redirects laufen im vorhandenen
+Web-Prozess (`apps/web`); keine neue Instanz, kein neues Secret, keine Migration. Details:
+docs/SEO_TECHNICAL.md, docs/DEPLOYMENT_NOTES.md „Website SEO, Redirects, kanonischer Host
+(Phase 17)“.
+
+| Variable | Wo | Bedeutung |
+| --- | --- | --- |
+| `WEB_INDEXING_ENABLED` | NUR Web-Server (`next start`), zur Laufzeit gelesen, kein Secret | Default aus ⇒ jede Seite `noindex, nofollow`, keine Canonicals/og:url/JSON-LD, `robots.txt` ohne Sitemap-Zeile, leere Sitemap (robots/sitemap laden dann keinen Bootstrap). Nur der exakte Wert `true` (äußerer Leerraum egal) öffnet – zusammen mit den übrigen Bedingungen (keine Demo, keine Origin-Sperre, gültige Basis, Seite veröffentlicht). Erst zum Website-Go-live setzen. |
+| `MAIL_PUBLIC_WEB_BASE_URL` | API (Worker lädt dieselbe Konfiguration) | Seit Phase 17 zugleich die einzige SEO-Basis des Web (`publicBaseUrl` im Bootstrap): https-Origin ohne Pfad/Query/Fragment/Zugangsdaten; `http` nur außerhalb production und nur für `localhost`/`127.0.0.1` (Entwicklung, E2E, Lighthouse). Ungültig oder fehlend ⇒ Website fail-closed `noindex`, auch mit Schalter. Production: `https://www.miet-royal.de` (kanonischer Host `www`; die API verlangt in production ohnehin https). Zeigt wie bisher auf die Web-App DERSELBEN Umgebung (Demo ⇒ Demo-Web; Isolations-Check vergleicht). |
+| `WEB_API_ORIGIN` | NUR Web-Server (Build UND Laufzeit) | Origin der API derselben Umgebung; beim Build als Rewrite-Ziel eingebacken (`MR_BUILD_API_ORIGIN`). Abweichung zur Laufzeit ⇒ Origin-Sperre: Konfigurator-Absenden, Vorschau und Bewertungen gesperrt UND (Phase 17) Website nicht indexierbar. Ohne Wert `http://127.0.0.1:3101`. |
+| `WEB_DIST_DIR` | NUR Web-Server, optional | eigenes Build-/Dev-Verzeichnis (`distDir`) je Instanz, z. B. `.next/demo` (Demo-Web der E2E-Suite), `.next/seo` (E2E-Projekt `seo`); nötig, wenn mehrere Instanzen desselben Projekts auf einem Rechner laufen (`next dev` sperrt sein Verzeichnis, Builds überschrieben sich). Bei `next build` und `next start` derselbe Wert. In einem normalen Deployment nicht gesetzt (Default `.next`). |
+| `WEB_APP_ENV` | NUR Web-Server | wie bisher (Abschnitt „Demo-Umgebung“). `demo` ⇒ Banner UND immer `noindex` – unabhängig von `WEB_INDEXING_ENABLED`. `production` ⇒ nur eine https-Basis gilt (auch `http://localhost` ist dann ungültig); dieselbe Verschärfung gilt, wenn die konfigurierte API im Bootstrap `environment: 'production'` meldet. |
+
+Regeln je Umgebung:
+
+- **production:** `WEB_APP_ENV=production`, `MAIL_PUBLIC_WEB_BASE_URL=https://www.miet-royal.de`,
+  `WEB_INDEXING_ENABLED=true` erst beim Go-live (docs/PRE_START_CHECKLIST.md „Website-Go-live
+  SEO“). Der kanonische Host `www` und der Apex-Redirect sind KEINE Variablen, sondern
+  Reverse-Proxy-Konfiguration (docs/DEPLOYMENT_NOTES.md); der Code enthält keinen Hostnamen.
+- **staging:** `WEB_INDEXING_ENABLED` nicht setzen – Staging bleibt crawlbar (`Allow: /`, keine
+  Sitemap-Zeile) und jede Antwort trägt `noindex`; das ist das von Google dokumentierte Mittel
+  gegen eine Indexierung (robots.txt allein hält nichts aus dem Index).
+- **demo:** immer `noindex`, unabhängig vom Schalter; `MAIL_PUBLIC_WEB_BASE_URL` zeigt auf die
+  Demo-Web-Instanz.
+- **development/E2E:** `http://127.0.0.1:<port>` als Basis zulässig; das E2E-Projekt `seo` setzt
+  `WEB_INDEXING_ENABLED=true` nur für seinen eigenen Production-Build (`WEB_DIST_DIR=.next/seo`),
+  Lighthouse läuft gegen einen eigenen lokalen Stack mit Indexierung.
+- Bewusst nicht aufgenommen: `MR_TEST_FORCE_EVENING_PIN` ist eine reine Test-Umgebungsvariable
+  der Touren-Integrationstests (docs/TEST_PLAN.md), keine Server-Konfiguration.

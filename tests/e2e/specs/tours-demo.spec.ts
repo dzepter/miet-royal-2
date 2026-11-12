@@ -16,9 +16,11 @@
  * Reine API-Tests (Node-fetch mit Session-Cookie, Muster communication-demo.spec.ts);
  * Buchung/Termin über apps/api/scripts/e2e-tours-seed.ts gegen die Demo-Datenbank.
  *
- * Zeit (Phase 14): Das Fenster liegt HEUTE relativ zu jetzt (`todayWindow`, helpers/
- * tours.ts: auf den Berliner Tag geklemmt, ≥ 15 min, bei knappem Resttag gestaucht).
- * Sperrfenster: Lauf NICHT zwischen 23:38 und 00:02 Uhr Berlin starten („Resttag zu kurz“).
+ * Zeit (Phase 17, Order §27 B): Der Liefertermin liegt MORGEN 10:00–11:00 Uhr Berlin
+ * (`berlinDayAt`, helpers/tours.ts) – ein fester Folgetag statt „heute relativ zu jetzt“.
+ * O plant und übernimmt nur (propose/apply) und startet die Tour nicht, TOUR_NOT_TODAY greift
+ * daher nicht; die Planung rechnet ab 08:00 Uhr des Tourtags (`defaultTourDeparture`).
+ * Damit hat diese Spec kein Resttag-Sperrfenster mehr (vorher 23:38–00:02 Uhr).
  */
 import { expect, test } from '@playwright/test';
 import {
@@ -28,13 +30,15 @@ import {
   DEMO_DATABASE_URL,
 } from '../helpers/demo-env.ts';
 import { resetRoutingFake, routingRequests } from '../helpers/routing.ts';
-import { seedTours, todayWindow, type ToursSeedResult } from '../helpers/tours.ts';
+import { berlinDayAt, berlinTodayIso, seedTours, type ToursSeedResult } from '../helpers/tours.ts';
 import { demoApiLogin } from '../helpers/training.ts';
 
 test.describe.configure({ mode: 'serial' });
 
 let cookie = '';
 let seed: ToursSeedResult;
+/** Tourtag = Berliner Kalendertag des Liefertermins (morgen). */
+let tourDate = '';
 
 async function demo<T = unknown>(
   method: 'GET' | 'POST',
@@ -68,7 +72,9 @@ test.beforeAll(async () => {
   // Login-Limit (10 je Minute je IP + E-Mail) gilt auch hier ⇒ 429-toleranter Helfer (wartet
   // `retry-after` ab, wie die Training-Specs seit Phase 14).
   cookie = await demoApiLogin(DEMO_ADMIN_EMAIL, DEMO_ADMIN_PASSWORD);
-  const o1Window = todayWindow(90, 150);
+  // Lieferfenster MORGEN 10:00–11:00 Uhr Berlin (s. Kopfkommentar) – unabhängig von der Uhrzeit.
+  const o1Window = { startAt: berlinDayAt(1, 10 * 60), endAt: berlinDayAt(1, 11 * 60) };
+  tourDate = berlinTodayIso(o1Window.startAt);
   seed = seedTours(
     {
       adminEmail: DEMO_ADMIN_EMAIL,
@@ -92,7 +98,6 @@ test('O Demo: Routing nur simuliert (Mock), kein Aufruf des Provider-Fakes, als 
   test.setTimeout(120_000);
   const booking = seed.bookings.o1!;
   const adminId = seed.users.admin!.id;
-  const tourDate = new Date().toLocaleDateString('en-CA', { timeZone: 'Europe/Berlin' });
 
   const created = await demo<{ tour: { id: string; version: number } }>('POST', '/staff/tours', {
     tourDate,

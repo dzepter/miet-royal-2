@@ -8,6 +8,7 @@ import { CMS_MESSAGES, CmsError, sendCmsError } from '../cms/errors.ts';
 import { CMS_MEDIA_MAX_BYTES, CmsMediaService } from '../cms/media-service.ts';
 import { cmsPreviewCookieName, CmsPreviewService } from '../cms/preview-service.ts';
 import { PublicSiteService } from '../cms/public-site.ts';
+import { runSeoCheck } from '../cms/seo-check.ts';
 import { buildPublicCatalog } from '../public/catalog.ts';
 import type { WebsiteModuleDeps } from '../website/module.ts';
 import { UUID_PATTERN } from './auth.ts';
@@ -19,6 +20,9 @@ import { UUID_PATTERN } from './auth.ts';
  * ändern/wiederherstellen, Regionsseite anlegen, Medien hochladen/bearbeiten `cms.edit`;
  * Veröffentlichen/Zurückziehen `cms.publish`; Vorschau erzeugen edit|publish;
  * „Produkte & Preise“-Lesesicht `product.view`. Bodies sind `strictObject`.
+ * Phase 17 (SEO, Design D12): `GET /staff/cms/seo-check` (Lesen edit|publish, `no-store`) liefert
+ * nicht blockierende Hinweise zur Suchmaschinen-Darstellung; `GET /public/site/settings` trägt
+ * zusätzlich `publicBaseUrl` und je Seite `publishedAt` (Design D1/D8).
  *
  * Öffentlich: `/public/site/*` (SSR der Web-App, KEIN IP-Limit, `no-store`, kein CORS) liest
  * nur VERÖFFENTLICHTE Inhalte; das Vorschau-Cookie wird dort nie gelesen. Medien nur über
@@ -114,6 +118,7 @@ export function registerWebsiteCmsRoutes(instance: FastifyInstance, deps: Websit
     environment: config.appEnv,
     reviewsMode: deps.reviews.mode,
     logger,
+    publicWebBaseUrl: config.mail.publicWebBaseUrl, // Phase 17 (SEO, D1): SEO-Basis des Web
   });
   const previewCookie = cmsPreviewCookieName(config.appEnv);
   const rateLimitEnabled = deps.rateLimitEnabled ?? instance.hasDecorator('rateLimit');
@@ -288,6 +293,15 @@ export function registerWebsiteCmsRoutes(instance: FastifyInstance, deps: Websit
     const bytes = await media.variantBytes(params.id, Number(params.width), { kind: 'staff' });
     if (bytes === null) return notFound(request, reply);
     return sendImage(reply, bytes, 'private, no-store');
+  });
+
+  // ── Staff: Hinweise zur Suchmaschinen-Darstellung (Phase 17, Design D12) ────
+
+  /** Lesen wie die Einträge (cms.edit ODER cms.publish); nie blockierend, nie gecacht. */
+  instance.get('/staff/cms/seo-check', async (request, reply) => {
+    if ((await requireAny(request, reply, READ)) === null) return;
+    void reply.header('cache-control', 'no-store');
+    return runSeoCheck(db, new Date());
   });
 
   // ── Staff: „Produkte & Preise“ (Lesesicht der öffentlichen Projektion) ─────

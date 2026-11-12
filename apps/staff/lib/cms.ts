@@ -564,3 +564,121 @@ export function isValidRegionSlug(slug: string): boolean {
 export function regionPathOf(slug: string): string {
   return `${CMS_REGION_PATH_PREFIX}${slug}`;
 }
+
+// ── Phase 17: SEO-Hinweise (Design D12, Auftrag §11/§24) ───────────────────
+
+/**
+ * `GET /staff/cms/seo-check` (Recht cms.edit ODER cms.publish, `no-store`). Reine Hinweise
+ * für die Redaktion – nie eine Sperre, kein Score. Die Meldungen kommen fertig auf Deutsch
+ * vom Server; der Staff ordnet sie nur Einträgen zu und zeigt `message`.
+ */
+export type SeoWarningScope = 'draft' | 'published' | 'catalog';
+
+export type SeoWarningField =
+  'metaTitle' | 'metaDescription' | 'content' | 'links' | 'description' | 'name' | 'saleUnit';
+
+/** Bekannte Codes (Design D12). Die Oberfläche zeigt stets `message` – auch bei unbekanntem Code. */
+export type SeoWarningCode =
+  | 'META_TITLE_MISSING'
+  | 'META_TITLE_SHORT'
+  | 'META_TITLE_LONG'
+  | 'META_DESCRIPTION_MISSING'
+  | 'META_DESCRIPTION_SHORT'
+  | 'META_DESCRIPTION_LONG'
+  | 'META_TITLE_DUPLICATE'
+  | 'META_DESCRIPTION_DUPLICATE'
+  | 'PAGE_EMPTY'
+  | 'BROKEN_INTERNAL_LINK'
+  | 'REGION_NEAR_DUPLICATE'
+  | 'PAGE_SUPPRESSED'
+  | 'PRODUCT_DESCRIPTION_PRICE_HIDDEN'
+  | 'PRODUCT_NAME_PRICE_HIDDEN'
+  | 'PRODUCT_UNIT_PRICE_HIDDEN';
+
+export interface SeoWarning {
+  /** `SeoWarningCode` oder ein künftiger Code – nur als `data-code` ausgegeben, nie interpretiert. */
+  code: string;
+  scope: SeoWarningScope;
+  entryId: string | null;
+  path: string | null;
+  field: SeoWarningField | null;
+  message: string;
+}
+
+export interface SeoCheckResponse {
+  checkedAt: string;
+  warnings: SeoWarning[];
+}
+
+/** Scope immer als Text (nie roher Enum, UX_RULES). */
+export const SEO_SCOPE_LABELS: Record<SeoWarningScope, string> = {
+  published: 'Veröffentlicht',
+  draft: 'Entwurf',
+  catalog: 'Produkte & Preise',
+};
+
+export function isSeoWarningScope(value: string): value is SeoWarningScope {
+  return value === 'published' || value === 'draft' || value === 'catalog';
+}
+
+/** Unbekannte Scopes (künftige API) ⇒ neutral „Hinweis“. */
+export function seoScopeLabel(scope: string): string {
+  return isSeoWarningScope(scope) ? SEO_SCOPE_LABELS[scope] : 'Hinweis';
+}
+
+/** Antwort defensiv lesen: nur Hinweise mit Meldung; unerwartete Form ⇒ keine Hinweise. */
+export function seoWarningsOf(data: SeoCheckResponse | null | undefined): SeoWarning[] {
+  if (data === null || data === undefined || !Array.isArray(data.warnings)) return [];
+  return data.warnings.filter(
+    (warning) => typeof warning?.message === 'string' && warning.message.trim() !== '',
+  );
+}
+
+const SEO_SCOPE_RANK: Record<SeoWarningScope, number> = { published: 0, draft: 1, catalog: 2 };
+
+function seoScopeRank(scope: string): number {
+  return isSeoWarningScope(scope) ? SEO_SCOPE_RANK[scope] : SEO_SCOPE_RANK.catalog + 1;
+}
+
+/** Veröffentlicht vor Entwurf vor Katalog, dann Pfad (ohne Pfad zuletzt), sonst Serverreihenfolge. */
+export function sortSeoWarnings(warnings: readonly SeoWarning[]): SeoWarning[] {
+  return [...warnings].sort((a, b) => {
+    const byScope = seoScopeRank(a.scope) - seoScopeRank(b.scope);
+    if (byScope !== 0) return byScope;
+    if (a.path === null || b.path === null) {
+      return a.path === b.path ? 0 : a.path === null ? 1 : -1;
+    }
+    return a.path.localeCompare(b.path);
+  });
+}
+
+export function seoWarningsForEntry(
+  warnings: readonly SeoWarning[],
+  entryId: string,
+): SeoWarning[] {
+  return warnings.filter((warning) => warning.entryId === entryId);
+}
+
+/** Hinweise zu Produkten („Produkte & Preise“), die keinem CMS-Eintrag gehören. */
+export function seoWarningsForCatalog(warnings: readonly SeoWarning[]): SeoWarning[] {
+  return warnings.filter((warning) => warning.scope === 'catalog');
+}
+
+/** Hinweise je Eintrag (nur mit `entryId`); Reihenfolge wie übergeben. */
+export function groupSeoWarningsByEntry(
+  warnings: readonly SeoWarning[],
+): Map<string, SeoWarning[]> {
+  const groups = new Map<string, SeoWarning[]>();
+  for (const warning of warnings) {
+    if (warning.entryId === null) continue;
+    const list = groups.get(warning.entryId) ?? [];
+    list.push(warning);
+    groups.set(warning.entryId, list);
+  }
+  return groups;
+}
+
+/** „1 Hinweis“ / „n Hinweise“. */
+export function seoWarningCountLabel(count: number): string {
+  return count === 1 ? '1 Hinweis' : `${count} Hinweise`;
+}

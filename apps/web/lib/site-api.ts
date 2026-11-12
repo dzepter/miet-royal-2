@@ -79,6 +79,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+/**
+ * Bootstrap-Form. Phase 17 (Design D1/D8, additiv): `publicBaseUrl` (string | null) und je Seite
+ * `publishedAt` (ISO-String) dürfen fehlen – Antworten älterer API-Versionen bleiben gültig;
+ * sind die Felder vorhanden, müssen sie die vereinbarte Form haben.
+ */
 export function isSiteBootstrap(value: unknown): value is PublicSiteBootstrap {
   return (
     isRecord(value) &&
@@ -86,11 +91,18 @@ export function isSiteBootstrap(value: unknown): value is PublicSiteBootstrap {
     (value.settings === null || isRecord(value.settings)) &&
     Array.isArray(value.pages) &&
     value.pages.every(
-      (page) => isRecord(page) && typeof page.path === 'string' && typeof page.title === 'string',
+      (page) =>
+        isRecord(page) &&
+        typeof page.path === 'string' &&
+        typeof page.title === 'string' &&
+        (page.publishedAt === undefined || typeof page.publishedAt === 'string'),
     ) &&
     isRecord(value.reviews) &&
     typeof value.reviews.mode === 'string' &&
-    typeof value.pickupArea === 'string'
+    typeof value.pickupArea === 'string' &&
+    (value.publicBaseUrl === undefined ||
+      value.publicBaseUrl === null ||
+      typeof value.publicBaseUrl === 'string')
   );
 }
 

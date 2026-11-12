@@ -3,6 +3,7 @@ import { Configurator } from '../../components/configurator/configurator';
 import {
   getApiOriginMismatch,
   getCatalog,
+  getSeoEnv,
   getSiteBootstrap,
 } from '../../components/site/site-data';
 import { SiteFrame } from '../../components/site/site-frame';
@@ -21,9 +22,21 @@ import { CONFIGURATOR_PATH, SECONDARY_CTA_LABEL, isPrivacyPublished } from '../.
 
 type Props = { searchParams: Promise<Record<string, string | string[] | undefined>> };
 
-/** Katalog weg oder keine wählbare Maschine ⇒ noindex (Review web_security-2). */
+/**
+ * Katalog weg, keine wählbare Maschine, Datenschutz nicht veröffentlicht oder Origin-Sperre ⇒
+ * noindex (Review web_security-2, Phase 17 D8/§22); Canonical immer `/konfigurator` ohne Query.
+ */
 export async function generateMetadata(): Promise<Metadata> {
-  return configuratorMetadata(await getCatalog());
+  const [bootstrap, catalog, seo] = await Promise.all([
+    getSiteBootstrap(),
+    getCatalog(),
+    getSeoEnv(),
+  ]);
+  return configuratorMetadata(catalog, {
+    ...seo,
+    privacyPublished: bootstrap.ok && isPrivacyPublished(bootstrap.data.pages),
+    originMismatch: getApiOriginMismatch(),
+  });
 }
 
 export default async function ConfiguratorPage({ searchParams }: Props) {

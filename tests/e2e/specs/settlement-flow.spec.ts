@@ -13,6 +13,7 @@
 import { expect, test, type Page } from '@playwright/test';
 import { acceptedBooking } from '../helpers/booking.ts';
 import { clearSink, expectMailCount, waitForMail } from '../helpers/mail.ts';
+import { expectProcessMainStatus, openProcessPage } from '../helpers/process-page.ts';
 import { ADMIN_EMAIL, ADMIN_PASSWORD, resetE2eDatabase } from '../helpers/seed.ts';
 import {
   assignAndPrepare,
@@ -97,9 +98,14 @@ async function expectLocked() {
   await expect(staff.getByTestId('retry-transfer')).toHaveCount(0);
 }
 
+/**
+ * Vorgang abgeschlossen: Hauptstatus EXAKT „Abgeschlossen“ (nicht „Übergabe/Rückgabe
+ * abgeschlossen“) und Abrechnung übertragen. Wartet auf die geladenen Vorgangsdaten
+ * (helpers/process-page.ts, Phase 17 §27 A) statt auf den 5-s-Default nach `goto`.
+ */
 async function expectProcessCompleted(processId: string) {
-  await staff.goto(`/vorgaenge/${processId}`);
-  await expect(staff.locator('.badge', { hasText: 'Abgeschlossen' }).first()).toBeVisible();
+  await openProcessPage(staff, processId);
+  await expectProcessMainStatus(staff, 'Abgeschlossen');
   await expect(staff.getByTestId('process-settlement')).toContainText(LABEL_TRANSFERRED);
 }
 

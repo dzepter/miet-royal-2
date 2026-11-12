@@ -149,9 +149,10 @@ Vor einer Live-Veröffentlichung der neuen Website:
   `REVIEWS_PROVIDER=disabled` (Default; die Website blendet die Sektion aus).
   Erst danach `GOOGLE_REVIEWS_TERMS_CONFIRMED=true` + `REVIEWS_PROVIDER=google`
   (Key nur beim API-Prozess). Demo: nie Google, höchstens `fake`.
-- **Indexierung:** `WEB_INDEXING_ENABLED` erst mit Phase 17 bzw. zum Go-live
-  setzen (vorher überall `noindex`); Redirects, Sitemap, Robots, Canonicals und
-  strukturierte Daten sind Phase 17.
+- **Indexierung:** `WEB_INDEXING_ENABLED` erst zum Go-live setzen (vorher überall
+  `noindex`); Redirects, Sitemap, robots.txt, Canonicals und strukturierte Daten
+  sind seit Phase 17 umgesetzt – Go-live-Schritte und Smokes im Abschnitt
+  „Website-Go-live SEO (ab Phase 17)“.
 - **CMS-Vorschau:** `MAIL_PUBLIC_WEB_BASE_URL` je Umgebung auf die Web-App
   DERSELBEN Umgebung (sonst „Vorschau öffnen“ 409).
 - **Web je Umgebung bauen:** jede Web-Instanz mit ihrem eigenen
@@ -168,6 +169,77 @@ Vor einer Live-Veröffentlichung der neuen Website:
   („Mainz-Hechtsheim“).
 - `pnpm check:env-isolation` vor dem Release wie bisher (prüft zusätzlich den
   Places-API-Key).
+
+## Website-Go-live SEO (ab Phase 17)
+Die neue Website ist bis zur DNS-/Domain-Umschaltung nicht öffentlich; alles
+Folgende gilt für den Website-Go-live (Phase 20) und baut auf dem Phase-16-Block
+oben auf. Nichts davon wird in Phase 17 eingeschaltet. Details:
+docs/SEO_TECHNICAL.md, docs/REDIRECT_MATRIX.md, docs/DEPLOYMENT_NOTES.md
+„Website SEO, Redirects, kanonischer Host (Phase 17)“ und Release-Ablauf „6d“.
+
+- **Reihenfolge:** (1) Rechtstexte juristisch freigegeben und im Staff
+  veröffentlicht – `/datenschutz` VOR dem Go-live, sonst keine Website-Anfrage
+  (fail-closed) und `/konfigurator` weder indexierbar noch in der Sitemap;
+  (2) Reverse-Proxy mit kanonischem Host `www`, Apex ⇒ 308 `www`, HTTP ⇒ HTTPS,
+  Zertifikat für beide Namen, Next nie direkt erreichbar; (3) API/Worker mit
+  `MAIL_PUBLIC_WEB_BASE_URL=https://www.miet-royal.de`; (4) Web-Instanz mit
+  demselben `WEB_API_ORIGIN` gebaut und gestartet, `WEB_APP_ENV=production`
+  (http-Basen sind dort nie gültig); (5) DNS-Umschaltung (Phase 20); (6) erst
+  jetzt `WEB_INDEXING_ENABLED=true` beim Web-Prozess setzen und neu starten;
+  (7) Smokes unten; (8) Search Console.
+- **www-Smoke (SEO-R9):** `curl -sI https://miet-royal.de/` ⇒ 308
+  `location: https://www.miet-royal.de/`; `curl -sI http://miet-royal.de/ablauf`
+  ⇒ 308 auf `https://www.miet-royal.de/ablauf` (Pfad bleibt);
+  `https://www.miet-royal.de/` ⇒ 200. Kein anderer Hostname wird bedient
+  (`curl -sI -H 'Host: evil.example' https://<IP>/` ⇒ Verbindung abgelehnt/444).
+  Absolute-form Request-Target: `curl -sI --request-target
+  http://evil.example/buchung/ https://www.miet-royal.de/` darf KEIN 308 auf
+  `evil.example` liefern – der Reverse-Proxy normalisiert auf origin-form
+  (Next selbst würde absolute-form mit 308 auf die fremde URL beantworten).
+- **robots.txt/sitemap.xml-Smoke:** vor Schritt (6) `Allow: /`,
+  `Disallow: /api/`, KEINE Sitemap-Zeile und leere Sitemap; nach Schritt (6)
+  `Allow: /`, `Allow: /api/public/cms/media/`, `Disallow: /api/`,
+  `Sitemap: https://www.miet-royal.de/sitemap.xml`; die Sitemap enthält nur
+  veröffentlichte Seiten mit `https://www.miet-royal.de/…` – kein `/konto`,
+  `/vorschau`, Token-Pfad, kein Entwurf, kein `http://`. Fehlt die Sitemap-Zeile
+  trotz Schalter: Basis-URL (https, ohne Pfad), Demo-Kennzeichnung (`/health`)
+  und die Origin-Meldung im Web-Serverlog prüfen.
+- **Alt-URL-Stichprobe aus docs/REDIRECT_MATRIX.md:** drei Redirects
+  (`/uber-uns/` ⇒ 308 `/ueber-uns`; `/buchung/?next=https://evil.example/` ⇒
+  308 `/konfigurator`; `/maschinen-zubehoer` ⇒ 308 `/slushmaschine-mieten`) und
+  zwei 410 (`/shop/`, `/thank-you/`) mit `curl -I` – jeweils genau ein Hop,
+  Location relativ, 410-Body „Diese Seite gibt es nicht mehr.“ mit
+  `x-robots-tag: noindex, nofollow`; `/ablauf/` ⇒ 308 `/ablauf` (`private,
+  no-store`) ⇒ 200.
+- **Canonical/noindex-Stichprobe:** Startseite, `/slushmaschine-mieten`, eine
+  Regionsseite, `/konfigurator?maschine=<slug>` ⇒ genau ein Canonical auf
+  `https://www.miet-royal.de/…` (Konfigurator ohne Query); `/konto/anmelden`,
+  `/vorschau`, 404 ⇒ `noindex`, kein Canonical; `/favicon.ico` ⇒ 200.
+- **Rich-Results-Test / Schema Markup Validator** gegen
+  `https://www.miet-royal.de/` (WebSite, Organization) und eine Regionsseite
+  (BreadcrumbList) – erst nach dem Go-live möglich; keine Fehler, keine Adresse/
+  Öffnungszeiten/Bewertungen im Markup, Logo ≥ 112×112 px
+  (docs/SEO_STRUCTURED_DATA_NOTES.md).
+- **Search Console (nicht Teil von Phase 17):** Property
+  `https://www.miet-royal.de/` verifizieren, Sitemap einreichen, Abdeckung/
+  Indexierung und die 410-/Redirect-Pfade der bisherigen Website beobachten;
+  Ranking-Monitoring als laufende Aufgabe.
+- **Lighthouse-Nachmessung** auf der Live-Domain (Mobile: `/`,
+  `/slushmaschine-mieten`, `/konfigurator`) gegen docs/WEBSITE_QA_REPORT.md; mit
+  echtem Hero-Bild zusätzlich LCP prüfen.
+- **Google-Bewertungen:** weiterhin fail-closed `REVIEWS_PROVIDER=disabled`, bis
+  die Punkte aus docs/GOOGLE_REVIEWS_API_NOTES.md „Go-live“ erledigt sind
+  (EWR-Permitted-Use nur über Rechtsberatung/Google Sales; Logo-Attribution ist
+  umgesetzt, Sichtabnahme auf Staging offen).
+- **Juristische Freigabe bleibt Blocker:** Impressum (Anschrift-Platzhalter),
+  Datenschutz (Konfigurator, Kundenbereich, Cookies
+  `__Host-mr_customer_session`/`__Host-mr_cms_preview`, Google-Bewertungen per
+  Klick, Instagram, Mailversand, Hoster/Logs, Aufsichtsbehörde, Stand). Keine
+  Veröffentlichung ungeprüfter Texte; keine Indexierung vor der Veröffentlichung
+  von Impressum und Datenschutz.
+- **Favicon/Logo:** neutrale Platzhalter (`apps/web/app/icon.svg`,
+  `apps/web/app/favicon.ico`) vor dem Go-live durch die finalen Dateien ersetzen
+  (gleiche Dateinamen).
 
 ## Sicherheitsregel
 Echte Zugangsdaten nie in Chat-Prompts oder Git-Dateien kopieren, wenn sie als

@@ -18,6 +18,7 @@ import type { PermissionKey } from '@mietroyal/permissions';
 import { asc, eq } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 import type pg from 'pg';
+import { vi } from 'vitest';
 import { buildApp } from '../src/app.ts';
 import { AuthError } from '../src/auth/service.ts';
 import { PushService } from '../src/communication/push/push-service.ts';
@@ -366,6 +367,81 @@ export function dateInDays(days: number): string {
 /** Zeitpunkt „HH:MM Berlin“ an einem ISO-Tag. */
 export function berlinAt(dateIso: string, hour: number, minute = 0): Date {
   return berlinDateTimeToUtc(dateIso, hour, minute);
+}
+
+// ── Testuhr (Phase 17, Order §27 B) ───────────────────────────────────────
+
+/** Ab dieser Berliner Wanduhrzeit (Minuten seit 0:00) wird die Testuhr zurückgedreht. */
+export const EVENING_PIN_FROM_MINUTE = 19 * 60;
+/** Zielzeit des Pins: 09:00 Berlin desselben Tages (lässt `inMinutes(+240)` bis 13:00 zu). */
+export const MORNING_PIN_HOUR = 9;
+/** Test-Env (NUR hier gelesen): erzwingt den Pin, um den Fake-Uhr-Pfad auch vormittags zu beweisen. */
+export const FORCE_EVENING_PIN_ENV = 'MR_TEST_FORCE_EVENING_PIN';
+
+export interface MorningClockPinOptions {
+  /** Echte Uhr (Standard `new Date()`) – nur für Tests des Helfers selbst. */
+  now?: Date;
+  /** Pin unabhängig von der Uhrzeit erzwingen (Standard: `MR_TEST_FORCE_EVENING_PIN=1`). */
+  force?: boolean;
+}
+
+/** Berliner Wanduhr „HH:MM“ (h23). */
+export function berlinClockOf(at: Date): string {
+  return new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Europe/Berlin',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  }).format(at);
+}
+
+/** Berliner Wanduhr-Minuten seit 0:00 (DST-korrekt über Intl, nicht über Tagesanfang gerechnet). */
+export function berlinMinutesOfDay(at: Date): number {
+  const [h, m] = berlinClockOf(at).split(':').map(Number);
+  return (h ?? 0) * 60 + (m ?? 0);
+}
+
+/**
+ * Abends (ab 19:00 Uhr Berlin) die Testuhr auf 09:00 DESSELBEN Berliner Tages zurückdrehen –
+ * in `beforeAll` VOR `createToursWorld` und dem ersten `inMinutes`; Rückgabe für `afterAll`.
+ *
+ * Warum: Die Touren-Tests legen Termine mit `inMinutes(+N)` (bis +240) an und verlangen das
+ * heutige Berliner Tourdatum (`todayBerlin()`). Die Produktregel APPOINTMENT_NOT_ON_TOUR_DATE
+ * (tour-service.ts `addStop`) lehnt Termine ab, die ab etwa 20:00 Uhr auf den Folgetag
+ * rutschen; TOUR_NOT_TODAY erlaubt Tourstarts nur am heutigen Tag, ein „Tourdatum morgen“
+ * ist deshalb keine Option. Die Produktlogik bleibt unverändert – gefälscht wird allein die
+ * Uhr des Testprozesses (die App läuft in-process, ihre `new Date()` sind dieselbe Uhr).
+ *
+ * NUR RÜCKWÄRTS, nie vorwärts: `staff_sessions.last_activity_at` wird beim Login per
+ * DB-`defaultNow()` (echte Uhr) gesetzt und in `authenticate` mit `Date.now()` verglichen –
+ * eine um mehr als APP_LOCK_MS (15 min) vorgestellte Testuhr liefert für JEDEN Request
+ * APP_LOCKED. Rückwärts ergibt sich nur negative Inaktivität (unkritisch). Vor 09:00 Berlin
+ * ist der Helfer darum auch mit `force` wirkungslos (Warnung statt Vorwärtsdrehen).
+ *
+ * Nur `Date` wird gefälscht (`toFake: ['Date']`); Timer bleiben echt (`sleep`, pg-Timeouts,
+ * `delayState.settle()`). `shouldAdvanceTime: true` lässt die Fake-Uhr weiterlaufen, damit
+ * Reihenfolgen wie „Anton zuerst“ (`startedAt`, tours-multi-active V2) unterscheidbar bleiben.
+ * Tagsüber ist der Helfer eine No-op – der Produktpfad läuft dann ohne Fake.
+ */
+export function pinMorningClockIfEvening(options: MorningClockPinOptions = {}): () => void {
+  const now = options.now ?? new Date();
+  const force = options.force ?? process.env[FORCE_EVENING_PIN_ENV] === '1';
+  if (!force && berlinMinutesOfDay(now) < EVENING_PIN_FROM_MINUTE) return () => {};
+  const today = berlinDateOf(now);
+  const clock = berlinClockOf(now);
+  const target = berlinAt(today, MORNING_PIN_HOUR, 0);
+  if (target.getTime() >= now.getTime()) {
+    console.warn(
+      `[tours-helpers] Testuhr-Pin übersprungen: ${today} ${clock} Berlin liegt nicht nach 09:00 (nie vorwärts).`,
+    );
+    return () => {};
+  }
+  vi.useFakeTimers({ toFake: ['Date'], shouldAdvanceTime: true });
+  vi.setSystemTime(target);
+  console.warn(
+    `[tours-helpers] Testuhr auf ${today} 09:00 Berlin zurückgedreht (Uhr ${clock}${force ? ', erzwungen' : ''}).`,
+  );
+  return () => vi.useRealTimers();
 }
 
 // ── Buchungen / Termine ───────────────────────────────────────────────────

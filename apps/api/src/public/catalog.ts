@@ -14,7 +14,11 @@ import {
   LARGE_EVENT_GUEST_THRESHOLD,
   STRAWS_PACK_SLUG,
 } from '@mietroyal/domain';
-import { containsExactAddress, exactAddressFragments } from '@mietroyal/validation/cms';
+import {
+  containsExactAddress,
+  containsPriceText,
+  exactAddressFragments,
+} from '@mietroyal/validation/cms';
 import { and, asc, eq, inArray } from 'drizzle-orm';
 import {
   PICKUP_EXACT_ADDRESS_KEY,
@@ -37,6 +41,16 @@ import { effectivePriceCentsAt } from '../commerce/product-service.ts';
  * - Abholung nur als öffentliche Region – nie die exakte Adresse; Produktname mit der exakten
  *   Adresse ⇒ Produkt entfällt, Beschreibung mit ihr ⇒ `description: null` (Review pricing-3,
  *   Log nur mit Slug).
+ * - Phase 17 (SEO, Order §23, Design D13): Preis-Freitext („60 €“, „EUR 60“, „60,-“) in der
+ *   Beschreibung ⇒ `description: null`, im Namen ⇒ Produkt entfällt öffentlich (Katalog,
+ *   product_grid, Konfigurator, Empfehlung) – Preis bleibt ausschließlich `priceCents` aus
+ *   product_prices; Log `public.catalog.price_text_suppressed` nur mit Slug und Feldname
+ *   (`field`: name, description, saleUnit), nie mit dem Text. Interne Produktdaten
+ *   (Staff-Routen) bleiben unverändert.
+ * - Phase 17 (Review RC-1): die Verkaufseinheit (`saleUnit` ⇒ öffentlich `unitLabel`, in der
+ *   Vorschau `unit`) ist die dritte Freitextquelle – mit Preis-Freitext ODER exakter Adresse
+ *   entfällt das Produkt öffentlich wie beim Namen (Katalog, Konfigurator-Auswahl, Inklusiv-
+ *   Pack, Empfehlung, Website-Anfrage).
  *
  * Konstanten (Gratis-Sirup je Behälter, 25 Becher/Strohhalme, Pack-Slugs, Kanisterlimit,
  * 250 Gäste) kommen ausschließlich aus packages/domain – keine zweite Wahrheit.
@@ -178,9 +192,68 @@ export function productNameRevealsExactAddress(
   return containsExactAddress(product.name, fragments);
 }
 
+/**
+ * Phase 17 (SEO, Design D13): Produktname mit Preis-Freitext ⇒ das Produkt ist öffentlich
+ * nicht vorhanden (der Name würde eine zweite, stale Preisquelle neben `priceCents` werden).
+ */
+export function productNameContainsPrice(product: Pick<Product, 'name'>): boolean {
+  return containsPriceText(product.name);
+}
+
+/**
+ * Phase 17 (Review RC-1): Verkaufseinheit mit der exakten Abholadresse ⇒ das Produkt ist
+ * öffentlich nicht vorhanden (Phase-16-Guard-Lücke: `unitLabel`/`unit` sind Freitext).
+ */
+export function productUnitRevealsExactAddress(
+  product: Pick<Product, 'saleUnit'>,
+  fragments: readonly string[],
+): boolean {
+  return containsExactAddress(product.saleUnit, fragments);
+}
+
+/**
+ * Phase 17 (Review RC-1): Verkaufseinheit mit Preis-Freitext („Flasche (12 €)“) ⇒ das Produkt
+ * ist öffentlich nicht vorhanden (sonst stünde der Text neben `priceCents` als zweite Preisquelle).
+ */
+export function productUnitContainsPrice(product: Pick<Product, 'saleUnit'>): boolean {
+  return containsPriceText(product.saleUnit);
+}
+
+/**
+ * Phase 17 (SEO): öffentlich ausgeblendetes Produkt – Name ODER Verkaufseinheit mit exakter
+ * Abholadresse oder Preis-Freitext (gemeinsame Regel für Katalog, product_grid/included_items,
+ * Konfigurator-Auswahl, Inklusiv-Pack, Empfehlung und Website-Anfrage).
+ */
+export function productHiddenPublicly(
+  product: Pick<Product, 'name' | 'saleUnit'>,
+  fragments: readonly string[],
+): boolean {
+  return (
+    productNameRevealsExactAddress(product, fragments) ||
+    productNameContainsPrice(product) ||
+    productUnitRevealsExactAddress(product, fragments) ||
+    productUnitContainsPrice(product)
+  );
+}
+
 interface ProjectionGuard {
   fragments: readonly string[];
   logger: PublicCatalogLogger | undefined;
+}
+
+/** Log-Ereignisse der Projektion – immer nur Slug und Feldname, nie der Text. */
+const EXACT_ADDRESS_SUPPRESSED = 'public.catalog.exact_address_suppressed';
+const PRICE_TEXT_SUPPRESSED = 'public.catalog.price_text_suppressed';
+
+type GuardedField = 'name' | 'description' | 'saleUnit';
+
+function logSuppressed(
+  guard: ProjectionGuard,
+  product: Pick<Product, 'slug'>,
+  field: GuardedField,
+  event: typeof EXACT_ADDRESS_SUPPRESSED | typeof PRICE_TEXT_SUPPRESSED,
+): void {
+  guard.logger?.warn({ productSlug: product.slug, field }, event);
 }
 
 async function projectProduct(
@@ -195,12 +268,31 @@ async function projectProduct(
   if (priceCents === null) return null;
   // Exakte Abholadresse nie öffentlich (Order §5): Name ⇒ Produkt entfällt, Beschreibung ⇒ null.
   if (productNameRevealsExactAddress(product, guard.fragments)) {
-    guard.logger?.warn({ productSlug: product.slug }, 'public.catalog.exact_address_suppressed');
+    logSuppressed(guard, product, 'name', EXACT_ADDRESS_SUPPRESSED);
+    return null;
+  }
+  // Phase 17 (SEO, D13): Preis-Freitext nie als zweite Preisquelle – Name ⇒ Produkt entfällt.
+  if (productNameContainsPrice(product)) {
+    logSuppressed(guard, product, 'name', PRICE_TEXT_SUPPRESSED);
+    return null;
+  }
+  // Phase 17 (Review RC-1): Verkaufseinheit wie der Name – Adresse oder Preis ⇒ Produkt entfällt.
+  if (productUnitRevealsExactAddress(product, guard.fragments)) {
+    logSuppressed(guard, product, 'saleUnit', EXACT_ADDRESS_SUPPRESSED);
+    return null;
+  }
+  if (productUnitContainsPrice(product)) {
+    logSuppressed(guard, product, 'saleUnit', PRICE_TEXT_SUPPRESSED);
     return null;
   }
   let description = product.description;
   if (description !== null && containsExactAddress(description, guard.fragments)) {
-    guard.logger?.warn({ productSlug: product.slug }, 'public.catalog.exact_address_suppressed');
+    logSuppressed(guard, product, 'description', EXACT_ADDRESS_SUPPRESSED);
+    description = null;
+  }
+  // Phase 17 (SEO, D13): Beschreibung mit Preisangabe ⇒ fail-closed ausblenden (Log nur Slug).
+  if (description !== null && containsPriceText(description)) {
+    logSuppressed(guard, product, 'description', PRICE_TEXT_SUPPRESSED);
     description = null;
   }
   return {

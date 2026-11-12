@@ -267,6 +267,41 @@ describe('Preis- und Adress-Schutz', () => {
     }
   });
 
+  it('erkennt Cent-Beträge (Phase 17, Review RC-2); Maße, Mengen, Jahreszahlen, Prozente und Wörter mit „cent“ bleiben frei (Review RC-6.2)', () => {
+    for (const text of [
+      '50 Cent',
+      '0,50 Cent je Becher',
+      '50 ct',
+      'Pfand 50 Cent je Becher',
+      'ab 50 Cent',
+      '50Cent',
+      '50 CENT',
+      '3 Cents',
+      '50\u00A0Cent',
+      '\uFF15\uFF10 Cent',
+    ]) {
+      expect(containsPriceText(text), JSON.stringify(text)).toBe(true);
+    }
+    for (const text of [
+      '5 Prozent',
+      'Prozent 50',
+      'Vincent 3',
+      'Accent',
+      '12,5 kg',
+      'Maße 60 × 40 cm',
+      'Baujahr 2024',
+      '2.000 Becher',
+      '60 x 40 x 80 cm',
+      '230 V',
+      '100 % vegan',
+      '50 Centimeter',
+      '2 Center',
+      '1 ctl',
+    ]) {
+      expect(containsPriceText(text), text).toBe(false);
+    }
+  });
+
   it('erkennt die exakte Abholadresse und ihren Straßenteil (normalisiert)', () => {
     const fragments = exactAddressFragments('Teststraße 1, 55129 Mainz-Hechtsheim (SYNTHETISCH)');
     expect(fragments.length).toBe(2);

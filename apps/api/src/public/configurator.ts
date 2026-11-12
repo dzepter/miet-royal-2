@@ -24,7 +24,7 @@ import {
   isSlushMachineProduct,
   loadActiveProducts,
   loadExactAddressFragments,
-  productNameRevealsExactAddress,
+  productHiddenPublicly,
   publicPriceCents,
   PUBLIC_PRICE_NOTE,
 } from './catalog.ts';
@@ -102,15 +102,16 @@ function mergeEntries(
 }
 
 /**
- * Öffentlich wählbare (aktive) Produkte je Slug – ohne Produkte, deren Name die exakte
- * Abholadresse enthält (Review pricing-3: sie existieren öffentlich nicht).
+ * Öffentlich wählbare (aktive) Produkte je Slug – ohne Produkte, deren Name oder
+ * Verkaufseinheit (Review RC-1) die exakte Abholadresse (Review pricing-3) oder einen
+ * Preis-Freitext (Phase 17, Design D13) enthält: sie existieren öffentlich nicht – wie im Katalog.
  */
 async function publicActiveProducts(
   executor: DatabaseExecutor,
   fragments: readonly string[],
 ): Promise<Product[]> {
   return (await loadActiveProducts(executor)).filter(
-    (product) => !productNameRevealsExactAddress(product, fragments),
+    (product) => !productHiddenPublicly(product, fragments),
   );
 }
 
@@ -215,12 +216,13 @@ export async function resolveConfiguratorSelection(
       return product;
     },
     // Wie im Angebot: Inklusiv-Packs unabhängig von der Auswahl, fehlend ⇒ null; ein Pack,
-    // dessen Name die exakte Abholadresse enthält, gilt öffentlich als fehlend.
+    // dessen Name oder Verkaufseinheit die exakte Abholadresse oder einen Preis-Freitext
+    // enthält, gilt öffentlich als fehlend (Review pricing-3, Phase 17 D13, Review RC-1).
     includedPack: async (slug) => {
       const pack =
         pricingProducts.get(slug) ??
         (await productService.pricingProductBySlug(slug, now, executor).catch(() => null));
-      return pack !== null && productNameRevealsExactAddress(pack, fragments) ? null : pack;
+      return pack !== null && productHiddenPublicly(pack, fragments) ? null : pack;
     },
   };
   return { machine, pricingProducts, request, resolver, requestedFreeLiters, issues };
@@ -290,7 +292,8 @@ export interface ConfiguratorPreviewInput {
 
 /**
  * Empfehlung nur aus VERÖFFENTLICHTEN Regeln und nur für öffentlich wählbare Slush-Maschinen
- * mit Preis (Name mit exakter Abholadresse ⇒ nie empfohlen, Review pricing-3).
+ * mit Preis (Name mit exakter Abholadresse oder Preis-Freitext ⇒ nie empfohlen,
+ * Review pricing-3 / Phase 17 D13 – ein solcher Name erscheint auch nicht im Empfehlungstext).
  */
 async function recommendationFor(
   executor: DatabaseExecutor,

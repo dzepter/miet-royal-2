@@ -1,8 +1,11 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { describe, it } from 'node:test';
+import { decideLegacyRoute } from './legacy-routes.ts';
 import {
   GOOGLE_ATTRIBUTION,
+  GOOGLE_MAPS_LOGO,
   GOOGLE_POLICY_URI,
   REVIEWS_TEXT,
   acceptReviewsResponse,
@@ -11,6 +14,7 @@ import {
   effectiveReviewsMode,
   fetchReviews,
   originalTextOf,
+  reviewsAttribution,
   reviewsPolicyNotice,
   translationLabel,
 } from './reviews.ts';
@@ -20,7 +24,8 @@ import type { PublicReview, PublicReviewsResponse } from './site-types.ts';
  * Phase 16 Review-Fixes (WEB, Order §18/§21, Design §4/§11.2.6): Google-Pflichtangaben
  * (Richtlinienhinweis + Link, Übersetzungshinweis, Originaltext, „Google Maps“ mit
  * translate="no"/nowrap – demo_reviews-1/-4) und fail-closed bei Modus-/Origin-Abweichung
- * (demo_reviews-2, web_security-1). Läuft mit `node --test`.
+ * (demo_reviews-2, web_security-1). Phase 17 (REVIEWS-QA, Design D19 / Auftrag §25): Attribution
+ * mit dem offiziellen Google-Maps-Logo (SEO-W-REV1–SEO-W-REV3). Läuft mit `node --test`.
  */
 
 const SECTION_SOURCE = readFileSync(
@@ -31,6 +36,15 @@ const SITE_CSS = readFileSync(
   new URL('../components/site/site.module.css', import.meta.url),
   'utf8',
 );
+const LOGO_SVG = readFileSync(new URL('../public/google-maps-logo-gray.svg', import.meta.url));
+
+/**
+ * SHA-256 des offiziellen Assets `GoogleMaps_Logo_Gray.svg` aus
+ * https://developers.google.com/static/maps/documentation/images/Google_Maps_Attribution_Assets.zip
+ * (Zip 2025-07-08, geprüft 12.11.2026). POL: „Use the official Google Maps logo files. Don't
+ * modify the logo in any way.“ – jede Änderung der Datei (auch „Optimierung“) bricht diesen Test.
+ */
+const OFFICIAL_LOGO_SHA256 = '99a08b570afce8ce830d26aeb93ba287f6ad67387e6219fe381234ad7e4016b5';
 
 const TRANSLATED: PublicReview = {
   authorName: 'B. Beispiel',
@@ -151,25 +165,152 @@ describe('Bewertungen – Google-Pflichtangaben (Review demo_reviews-1/-4)', () 
     assert.equal(demoShown[0]?.originalText, null);
   });
 
-  it('W-R9. Attribution: Google immer exakt „Google Maps“ (translate="no", nowrap); Demo nie „Google“', () => {
+  it('W-R9. Attribution: Google immer exakt „Google Maps“ (Label des Logos, Linktexte mit translate="no"/nowrap); Demo nie „Google“', () => {
     assert.equal(attributionText(GOOGLE), GOOGLE_ATTRIBUTION);
     assert.equal(attributionText({ ...GOOGLE, attribution: 'Irgendwas' }), 'Google Maps');
     assert.equal(attributionText({ ...GOOGLE, attribution: '' }), 'Google Maps');
     assert.doesNotMatch(attributionText(DEMO), /google/i);
     assert.doesNotMatch(attributionText({ ...DEMO, attribution: 'Google Maps' }), /google/i);
 
-    // Darstellung: „Google Maps“ in einem eigenen Element mit translate="no" und nowrap-Klasse.
+    // Darstellung: „Google Maps“ in Linktexten in einem eigenen Element mit translate="no" und
+    // nowrap-Klasse („Alle Bewertungen auf Google Maps“, „Auf Google Maps ansehen“).
     assert.match(
       SECTION_SOURCE,
       /<span translate="no" className=\{styles\.noWrap\}[^>]*>\s*Google Maps\s*<\/span>/,
     );
-    assert.match(SECTION_SOURCE, /Quelle: \{google \? <GoogleMapsName/);
+    assert.match(SECTION_SOURCE, /Alle Bewertungen auf <GoogleMapsName \/>/);
+    assert.match(SECTION_SOURCE, /Auf <GoogleMapsName \/> ansehen/);
     assert.match(SITE_CSS, /\.noWrap \{\s*white-space: nowrap;\s*\}/);
+    // Die sichtbare Textattribution gibt es nur noch im Demo-Zweig (Phase 17: Google ⇒ Logo).
+    assert.match(SECTION_SOURCE, /Quelle: \{attribution\.text\}/);
+    assert.doesNotMatch(SECTION_SOURCE, /Quelle: \{google/);
     // Richtlinien-Link extern sicher geöffnet.
     assert.match(
       SECTION_SOURCE,
       /<a href=\{policy\.href\} rel="noopener noreferrer" target="_blank">/,
     );
+  });
+});
+
+describe('Bewertungen – Attribution mit dem offiziellen Google-Maps-Logo (Phase 17, Design D19 / Auftrag §25)', () => {
+  it('SEO-W-REV1. google ⇒ Logo-Attribution mit alt „Google Maps“ (verlinkt nur auf https-placeUri); demo ⇒ Text ohne Logo, nie „Google“', () => {
+    assert.deepEqual(reviewsAttribution(GOOGLE), {
+      kind: 'google-maps-logo',
+      src: '/google-maps-logo-gray.svg',
+      alt: 'Google Maps',
+      width: 98,
+      height: 18,
+      href: 'https://maps.google.com/?cid=1',
+    });
+    // placeUri fehlt oder ist nicht https ⇒ Logo ohne Link (nie http/javascript verlinken).
+    for (const placeUri of [null, '', 'http://maps.google.com/?cid=1', 'javascript:alert(1)']) {
+      const attribution = reviewsAttribution({ ...GOOGLE, placeUri });
+      assert.equal(attribution.kind, 'google-maps-logo');
+      assert.equal(attribution.kind === 'google-maps-logo' ? attribution.href : 'x', null);
+    }
+    // Auch eine abweichende API-Attribution ändert im Google-Modus nichts am Logo.
+    assert.equal(
+      reviewsAttribution({ ...GOOGLE, attribution: 'Irgendwas' }).kind,
+      'google-maps-logo',
+    );
+
+    assert.deepEqual(reviewsAttribution(DEMO), {
+      kind: 'text',
+      text: 'DEMO – synthetische Beispielbewertungen',
+    });
+    assert.deepEqual(reviewsAttribution({ ...DEMO, attribution: 'Google Maps' }), {
+      kind: 'text',
+      text: 'DEMO – synthetische Beispielbewertungen',
+    });
+    const demoWithPlace = reviewsAttribution({
+      ...DEMO,
+      placeUri: 'https://maps.google.com/?cid=1',
+    });
+    assert.equal(demoWithPlace.kind, 'text');
+    assert.doesNotMatch(JSON.stringify(demoWithPlace), /google|logo|svg/i);
+
+    // Asset-Konstanten: natives Verhältnis 98:18, alt = Pflichttext, Freiraum ≥ 10 px (POL) und
+    // Linkfläche 18 + 2 × Freiraum ≥ 44 px (UX_RULES).
+    assert.equal(GOOGLE_MAPS_LOGO.alt, GOOGLE_ATTRIBUTION);
+    assert.equal(GOOGLE_MAPS_LOGO.width / GOOGLE_MAPS_LOGO.height, 98 / 18);
+    assert.ok(GOOGLE_MAPS_LOGO.height >= 16 && GOOGLE_MAPS_LOGO.height <= 19);
+    assert.ok(GOOGLE_MAPS_LOGO.clearSpacePx >= 10);
+    assert.ok(GOOGLE_MAPS_LOGO.height + 2 * GOOGLE_MAPS_LOGO.clearSpacePx >= 44);
+
+    // Darstellung (Quelltext der Komponente): <img src alt width height>, CSS-Höhe 18 px/Breite
+    // auto, translate="no" + Test-IDs am umgebenden Element, nur im Logo-Zweig gerendert.
+    assert.match(
+      SECTION_SOURCE,
+      /<img\s+src=\{attribution\.src\}\s+alt=\{attribution\.alt\}\s+width=\{attribution\.width\}\s+height=\{attribution\.height\}/,
+    );
+    assert.match(SECTION_SOURCE, /height: `\$\{attribution\.height\}px`, width: 'auto'/);
+    assert.match(
+      SECTION_SOURCE,
+      /<div\s+translate="no"\s+data-testid="reviews-attribution"\s+data-attribution="google-maps-logo"/,
+    );
+    assert.match(SECTION_SOURCE, /padding: `\$\{GOOGLE_MAPS_LOGO\.clearSpacePx\}px 0`/);
+    assert.match(
+      SECTION_SOURCE,
+      /attribution\.kind === 'google-maps-logo' \? \(\s*<GoogleMapsAttribution attribution=\{attribution\} \/>/,
+    );
+    assert.equal(SECTION_SOURCE.match(/<GoogleMapsAttribution /g)?.length, 1);
+    // Logo-Link extern sicher geöffnet; ohne placeUri ein Span statt Link.
+    assert.match(
+      SECTION_SOURCE,
+      /<a href=\{attribution\.href\} rel="noopener noreferrer" target="_blank" style=\{clearSpace\}>/,
+    );
+    assert.match(SECTION_SOURCE, /<span style=\{clearSpace\}>\{logo\}<\/span>/);
+    // Demo-Zweig: Textattribution mit Test-ID, kein Logo-Pfad außerhalb des Logo-Zweigs.
+    assert.match(
+      SECTION_SOURCE,
+      /data-testid="reviews-attribution"\s+data-attribution="text"\s*>\s*Quelle: \{attribution\.text\}/,
+    );
+    assert.doesNotMatch(SECTION_SOURCE, /google-maps-logo-gray\.svg/);
+    // Horizontaler Freiraum: Flex-Abstand der Summary-Zeile ≥ 10 px und Seitenrand ≥ 1rem.
+    assert.match(SITE_CSS, /\.reviewSummary \{[^}]*gap: 0\.5rem 1rem;/);
+    assert.match(SITE_CSS, /--mr-gutter: clamp\(1rem, 4vw, 2rem\);/);
+    // Kontrast Gray #5E5E5E auf dem Creme-Hintergrund der Sektion (POL „accessible contrast“).
+    assert.ok(contrast('#5e5e5e', token('mr-cream')) >= 4.5);
+    assert.ok(contrast('#5e5e5e', token('mr-sand')) >= 4.5);
+  });
+
+  it('SEO-W-REV2. Asset in apps/web/public ist die unveränderte offizielle Gray-SVG (Hash, 98×18, nur Pfade – kein Script, keine externen Referenzen)', () => {
+    assert.equal(createHash('sha256').update(LOGO_SVG).digest('hex'), OFFICIAL_LOGO_SHA256);
+    const svg = LOGO_SVG.toString('utf8');
+    assert.match(svg, /^<\?xml version="1\.0" encoding="utf-8"\?>/);
+    assert.match(svg, /<svg [^>]*width="98px" height="18px" viewBox="0 0 98 18"/);
+    assert.equal(svg.match(/<path /g)?.length, 2);
+    assert.deepEqual([...new Set(svg.match(/fill="#[0-9A-Fa-f]{6}"/g))], ['fill="#5E5E5E"']);
+    for (const forbidden of [
+      /<script/i,
+      /<style/i,
+      /<image/i,
+      /<use\b/i,
+      /<foreignObject/i,
+      /<!ENTITY/i,
+      /<!DOCTYPE/i,
+      /\shref=/i,
+      /xlink:href/i,
+      /url\(/i,
+      /@import/i,
+      /javascript:/i,
+      /\son[a-z]+=/i,
+    ]) {
+      assert.doesNotMatch(svg, forbidden);
+    }
+    // Einzige externe Zeichenketten: die SVG-/XLink-Namensraum-Deklarationen (keine Referenzen).
+    const urls = svg.match(/https?:\/\/[^"'\s<>]+/g) ?? [];
+    assert.deepEqual([...new Set(urls)].sort(), [
+      'http://www.w3.org/1999/xlink',
+      'http://www.w3.org/2000/svg',
+    ]);
+  });
+
+  it('SEO-W-REV3. Proxy (Alt-URL-Behandlung) lässt den Logo-Pfad unberührt – kein Redirect, kein 410 ⇒ Datei aus public/', () => {
+    assert.deepEqual(decideLegacyRoute(GOOGLE_MAPS_LOGO.src, ''), { kind: 'none' });
+    assert.deepEqual(decideLegacyRoute(GOOGLE_MAPS_LOGO.src, '?v=1'), { kind: 'none' });
+    assert.equal(GOOGLE_MAPS_LOGO.src.endsWith('/'), false);
+    assert.match(GOOGLE_MAPS_LOGO.src, /^\/[a-z0-9-]+\.svg$/);
   });
 });
 

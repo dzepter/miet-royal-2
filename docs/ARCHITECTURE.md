@@ -56,7 +56,10 @@ Bestehendes simples Webhosting nicht als App-Backend voraussetzen.
 
 ## Domains
 Vorschlag:
-- www.miet-royal.de → Website
+- www.miet-royal.de → Website (Phase 17: kanonischer Host; Apex `miet-royal.de`
+  ⇒ 308 auf `https://www.miet-royal.de$request_uri` und HTTP ⇒ HTTPS ausschließlich
+  im Reverse-Proxy – kein Host-Header-Verhalten im Anwendungscode; absolute
+  SEO-URLs nur aus `MAIL_PUBLIC_WEB_BASE_URL`, docs/SEO_TECHNICAL.md)
 - app.miet-royal.de → Staff
 - demo.miet-royal.de → Demo
 - kunden.miet-royal.de oder /konto → Kundenbereich
@@ -186,3 +189,31 @@ docs/WEBSITE_CMS.md, docs/WEBSITE_CONFIGURATOR.md, docs/GOOGLE_REVIEWS_API_NOTES
 - **Demo:** CMS-Tabellen überleben den Business-Reset; Website-Anfragen
   (`public_inquiry_submissions`) werden gelöscht. Bewertungen in der Demo nur
   synthetisch (`fake`), nie Google.
+
+## SEO-Schicht und Alt-URLs (Phase 17)
+Technische SEO und Website-Migration laufen in den vorhandenen Prozessen (Details:
+docs/SEO_TECHNICAL.md, docs/REDIRECT_MATRIX.md, docs/SEO_STRUCTURED_DATA_NOTES.md):
+
+- **Web-Proxy (`apps/web/proxy.ts`):** einziger Ort für Alt-URLs der bisherigen
+  WordPress-Website – permanenter Redirect 308 in einem Hop, 410 als eigenständiges
+  HTML, Schluss-Slash-Normalisierung; reine Entscheidungsfunktion
+  `apps/web/lib/legacy-routes.ts` (Listen `LEGACY_REDIRECTS`, `LEGACY_GONE`),
+  `skipTrailingSlashRedirect` in `next.config.ts`. Ziel-URLs stammen nie aus
+  Host-/Forwarded-Headern; kein Logging (Token in Pfaden).
+- **SEO-Kontext (`apps/web/lib/site-seo.ts`, `site-meta.ts`,
+  `components/site/site-data.ts`):** je Request eine fail-closed Entscheidung aus
+  `WEB_INDEXING_ENABLED`, Demo-Kennzeichnung, Origin-Vergleich und der von der API
+  gelieferten Basis `publicBaseUrl` (= `MAIL_PUBLIC_WEB_BASE_URL`; in production nur
+  https). Daraus Metadaten (Canonical, OpenGraph, Twitter, robots), `app/robots.ts`,
+  `app/sitemap.ts` und JSON-LD (`lib/site-jsonld.ts`, `components/site/json-ld.tsx`).
+  Root-Layout immer noindex; Portal, Vorschau, Token-Seiten, 404/410 und Demo bleiben
+  noindex.
+- **API:** Bootstrap `GET /public/site/settings` liefert `publicBaseUrl` und je Seite
+  `publishedAt`; `GET /staff/cms/seo-check` (`apps/api/src/cms/seo-check.ts`) liefert
+  Redaktionshinweise (nie blockierend); die öffentliche Produktprojektion
+  (`apps/api/src/public/catalog.ts`) blendet Preis-Freitext in Name, Beschreibung und
+  Verkaufseinheit fail-closed aus (eine Preisquelle).
+- **Staff:** `SeoWarningsBox` (`apps/staff/components/website.tsx`) in Übersicht und
+  Editor des Bereichs „Website“.
+- **Reverse-Proxy:** kanonischer Host `www`, Apex-Redirect, HTTP ⇒ HTTPS,
+  Normalisierung absolute-form Request-Targets (kein App-Code).

@@ -5,17 +5,25 @@
 cloud.google.com). Abgerufen als HTML/Text; **kein Aufruf gegen places.googleapis.com** – weder
 bei der Recherche noch in Tests (Tests laufen gegen einen lokalen Fake-HTTP-Server).
 
+**Nachgeprüft am:** 12.11.2026 (Phase 17, Auftrag §25): Die Policies-Seite (POL) trägt jetzt den
+Stand 2026-11-09 mit dem neuen Abschnitt „Data storage, caching, and scraping“ (Abschnitt 5); PD,
+FLAG und EEA-PL tragen ebenfalls 2026-11-09, inhaltlich unverändert; EEA-PU unverändert
+(04.06.2025). Zusätzlich das offizielle Attributionsasset (ASSETS) und die allgemeinen
+Geo-Markenregeln (GEO-BRAND) geprüft – die Attribution ist seitdem das Google-Maps-Logo
+(Abschnitt 3 „Logo-Attribution“). Weiterhin **kein Aufruf gegen places.googleapis.com**.
+
 Viele Doku-Seiten tragen oben einen Kasten „Page Summary“, der laut HTML
 `data-tooltip="Generated with AI"` ist. Er ist **nicht normativ** und wird hier nicht als Beleg
 verwendet. Zitiert wird nur aus dem Seitentext bzw. den Vertragsbedingungen.
 
-Policies und Terms ändern sich häufig (die Service Specific Terms zuletzt am 28.10.2026).
+Policies und Terms ändern sich häufig (die Service Specific Terms zuletzt am 28.10.2026, die
+Policies-Seite am 09.11.2026).
 **Vor Go-live diese Notizen erneut gegen die Quellen prüfen.**
 
 | Kurzname | Quelle | Stand laut Seite |
 | --- | --- | --- |
-| PD | https://developers.google.com/maps/documentation/places/web-service/place-details | 2026-11-03 |
-| POL | https://developers.google.com/maps/documentation/places/web-service/policies | 2026-11-03 |
+| PD | https://developers.google.com/maps/documentation/places/web-service/place-details | 2026-11-09 (nachgeprüft 12.11.2026, inhaltlich unverändert) |
+| POL | https://developers.google.com/maps/documentation/places/web-service/policies | 2026-11-09 (nachgeprüft 12.11.2026; neu: „Data storage, caching, and scraping“) |
 | REST-Place | https://developers.google.com/maps/documentation/places/web-service/reference/rest/v1/places | 2026-10-27 |
 | REST-get | https://developers.google.com/maps/documentation/places/web-service/reference/rest/v1/places/get | 2026-05-15 |
 | FIELDS | https://developers.google.com/maps/documentation/places/web-service/data-fields | 2026-11-03 |
@@ -27,7 +35,7 @@ Policies und Terms ändern sich häufig (die Service Specific Terms zuletzt am 2
 | KEY | https://developers.google.com/maps/documentation/places/web-service/get-api-key | 2026-11-03 |
 | SEC | https://developers.google.com/maps/api-security-best-practices | 2026-11-03 |
 | PID | https://developers.google.com/maps/documentation/places/web-service/place-id | 2026-11-03 |
-| FLAG | https://developers.google.com/maps/documentation/places/web-service/content-reporting | 2026-11-03 |
+| FLAG | https://developers.google.com/maps/documentation/places/web-service/content-reporting | 2026-11-09 (nachgeprüft 12.11.2026, inhaltlich unverändert) |
 | LINKS | https://developers.google.com/maps/documentation/places/web-service/maps-links | 2026-11-03 |
 | MURL | https://developers.google.com/maps/documentation/urls/get-started | 2026-11-03 |
 | TOS | https://cloud.google.com/maps-platform/terms | 26.08.2026 |
@@ -35,9 +43,11 @@ Policies und Terms ändern sich häufig (die Service Specific Terms zuletzt am 2
 | EEA-TOS | https://cloud.google.com/terms/maps-platform/eea | 26.08.2026 |
 | EEA-SST | https://cloud.google.com/terms/maps-platform/eea/maps-service-terms | 28.10.2026 |
 | EEA-PU | https://cloud.google.com/terms/maps-platform/eea-places-api-permitted-uses | 04.06.2025 |
-| EEA-PL | https://developers.google.com/maps/comms/eea/places | 2026-11-03 |
+| EEA-PL | https://developers.google.com/maps/comms/eea/places | 2026-11-09 (nachgeprüft 12.11.2026, inhaltlich unverändert) |
 | EEA-FAQ | https://developers.google.com/maps/comms/eea/faq | 2026-11-03 |
 | AIP-193 | https://google.aip.dev/193 (Weiterleitung von https://cloud.google.com/apis/design/errors) | o. A. |
+| ASSETS | https://developers.google.com/static/maps/documentation/images/Google_Maps_Attribution_Assets.zip | Zip vom 08.07.2025 (abgerufen 12.11.2026) |
+| GEO-BRAND | https://about.google/brand-resource-center/products-and-services/geo-guidelines/ | o. A. (abgerufen 12.11.2026) |
 
 ## Kurzfassung
 
@@ -54,9 +64,11 @@ Policies und Terms ändern sich häufig (die Service Specific Terms zuletzt am 2
    eine eigene **globale Tagesgrenze** (`REVIEWS_DAILY_REQUEST_LIMIT`, Default 32).
 4. **EWR-Nutzungszweck unklar ⇒ fail-closed:** `REVIEWS_PROVIDER=google` startet nur mit
    `GOOGLE_REVIEWS_TERMS_CONFIRMED=true`. Bis zur Klärung bleibt production auf `disabled`.
-5. **Attribution Pflicht:** „Google Maps“, je Bewertung Avatar + Name + Profil-Link, Link zur
-   einzelnen Bewertung, Meldelink, Sortier-/Filterhinweis, Übersetzungshinweis. Demo-/Fake-Inhalte
-   tragen **nie** „Google“.
+5. **Attribution Pflicht:** offizielles Google-Maps-Logo (seit Phase 17; der Text „Google Maps“
+   ist laut POL nur bei Platzmangel zulässig und dient hier als Accessibility-Label des Logos), je
+   Bewertung Avatar + Name + Profil-Link, Link zur einzelnen Bewertung, Meldelink,
+   Sortier-/Filterhinweis, Übersetzungshinweis, Richtlinienhinweis. Demo-/Fake-Inhalte tragen
+   **nie** „Google“ und nie das Logo.
 6. **Datenschutz:** Der Server sendet Google keine Besucherdaten. Der Browser lädt Avatare von
    Google-Hosts – erst **nach Klick**. Die Datenschutzerklärung muss das vor Go-live nennen.
 
@@ -119,7 +131,7 @@ Google.“*), EEA-TOS 3.2.5 (*„Customer will comply with the Documentation“*
 
 | Pflicht (POL/FLAG) | Beleg | Umsetzung Miet-Royal |
 | --- | --- | --- |
-| „Google Maps“ (Logo bevorzugt, Text bei wenig Platz) ohne Karte | POL: *„Attribution should take the form of the Google Maps logo whenever possible. In cases where space is limited, the text Google Maps is acceptable.“* | DTO `attribution: 'Google Maps'`; Web zeigt Text „Google Maps“ in `<span translate="no">` ohne Umbruch (`white-space: nowrap`), Systemschrift Sans-Serif, keine Google Fonts – auch in den Links „Alle Bewertungen auf Google Maps“ und „Auf Google Maps ansehen“. Logo-Entscheidung = Go-live-Punkt. |
+| Google-Maps-Logo (Text „Google Maps“ nur bei Platzmangel) ohne Karte | POL: *„Attribution should take the form of the Google Maps logo whenever possible. In cases where space is limited, the text Google Maps is acceptable.“* – *„If the size of your interface does not support using the Google Maps logo, you can spell out Google Maps in text.“* | **Logo umgesetzt (Phase 17, 12.11.2026)** – Details unten „Logo-Attribution“. DTO bleibt `attribution: 'Google Maps'` (Web nutzt den Text als alt/Label des Logos); in den Linktexten „Alle Bewertungen auf Google Maps“ und „Auf Google Maps ansehen“ steht „Google Maps“ weiter in `<span translate="no">` ohne Umbruch (Linktext, keine Attribution). |
 | Autor: Avatar, Name, Profil-Link | POL: *„You must always credit the author when displaying photos or reviews.“*; *„For reviews, If space is limited, the minimum requirement is to display the author's avatar.“* | Bewertung ohne `displayName`/`uri`/`photoUri` wird verworfen; im DTO für `mode: 'google'` sind `authorUri`, `authorPhotoUri` immer gesetzt. |
 | Link zur einzelnen Bewertung | POL: *„end-users must always have access to view the individual source photo or review on Google Maps using the provided googleMapsUri.“* | ohne `googleMapsUri` keine Anzeige; DTO `reviewUri` immer gesetzt. |
 | Meldelink | FLAG: *„You must display the content reporting link when you display these objects“* (POL: „recommended“) | fail-safe anzeigen: DTO `flagUri`; ein gelieferter, aber unzulässiger Link verwirft die Bewertung. |
@@ -134,6 +146,57 @@ die recommended-Punkte sind umgesetzt. Texte werden **nicht verändert** (keine 
 eigene Übersetzung, keine KI-Zusammenfassung, keine Auswahl nach Sternen; Grundlage EEA-TOS
 3.3.2(c) *„No Creating Content From Google Maps Content“* und EEA-SST §2). `visitDate` ist laut POL
 nur für Orte in Frankreich anzuzeigen und wird nicht angefordert.
+
+### Logo-Attribution (Phase 17, Auftrag §25 / Design D19 – umgesetzt 12.11.2026)
+
+Bewertung: Ein formales „must logo“ steht nicht im normativen Seitentext (die Formulierung
+*„you must include the Google logo“* steht nur in der KI-„Page Summary“); die Text-Variante ist
+aber ausdrücklich an **begrenzten Platz** gebunden (*„where space is limited“*, *„If the size of
+your interface does not support using the Google Maps logo“*). Eine Bewertungs-Sektion auf einer
+Desktop-/Mobile-Website hat diesen Platz ⇒ die regelkonforme Form ist das Logo. „Powered by
+Google“ kommt auf der aktuellen Policies-Seite nicht mehr vor; POL: *„For new implementations,
+use "Google Maps"“*. Vorgaben (POL, Abschnitt „Google Maps logo“, Stand 2026-11-09; GEO-BRAND):
+
+- *„Use the official Google Maps logo files.“* – *„Don't modify the logo in any way.“* –
+  *„Maintain the aspect ratio of the logo to prevent distortion.“*
+- *„Use the outlined logo on a busy background, like a map or image. Use the non-outlined logo on
+  a plain background, like a solid color or subtle gradient.“*
+- *„Minimum logo height: 16dp – Maximum logo height: 19dp – Minimum logo clear space: 10dp on
+  left, right and top, 5dp on the bottom“*
+- *„Maintain an accessible contrast between the logo and the background. Include an accessibility
+  label with the text Google Maps.“*
+- *„Position attribution near the top or bottom of the content, and within the same visual
+  container.“* – *„Verify that the attribution is always visible and legible. Never remove, hide,
+  obscure, or modify it.“*
+- GEO-BRAND: *„Google logos cannot be used in-line (for example, "These maps from [Google
+  logo].")“* – *„You may not move the attribution away from the content, such as to … the footer
+  of your website.“* – *„Requests for exceptions will not be answered or granted.“*
+
+Asset: `Google_Maps_Attribution_Assets.zip` (ASSETS; Zip-Datum 08.07.2025, abgerufen 12.11.2026;
+im Zip keine README-/Lizenzdatei – die Nutzungsregeln stehen nur auf POL). Inhalt: fünf Varianten
+`GoogleMaps_Logo_{Gray, DarkGray, White, WithLightOutline, WithDarkOutline}`, je als SVG und als
+PNG 1x/2x/4x; die nicht umrandeten SVGs haben `viewBox 0 0 98 18`, die umrandeten `0 0 105 22`.
+
+Umsetzung Miet-Royal (`apps/web/components/site/reviews-section.tsx`, Logik
+`apps/web/lib/reviews.ts`, Asset `apps/web/public/google-maps-logo-gray.svg`):
+
+| Vorgabe | Umsetzung |
+| --- | --- |
+| Offizielle Datei, unverändert | `GoogleMaps_Logo_Gray.svg` byteidentisch kopiert (SHA-256 `99a08b570afce8ce830d26aeb93ba287f6ad67387e6219fe381234ad7e4016b5`; Unit-Test SEO-W-REV2 prüft Hash, Maße, genau zwei `<path>`-Elemente, keine Scripts/externen Referenzen); lokal aus `public/` ausgeliefert (kein Hotlink, kein Nachbau, kein CSS-Filter, keine Farb-/Formänderung). |
+| Variante / Hintergrund | Gray (`#5E5E5E`, nicht umrandet) auf dem ruhigen Creme-Hintergrund `#FFFCF2` der Sektion: Kontrast 6,3:1 (auf Sand `#F6EBD4` 5,5:1). Weitere Varianten (White, umrandet) werden nicht gebraucht – die Sektion liegt nie auf dunklem Grund oder über einem Bild. |
+| Größe / Verhältnis | `<img src="/google-maps-logo-gray.svg" alt="Google Maps" width="98" height="18">`, CSS `height: 18px; width: auto` – 18 px liegt in 16–19 dp; `width`/`height` im nativen Verhältnis 98:18 ⇒ kein Layout-Shift. |
+| Freiraum | Vertikal 13 px Innenabstand des Logo-Elements (≥ 10 dp; zugleich 44 px Touchfläche des Links), horizontal der Flex-Abstand 1 rem der Summary-Zeile und der Seitenrand ≥ 1 rem (Unit-Test SEO-W-REV1 prüft die CSS-Werte). |
+| Accessibility-Label | `alt="Google Maps"` (kein zusätzlicher versteckter Text); der Link heißt damit „Google Maps“. |
+| Position | Eigenständiges Element oben im Inhalt der Sektion, neben Gesamtbewertung und Anzahl, im selben Container wie die Bewertungen – nie inline in einem Satz, nie in der Fußzeile. |
+| Nicht übersetzbar | `translate="no"` am umgebenden Element; `data-testid="reviews-attribution"`, `data-attribution="google-maps-logo"`. |
+| Verlinkung | Auf `placeUri` (Ort bei Google Maps), nur wenn vorhanden und `https:` (serverseitig zusätzlich Host-Allowlist), `rel="noopener noreferrer"`, `target="_blank"`; ohne Link bleibt das Logo stehen. |
+| Demo | Unverändert Text „Quelle: DEMO – synthetische Beispielbewertungen“ (`data-attribution="text"`), nie das Logo, nie „Google“, kein `<img>` in der Sektion (E2E K2). |
+| Klick-zum-Laden | Das Logo erscheint erst mit den Bewertungen (nach dem Klick); vor dem Klick wird weiterhin nichts von Google geladen. |
+
+Tests: `apps/web/lib/reviews.test.ts` W-R9 (Linktexte), SEO-W-REV1 (google ⇒ Logo-Attribution mit
+alt „Google Maps“, Link nur https; demo ⇒ Text ohne Logo), SEO-W-REV2 (Asset unverändert, nur
+Pfade), SEO-W-REV3 (Alt-URL-Proxy fasst den Logo-Pfad nicht an). Die Sichtabnahme auf Staging bleibt
+Go-live-Punkt 9.
 
 ## 4. Limits und Kosten
 - PD: *„reviews and reviewSummary: Return up to five user-submitted Review objects … Requesting
@@ -192,6 +255,39 @@ exempt from the caching restrictions. You can therefore store place ID values in
 
 Die Tabelle `integration_rate_limits` enthält nur Provider, Umgebung und Zeitpunkte – keine
 Inhalte, keinen Key, keine URL.
+
+### Policy-Abschnitt „Data storage, caching, and scraping“ (POL, neu seit 2026-11-09)
+
+Die Policies-Seite fasst die Vertragsregeln seit dem 09.11.2026 selbst zusammen (geprüft
+12.11.2026):
+
+> Caching and scraping restrictions (Section 3.2.3(a) and (b)): Cache or store Google Maps
+> Content only as expressly permitted under the Google Maps Platform Service Specific Terms. Don't
+> export, extract, or scrape Google Maps Content for use outside the Services. For example, don't
+> pre-fetch, index, store, or redistribute Google Maps Content outside the Services; … or copy and
+> save business names, addresses, or user reviews.
+>
+> Derived content restrictions (Section 3.2.3(c)): … Don't create content based on Google Maps
+> Content.
+>
+> To reduce latency and billing costs without caching restricted data, use field masks or field
+> lists to request only the fields that your user interface needs. Store exempt identifiers such
+> as the place ID to fetch fresh details when a user interacts with a place.
+>
+> Google technical support engineers can't provide legal advice or grant exceptions to the Google
+> Maps Platform Terms of Service. Consult your legal counsel to determine whether your
+> implementation complies with the terms, or contact Sales if your use case requires custom
+> licensing.
+
+Die Ausnahmen sind dort ausformuliert: Place ID *„exempt from the caching restrictions. You can
+therefore store place ID values indefinitely“*; lat/lng *„up to 30 consecutive calendar days“*.
+
+Konsequenzen: Die Phase-16-Entscheidungen oben (kein DB-/Memory-/CDN-Cache, `Cache-Control:
+no-store`, Place ID in der Config, minimale Feldmaske) sind damit wörtlich durch die Policies-Seite
+gedeckt. **Klick-zum-Laden** (*„fetch fresh details when a user interacts with a place“*) ist genau
+das empfohlene Muster – kein automatischer Abruf beim Seitenaufbau, kein Prefetch, kein
+Server-Rendering der Bewertungen. Fragen zur Vertragsauslegung (Go-live 2) beantwortet der
+Google-Support ausdrücklich nicht ⇒ Rechtsberatung oder Google Sales.
 
 ## 6. EWR-Nutzungszweck (fail-closed)
 - Bei einer Billing-Adresse im EWR gelten EEA-TOS, EEA-SST und die **Places API EEA Permitted
@@ -258,6 +354,12 @@ Inhalte, keinen Key, keine URL.
   (Unit, lokaler Fake-HTTP-Server `apps/api/src/reviews/testing/fake-places-server.ts`) und
   `apps/api/test/reviews-*.integration.test.ts` (Route, globale Grenze, kein DB-Inhalt, Key nie im
   Log). Kein Test ruft Google auf.
+- **Web-Darstellung** (`apps/web/components/site/reviews-section.tsx`, Logik
+  `apps/web/lib/reviews.ts`): Klick-zum-Laden („Bewertungen anzeigen“), Attribution mit dem
+  offiziellen Google-Maps-Logo (Phase 17, Abschnitt 3 „Logo-Attribution“), Avatare mit
+  `referrerPolicy="no-referrer"`, externe Links mit `rel="noopener noreferrer"`, Antwort mit
+  fremdem Modus wird verworfen; Tests `apps/web/lib/reviews.test.ts` (W-R6–W-R12,
+  SEO-W-REV1–SEO-W-REV3).
 
 ## 9. Fehlerbilder (AIP-193, PD, PID)
 - Form: `{"error":{"code":<HTTP>,"message":…,"status":"<google.rpc.Code>","details":[…]}}`.
@@ -281,8 +383,12 @@ Inhalte, keinen Key, keine URL.
 ## Go-live
 1. Vertragsregime klären (Billing-Adresse EWR ⇒ EEA-TOS/EEA-SST/EEA-PU; EEA-ToS in der Console
    akzeptieren).
-2. Permitted Use bestätigen (EEA-PU Nr. (2) für ein Profil ohne öffentliche Adresse?) – über den
-   Google-Maps-Platform-Support oder rechtlich. **Bis dahin `REVIEWS_PROVIDER=disabled`.**
+2. Permitted Use bestätigen (EEA-PU Nr. (2) für ein Profil ohne öffentliche Adresse?) – **nicht**
+   über den Google-Maps-Platform-Support: Laut POL (2026-11-09) gibt der technische Support weder
+   Rechtsauskunft noch Ausnahmen (*„Google technical support engineers can't provide legal advice
+   or grant exceptions … Consult your legal counsel … or contact Sales if your use case requires
+   custom licensing.“*) ⇒ Klärung durch Rechtsberatung oder Google Sales. **Bis dahin
+   `REVIEWS_PROVIDER=disabled`.**
 3. Google-Cloud-Projekt mit Billing; nur „Places API (New)“ (`places.googleapis.com`) aktivieren.
 4. API-Key je Umgebung: API-Restriction Places API (New), Application-Restriction IP (öffentliche
    Egress-IP der Production-API). Demo und Test bekommen keinen Key.
@@ -293,10 +399,12 @@ Inhalte, keinen Key, keine URL.
 8. Rechtstexte der Website (EEA-TOS 3.2.2): Hinweis auf Google-Maps-Inhalte, Google Maps End User
    Additional Terms (https://maps.google.com/help/terms_maps/) und Google Privacy Policy
    (https://policies.google.com/privacy); klären, wo das hingehört.
-9. Attribution-Abnahme gegen POL (Logo oder Text „Google Maps“; Avatar/Name/Profil-Link; Link zur
-   Bewertung; Meldelink; relatives Datum; Sortier-, Übersetzungs- und Richtlinienhinweis; klare
-   visuelle Abgrenzung; keine Karte in der Nähe). Logo (offizielle Assets, lokal ausgeliefert)
-   ist bevorzugt – Entscheidung offen.
+9. Attribution-Abnahme gegen POL: Logo **umgesetzt** (Phase 17, Abschnitt 3 „Logo-Attribution“:
+   offizielles Asset, lokal ausgeliefert, Gray-Variante, 18 px, Freiraum, alt „Google Maps“, Link
+   auf den Ort). Die Abnahme selbst bleibt: Sichtprüfung auf Staging mit echten Daten (Logo
+   sichtbar und lesbar, Kontrast, Position im selben Container, Avatar/Name/Profil-Link, Link zur
+   Bewertung, Meldelink, relatives Datum, Sortier-, Übersetzungs- und Richtlinienhinweis, klare
+   visuelle Abgrenzung, keine Karte in der Nähe).
 10. Entscheidung DSB/Inhaber: Klick-zum-Laden (umgesetzt) bestätigen; Alternative wäre nur ein
     Maps-URL-Link ohne API (MURL: *„You don't need a Google API key to use Maps URLs.“*).
 11. Prüfen, dass kein Reverse-Proxy/CDN/Next `/api/public/reviews` oder HTML mit Bewertungen
@@ -317,3 +425,6 @@ Inhalte, keinen Key, keine URL.
   unvollständige Bewertungen verwerfen (ohne Text: Anzeige nur mit Sternen).
 - Abrechnungswährung: **unklar**.
 - Meldelink „must“ (FLAG) vs. „recommended“ (POL): **fail-safe angezeigt**.
+- Logo „must“ vs. „should“: normativ *„should … whenever possible“*, Text nur bei Platzmangel;
+  eine Logo-Pflicht steht nur in der KI-„Page Summary“ ⇒ Logo umgesetzt (Phase 17), kein formales
+  „must“ – bei der nächsten Prüfung der Quellen (Go-live 14) erneut lesen.
