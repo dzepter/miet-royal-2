@@ -247,3 +247,50 @@ test('K3. Website-Anfrage über die Demo-Web-Instanz ⇒ Vorgang/Anfrage/Kunde n
   ).toBe(0);
   await context.close();
 });
+
+// ── Phase 17: SEO-C5 ──────────────────────────────────────────────────────
+
+test('SEO-C5. Demo-Web ist nie indexierbar (auch mit gültiger Basis der Demo-API): robots.txt ohne Sitemap-Zeile, Seiten noindex ohne Canonical/og:url/JSON-LD, leere Sitemap', async ({
+  request,
+  page,
+}) => {
+  test.setTimeout(180_000);
+  // Die Demo-API liefert eine gültige Basis (MAIL_PUBLIC_WEB_BASE_URL = Demo-Web) – Demo bleibt
+  // trotzdem fail-closed noindex (Auftrag §3, Design D2).
+  const settings = await getJson<SiteBootstrap & { publicBaseUrl: string | null }>(
+    `${DEMO_API_ORIGIN}/public/site/settings`,
+  );
+  expect(settings.data.publicBaseUrl).toBe(DEMO_WEB_ORIGIN);
+
+  const robotsResponse = await request.get(`${DEMO_WEB_ORIGIN}/robots.txt`, { maxRedirects: 0 });
+  expect(robotsResponse.status()).toBe(200);
+  const robots = await robotsResponse.text();
+  expect(robots).toMatch(/^User-Agent: \*$/m);
+  expect(robots).toMatch(/^Allow: \/$/m);
+  expect(robots).toMatch(/^Disallow: \/api\/$/m);
+  expect(robots, 'kein „Disallow: /“').not.toMatch(/^Disallow: \/\s*$/m);
+  expect(robots, 'keine Sitemap-Zeile').not.toMatch(/^Sitemap:/m);
+
+  const sitemap = await request.get(`${DEMO_WEB_ORIGIN}/sitemap.xml`, { maxRedirects: 0 });
+  expect(sitemap.status()).toBe(200);
+  const xml = await sitemap.text();
+  expect(xml).toContain('<urlset');
+  expect(xml, 'leere Sitemap').not.toContain('<url>');
+
+  for (const path of ['/', '/konfigurator', '/slushmaschine-mieten/mainz']) {
+    const response = await page.goto(`${DEMO_WEB_ORIGIN}${path}`, { timeout: 90_000 });
+    expect(response?.status(), `GET ${path}`).toBe(200);
+    await expectBanner(page, path);
+    const robotsMeta = await page
+      .locator('meta[name="robots"]')
+      .evaluateAll((elements) => elements.map((el) => el.getAttribute('content') ?? ''));
+    expect(robotsMeta.length, `${path}: robots-Meta`).toBeGreaterThanOrEqual(1);
+    for (const content of robotsMeta) expect(content, `${path}: noindex`).toContain('noindex');
+    await expect(page.locator('link[rel="canonical"]'), `${path}: kein Canonical`).toHaveCount(0);
+    await expect(page.locator('meta[property="og:url"]'), `${path}: kein og:url`).toHaveCount(0);
+    await expect(
+      page.locator('script[type="application/ld+json"]'),
+      `${path}: kein JSON-LD`,
+    ).toHaveCount(0);
+  }
+});

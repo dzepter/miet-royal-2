@@ -5,9 +5,11 @@ import { CMS_BOOTSTRAP_ENTRIES } from '../src/cms/bootstrap-content.ts';
 import { runCmsBootstrap } from '../src/cms/bootstrap.ts';
 import type { StaffCmsEntryDetail } from '../src/cms/cms-service.ts';
 import type { SeoWarning } from '../src/cms/seo-check.ts';
+import { PICKUP_EXACT_ADDRESS_KEY, setStringSetting } from '../src/crm/settings-service.ts';
 import { destroyTestContext, type TestContext } from './auth-helpers.ts';
 import {
   call,
+  CMS_TEST_EXACT_ADDRESS,
   createCmsTestContext,
   resetCmsWorld,
   seedPage,
@@ -20,8 +22,10 @@ import {
  * Phase 17 (SEO, Order §11/§23/§24, Design D12): `GET /staff/cms/seo-check` – Rechte wie das
  * Lesen der Einträge (cms.edit ODER cms.publish), `no-store`, nicht blockierende deutsche
  * Hinweise ohne Codes: doppelte Meta-Titel veröffentlichter Seiten, Entwurf ohne Meta-Titel,
- * kaputter interner Link, Regions-Kopie, Produkt mit Preis-Freitext; Standardinhalte nach
- * `cms:bootstrap --publish-demo`. Namen laufen als „SEO-API<n>“.
+ * kaputter interner Link, Regions-Kopie, Produkt mit Preis-Freitext (Name, Beschreibung,
+ * Verkaufseinheit – Review RC-1), nachträglich gepflegte Abholadresse in einem Seitentitel
+ * (Review RC-4a); Standardinhalte nach `cms:bootstrap --publish-demo`. Namen laufen als
+ * „SEO-API<n>“.
  */
 
 let ctx: TestContext;
@@ -252,10 +256,15 @@ describe('Phase 17 – SEO-Check (GET /staff/cms/seo-check)', () => {
     expect(await warningsOf('BROKEN_INTERNAL_LINK')).toHaveLength(1);
   });
 
-  it('SEO-API5. Produkt mit Preisangabe in Beschreibung bzw. Name ⇒ Katalog-Hinweise ohne Preis im Text; inaktive Produkte bleiben außen vor', async () => {
-    const touched = ['sirup-kirsche', 'slush-2x8', 'sirup-waldmeister'];
+  it('SEO-API5. Produkt mit Preisangabe in Beschreibung, Name bzw. Verkaufseinheit ⇒ Katalog-Hinweise ohne Preis im Text mit Verweis auf die Produktverwaltung; inaktive Produkte bleiben außen vor', async () => {
+    const touched = ['sirup-kirsche', 'slush-2x8', 'sirup-waldmeister', 'becher-25'];
     const originals = await ctx.db
-      .select({ slug: products.slug, name: products.name, description: products.description })
+      .select({
+        slug: products.slug,
+        name: products.name,
+        description: products.description,
+        saleUnit: products.saleUnit,
+      })
       .from(products)
       .where(inArray(products.slug, touched));
     try {
@@ -271,6 +280,11 @@ describe('Phase 17 – SEO-Check (GET /staff/cms/seo-check)', () => {
         .update(products)
         .set({ description: 'EUR 12 je Flasche', active: false })
         .where(eq(products.slug, 'sirup-waldmeister'));
+      // Review RC-1: Verkaufseinheit mit Preisangabe
+      await ctx.db
+        .update(products)
+        .set({ saleUnit: '25er-Pack (ab 2,50 €)' })
+        .where(eq(products.slug, 'becher-25'));
       const response = await seoCheck(world.publisher.cookie);
       expect(response.statusCode).toBe(200);
       expect(response.json().warnings).toEqual([
@@ -281,7 +295,7 @@ describe('Phase 17 – SEO-Check (GET /staff/cms/seo-check)', () => {
           path: null,
           field: 'description',
           message:
-            'Die Beschreibung des Produkts „Sirup Kirsche“ enthält eine Preisangabe. Auf der Website wird die Beschreibung deshalb nicht angezeigt – Preise kommen ausschließlich aus „Produkte & Preise“.',
+            'Die Beschreibung des Produkts „Sirup Kirsche“ enthält eine Preisangabe. Auf der Website wird die Beschreibung deshalb nicht angezeigt – Preise kommen ausschließlich aus der Produktverwaltung („Produkte & Preise“).',
         },
         {
           code: 'PRODUCT_NAME_PRICE_HIDDEN',
@@ -290,17 +304,40 @@ describe('Phase 17 – SEO-Check (GET /staff/cms/seo-check)', () => {
           path: null,
           field: 'name',
           message:
-            'Der Name des Produkts mit dem Kürzel „slush-2x8“ enthält eine Preisangabe. Das Produkt wird auf der Website deshalb nicht angezeigt – bitte den Namen in „Produkte & Preise“ anpassen.',
+            'Der Name des Produkts mit dem Kürzel „slush-2x8“ enthält eine Preisangabe. Das Produkt wird auf der Website deshalb nicht angezeigt – bitte den Namen in der Produktverwaltung („Produkte & Preise“) anpassen.',
+        },
+        {
+          code: 'PRODUCT_UNIT_PRICE_HIDDEN',
+          scope: 'catalog',
+          entryId: null,
+          path: null,
+          field: 'saleUnit',
+          message:
+            'Die Verkaufseinheit des Produkts „Becher (25 Stück)“ enthält eine Preisangabe. Das Produkt wird auf der Website deshalb nicht angezeigt – bitte die Verkaufseinheit in der Produktverwaltung („Produkte & Preise“) anpassen.',
         },
       ]);
-      for (const forbidden of ['12 €', '100,-', 'EUR 12', 'Tagesmiete', 'waldmeister']) {
+      for (const forbidden of ['12 €', '100,-', 'EUR 12', 'Tagesmiete', 'waldmeister', '2,50']) {
         expect(response.body, forbidden).not.toContain(forbidden);
       }
+      // Dieselbe Projektion: der Becher-Pack fehlt in der Staff-Lesesicht „Produkte & Preise“.
+      const staffCatalog = await call(ctx, 'GET', '/staff/cms/catalog', {
+        cookie: world.viewer.cookie,
+      });
+      expect(staffCatalog.statusCode).toBe(200);
+      expect(staffCatalog.json().accessories.map((item: { slug: string }) => item.slug)).toEqual([
+        'strohhalme-25',
+      ]);
+      expect(staffCatalog.body).not.toContain('2,50');
     } finally {
       for (const original of originals) {
         await ctx.db
           .update(products)
-          .set({ name: original.name, description: original.description, active: true })
+          .set({
+            name: original.name,
+            description: original.description,
+            saleUnit: original.saleUnit,
+            active: true,
+          })
           .where(eq(products.slug, original.slug));
       }
     }
@@ -390,5 +427,87 @@ describe('Phase 17 – SEO-Check (GET /staff/cms/seo-check)', () => {
     ]) {
       expect(response.body, forbidden).not.toContain(forbidden);
     }
+  });
+
+  it('SEO-API9. Exakte Abholadresse nachträglich gepflegt: veröffentlichte Seite mit der Adresse im Titel liefert die Website nicht aus ⇒ Hinweis (ohne Adresse) und kaputter Link von der Startseite – dieselbe Entscheidung wie Bootstrap und Seitenabruf; nach Korrektur verschwinden beide (Review RC-4a)', async () => {
+    const home = await publishPage(
+      'home',
+      '/',
+      {
+        title: 'Startseite',
+        blocks: [
+          {
+            type: 'cta',
+            heading: 'Weiter',
+            primary: { label: 'Häufige Fragen', href: '/faq' },
+            secondary: { label: 'Konfigurator', href: '/konfigurator' },
+          },
+        ],
+      },
+      {
+        metaTitle: 'Slushmaschine mieten in Mainz | Miet-Royal',
+        metaDescription: DESCRIPTION_HOME,
+      },
+    );
+    // Zum Zeitpunkt der Veröffentlichung ist keine Abholadresse gepflegt ⇒ Titel zulässig.
+    const faq = await publishPage(
+      'faq',
+      '/faq',
+      { title: 'Häufige Fragen – Abholung Teststraße 1', blocks: [TEXT_BLOCK] },
+      {
+        metaTitle: 'Häufige Fragen zur Slush-Miete | Miet-Royal',
+        metaDescription: DESCRIPTION_FAQ,
+      },
+    );
+    expect(await warningsOf()).toEqual([]);
+    expect(
+      (await call(ctx, 'GET', '/public/site/settings'))
+        .json()
+        .pages.map((item: { path: string }) => item.path),
+    ).toEqual(['/', '/faq']);
+    // Adresse wird erst jetzt gepflegt ⇒ die Website liefert /faq fail-closed nicht mehr aus.
+    await setStringSetting(ctx.db, world.adminId, PICKUP_EXACT_ADDRESS_KEY, CMS_TEST_EXACT_ADDRESS);
+    const response = await seoCheck(world.editor.cookie);
+    expect(response.statusCode).toBe(200);
+    expect(response.json().warnings).toEqual([
+      {
+        code: 'BROKEN_INTERNAL_LINK',
+        scope: 'published',
+        entryId: home.id,
+        path: '/',
+        field: 'links',
+        message:
+          'Der Link „/faq“ führt auf eine Seite, die derzeit nicht veröffentlicht ist. Die Website blendet diesen Link aus, bis die Seite veröffentlicht ist.',
+      },
+      {
+        code: 'PAGE_SUPPRESSED',
+        scope: 'published',
+        entryId: faq.id,
+        path: '/faq',
+        field: 'content',
+        message:
+          'Die veröffentlichte Seite wird auf der Website nicht ausgeliefert, weil Titel oder Meta-Titel die exakte Abholadresse enthalten.',
+      },
+    ]);
+    expect(response.body.toLowerCase()).not.toContain('teststr');
+    expect(response.body).not.toContain('55129');
+    // Konsistenz mit der öffentlichen Projektion: Bootstrap ohne /faq, Seitenabruf 404.
+    const site = await call(ctx, 'GET', '/public/site/settings');
+    expect(site.json().pages.map((item: { path: string }) => item.path)).toEqual(['/']);
+    expect((await call(ctx, 'GET', '/public/site/page?path=/faq')).statusCode).toBe(404);
+    // Titel ohne Adresse veröffentlicht ⇒ Seite wieder erreichbar, beide Hinweise verschwinden.
+    const current = await world.cms.getEntry(faq.id);
+    await world.cms.saveDraft(world.editor.id, faq.id, {
+      baseRevisionId: current.draft.revisionId,
+      content: { title: 'Häufige Fragen', blocks: [TEXT_BLOCK] },
+      metaTitle: 'Häufige Fragen zur Slush-Miete | Miet-Royal',
+      metaDescription: DESCRIPTION_FAQ,
+    });
+    const corrected = await world.cms.getEntry(faq.id);
+    await world.cms.publish(world.publisher.id, faq.id, {
+      revisionId: corrected.draft.revisionId,
+    });
+    expect(await warningsOf()).toEqual([]);
+    expect((await call(ctx, 'GET', '/public/site/page?path=/faq')).statusCode).toBe(200);
   });
 });

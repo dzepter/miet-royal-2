@@ -169,12 +169,14 @@ bedeutet ausschließlich „Vertrag gegen die implementierte Nutzung geprüft“
    prozessgebunden 12 Berliner Kalendermonate, sonst 90 Tage nach Endzustand)
    und als Retention-Job nachziehen. Keine Fachregel erfinden.
 
-## Alte Website (vor Phase 17)
+## Alte Website (Phase 17 umgesetzt, Rankings offen)
 URL-Liste, wichtige Rankings, Redirect-Mapping, zu übernehmender Content.
 Phase 16: Inventur (URLs, Inhalte, Bilder/Logo, Impressum/Datenschutz,
 Widersprüche) liegt in docs/WEBSITE_MIGRATION_NOTES.md; übernommene Texte nur als
-redaktionelle CMS-Entwürfe. Redirect-/410-Matrix und Ranking-Prüfung bleiben
-Phase 17.
+redaktionelle CMS-Entwürfe. Phase 17 (12.11.2026): Alt-URLs erneut lesend
+verifiziert, Redirect-/410-Matrix umgesetzt (docs/REDIRECT_MATRIX.md,
+docs/WEBSITE_MIGRATION_NOTES.md §10). Weiter offen: Ranking-/Backlink-Prüfung
+und Search Console (kein Zugang; Go-live, siehe „Phase 17“).
 
 ## Noch als Admin-/Stammdaten definieren
 - genaue Gästezahl→Maschinenempfehlungslogik (Phase 16: technisch als pflegbare,
@@ -418,11 +420,12 @@ folgenden Härtungen und Restrisiken sind KEINE Phase-15-Blocker (Phase 15 Final
     Berliner Kalendertage nach dem Endzustand; die Zeilen selbst bleiben. Die Menge
     begrenzen nur die IP-Limits und die DB-Versanddrossel (5 Links je 15 min je
     Kunde bzw. bei Reauth je Session).
-- **Uhrzeitabhängige Touren-Integrationstests (vorbestehend seit Phase 13, im
-  Phase-15-Gate festgestellt):** `tours-delay-risk` (RF1), `tours-multi-active` (V6) und
-  ggf. `offline-tour-lease` scheitern abends ab etwa 20:00 Uhr Berlin, weil Termine bei
-  „jetzt + bis zu 240 min“ auf den nächsten Tag fallen. Bis zu einer injizierbaren
-  Testuhr gilt das Sperrfenster in TEST_PLAN („Touren … Phase 13“); kein Produktfehler.
+- **Uhrzeitabhängige Touren-Integrationstests – ERLEDIGT (Phase 17, Auftrag §27 B):**
+  `tours-delay-risk`, `tours-multi-active`, `offline-tour-lease`, `tours-delay-accuracy` und
+  `tours-delay-push` drehen ab 19:00 Uhr Berlin die Testuhr auf 09:00 desselben Tages zurück
+  (`pinMorningClockIfEvening`, nur `Date`, nie vorwärts; keine Produktlogik geändert) – die
+  Integrationssuite hat kein Startzeitfenster mehr (TEST_PLAN „Touren … Phase 13“). Die
+  verbleibenden E2E-Fenster und die Option einer injizierbaren API-Testuhr stehen unter „Phase 17“.
 - **E2E-Seed-Abkürzungen** (`apps/api/scripts/e2e-portal-seed.ts`,
   `tests/e2e/helpers/portal.ts`): Live-Standort der aktiven Tour (Szenario G) per
   SQL wie der Integrationstest-Helfer; vom Seed erzeugte Dokument-Bytes werden mit
@@ -487,11 +490,11 @@ CMS/Konfiguration ergänzbar, ohne die Website neu zu programmieren):**
   Einsatzgebiete und Mengen-/Zeitangaben im Text (bei Regeländerung manuell
   nachziehen). Öffnungszeiten sind nicht belegt und werden nicht erfunden.
 
-**Phase 17 (NICHT in Phase 16 erledigt, bewusst nicht vorweggenommen):**
-komplette Redirect-/410-Matrix Alt → Neu, Sitemap, Robots-Finalisierung,
-Canonical-QA, strukturierte Daten, Core-Web-Vitals-/Performance-QA, SEO-Content-
-QA, Prüfung alter URLs/Rankings. Bis dahin bleibt die Indexierung aus
-(`WEB_INDEXING_ENABLED` nicht gesetzt ⇒ überall `noindex`).
+**Phase 17 (umgesetzt 2026-11-12, Abschnitt „Phase 17“):** Redirect-/410-Matrix,
+Sitemap, robots.txt, Canonicals, strukturierte Daten, Lighthouse-/Accessibility-/
+Responsive-QA, SEO-Hinweise im Staff, lesende Prüfung alter URLs. Weiter offen:
+Ranking-/Search-Console-Prüfung. Die Indexierung bleibt bis zum Website-Go-live
+aus (`WEB_INDEXING_ENABLED` nicht gesetzt ⇒ überall `noindex`).
 
 **Technische Restpunkte und Betriebshinweise (keine Phase-16-Blocker):**
 
@@ -544,3 +547,88 @@ QA, Prüfung alter URLs/Rankings. Bis dahin bleibt die Indexierung aus
 - **Echte Google-Antwort ungetestet:** Host-Allowlist und Feldverfügbarkeit
   (`photoUri`, `text`) sind aus der Doku abgeleitet ⇒ einmaliger Staging-Smoke
   mit echtem Key vor Go-live (docs/GOOGLE_REVIEWS_API_NOTES.md „Go-live“).
+
+## Phase 17 – Stand nach Phase 17 (2026-11-12)
+
+SEO-Fundament, Redirect-/410-Matrix, technische QA und Testflake-Härtung sind umgesetzt
+(docs/SEO_TECHNICAL.md, docs/REDIRECT_MATRIX.md, docs/SEO_STRUCTURED_DATA_NOTES.md,
+docs/WEBSITE_QA_REPORT.md). Die bisherige Live-Website bleibt unverändert online; die
+Indexierung der neuen Website bleibt aus (`WEB_INDEXING_ENABLED` ungesetzt).
+
+**Erledigt (Phase 17):** fail-closed Indexierbarkeit mit konfigurierter Basis (keine
+Host-Ableitung; in production nur https); Canonicals; robots.txt (crawlbar, nur `/api/`
+gesperrt, veröffentlichte Bilder erlaubt, Sitemap-Zeile nur indexierbar); dynamische Sitemap
+aus veröffentlichten Seiten; OpenGraph/Twitter mit Social Image nur aus veröffentlichtem
+Hero-Bild; JSON-LD WebSite/Organization/BreadcrumbList; sichtbare Brotkrumen; 404-Metadaten;
+410-Seite; Legacy-Redirects 308 in einem Hop im Next-Proxy; SEO-Hinweise im Staff (nie
+blockierend); Preis-Guard der öffentlichen Produktprojektion (Name, Beschreibung,
+Verkaufseinheit, Cent-Beträge); Google-Maps-Logo-Attribution; Lighthouse-/Accessibility-/
+Responsive-QA mit Fixes (Favicon-Platzhalter, Marken-Link-Name, umbrechende Preiszeilen);
+Testuhr-Pin der Touren-Integrationstests; Lexware-Wartebedingung.
+
+**Offen / deferred (Go-live, Auftrag §35 – nichts davon in Phase 17):**
+
+- **Search Console:** Property für `https://www.miet-royal.de/` verifizieren, Sitemap
+  einreichen, Indexabdeckung und die 410-/Redirect-Pfade der bisherigen Website beobachten.
+- **DNS-Umschaltung und WordPress-Abschaltung** (Phase 20); bis dahin kein Live-Test des
+  www-Redirects (Go-live-Smoke SEO-R9, docs/PRE_START_CHECKLIST.md „Website-Go-live SEO“).
+- **Ranking-/Backlink-Prüfung und Ranking-Monitoring:** in Phase 17 nicht möglich (kein Zugang
+  zu Search-Console-/Backlink-Daten). Entscheidung `/shop/` 410 (umgesetzt) vs. 301 auf
+  `/slushmaschine-mieten` nur bei nachgewiesenem Wert.
+- **Rich-Results-Test / Schema Markup Validator** erst gegen die Live-Domain
+  (docs/SEO_STRUCTURED_DATA_NOTES.md „Prüfmethode“); Logo-Mindestgröße 112×112 px mit dem
+  finalen Logo prüfen.
+- **Juristische Freigabe der Rechtstexte bleibt Blocker** (Impressum-Platzhalter, Datenschutz
+  inkl. Cookies `__Host-mr_customer_session`/`__Host-mr_cms_preview`, Google-Bewertungen per
+  Klick) – siehe „Phase 16“; vor der Veröffentlichung keine Indexierung einschalten.
+- **Google-Bewertungen:** EWR-Permitted-Use nur über Rechtsberatung oder Google Sales klärbar
+  (der technische Support gibt laut Policy vom 2026-11-09 keine Rechtsauskunft) –
+  `REVIEWS_PROVIDER=disabled` bleibt. Logo-Attribution umgesetzt; Sichtabnahme mit echten Daten
+  auf Staging offen (docs/GOOGLE_REVIEWS_API_NOTES.md Go-live 9). Entscheidung der Leitung:
+  Logo oben neben der Gesamtbewertung (umgesetzt) oder unterhalb der Liste; zweiter Textlink
+  „Alle Bewertungen auf Google Maps“ behalten (umgesetzt) oder streichen. Host-Liste für
+  Avatare/Links (spätere CSP `img-src`) nur per Staging-Smoke ermittelbar.
+- **Finales Favicon/Logo der Firma einsetzen:** `apps/web/app/icon.svg` und
+  `apps/web/app/favicon.ico` sind neutrale Platzhalter („MR“ auf Bronze, wie die Staff-PWA-Icons
+  in `apps/staff/public/icons/`) – Dateien 1:1 durch die finalen Grafiken ersetzen (gleiche
+  Dateinamen); Logo in den Website-Einstellungen nur mit geklärten Rechten („Marke / Assets“).
+- **Dynamische 404-Oberfläche clientseitig gerendert (seit Phase 16, in Phase 17 analysiert):**
+  Für CMS-Routen, die `notFound()` werfen, liefert Next Status 404, Titel und `noindex` im HTML,
+  die 404-Oberfläche (H1, Links) aber erst nach Hydration; direkte unbekannte URLs rendern
+  vollständig serverseitig. Für Suchmaschinen ist der Status maßgeblich; eine serverseitig
+  vollständige 404 für CMS-Pfade bräuchte eine Route-Group mit eigenem Layout/not-found – offen,
+  keine Fachwirkung.
+- **API-Ausfall ⇒ 200 + `noindex` statt 503:** CMS-Seiten antworten ohne erreichbare API mit der
+  Zustandsseite „Gleich wieder da“ (Status 200, immer `noindex`, kein Canonical, kein JSON-LD).
+  Keine indexierbare Fehlerseite; ein 503 mit `Retry-After` wäre für Crawler präziser – bewusst
+  nicht in Phase 17 geändert (Phase-16-Verhalten, nur Hinweis).
+- **`Organization.telephone` nur international:** eine national gepflegte Telefonnummer
+  (ohne Ländervorwahl) erscheint auf der Seite, aber nicht im JSON-LD (Google empfiehlt Landes-
+  und Ortsvorwahl). Kontaktwerte vor dem Go-live ohnehin bestätigen („Phase 16“).
+- **Verbleibende E2E-Zeitfenster (Berlin):** `tours-flow.spec.ts` 22:43–00:02;
+  `portal-flow.spec.ts` (G), `training-demo.spec.ts` (H), `tours-offline-conflict.spec.ts`
+  23:38–00:02 – Produktregel `TOUR_NOT_TODAY` plus Termine „heute relativ zu jetzt“; die API
+  hat keine injizierbare Uhr. Option für später: injizierbare Testuhr der API (nur Test-Env,
+  wäre eine Produktänderung – bewusst nicht in Phase 17). Integrationssuite und `tours-demo`
+  sind ohne Zeitfenster (docs/TEST_PLAN.md).
+- **Lighthouse-Hinweise ohne Score-Wirkung:** bf-cache (`no-store` bei dynamischem SSR),
+  render-blocking CSS 5,8 KB, unused/legacy JS der Next-Runtime – keine Maßnahme in Phase 17;
+  LCP mit echtem Hero-Bild nicht gemessen (Seed ohne Bilder) ⇒ Staging-Nachmessung nach dem
+  Medien-Upload (docs/WEBSITE_QA_REPORT.md „Nicht geprüft“).
+- **Akzeptierte Redirect-Ausnahme:** Pfade mit Mehrfach-Slash (`//uber-uns/`, `/buchung//`)
+  normalisiert Next vor dem Proxy ⇒ zwei Hops; keine echte Alt-URL betroffen
+  (docs/REDIRECT_MATRIX.md „Verfahren“).
+- **SEO-Check, bewusst ohne eigenen Hinweis:** ein veröffentlichter Eintrag mit ungültigem
+  gespeichertem Inhalt (nur per Direkt-INSERT möglich, Revisionen sind unveränderlich) erzeugt
+  keinen eigenen Hinweis – nur Links darauf gelten als kaputt; die exakte Abholadresse in der
+  Verkaufseinheit eines Produkts wird (wie bei Name/Beschreibung) nur geloggt, das Produkt
+  entfällt öffentlich. Die Meldung `BROKEN_INTERNAL_LINK` sagt „nicht veröffentlicht“, auch wenn
+  das Ziel veröffentlicht, aber wegen der Adresse ausgeblendet ist – `PAGE_SUPPRESSED` erklärt
+  diesen Fall. Optional später: eigene Meldungen.
+- **E2E-Laufzeit:** der Production-Build der Website (Projekt `seo`) startet bei jedem
+  Playwright-Lauf mit (≈ 15–60 s mit Turbopack-Cache, ohne Cache bis ~2 min) – Playwright startet
+  alle `webServer`-Einträge unabhängig vom gewählten Projekt.
+- **X/Twitter-Cards:** offizielle Dokumentation nicht abrufbar; Umsetzung nach bekanntem Schema,
+  nicht gegen eine Primärquelle verifiziert (kein Blocker).
+- **Staging darf nie indexiert werden:** `WEB_INDEXING_ENABLED` dort nicht setzen; Staging bleibt
+  crawlbar, jede Antwort `noindex`, keine Sitemap-Zeile (docs/ENVIRONMENTS.md „Website-SEO“).

@@ -5026,3 +5026,129 @@ Externes CMS, HTML-/WYSIWYG-Editor, Medien-Löschen, Preise im CMS,
 Verfügbarkeitsprüfung oder Ablehnung im Konfigurator, Lieferpreis, Online-
 Buchung/-Zahlung, Bestätigungsmail an Kunden, CAPTCHA, Google-Widget,
 Instagram-Feed, Redirects/Sitemap/strukturierte Daten (Phase 17).
+
+## Phase 17: SEO, Redirects, 410, technische QA (2026-11-12)
+
+Gesamtdarstellung: docs/SEO_TECHNICAL.md, docs/REDIRECT_MATRIX.md,
+docs/SEO_STRUCTURED_DATA_NOTES.md, docs/WEBSITE_QA_REPORT.md. Die bisherige Live-Website
+bleibt unverändert; keine DNS-Umschaltung; die Indexierung bleibt aus (Default). Keine
+Migration, keine neue Instanz, kein neues Secret, keine Fachlogik-Änderung.
+
+- **Kanonische Basis nur aus der Konfiguration, nie aus dem Request** (D1, Review RA-2): Die
+  API liefert `MAIL_PUBLIC_WEB_BASE_URL` als `publicBaseUrl` im Bootstrap; das Web prüft den
+  Wert zusätzlich (https-Origin ohne Pfad/Query/Fragment/Zugangsdaten; `http` nur außerhalb
+  production und nur für `localhost`/`127.0.0.1`) und bildet daraus ALLE absoluten URLs
+  (Canonical, `og:url`, Sitemap, Sitemap-Zeile in robots.txt, JSON-LD). Nie Host-,
+  `X-Forwarded-Host`- oder `request.url`-Ableitung. Begründung: eine Quelle für Mail-Links,
+  Portal, Vorschau und SEO; Host-Header sind fälschbar (Host-Header-Poisoning würde Canonicals
+  und Sitemap vergiften); die API prüft https nur bei aktivem Mailversand, daher die zusätzliche
+  Web-Prüfung, in production ohne jede http-Ausnahme. Verworfen: eine zweite Web-Variable für
+  die Basis (zweite Wahrheit), Ableitung aus dem Request, Canonicals ohne gültige Basis.
+- **Indexierbarkeit als reine, fail-closed Funktion** (D2/D3): `indexable = Schalter && !demo
+  && !originMismatch && Basis gültig`, dazu je Seite „veröffentlicht“ bzw. „Konfigurator
+  nutzbar“. Das Root-Layout setzt `robots` immer noindex; jede Website-Seite gibt sich selbst
+  frei. Ohne Indexierbarkeit keine absoluten URLs (kein Canonical, `og:url`, Sitemap-Eintrag,
+  JSON-LD). Portal, Vorschau, Token-Seiten, 404, 410, Fallback-/Fehlerseiten und Demo bleiben
+  immer noindex. Verworfen: Canonicals auf noindex-Seiten (von Google nicht geregelt), Canonicals
+  auf unveröffentlichte Seiten, Indexierung über Build-Zeit-Konstanten.
+- **Redirects im Next-Proxy statt `redirects()`** (D4): `apps/web/proxy.ts` mit
+  `skipTrailingSlashRedirect: true`. Begründung: Nexts eigener Trailing-Slash-Redirect läuft vor
+  allen Redirects und erzeugte Ketten (`/uber-uns/` → `/uber-uns` → `/ueber-uns`); `redirects()`
+  kann keinen 410-Body liefern; der Proxy entscheidet Legacy-Ziel, 410 und Schluss-Slash in
+  einem Hop. Projektweit **308** (Next-Konvention für permanente Redirects, Methode bleibt
+  erhalten; für Google gleichwertig zu 301). Die Location stammt nur aus der Entscheidungstabelle
+  (relativ, genau ein führender `/`); der Proxy löst sie gegen die eigene Server-URL mit
+  Origin-Guard auf, weil Nexts Node-Adapter eine absolute URL verlangt (relative Location ⇒ 500,
+  am Production-Build belegt), und Next relativiert sie wieder. Query bei Legacy-Redirects
+  verworfen (kein Open Redirect über `?next=`), bei Slash-Normalisierung nur sichtbares ASCII.
+  Cache-Header (Review RD-2/RB-2): Tabellen-Redirects `public, max-age=3600`,
+  Slash-Normalisierungen `private, no-store`, weil sie auch Token-/Portal-/Vorschau-Pfade
+  treffen. Akzeptiert (Review RB-3): Pfade mit Mehrfach-Slash normalisiert Next vor dem Proxy ⇒
+  zwei Hops, keine echte Alt-URL betroffen; prozentkodierte Pfade erhalten keinen
+  Proxy-Redirect und werden von Next dekodiert bedient (RB-4). Verworfen: `redirects()`/
+  `trailingSlash` in `next.config.ts`, 301 (Mix mit Nexts 308), `NextResponse.redirect(new
+  URL(…, request.url))` (Host-Vertrauen), Logging im Proxy (Token in Pfaden), Präfixregeln für
+  410 (Unterpfade bleiben 404).
+- **410 als eigenständiges HTML** (D5): direkte Proxy-Antwort im Website-Look mit noindex
+  (Meta + `X-Robots-Tag`), `public, max-age=3600`, ohne Script. Begründung: ein Rewrite auf eine
+  Seite könnte den Status nicht setzen, CSS Modules stehen im Proxy nicht zur Verfügung; Google
+  behandelt 410 wie 404, semantisch korrekt für entfernte Inhalte, keine Soft-404. Verworfen:
+  200-Seite „nicht mehr verfügbar“, Sammel-Redirect wertloser Alt-URLs auf `/` (Soft-404-Risiko
+  laut Google).
+- **Kanonischer Host nur im Reverse-Proxy** (D6): `www.miet-royal.de`; Apex ⇒ 308 `www` und
+  HTTP ⇒ HTTPS im nginx; kein Hostname und keine Host-Allowlist im Code. Begründung: DNS/Proxy
+  werden erst beim Go-live umgeschaltet; App-Code mit Host-Header-Logik wäre ungetestetes,
+  gegen beliebige Forwarded-Header angreifbares Verhalten. Umkehrbar per Konfiguration. Der
+  Reverse-Proxy normalisiert zudem absolute-form Request-Targets, die Next selbst mit 308 auf die
+  fremde URL beantworten würde (Review RB-5). Verworfen: Host-Redirect im Next-Proxy.
+- **robots.txt sperrt nur `/api/` – nie `Disallow: /`** (D7 final, Review RA-1/RA-3): nicht
+  indexierbar ⇒ `Allow: /`, `Disallow: /api/`, keine Sitemap-Zeile; indexierbar ⇒ zusätzlich
+  `Allow: /api/public/cms/media/` und Sitemap. Begründung (Google Search Central „Block Search
+  indexing with noindex“, „Introduction to robots.txt“): robots.txt hält keine URL aus dem Index
+  – eine gesperrte URL kann ohne Inhalt indexiert werden, und das noindex jeder Antwort einer
+  nicht indexierbaren Instanz würde nie gelesen; Staging/Demo bleiben deshalb crawlbar mit
+  noindex. Portal, Vorschau und Token-Seiten ebenfalls nur per noindex (Token-URLs gehören nicht
+  in eine öffentliche Datei). Veröffentlichte Bild-URLs müssen crawlbar sein (Google: Bild-URLs
+  strukturierter Daten). Ohne Schalter laden robots/sitemap keinen Bootstrap (RD-3). Verworfen:
+  `Disallow: /` für Staging, Disallow-Liste privater Bereiche.
+- **Sitemap nur aus veröffentlichten Seiten mit echtem `publishedAt`** (D8): API liefert
+  `publishedAt` je Seite; `/konfigurator` nur wenn nutzbar (Katalog, ≥ 1 Maschine, Datenschutz
+  veröffentlicht, keine Origin-Sperre); keine `priority`/`changefreq` (Google ignoriert sie).
+  Verworfen: statische oder Build-Zeit-Sitemap (Veröffentlichungen wären unsichtbar), erfundene
+  Änderungsdaten.
+- **Metadaten aus dem CMS, Social Image nur Hero-Bild** (D9): Titel/Beschreibung bleiben Source
+  of Truth, keine Keywords, keine Markendoppelung; OpenGraph/Twitter ohne Bild zulässig statt
+  erfundenem Bild; Logo nur im JSON-LD. Verworfen: generiertes OG-Bild, Bilder der Alt-Website.
+- **Konservative strukturierte Daten** (D10): `WebSite`, `Organization` (ohne Adresse),
+  `BreadcrumbList`; kein LocalBusiness/Review/AggregateRating/FAQPage/Product/Offer/Service/
+  SearchAction – Gründe mit Quellen in docs/SEO_STRUCTURED_DATA_NOTES.md. Serialisierung mit
+  Unicode-Escapes; einzige Stelle mit `dangerouslySetInnerHTML`. **Sichtbare Brotkrume = JSON-LD**
+  (D11): nur Regions- und Secondary-Offer-Seiten; keine versteckten SEO-Breadcrumbs.
+- **SEO-Check nur als Warnung** (D12): `GET /staff/cms/seo-check` (edit|publish, no-store),
+  reine Funktion; Entwurfs-Hinweise nur bei Abweichung vom veröffentlichten Stand; Regions-
+  Ähnlichkeit über Jaccard und (ab 30 Trigrammen) Containment (Review RC-3); Links gelten als
+  kaputt, wenn die Website die Zielseite nicht ausliefert (RC-4). Nie blockierend, kein Score,
+  keine Umschreibung – die Redaktion entscheidet (Auftrag §11/§24). Verworfen: Publish-Sperre
+  bei Warnungen, Code-zu-Text-Tabelle im Staff (eine Quelle: die Servermeldung), Prüfung der
+  `site_settings`.
+- **Preis-Guard fail-closed in der öffentlichen Projektion** (D13, Review RC-1/RC-2):
+  Beschreibung mit Preis ⇒ `null`; Name oder Verkaufseinheit mit Preis ⇒ Produkt entfällt
+  öffentlich (wie der Adress-Guard, der jetzt ebenfalls die Verkaufseinheit prüft); Cent-Beträge
+  zählen als Preisangabe; Log nur Slug und Feldname; interne Produktdaten unverändert.
+  Verworfen: Speichersperre im Produktformular (interne Freitexte bleiben erlaubt), Preise aus
+  dem Text parsen.
+- **Testuhr-Pin rückwärts statt Startzeitfenster** (D14 B): `pinMorningClockIfEvening` ab
+  19:00 Berlin auf 09:00 desselben Tages in allen fünf Touren-Integrationsdateien, nur `Date`,
+  nie vorwärts (eine Uhr in der Zukunft sperrt die Staff-Session, weil `last_activity_at` von
+  der DB-Uhr kommt), Force nur per Test-Env. `tours-demo` plant auf morgen (die Tour wird dort
+  nie gestartet). Verworfen: injizierbare Produkt-Uhr (Produktänderung), Seeds auf morgen in
+  Specs mit Heute-Semantik, Senken der Mindestfenster (≤ 13 min Gewinn).
+- **Zustandsbedingung statt 5-s-Default** (D14 A): `openProcessPage` wartet auf die Antwort
+  der Vorgangsdaten, `expectProcessMainStatus` prüft den Hauptstatus exakt mit 30 s;
+  Markup-Marker `process-main-status`. Verworfen: Sleeps, `.first()` auf unscharfe Badge-Locator.
+- **E2E gegen den Production-Build** (D15): eigenes Playwright-Projekt `seo` mit
+  `WEB_INDEXING_ENABLED=true` und `WEB_DIST_DIR=.next/seo` an der Haupt-API; Canonicals zeigen
+  auf die konfigurierte Basis statt auf den Request-Host. Verworfen: SEO-Tests nur gegen
+  `next dev` (abweichende Header/Caches) oder ein geteilter Build.
+- **Lighthouse als QA ohne Repo-Dependency, Maßnahmen nur nach Messung** (D16/D17): `npx
+  lighthouse` gegen den Production-Build mit Indexing-Testkonfiguration; Fixes: Favicon-
+  Platzhalter (Konsolenfehler), Marken-Link ohne abweichendes `aria-label` (WCAG 2.5.3),
+  `overflow-wrap`/`hyphens` für Überschriften, kein `nowrap` auf Preiszeilen (Review RD-1).
+  Verworfen: Cache-Umbau (bf-cache), Polyfill-Entfernung, Preload/Preconnect.
+- **Legal-QA nur technisch** (D18) und **Google-Maps-Logo-Attribution** (D19): Policy „Logo
+  whenever possible“, Text nur bei Platzmangel – eine Website-Sektion hat keinen Platzmangel ⇒
+  offizielles Asset lokal und unverändert, „Google Maps“ nur noch als alt/Linktext. Verworfen:
+  Nachbau, Hotlink, Logo in der Fußzeile oder inline im Satz.
+
+### Bewusst offen (Phase 17)
+Dynamische 404-Oberfläche clientseitig gerendert; API-Ausfall ⇒ 200 + noindex statt 503;
+`Organization.telephone` nur international; injizierbare API-Testuhr für die E2E-Restfenster;
+Logo-Position und zweiter Textlink der Bewertungs-Sektion; finales Favicon/Logo; Rich-Results-
+Test, Search Console, DNS-Umschaltung, Ranking-Monitoring, juristische Freigabe –
+docs/OPEN_ITEMS.md „Phase 17“.
+
+### Bewusst nicht gebaut
+Host-Header-Logik im Code, `Disallow` privater Bereiche oder ganzer Staging-Instanzen,
+LocalBusiness-/FAQ-/Review-/Product-Markup, automatische Ortsseiten, Analytics/Tracker/
+Consent-Manager, neue Cache-Architektur, Search-Console-Anbindung, Speichersperre für
+Preis-Freitext in Produktdaten.

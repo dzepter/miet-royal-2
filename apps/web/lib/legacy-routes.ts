@@ -162,8 +162,15 @@ export const LEGACY_GONE: ReadonlyArray<LegacyGone> = [
  */
 export const SAFE_PATH = /^\/[A-Za-z0-9._~-]+(?:\/[A-Za-z0-9._~-]+)*\/?$/;
 
-/** Cache-Dauer der 308-Antworten (Redirects sind rein URL-abhängig, keine Kontodaten). */
+/** Cache-Dauer der Legacy-308-Antworten (Tabellen-Redirects: rein URL-abhängig, öffentliche Alt-URLs). */
 export const REDIRECT_CACHE_CONTROL = 'public, max-age=3600';
+/**
+ * Slash-Normalisierungen werden NICHT geteilt gecacht (Review RD-2/RB-2): sie treffen auch
+ * Token-/Portal-/Vorschau-Pfade (`/angebot/<token>/`, `/konto/…/`), deren `headers()`-Regel
+ * `private, no-store` der Proxy sonst überschriebe – Token-URL und Location gehörten dann eine
+ * Stunde in Shared Caches. Der Nutzen eines Caches ist hier null (seltene Alt-Links).
+ */
+export const SLASH_REDIRECT_CACHE_CONTROL = 'private, no-store';
 
 /** Antwort-Header der 410-Seite (Header-Namen lowercase). */
 export const GONE_HEADERS: Readonly<Record<string, string>> = Object.freeze({
@@ -175,7 +182,7 @@ export const GONE_HEADERS: Readonly<Record<string, string>> = Object.freeze({
 });
 
 export type LegacyRouteDecision =
-  | { readonly kind: 'redirect'; readonly location: string }
+  | { readonly kind: 'redirect'; readonly location: string; readonly cacheControl: string }
   | { readonly kind: 'gone' }
   | { readonly kind: 'none' };
 
@@ -198,8 +205,8 @@ function keptSearch(search: string): string {
   return /^\?[\x21-\x7e]*$/.test(search) ? search : '';
 }
 
-function redirectTo(location: string): LegacyRouteDecision {
-  return isRelativeLocation(location) ? { kind: 'redirect', location } : NONE;
+function redirectTo(location: string, cacheControl: string): LegacyRouteDecision {
+  return isRelativeLocation(location) ? { kind: 'redirect', location, cacheControl } : NONE;
 }
 
 /**
@@ -207,8 +214,8 @@ function redirectTo(location: string): LegacyRouteDecision {
  * `''` oder `?…`):
  * (a) `/` oder nicht SAFE ⇒ none; (b) normalisiert = lowercase + Schluss-Slash entfernt;
  * (c) exakt in LEGACY_GONE ⇒ gone; (d) exakt in LEGACY_REDIRECTS ⇒ redirect auf `to`, Query
- * verworfen; (e) Pfad endete mit `/` ⇒ redirect auf den Pfad ohne Schluss-Slash in
- * Original-Schreibweise plus Query; (f) sonst none.
+ * verworfen, `cache-control` öffentlich 1 h; (e) Pfad endete mit `/` ⇒ redirect auf den Pfad ohne
+ * Schluss-Slash in Original-Schreibweise plus Query, `cache-control: private, no-store`; (f) sonst none.
  */
 export function decideLegacyRoute(pathname: string, search: string): LegacyRouteDecision {
   if (pathname === '/' || !SAFE_PATH.test(pathname)) return NONE;
@@ -216,8 +223,10 @@ export function decideLegacyRoute(pathname: string, search: string): LegacyRoute
   const normalized = trimmed.toLowerCase();
   if (GONE_PATHS.has(normalized)) return GONE;
   const target = REDIRECT_TARGETS.get(normalized);
-  if (target !== undefined) return redirectTo(target);
-  if (trimmed !== pathname) return redirectTo(`${trimmed}${keptSearch(search)}`);
+  if (target !== undefined) return redirectTo(target, REDIRECT_CACHE_CONTROL);
+  if (trimmed !== pathname) {
+    return redirectTo(`${trimmed}${keptSearch(search)}`, SLASH_REDIRECT_CACHE_CONTROL);
+  }
   return NONE;
 }
 

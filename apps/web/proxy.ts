@@ -1,11 +1,6 @@
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
-import {
-  GONE_HEADERS,
-  REDIRECT_CACHE_CONTROL,
-  decideLegacyRoute,
-  goneHtml,
-} from './lib/legacy-routes';
+import { GONE_HEADERS, decideLegacyRoute, goneHtml } from './lib/legacy-routes';
 
 /**
  * Phase 17 (WEB-ROUTES, Design D4/D5): Alt-URL-Behandlung der Website in EINEM Hop –
@@ -36,7 +31,9 @@ export function proxy(request: NextRequest) {
     if (target.origin !== request.nextUrl.origin) return NextResponse.next();
     return new NextResponse(null, {
       status: 308,
-      headers: { location: target.href, 'cache-control': REDIRECT_CACHE_CONTROL },
+      // Legacy-Tabelle ⇒ öffentlich cachebar; Slash-Normalisierung ⇒ `private, no-store`
+      // (Token-/Portal-Pfade, Review RD-2).
+      headers: { location: target.href, 'cache-control': decision.cacheControl },
     });
   }
   return NextResponse.next();

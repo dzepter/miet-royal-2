@@ -2,19 +2,31 @@ import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { describe, it } from 'node:test';
-import { LEGACY_GONE, LEGACY_REDIRECTS, decideLegacyRoute } from './legacy-routes.ts';
+import {
+  LEGACY_GONE,
+  LEGACY_REDIRECTS,
+  REDIRECT_CACHE_CONTROL,
+  SLASH_REDIRECT_CACHE_CONTROL,
+  decideLegacyRoute,
+} from './legacy-routes.ts';
 
 /**
  * Phase 17 (WEB-ROUTES, Auftrag §32): docs/REDIRECT_MATRIX.md ist die verbindliche Tabelle der
  * Alt-URLs. Dieser Test hält Tabelle und Code (`legacy-routes.ts`) deckungsgleich: jeder
  * Code-Eintrag steht in der Tabelle mit richtigem Ergebnis/Ziel, keine Tabellenzeile behauptet
  * einen Redirect/410 ohne Code-Eintrag, jedes Ziel existiert als Route der Web-App, und die
- * Testnamen der Tabelle existieren. Läuft mit `node --test`.
+ * Testnamen der Tabelle existieren (Unit-Tests in legacy-routes.test.ts, E2E-Namen als Testtitel in
+ * tests/e2e/specs/seo-redirects.spec.ts – Review RB-1). Läuft mit `node --test`.
  */
 
 const DOC_PATH = path.resolve(import.meta.dirname, '../../../docs/REDIRECT_MATRIX.md');
 const APP_DIR = path.resolve(import.meta.dirname, '../app');
 const UNIT_TEST_PATH = path.resolve(import.meta.dirname, 'legacy-routes.test.ts');
+/** Review RB-1: die E2E-Namen der Tabelle müssen in der Playwright-Spec tatsächlich existieren. */
+const E2E_SPEC_PATH = path.resolve(
+  import.meta.dirname,
+  '../../../tests/e2e/specs/seo-redirects.spec.ts',
+);
 const HEADER = ['Altpfad', 'Ergebnis', 'Ziel', 'Begründung', 'Testname'];
 const E2E_NAMES: ReadonlySet<string> = new Set(
   Array.from({ length: 9 }, (_v, index) => `SEO-R${index + 1}`),
@@ -145,7 +157,7 @@ describe('docs/REDIRECT_MATRIX.md ↔ lib/legacy-routes.ts (Phase 17, SEO-R-D)',
           for (const variant of [alt, base, `${base}/`]) {
             assert.deepEqual(
               decideLegacyRoute(variant, '?next=https://evil.example/'),
-              { kind: 'redirect', location: entry?.to },
+              { kind: 'redirect', location: entry?.to, cacheControl: REDIRECT_CACHE_CONTROL },
               `${where}: ${variant}`,
             );
           }
@@ -163,10 +175,19 @@ describe('docs/REDIRECT_MATRIX.md ↔ lib/legacy-routes.ts (Phase 17, SEO-R-D)',
               !LEGACY_GONE.some((entry) => entry.path === normalize(alt)),
             `${where}: ist Legacy-Eintrag, nicht nur Slash`,
           );
-          assert.deepEqual(decideLegacyRoute(alt, ''), { kind: 'redirect', location: ziel }, where);
+          // Slash-Normalisierung: nie geteilt cachebar (Token-/Portal-Pfade, Review RD-2).
+          assert.deepEqual(
+            decideLegacyRoute(alt, ''),
+            { kind: 'redirect', location: ziel, cacheControl: SLASH_REDIRECT_CACHE_CONTROL },
+            where,
+          );
           assert.deepEqual(
             decideLegacyRoute(alt, '?x=1'),
-            { kind: 'redirect', location: `${ziel}?x=1` },
+            {
+              kind: 'redirect',
+              location: `${ziel}?x=1`,
+              cacheControl: SLASH_REDIRECT_CACHE_CONTROL,
+            },
             `${where}: Query bleibt`,
           );
           assert.equal(decideLegacyRoute(ziel, '').kind, 'none', `${where}: Ziel löst erneut aus`);
@@ -252,6 +273,15 @@ describe('docs/REDIRECT_MATRIX.md ↔ lib/legacy-routes.ts (Phase 17, SEO-R-D)',
           markdown.includes(`${name},`) ||
           markdown.includes(`${name}:`),
         `${name} nicht im Dokument`,
+      );
+    }
+    // Review RB-1: nicht nur erwähnt – die Spec existiert und trägt jeden Namen als Testtitel.
+    assert.ok(existsSync(E2E_SPEC_PATH), 'tests/e2e/specs/seo-redirects.spec.ts fehlt');
+    const e2eSource = readFileSync(E2E_SPEC_PATH, 'utf8');
+    for (const name of E2E_NAMES) {
+      assert.ok(
+        e2eSource.includes(`test('${name} `),
+        `${name} fehlt als Testtitel in seo-redirects.spec.ts`,
       );
     }
   });

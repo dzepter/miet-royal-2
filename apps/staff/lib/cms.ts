@@ -575,7 +575,7 @@ export function regionPathOf(slug: string): string {
 export type SeoWarningScope = 'draft' | 'published' | 'catalog';
 
 export type SeoWarningField =
-  'metaTitle' | 'metaDescription' | 'content' | 'links' | 'description' | 'name';
+  'metaTitle' | 'metaDescription' | 'content' | 'links' | 'description' | 'name' | 'saleUnit';
 
 /** Bekannte Codes (Design D12). Die Oberfläche zeigt stets `message` – auch bei unbekanntem Code. */
 export type SeoWarningCode =
@@ -590,8 +590,10 @@ export type SeoWarningCode =
   | 'PAGE_EMPTY'
   | 'BROKEN_INTERNAL_LINK'
   | 'REGION_NEAR_DUPLICATE'
+  | 'PAGE_SUPPRESSED'
   | 'PRODUCT_DESCRIPTION_PRICE_HIDDEN'
-  | 'PRODUCT_NAME_PRICE_HIDDEN';
+  | 'PRODUCT_NAME_PRICE_HIDDEN'
+  | 'PRODUCT_UNIT_PRICE_HIDDEN';
 
 export interface SeoWarning {
   /** `SeoWarningCode` oder ein künftiger Code – nur als `data-code` ausgegeben, nie interpretiert. */

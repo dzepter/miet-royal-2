@@ -14,6 +14,7 @@ import {
   seoEnvFrom,
   siteRobots,
   type SeoEnv,
+  readProductionWebEnv,
 } from './site-meta.ts';
 import type { PublicCatalog, PublicPage, PublicSiteBootstrap, SitePageType } from './site-types.ts';
 
@@ -239,5 +240,28 @@ describe('Indexierung fail-closed (Phase 16 Review-Fixes, Phase 17 SEO)', () => 
       base: null,
       siteName: 'Miet-Royal',
     });
+  });
+  it('SEO-W18. seoEnvFrom: production (WEB_APP_ENV oder Bootstrap-Environment) ⇒ http-Basis fail-closed, https-Basis bleibt; readProductionWebEnv nur exakt „production“', () => {
+    assert.equal(readProductionWebEnv('production'), true);
+    assert.equal(readProductionWebEnv(' production '), true);
+    assert.equal(readProductionWebEnv('Production'), false);
+    assert.equal(readProductionWebEnv('staging'), false);
+    assert.equal(readProductionWebEnv(undefined), false);
+    // Der Test-Bootstrap ist `environment: 'production'` – lokale Basis nur in development gültig.
+    const local = bootstrap({ publicBaseUrl: 'http://localhost:3000', environment: 'development' });
+    assert.equal(seoEnvFrom(local, false, false, true, false).indexable, true);
+    assert.equal(seoEnvFrom(local, false, false, true, true).indexable, false);
+    assert.equal(seoEnvFrom(local, false, false, true, true).base, null);
+    assert.equal(
+      seoEnvFrom(
+        bootstrap({ publicBaseUrl: 'http://localhost:3000', environment: 'production' }),
+        false,
+        false,
+        true,
+        false,
+      ).indexable,
+      false,
+    );
+    assert.equal(seoEnvFrom(bootstrap(), false, false, true, true).base, BASE);
   });
 });

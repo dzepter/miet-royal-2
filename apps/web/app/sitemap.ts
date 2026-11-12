@@ -5,7 +5,7 @@ import {
   getDemoMode,
   getSiteBootstrap,
 } from '../components/site/site-data';
-import { seoEnvFrom } from '../lib/site-meta';
+import { readIndexingEnabled, seoEnvFrom } from '../lib/site-meta';
 import { isPrivacyPublished } from '../lib/site-nav';
 import { configuratorIndexable, sitemapEntries } from '../lib/site-seo';
 
@@ -22,6 +22,8 @@ import { configuratorIndexable, sitemapEntries } from '../lib/site-seo';
 export const dynamic = 'force-dynamic';
 
 export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
+  // Schalter aus ⇒ leer, ohne Bootstrap-/Health-Aufrufe (Review RD-3).
+  if (!readIndexingEnabled()) return [];
   const [bootstrap, demo] = await Promise.all([getSiteBootstrap(), getDemoMode()]);
   const originMismatch = getApiOriginMismatch();
   const seo = seoEnvFrom(bootstrap, demo, originMismatch);

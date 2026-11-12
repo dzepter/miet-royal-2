@@ -439,3 +439,68 @@ test('J. Medien: PNG hochladen, mit Alt-Text in einen Block einsetzen und speich
   expect(listed?.usedInPublished).toBe(true);
   await visitor.context().close();
 });
+
+// ── Phase 17: SEO-ST1 ─────────────────────────────────────────────────────
+
+test('SEO-ST1. SEO-Hinweise im Staff: Meta-Titel mit 14 Zeichen speichern ⇒ Kasten am Eintrag mit META_TITLE_SHORT, Übersicht zeigt Kasten und Zähler an der Eintragszeile; gültiger Titel ⇒ Kasten verschwindet', async ({
+  browser,
+}) => {
+  test.setTimeout(240_000);
+  const path = '/kontakt';
+  const entryId = entryIdOf(seed, path);
+  const shortTitle = 'Kontakt – kurz'; // 14 Zeichen (< 20 ⇒ Hinweis META_TITLE_SHORT)
+  const validTitle = 'Kontakt zu Miet-Royal | Slushmaschinen mieten'; // ≥ 20 Zeichen, ≤ 60
+
+  // Redaktion (nur cms.edit) – Hinweise sind Lesen (cms.edit ODER cms.publish).
+  const editorContext = await browser.newContext();
+  const editor = await editorContext.newPage();
+  await login(editor, CMS_EDITOR.email, CMS_EDITOR.password, CMS_EDITOR.firstName);
+  await openEditor(editor, entryId);
+  const detail = (await (
+    await editor.request.get(`/api/staff/cms/entries/${entryId}`)
+  ).json()) as EntryDetail;
+  const titleField = editor.getByTestId('cms-metaTitle');
+  await expect(titleField).toBeEditable();
+  await titleField.fill(shortTitle);
+  await saveDraftViaUi(editor, detail.draft.revisionNumber + 1);
+
+  // Kasten am Eintrag (asynchron nach dem Speichern geladen) mit genau diesem Hinweis.
+  const entryBox = editor.getByTestId('cms-seo-entry-warnings');
+  await expect(entryBox).toBeVisible({ timeout: 30_000 });
+  const shortWarning = entryBox.locator('li[data-code="META_TITLE_SHORT"]');
+  await expect(shortWarning).toHaveCount(1);
+  await expect(shortWarning).toContainText('14 Zeichen');
+  await expect(shortWarning).toHaveAttribute('data-scope', 'draft');
+  // Nie blockierend: Speichern war erfolgreich, Vorschau weiterhin möglich.
+  await expect(editor.getByTestId('cms-preview')).toBeEnabled();
+
+  // Übersicht: Kasten sichtbar, Eintragszeile trägt den Zähler.
+  await editor.goto('/website');
+  const overviewBox = editor.getByTestId('cms-seo-warnings');
+  await expect(overviewBox).toBeVisible({ timeout: 30_000 });
+  await expect(
+    overviewBox.locator(`li[data-code="META_TITLE_SHORT"][data-entry-id="${entryId}"]`),
+  ).toHaveCount(1);
+  const row = editor.getByTestId(`cms-entry-${path}`);
+  await expect(row).toBeVisible();
+  await expect(row.getByTestId('cms-entry-seo-count')).toBeVisible();
+  await expect(row.getByTestId('cms-entry-seo-count')).toContainText('Hinweis');
+
+  // Gültiger Titel ⇒ keine Hinweise mehr am Eintrag (Kasten weg), Zähler verschwindet.
+  await openEditor(editor, entryId);
+  await editor.getByTestId('cms-metaTitle').fill(validTitle);
+  await saveDraftViaUi(editor, detail.draft.revisionNumber + 2);
+  await expect(editor.getByTestId('cms-seo-entry-warnings')).toHaveCount(0, { timeout: 30_000 });
+  await editor.goto('/website');
+  await expect(editor.getByTestId(`cms-entry-${path}`)).toBeVisible({ timeout: 30_000 });
+  await expect(
+    editor.getByTestId(`cms-entry-${path}`).getByTestId('cms-entry-seo-count'),
+  ).toHaveCount(0);
+  // Öffentlich unverändert (nur Entwurf geändert, nichts veröffentlicht).
+  const publicPage = await editor.request.get(
+    `${WEB_ORIGIN}/api/public/site/page?path=${encodeURIComponent(path)}`,
+  );
+  expect(publicPage.status()).toBe(200);
+  expect((await publicPage.text()).includes(shortTitle)).toBe(false);
+  await editorContext.close();
+});

@@ -3,14 +3,18 @@
 **Stand:** 06.11.2026 (Phase 16, Order §24). Grundlage: einmalige, rein lesende Inventur der
 Live-Website `https://miet-royal.de/` (nur GET-Abrufe von Seiten, Sitemaps, `robots.txt`,
 WP-REST-Listen und Bild-Anfängen; kein Formular abgesendet, kein Login, keine Änderung).
+**Ergänzt:** 12.11.2026 (Phase 17, Auftrag §6/§7) – erneute, ebenfalls nur lesende Verifikation
+der Alt-URLs und Umsetzung der Redirect-/410-Matrix (§10, docs/REDIRECT_MATRIX.md).
 
 **Wichtig**
 
 - Die bestehende Live-Website bleibt **unverändert online** – keine DNS-/Domain-Umschaltung,
   kein Löschen von WordPress, keine Änderung an Inhalten oder Plugins.
-- **Phase 16 setzt keine Redirects um.** Redirect-/410-Matrix Alt → Neu, Sitemap, Robots,
-  Canonicals, strukturierte Daten und die Prüfung alter URLs/Rankings sind **Phase 17**. Die
-  Spalte „inhaltliche Entsprechung“ in §2 ist nur eine Orientierung, keine Redirect-Entscheidung.
+- **Phase 16 setzte keine Redirects um; seit Phase 17 gilt die Redirect-/410-Matrix**
+  (docs/REDIRECT_MATRIX.md, verbindlich je Altpfad) zusammen mit Sitemap, robots.txt,
+  Canonicals und strukturierten Daten (docs/SEO_TECHNICAL.md). Die Spalte „inhaltliche
+  Entsprechung“ in §2 bleibt eine Orientierung – die Entscheidung je Altpfad steht nur in der
+  Matrix. Die Prüfung alter Rankings bleibt offen (§10).
 - **Nichts kopiert:** Keine Bilder, Logos, Videos, PDFs, CSS oder Skripte der Alt-Seite liegen im
   Repository. Texte wurden nur als **redaktionelle Entwürfe** in die CMS-Bootstrap-Inhalte
   übernommen (`apps/api/src/cms/bootstrap-content.ts`, §7), jeweils mit interner
@@ -77,10 +81,11 @@ Es gibt **keine** FAQ-Seite, **keine** Ortsseiten, **keine** eigenen Produktseit
 | `/sample-page/` | WordPress-Standardseite | index |
 | `/metform-form/contact-form/` | Einzelseite des Formular-Plugins | index |
 | `/book-appointment/`, `/my-bookings/`, `/thank-you/` | Buchungs-Plugin-Reste mit roh ausgegebenen Shortcodes | index |
-| `/cancel-appointment/`, `/cancel-payment/`, `/appointment-cancellation-confirmation/`, `/appointment-reschedule/`, `/bookingpress-complete-payment/` | nur aus Sitemap/REST bekannt, **nicht einzeln abgerufen** – vermutlich gleiche Leerseiten | unklar |
+| `/cancel-appointment/`, `/cancel-payment/`, `/appointment-cancellation-confirmation/`, `/appointment-reschedule/`, `/bookingpress-complete-payment/` | Phase 16: nur aus Sitemap/REST bekannt. **Phase 17 (12.11.2026) einzeln verifiziert:** BookingPress-Standardtexte (englisch) bzw. rohe Shortcodes, kein Inhalt, alle in der Page-Sitemap ⇒ 410 (docs/REDIRECT_MATRIX.md) | index, follow (korrigiert; Phase 16 „unklar“) |
 
 `robots.txt` sperrt nur WooCommerce-Upload-/Log-Pfade, `add-to-cart`-Parameter und `/wp-admin/`.
-Rankings der Alt-URLs wurden **nicht** geprüft (Phase 17).
+Rankings der Alt-URLs wurden **nicht** geprüft – auch nicht in Phase 17 (kein Zugang zu
+Search-Console-/Backlink-Daten; Go-live-Punkt, siehe §10).
 
 ## 3 Zentrale Inhalte der Alt-Seite (Kurzfassung)
 
@@ -306,5 +311,48 @@ in production). Jede Seite hat eine interne Redaktionsnotiz mit offenen Punkten.
 - **Popcorn/Waffel:** Preise, Inklusivleistungen, Limits, Transport, Bilder, Anfrageweg
   (OPEN_ITEMS „Popcorn/Waffel“).
 - **Empfehlungsregeln** Gästezahl → Maschine (OPEN_ITEMS).
-- **Phase 17:** Redirect-/410-Matrix für §2a/§2b, Ranking-Prüfung, nicht einzeln abgerufene
-  Buchungs-Plugin-Seiten prüfen, Sitemap/Robots/Canonicals/strukturierte Daten.
+- **Phase 17 (erledigt 12.11.2026):** Redirect-/410-Matrix für §2a/§2b
+  (docs/REDIRECT_MATRIX.md), erneute Verifikation der Buchungs-Plugin-Seiten, Sitemap/Robots/
+  Canonicals/strukturierte Daten (docs/SEO_TECHNICAL.md). **Weiter offen:** Ranking-/Search-
+  Console-Prüfung, DNS-Umschaltung, WordPress-Abschaltung (§10).
+
+## 10 Phase 17 – Verifikation der Alt-URLs, Redirect-Stand, kanonischer Host (12.11.2026)
+
+**Verifikation (nur lesend):** 12.11.2026, 07:29–07:31 UTC, 53 Anfragen gegen
+`https://miet-royal.de/` (`curl --max-time 20`; GET mit höchstens 3 Redirect-Hops und
+HTML-Speicherung für 24 Seiten, HEAD ohne Redirect-Folgen für 22 Pfade, 7 Vorab-Abrufe:
+`robots.txt`, `sitemap_index.xml`, vier Unter-Sitemaps, `www`-HEAD; 1 s Pause, höchstens zwei
+Anfragen je URL). Kein Formular, kein Login, kein POST, keine Änderung. Gespeicherte Rohdaten
+sind Fremddaten und wurden nur geparst, nie ausgeführt; Anschrift, Telefonnummer und
+Steuernummer der Alt-Seite werden hier nicht wiedergegeben. Erreichbarkeit einwandfrei
+(Apache/WordPress 6.9.x, Hello Elementor, Rank Math).
+
+| Umfang | Befund |
+| --- | --- |
+| Host/Protokoll | `https://www.miet-royal.de/` ⇒ 301 `https://miet-royal.de/` (WordPress); `http://` ⇒ 301 `https://`. 12 Pfade ohne Schluss-Slash ⇒ 301 auf die Slash-Variante ⇒ beide Schreibweisen müssen auf der neuen Website dieselbe Regel treffen |
+| §6-Redirect-Quellen (11 Pfade, GET) | alle 200 mit Inhalt, Self-Canonical (außer `/mein-konto/`: `noindex`, kein Canonical). Wertvoller Inhalt: `/`, `/maschinen-zubehoer/`, `/ablauf/`, `/buchung/`, `/uber-uns/`, `/kontaktformular/`, `/impressum/`, `/datenschutz/`. Inhaltlich wertlos (Formularvorlage, roher Shortcode, ungenutzter Login): `/metform-form/contact-form/`, `/book-appointment/`, `/mein-konto/` – Redirect laut Auftrag §6 vertretbar, 410 wäre gleichwertig. Keine Elementor-Inhaltsseite hat ein `<h1>` |
+| §7-410-Kandidaten (13 Pfade, GET) | alle 200 (bzw. `/kasse/` 302 → `/warenkorb/`), alle in den Rank-Math-Sitemaps, kein Inhalt (leeres Shoparchiv, leerer Warenkorb, WordPress-Standardbeitrag/-seite, BookingPress-Standardtexte bzw. rohe Shortcodes). Die fünf in §2b als „nicht einzeln abgerufen“ markierten Seiten sind `index, follow` (nicht „unklar“) ⇒ 410 zwingend. `/my-bookings/` bleibt laut Auftrag §7 ein Redirect auf `/konto` |
+| Sitemaps | `sitemap_index.xml` → `post-`, `page-`, `metform-form-`, `category-sitemap.xml`: 24 Seiten-URLs, alle durch §6 (11) oder §7 (13) abgedeckt; zusätzlich 25 Bild-URLs unter `/wp-content/uploads/` (nicht abgerufen, nichts übernommen) |
+| weitere WordPress-Pfade (nur HEAD) | `/feed/`, `/comments/feed/` (RSS, 200), `/author/techremedys/` (200), `/page/2/` (200), `/wp-json/` (200, `X-Robots-Tag: noindex`), `/wp-login.php` (200), `/xmlrpc.php` (405), `/tag/` (404); Inhalte nicht abgerufen |
+| nicht geprüft | `/?p=<id>`-Shortlinks (nicht abgerufen), Bild-URLs, Rankings/Backlinks/Search-Console-Daten (kein Zugang; Go-live-Punkt) |
+
+**Umsetzung (Phase 17; verbindlich docs/REDIRECT_MATRIX.md, Verfahren docs/SEO_TECHNICAL.md):**
+308 in einem Hop für `/maschinen-zubehoer`, `/buchung`, `/uber-uns`, `/kontaktformular`,
+`/metform-form/contact-form`, `/book-appointment`, `/mein-konto`, `/my-bookings` und
+`/sitemap_index.xml` (⇒ neue `/sitemap.xml`); 410 für die 13 §7-Pfade sowie `/feed`,
+`/comments/feed`, `/author/techremedys`, `/page/2` und die vier Unter-Sitemaps; gleiche Pfade
+(`/ablauf/`, `/impressum/`, `/datenschutz/`, …) nur mit einer Slash-Normalisierung (308);
+`/wp-login.php`, `/xmlrpc.php`, `/wp-json`, `/tag`, `/wp-content/uploads/*` bewusst 404;
+`/?p=`/`/?s=` nicht gemappt (Startseite mit Canonical `/`). Die Alt-Sitemaps werden nicht
+weitergeführt; die neue Website hat genau eine Sitemap `/sitemap.xml` aus veröffentlichten
+CMS-Seiten. Jede Regel gilt mit und ohne Schluss-Slash und in jeder Schreibweise.
+
+**Kanonischer Host:** Die Alt-Seite leitet `www.` → Apex; die neue Website macht es umgekehrt
+(`www.miet-royal.de` kanonisch, Apex ⇒ 308 `www` ausschließlich im Reverse-Proxy,
+docs/DEPLOYMENT_NOTES.md „Website SEO, Redirects, kanonischer Host (Phase 17)“). Bis zur
+DNS-Umschaltung ist davon nichts live; die Alt-Seite bleibt unverändert.
+
+**Deferred (Auftrag §35, nicht Teil von Phase 17):** DNS-Umschaltung, WordPress-Abschaltung,
+Search-Console-Verifikation und Sitemap-Einreichung, Ranking-Prüfung/-Monitoring,
+Rich-Results-Test gegen die Live-Domain, Entscheidung `/shop/` 410 vs. Redirect bei
+nachgewiesenem Backlink-Wert (docs/OPEN_ITEMS.md „Phase 17“).

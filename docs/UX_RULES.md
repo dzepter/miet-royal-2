@@ -159,8 +159,11 @@ docs/WEBSITE_CONFIGURATOR.md):
   Laden werden Bewertungen und Profilbilder von Google abgerufen.“), nur wenn ein
   Provider aktiv ist; Demo eindeutig „DEMO – synthetische
   Beispielbewertungen“; Fehler ⇒ „Bewertungen sind gerade nicht verfügbar.“
-  Google-Modus: Attribution „Google Maps“ (nicht übersetzbar, ohne
-  Zeilenumbruch), Richtlinienhinweis von Google mit Link, „Von Google übersetzt“
+  Google-Modus: Attribution mit dem offiziellen Google-Maps-Logo (Phase 17:
+  unverändertes Asset, 18 px hoch, Freiraum, `alt` „Google Maps“, nicht
+  übersetzbar, eigenständig neben der Gesamtbewertung – nie im Fließtext, nie
+  in der Fußzeile; verlinkt auf den Ort), „Google Maps“ in Linktexten ohne
+  Zeilenumbruch, Richtlinienhinweis von Google mit Link, „Von Google übersetzt“
   bei übersetzten Texten, Originaltext optional aufklappbar.
 - Keine Live-Verfügbarkeit, keine Bestandszahlen, kein WhatsApp-Widget, kein
   Google-Maps-Embed, kein Newsletter, keine Marketing-Tracker, kein
@@ -177,6 +180,38 @@ docs/WEBSITE_CONFIGURATOR.md):
   Codes. Eingaben sind erst nach dem Laden der Seite (Hydration) bedienbar –
   keine still verlorenen Eingaben.
 
+Umsetzung Phase 17 (SEO und technische QA, Details docs/SEO_TECHNICAL.md und
+docs/WEBSITE_QA_REPORT.md):
+- Brotkrume nur dort, wo sie Orientierung gibt: Regionsseiten („Start ›
+  Slushmaschine mieten › Ort“) und sekundäre Angebote („Start › Seite“) –
+  `nav aria-label="Brotkrumen"` mit `ol`, aktuelle Seite als
+  `aria-current="page"` ohne Link, Trennzeichen rein per CSS, Einträge ≥ 44 px,
+  umbrechend. Keine Brotkrume auf Start- und Hauptseiten; das JSON-LD entspricht
+  exakt der sichtbaren Brotkrume (nie versteckte SEO-Breadcrumbs).
+- 410-Seite („Diese Seite gibt es nicht mehr.“): Website-Look mit Creme/Bronze
+  und Serifen-Überschrift, Erklärung in du-Ansprache, CTA „Slush konfigurieren“,
+  Links „Zur Startseite“, „Slushmaschine mieten“, „Kontakt“; echter Status 410,
+  noindex, kein Script, keine technischen Codes. 404-Seite: Titel „Seite nicht
+  gefunden – Miet-Royal“, echter Status 404 (auch für unveröffentlichte
+  CMS-Seiten).
+- Umbruch statt Überlauf: Überschriften mit `overflow-wrap: anywhere` und
+  `hyphens: auto`; kein `white-space: nowrap` auf variablen Textwerten (z. B.
+  Preiszeilen der Inklusiv-Listen – der Betrag bleibt durch das geschützte
+  Leerzeichen zusammen); Raster mit `minmax(0, 1fr)` statt `1fr`, damit sie
+  unter die Min-Content-Breite schrumpfen (Konfigurator: die Schrittleiste
+  scrollt intern); keine horizontale Seite bei 320–1440 px außer bewusst
+  scrollbaren Komponenten. Sichtbarer Fokus (3 px, Gold auf dunklem Grund) auch
+  auf der 410-Seite.
+- Marken-Link im Kopf: der zugängliche Name ist der sichtbare Text (Wortmarke
+  bzw. Logo-Alt-Text plus Slogan); ein `aria-label` („<Firma> – Startseite“) nur,
+  wenn der Link keinen Text hat (dekoratives Logo ohne Slogan) – WCAG 2.5.3
+  „Label in Name“.
+- Favicon/App-Icon: neutraler Platzhalter („MR“ auf Bronze, `app/icon.svg`,
+  `app/favicon.ico`) bis das finale Logo vorliegt – 1:1 ersetzen
+  (docs/OPEN_ITEMS.md „Phase 17“).
+- Weiterhin keine Tracker, kein Consent-Manager, keine Cookie-Banner;
+  Bewertungen bleiben Klick-zum-Laden.
+
 Staff-Bereich „Website“ (Phase 16, Navigation bei `cms.edit` oder
 `cms.publish`, nach „Produkte“): Übersicht mit Gruppen (Einstellungen,
 Hauptseiten, Regionale Seiten, Sekundäre Angebote, Rechtliches) und Status als
@@ -191,6 +226,13 @@ Pfad („Block 3 (Vorteile) › Eintrag 1 › Titel“), nie rohe Codes. „Prod
 Preise“ ist eine Lesesicht mit Link nach `/produkte`. Kasten „Website-Anfrage“
 in der Inquiry-Ansicht des Vorgangs: kompakt, nur bei Website-Anfragen, keine
 automatische Zusammenführung.
+Phase 17: Kasten „Hinweise zur Suchmaschinen-Darstellung“ in der Übersicht und
+„Hinweise zu Titel, Beschreibung und Inhalt“ im Editor – Geltungsbereich als
+Text („Veröffentlicht“, „Entwurf“, „Produkte & Preise“), Servermeldung ohne
+Codes, Satz „nichts wird blockiert“; Links „Bearbeiten“ bzw. „Produkte & Preise
+öffnen“; kein Score, keine Sperre, kein Ladeindikator; bei fehlendem Recht,
+offline oder Fehler fehlt der Kasten still (Warnungen nur bei echtem
+Handlungsbedarf).
 
 ## Responsive / Accessibility
 - Smartphone, Tablet, Desktop direkt

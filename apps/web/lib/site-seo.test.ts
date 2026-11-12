@@ -7,6 +7,7 @@ import {
   canonicalUrl,
   configuratorIndexable,
   normalizeSeoPath,
+  ROBOTS_ALLOW_MEDIA_PATH,
   robotsRules,
   seoContext,
   seoImageFrom,
@@ -257,14 +258,22 @@ describe('Metadaten, Social Image, robots.txt und Sitemap (Phase 17, Design D7�
     assert.deepEqual(bare.alternates, { canonical: `${BASE}/faq` });
   });
 
-  it('SEO-W7. robots.txt: nicht indexierbar ⇒ „Disallow: /“ ohne Sitemap; indexierbar ⇒ „Allow: /“, NUR „Disallow: /api/“ und Sitemap der Basis', () => {
-    const closed = { rules: [{ userAgent: '*', disallow: '/' }] };
+  it('SEO-W7. robots.txt: nicht indexierbar ⇒ crawlbar („Allow: /“, „Disallow: /api/“), KEIN „Disallow: /“, keine Sitemap; indexierbar ⇒ zusätzlich „Allow: /api/public/cms/media/“ und Sitemap der Basis', () => {
+    // Review RA-3: `Disallow: /` würde das noindex jeder Antwort unsichtbar machen (Google:
+    // robots.txt hält keine URL aus dem Index) – nicht indexierbare Instanzen bleiben crawlbar.
+    const closed = { rules: [{ userAgent: '*', allow: '/', disallow: ['/api/'] }] };
     assert.deepEqual(robotsRules({ indexable: false, base: null }), closed);
     assert.deepEqual(robotsRules({ indexable: false, base: BASE }), closed);
+    // Inkonsistenter Kontext (indexierbar ohne Basis) ⇒ ebenfalls geschlossen, keine Sitemap.
+    assert.deepEqual(robotsRules({ indexable: true, base: null }), closed);
+    assert.equal(JSON.stringify(closed).includes('"disallow":"/"'), false);
+    assert.equal('sitemap' in robotsRules({ indexable: false, base: BASE }), false);
+    // Review RA-1: veröffentlichte Medien (og:image, Logo, Seitenbilder) müssen crawlbar sein.
     assert.deepEqual(robotsRules({ indexable: true, base: BASE }), {
-      rules: [{ userAgent: '*', allow: '/', disallow: ['/api/'] }],
+      rules: [{ userAgent: '*', allow: ['/', '/api/public/cms/media/'], disallow: ['/api/'] }],
       sitemap: `${BASE}/sitemap.xml`,
     });
+    assert.equal(ROBOTS_ALLOW_MEDIA_PATH, '/api/public/cms/media/');
     assert.deepEqual([...ROBOTS_DISALLOW_PATHS], ['/api/']);
     // Leitungsentscheidung D7 (Google „Block Search indexing with noindex“): Portal, Vorschau und
     // Token-Pfade bleiben crawlbar, damit ihr noindex gesehen wird – nie per Disallow sperren.
@@ -314,5 +323,29 @@ describe('Metadaten, Social Image, robots.txt und Sitemap (Phase 17, Design D7�
     assert.equal(validIsoDate('gestern'), null);
     assert.equal(validIsoDate(''), null);
     assert.equal(validIsoDate(undefined), null);
+  });
+  it('SEO-W17. Production: http-Basis nie gültig (auch localhost/127.0.0.1); https bleibt; außerhalb production bleibt http nur lokal erlaubt', () => {
+    // Review RA-2: `MAIL_PUBLIC_WEB_BASE_URL=http://localhost:3000` + Schalter an darf in production
+    // keine localhost-Canonicals/Sitemap erzeugen.
+    assert.equal(validSeoBaseUrl('http://localhost:3000', { allowLocalHttp: false }), null);
+    assert.equal(validSeoBaseUrl('http://127.0.0.1:3100', { allowLocalHttp: false }), null);
+    assert.equal(validSeoBaseUrl('https://www.miet-royal.de', { allowLocalHttp: false }), BASE);
+    assert.equal(
+      validSeoBaseUrl('http://localhost:3000', { allowLocalHttp: true }),
+      'http://localhost:3000',
+    );
+    assert.equal(validSeoBaseUrl('http://staging.example.org', { allowLocalHttp: true }), null);
+    const local = {
+      indexingEnabled: true,
+      demo: false,
+      originMismatch: false,
+      base: 'http://localhost:3000',
+    };
+    assert.deepEqual(seoContext(local), { indexable: true, base: 'http://localhost:3000' });
+    assert.deepEqual(seoContext({ ...local, production: true }), { indexable: false, base: null });
+    assert.deepEqual(seoContext({ ...local, base: BASE, production: true }), {
+      indexable: true,
+      base: BASE,
+    });
   });
 });

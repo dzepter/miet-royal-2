@@ -1,10 +1,12 @@
 # Redirect-/410-Matrix der Website-Migration (Phase 17)
 
-Stand: 2026-11-12 (Phase 17, Agent WEB-ROUTES – Tabelle; Prosa/Querverweise ergänzt der
-DOCS-Agent). Quellen: docs/WEBSITE_MIGRATION_NOTES.md §2a/§2b und die ausschließlich lesende
-Verifikation der Alt-Seite `https://miet-royal.de/` vom 12.11.2026 (alle 24 Seiten-URLs der
-Alt-Sitemaps sind abgedeckt; die fünf vorher „nicht einzeln geprüften“ BookingPress-Seiten sind
-verifiziert: `index, follow`, kein Inhalt ⇒ 410 bestätigt).
+Stand: 2026-11-12 (Phase 17). Verbindliche Tabelle aller bekannten Alt-URLs; Code
+`apps/web/lib/legacy-routes.ts`, Verfahren und Hintergrund docs/SEO_TECHNICAL.md
+„Legacy-Redirects“. Quellen: docs/WEBSITE_MIGRATION_NOTES.md §2a/§2b/§10 und die ausschließlich
+lesende Verifikation der Alt-Seite `https://miet-royal.de/` vom 12.11.2026 (alle 24 Seiten-URLs
+der Alt-Sitemaps sind abgedeckt; die fünf vorher „nicht einzeln geprüften“ BookingPress-Seiten
+sind verifiziert: `index, follow`, kein Inhalt ⇒ 410 bestätigt; Verifikationsstand am Ende
+dieses Dokuments).
 
 ## Zweck
 
@@ -31,8 +33,10 @@ Diese Tabelle ist die verbindliche Liste. Der Konsistenztest `apps/web/lib/redir
   der Entscheidungstabelle (`decideLegacyRoute`, relativer Pfad); Nexts Node-Adapter verlangt intern
   eine absolute URL (relativ ⇒ 500) – der Proxy löst den Pfad deshalb gegen die EIGENE Server-URL
   (`request.nextUrl`: hostname/port des Servers, nicht der Host-/Forwarded-Header) auf, prüft, dass
-  der Origin unverändert ist, und Next relativiert die Location wieder. `Cache-Control: public,
-  max-age=3600`.
+  der Origin unverändert ist, und Next relativiert die Location wieder. `Cache-Control`:
+  Legacy-Tabellen-Redirects `public, max-age=3600`; Slash-Normalisierungen `private, no-store`,
+  weil sie auch Token-/Portal-/Vorschau-Pfade treffen, deren Location nie in geteilten Caches
+  liegen darf (Review RD-2/RB-2; Unit SEO-R-U14, E2E SEO-R1/R3).
 - Antwort `410`: eigenständige kleine HTML-Seite im Website-Look mit der Überschrift
   „Diese Seite gibt es nicht mehr.“, Links „Zur Startseite“ (`/`), „Slushmaschine mieten“
   (`/slushmaschine-mieten`), „Kontakt“ (`/kontakt`) und CTA „Slush konfigurieren“ (`/konfigurator`);
@@ -42,9 +46,12 @@ Diese Tabelle ist die verbindliche Liste. Der Konsistenztest `apps/web/lib/redir
 - `410` gilt nur für exakte Pfade. Unterpfade (`/shop/irgendwas`) sind keine bekannten Alt-URLs
   und laufen in die 404-Seite der Website (noindex).
 - Nicht vom Proxy behandelt: `/` selbst, `/api/*` (Rewrite zur API), `/_next/*`, `favicon.ico`,
-  `robots.txt`, `sitemap.xml` sowie Pfade mit `//`, `\`, `%`, `:`, `?`, `#` im Pfadteil – Next
-  normalisiert Mehrfach-Slashes/Backslashes selbst (308 auf den bereinigten Pfad), alles andere
-  endet als 404.
+  `robots.txt`, `sitemap.xml` sowie Pfade mit `//`, `\`, `%`, `:`, `?`, `#` im Pfadteil. Next
+  normalisiert Mehrfach-Slashes/Backslashes selbst (308 auf den bereinigten Pfad); erst danach
+  greift der Proxy – `//uber-uns/` oder `/buchung//` durchlaufen so zwei Hops (akzeptierte
+  Ausnahme, Review RB-3: keine echte Alt-URL ist betroffen). Prozentkodierte Pfade
+  (`/%73lushmaschine-mieten/`) erhalten keinen Proxy-Redirect; Next bedient sie dekodiert als die
+  jeweilige Seite mit korrektem Canonical (Review RB-4). Übrige unbekannte Pfade enden als 404.
 
 ## Trailing-Slash-Regel
 
@@ -53,6 +60,8 @@ Kanonisch ist die Form OHNE Schluss-Slash. Jeder sonstige „sichere“ Pfad mit
 einem `308` auf die Form ohne Slash geleitet; die Query bleibt erhalten, die Groß-/Kleinschreibung
 bleibt unverändert (Next-Routen sind case-sensitive, `/Ablauf` endet als 404). Damit entsteht für
 die gleichen Pfade der Alt-Seite genau ein Redirect und keine Doppelweiterleitung (Auftrag §6).
+Diese Antworten tragen `Cache-Control: private, no-store` (auch für `/konto/…/`,
+`/angebot/<token>/`, `/vorschau/`).
 
 ## Query-Regel
 
@@ -67,6 +76,10 @@ die gleichen Pfade der Alt-Seite genau ein Redirect und keine Doppelweiterleitun
   antwortet mit 200 und Canonical `/` ohne Query.
 - Ein Open Redirect ist ausgeschlossen: Die `Location` beginnt immer mit genau einem `/`;
   `//host/`, `/\host/`, `/%2F%2Fhost/` und `/buchung//` lösen keinen Proxy-Redirect aus.
+  Absolute-form Request-Targets (`GET http://evil.example/buchung/ HTTP/1.1`) beantwortet Next
+  selbst mit 308 auf die fremde absolute URL (Next-Core, Review RB-5); Browser senden nie
+  absolute-form, der Reverse-Proxy normalisiert auf origin-form – Go-live-Smoke in
+  docs/PRE_START_CHECKLIST.md.
 
 ## Kanonischer Host (www)
 
@@ -152,3 +165,44 @@ noindex. Ein Schluss-Slash wird auch hier zuerst normalisiert (`/wp-json/` ⇒ 3
 | `/wp-json/` | 404 | – | WordPress-REST-Wurzel (war bereits `X-Robots-Tag: noindex`); kein Redirect. | SEO-R-U5, SEO-R8 |
 | `/tag/` | 404 | – | Schlagwort-Archiv (auf der Alt-Seite schon 404). | SEO-R-U5, SEO-R8 |
 | `/wp-content/uploads/*` | 404 | – | Bilder/Uploads der Alt-Seite (Logo, Fotos, Stock-/KI-Bilder); nichts wird übernommen, kein Redirect. | SEO-R-U5, SEO-R8 |
+
+## Verifikationsstand der Alt-URLs (12.11.2026)
+
+- **Methode:** ausschließlich lesende Abrufe gegen `https://miet-royal.de/` am 12.11.2026
+  (07:29–07:31 UTC): 53 Anfragen (`curl --max-time 20`; GET mit höchstens 3 Redirect-Hops und
+  HTML-Speicherung für 24 Seiten, HEAD ohne Redirect-Folgen für 22 Pfade, 7 Vorab-Abrufe:
+  `robots.txt`, `sitemap_index.xml`, vier Unter-Sitemaps, `www`-HEAD), 1 s Pause, höchstens zwei
+  Anfragen je URL. Kein Formular, kein Login, kein POST, keine Änderung an der Alt-Seite.
+  Gespeicherte Rohdaten sind Fremddaten (nur geparst); Anschrift, Telefonnummer und Steuernummer
+  der Alt-Seite werden in der Doku nicht wiedergegeben. Details:
+  docs/WEBSITE_MIGRATION_NOTES.md §10.
+- **Einzeln geprüft (GET):** alle 11 Redirect-Quellen des Auftrags §6 (alle 200, Self-Canonical
+  außer `/mein-konto/`) und alle 13 410-Kandidaten des Auftrags §7 (200 bzw. `/kasse/` 302 →
+  `/warenkorb/`; alle in den Rank-Math-Sitemaps). Die fünf vorher „nicht einzeln geprüften“
+  BookingPress-Seiten sind `index, follow` mit rohen Shortcodes bzw. englischen
+  Plugin-Standardtexten – kein Inhalt ⇒ 410.
+- **Nur per HEAD (Status, Inhalt nicht abgerufen):** `/feed/`, `/comments/feed/`,
+  `/author/techremedys/`, `/page/2/`, `/wp-json/`, `/wp-login.php`, `/xmlrpc.php`, `/tag/`.
+- **Nicht geprüft:** `/?p=<id>`-Shortlinks, Bild-URLs unter `/wp-content/uploads/`,
+  Rankings/Backlinks/Search-Console-Daten (kein Zugang; Go-live-Punkt). Deshalb bleibt `/shop/`
+  410; ein Redirect auf `/slushmaschine-mieten` käme nur bei nachgewiesenem Wert in Frage.
+- **Abgleich:** Alle 24 Seiten-URLs der Alt-Sitemaps sind durch Zeilen dieser Matrix abgedeckt;
+  Host- und Protokoll-Redirects der Alt-Seite (`www.` → Apex, `http` → `https`) werden auf der
+  neuen Website umgekehrt (`www` kanonisch) im Reverse-Proxy abgebildet.
+
+## Rollback und Pflege
+
+- **Quelle der Wahrheit** ist der Code: `LEGACY_REDIRECTS` und `LEGACY_GONE` in
+  `apps/web/lib/legacy-routes.ts`. Diese Tabelle muss deckungsgleich sein – der Konsistenztest
+  `apps/web/lib/redirect-matrix.test.ts` (SEO-R-D1–D5) schlägt sonst an. Eine neue Zeile braucht
+  einen Code-Eintrag, mindestens einen Unit-Testnamen (`SEO-R-U<n>`, vorhanden in
+  `legacy-routes.test.ts`) und als E2E-Namen nur `SEO-R1`–`SEO-R9`.
+- **Rollback einer Regel:** Eintrag entfernen oder umhängen, Tabellenzeile anpassen,
+  `pnpm --filter @mietroyal/web test` ausführen, Web neu bauen und deployen. Legacy-Redirects
+  tragen `Cache-Control: public, max-age=3600` – Browser und geteilte Caches können eine
+  geänderte Regel bis zu einer Stunde lang mit der alten Antwort beantworten. Ein vollständiger
+  Rollback ist der vorherige Build. Bis zur DNS-Umschaltung bleibt die bisherige Website
+  unverändert online; die Regeln wirken nur auf der neuen Instanz.
+- **Tabellenformat nicht ändern:** fünf Spalten (Altpfad, Ergebnis, Ziel, Begründung, Testname);
+  Altpfad und Ziel in Backticks; Ergebnis exakt `200`, `308`, `308 (Slash)`, `410` oder `404`;
+  Ziel `–` bei 410/404; keine Alt-URL doppelt. Prosa außerhalb der Tabellen ist frei.

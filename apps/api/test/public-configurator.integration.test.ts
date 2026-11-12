@@ -1,3 +1,4 @@
+import { PassThrough } from 'node:stream';
 import { cmsEntries, cmsRevisions, products, productPrices } from '@mietroyal/database';
 import { eq, inArray } from 'drizzle-orm';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -30,10 +31,13 @@ import {
  * product_prices und der zentralen Preisengine; keine IDs/Bestände/Historie; Abholung
  * ohne exakte Adresse; Lieferung ohne Preis; ≥ 250 Gäste nur Hinweis; Empfehlung nur aus
  * veröffentlichten Regeln und überschreibbar. Namen laufen als „PC<n>“.
+ * Phase 17 (SEO, D13 + Review RC-1): Preis-Guard der Projektion (Name, Beschreibung,
+ * Verkaufseinheit) als „SEO-P<n>“; das Serverlog wird aufgefangen (nur Slug/Feld, nie Text).
  */
 
 let ctx: TestContext;
 let adminId: string;
+let logBuffer = '';
 
 const SEED_PRICES: Record<string, number> = {
   'slush-1x8': 6000,
@@ -56,7 +60,11 @@ const CONTAINERS: Record<string, number> = {
 };
 
 beforeAll(async () => {
-  ctx = await createTestContext();
+  const sink = new PassThrough();
+  sink.on('data', (chunk: Buffer) => {
+    logBuffer += chunk.toString('utf8');
+  });
+  ctx = await createTestContext({ logDestination: sink, logLevel: 'warn' });
 });
 
 afterAll(async () => {
@@ -722,6 +730,119 @@ describe('Phase 17 – Preis-Guard der öffentlichen Produktprojektion (Order §
         await ctx.db
           .update(products)
           .set({ name: original.name, description: original.description })
+          .where(eq(products.slug, original.slug));
+      }
+    }
+  });
+
+  it('SEO-P7. Verkaufseinheit mit Preisangabe ⇒ Sirup fehlt im Katalog, ist nicht wählbar (SYRUP_UNAVAILABLE), kein Preistext in den Antworten; Staff-Produktdaten unverändert; Log nur Slug und Feld; Verkaufseinheit mit exakter Adresse ⇒ ebenfalls ausgeblendet (Review RC-1)', async () => {
+    const touched = ['sirup-kirsche', 'becher-25'];
+    const originals = await ctx.db
+      .select({
+        slug: products.slug,
+        name: products.name,
+        description: products.description,
+        saleUnit: products.saleUnit,
+      })
+      .from(products)
+      .where(inArray(products.slug, touched));
+    const priceTexts = ['12 €', 'Flasche (12'];
+    try {
+      await ctx.db
+        .update(products)
+        .set({ saleUnit: 'Flasche (12 €)' })
+        .where(eq(products.slug, 'sirup-kirsche'));
+      logBuffer = '';
+      // Katalog: der Sirup existiert öffentlich nicht; die übrigen Sirupe tragen ihre Einheit.
+      const { response, body } = await catalog();
+      expect(body.syrups.map((s: { slug: string }) => s.slug)).toEqual([
+        'sirup-wassermelone',
+        'sirup-waldmeister',
+        'sirup-blaue-himbeere',
+      ]);
+      expect(body.syrups[0].unitLabel).toBe('1-L-Flasche');
+      for (const forbidden of priceTexts) expect(response.body, forbidden).not.toContain(forbidden);
+      // Vorschau: als Gratis- UND Extra-Sirup nicht wählbar (Hinweis statt Fehler), Maschine
+      // normal berechnet, keine Position trägt den Einheiten-Text.
+      const result = await preview({
+        machineSlug: 'slush-1x8',
+        syrups: {
+          free: [{ slug: 'sirup-kirsche', liters: 1 }],
+          extra: [{ slug: 'sirup-kirsche', liters: 2 }],
+        },
+      });
+      expect(result.issues).toEqual([
+        { code: 'SYRUP_UNAVAILABLE', message: 'Diese Sirupsorte ist gerade nicht wählbar.' },
+        { code: 'SYRUP_UNAVAILABLE', message: 'Diese Sirupsorte ist gerade nicht wählbar.' },
+      ]);
+      expect(result.fixedTotalCents).toBe(6000);
+      expect(result.commission).toEqual([]);
+      for (const forbidden of priceTexts) {
+        expect(JSON.stringify(result), forbidden).not.toContain(forbidden);
+      }
+      // Ein anderer Sirup bleibt normal wählbar – mit seiner Einheit in der Kommission.
+      const other = await preview({
+        machineSlug: 'slush-1x8',
+        syrups: { free: [], extra: [{ slug: 'sirup-waldmeister', liters: 1 }] },
+      });
+      expect(other.issues).toEqual([]);
+      expect(other.commission).toHaveLength(1);
+      expect(other.commission[0]).toMatchObject({ unit: '1-L-Flasche', unitPriceCents: 1200 });
+      // Interne Produktdaten unverändert: die Staff-Route zeigt die Verkaufseinheit weiter.
+      const staff = await createStaffWithPermissions(ctx, adminId, {
+        firstName: 'Vera',
+        lastName: 'Einheit',
+        email: 'einheit@seo.test',
+        password: 'einheit-passwort-123',
+        permissionKeys: ['product.view'],
+      });
+      const list = await ctx.app.inject({
+        method: 'GET',
+        url: '/staff/products',
+        headers: { cookie: staff.cookie },
+      });
+      expect(list.statusCode).toBe(200);
+      const kirsche = (list.json().products as Array<{ slug: string; saleUnit: string }>).find(
+        (product) => product.slug === 'sirup-kirsche',
+      );
+      expect(kirsche?.saleUnit).toBe('Flasche (12 €)');
+      // Log: Ereignis, Slug und Feldname – nie der Text.
+      expect(logBuffer).toContain('public.catalog.price_text_suppressed');
+      expect(logBuffer).toContain('sirup-kirsche');
+      expect(logBuffer).toMatch(/"field":\s*"saleUnit"/);
+      for (const forbidden of priceTexts) expect(logBuffer, forbidden).not.toContain(forbidden);
+      // Phase-16-Guard-Lücke: Verkaufseinheit mit der exakten Abholadresse ⇒ ebenfalls ausgeblendet.
+      await setPickupExactAddress(ctx, adminId);
+      await ctx.db
+        .update(products)
+        .set({ saleUnit: '25er-Pack (Teststr. 1)' })
+        .where(eq(products.slug, 'becher-25'));
+      logBuffer = '';
+      const second = await catalog();
+      expect(second.body.accessories.map((a: { slug: string }) => a.slug)).toEqual([
+        'strohhalme-25',
+      ]);
+      expect(second.response.body.toLowerCase()).not.toContain('teststr');
+      const withCups = await preview({
+        machineSlug: 'slush-1x8',
+        extras: { cups25: 1, straws25: 0 },
+      });
+      expect(withCups.issues.map((issue: { code: string }) => issue.code)).toEqual([
+        'ACCESSORY_UNAVAILABLE',
+      ]);
+      expect(JSON.stringify(withCups).toLowerCase()).not.toContain('teststr');
+      expect(logBuffer).toContain('public.catalog.exact_address_suppressed');
+      expect(logBuffer).toContain('becher-25');
+      expect(logBuffer.toLowerCase()).not.toContain('teststr');
+    } finally {
+      for (const original of originals) {
+        await ctx.db
+          .update(products)
+          .set({
+            name: original.name,
+            description: original.description,
+            saleUnit: original.saleUnit,
+          })
           .where(eq(products.slug, original.slug));
       }
     }

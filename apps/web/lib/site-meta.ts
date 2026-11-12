@@ -31,6 +31,11 @@ export type { SeoEnv, SiteMetadata, SiteRobots } from './site-seo.ts';
 export const NOINDEX_ROBOTS: SiteRobots = { index: false, follow: false };
 
 /** Default AUS: nur der Wert `true` (klein geschrieben, äußerer Leerraum egal) öffnet. */
+/** `WEB_APP_ENV=production` (exakt) – schärft die Basis-Prüfung (nur https). */
+export function readProductionWebEnv(value: string | undefined = process.env.WEB_APP_ENV): boolean {
+  return (value ?? '').trim() === 'production';
+}
+
 export function readIndexingEnabled(
   value: string | undefined = process.env.WEB_INDEXING_ENABLED,
 ): boolean {
@@ -67,6 +72,7 @@ export function seoEnvFrom(
   demo: boolean,
   originMismatch: boolean,
   indexingEnabled: boolean = readIndexingEnabled(),
+  production: boolean = readProductionWebEnv(),
 ): SeoEnv {
   const boot = bootstrap.ok ? bootstrap.data : null;
   const context = seoContext({
@@ -74,6 +80,8 @@ export function seoEnvFrom(
     demo: demo || boot?.environment === 'demo',
     originMismatch,
     base: boot?.publicBaseUrl,
+    // Review RA-2: in production ist eine http-Basis (auch localhost) nie gültig.
+    production: production || boot?.environment === 'production',
   });
   return { ...context, siteName: boot?.settings?.businessName ?? SITE_BRAND_NAME };
 }

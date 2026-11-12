@@ -31,7 +31,19 @@ export const SEO_LOCAL_HTTP_HOSTS: readonly string[] = ['localhost', '127.0.0.1'
  * localhost/127.0.0.1), keine Zugangsdaten, kein Query/Fragment, Pfad genau `/`.
  * Rückgabe ohne Schluss-Slash (`https://www.example.org`, ggf. mit Port).
  */
-export function validSeoBaseUrl(value: string | null | undefined): string | null {
+export interface SeoBaseUrlOptions {
+  /**
+   * `http://localhost|127.0.0.1` als Basis zulassen (lokale Entwicklung, E2E, Lighthouse).
+   * In production NIE (Auftrag §4 „Production: nur HTTPS“) – dann ist jede http-Basis ungültig
+   * und die Instanz bleibt fail-closed nicht indexierbar.
+   */
+  allowLocalHttp?: boolean;
+}
+
+export function validSeoBaseUrl(
+  value: string | null | undefined,
+  options: SeoBaseUrlOptions = {},
+): string | null {
   if (typeof value !== 'string') return null;
   const trimmed = value.trim();
   if (trimmed === '' || /[?#\s]/.test(trimmed)) return null;
@@ -43,7 +55,9 @@ export function validSeoBaseUrl(value: string | null | undefined): string | null
   }
   if (url.username !== '' || url.password !== '' || url.hostname === '') return null;
   if (url.protocol === 'http:') {
-    if (!SEO_LOCAL_HTTP_HOSTS.includes(url.hostname)) return null;
+    if (options.allowLocalHttp === false || !SEO_LOCAL_HTTP_HOSTS.includes(url.hostname)) {
+      return null;
+    }
   } else if (url.protocol !== 'https:') {
     return null;
   }
@@ -62,6 +76,11 @@ export interface SeoContextInput {
   originMismatch: boolean;
   /** Rohwert `publicBaseUrl` aus dem Bootstrap (wird hier geprüft). */
   base: string | null | undefined;
+  /**
+   * Produktivinstanz (WEB_APP_ENV=production oder Bootstrap `environment: 'production'`):
+   * dann ist nur eine https-Basis gültig – auch `http://localhost` nicht (Review RA-2).
+   */
+  production?: boolean;
 }
 
 export interface SeoContext {
@@ -77,7 +96,7 @@ export interface SeoEnv extends SeoContext {
 }
 
 export function seoContext(input: SeoContextInput): SeoContext {
-  const base = validSeoBaseUrl(input.base);
+  const base = validSeoBaseUrl(input.base, { allowLocalHttp: input.production !== true });
   const indexable = input.indexingEnabled && !input.demo && !input.originMismatch && base !== null;
   return { indexable, base: indexable ? base : null };
 }
@@ -264,11 +283,13 @@ export function buildSiteMetadata(input: BuildSiteMetadataInput): SiteMetadata {
  * (Meta + X-Robots-Tag, Phase 12/15/16) aus dem Index und stehen nie in der Sitemap. Keine
  * Tokens in robots.txt; robots ist keine Sicherheitsgrenze.
  */
+/** Einziger crawlbarer `/api/`-Unterpfad: veröffentlichte CMS-Medien (Review RA-1). */
+export const ROBOTS_ALLOW_MEDIA_PATH = PUBLISHED_MEDIA_PREFIX;
 export const ROBOTS_DISALLOW_PATHS: readonly string[] = ['/api/'];
 
 export interface RobotsRule {
   userAgent: string;
-  allow?: string;
+  allow?: string | string[];
   disallow: string | string[];
 }
 
@@ -280,10 +301,23 @@ export interface RobotsFile {
 /** Nicht indexierbar ⇒ alles gesperrt, keine Sitemap-Zeile; sonst Allow + Sperrliste + Sitemap. */
 export function robotsRules(context: SeoContext): RobotsFile {
   if (!context.indexable || context.base === null) {
-    return { rules: [{ userAgent: '*', disallow: '/' }] };
+    // Nicht indexierbar: crawlbar lassen, damit das noindex jeder Antwort gesehen wird
+    // (Google: ein per robots.txt gesperrter Pfad kann ohne Inhalt indexiert werden und sein
+    // noindex wird nie gelesen – robots.txt ist kein Mittel gegen Indexierung). Keine Sitemap,
+    // `/api/` gesperrt (kein HTML, Bilder einer nicht indexierbaren Instanz nicht crawlbar).
+    return { rules: [{ userAgent: '*', allow: '/', disallow: [...ROBOTS_DISALLOW_PATHS] }] };
   }
   return {
-    rules: [{ userAgent: '*', allow: '/', disallow: [...ROBOTS_DISALLOW_PATHS] }],
+    rules: [
+      {
+        userAgent: '*',
+        // Veröffentlichte CMS-Bilder (og:image, Organization.logo, Seitenbilder) müssen crawlbar
+        // sein (Google: Bild-URLs strukturierter Daten dürfen nicht blockiert sein); die längere
+        // Allow-Regel gewinnt gegen `Disallow: /api/`.
+        allow: ['/', ROBOTS_ALLOW_MEDIA_PATH],
+        disallow: [...ROBOTS_DISALLOW_PATHS],
+      },
+    ],
     sitemap: `${context.base}/sitemap.xml`,
   };
 }

@@ -1,12 +1,15 @@
 import { cmsEntries, cmsRevisions, products, type DatabaseExecutor } from '@mietroyal/database';
 import {
   cmsPageContentSchema,
+  containsExactAddress,
   containsPriceText,
+  exactAddressFragments,
   type CmsPageContent,
   type CmsPageTypeName,
 } from '@mietroyal/validation/cms';
 import { asc, eq } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
+import { getPickupExactAddress } from '../crm/settings-service.ts';
 
 /**
  * Phase 17 (SEO, Order §11/§23/§24, Design D12): Hinweise zur Suchmaschinen-Darstellung für
@@ -15,7 +18,8 @@ import { alias } from 'drizzle-orm/pg-core';
  *
  * `computeSeoWarnings` ist eine reine Funktion über bereits geladenen Daten (Unit-Tests ohne
  * Datenbank); `loadSeoCheckInput`/`runSeoCheck` laden alle Einträge mit Entwurfs- und
- * veröffentlichter Revision sowie Slug/Name/Beschreibung der AKTIVEN Produkte (keine Preise).
+ * veröffentlichter Revision, Slug/Name/Beschreibung/Verkaufseinheit der AKTIVEN Produkte (keine
+ * Preise) sowie die Prüffragmente der exakten Abholadresse (nur zum Abgleich, nie ausgegeben).
  *
  * Geltungsbereiche (`scope`):
  * - `published`: die veröffentlichte Revision eines Eintrags (so sieht die Website aus);
@@ -25,23 +29,36 @@ import { alias } from 'drizzle-orm/pg-core';
  *
  * Regeln: Meta-Titel/-Beschreibung fehlend, sehr kurz, sehr lang; exakt gleiche Meta-Titel bzw.
  * -Beschreibungen (NFKC + trim + lowercase, getrennt unter veröffentlichten Revisionen und unter
- * Entwürfen); leere Seite; interner Link auf eine nicht veröffentlichte Seite; Regionsseiten mit
- * nahezu identischem Text (Jaccard-Ähnlichkeit der Wort-3-Gramme); Produktname/-beschreibung
- * mit Preis-Freitext. Meldungen sind deutsch, ohne Codes und zitieren nie einen Preis.
+ * Entwürfen); leere Seite; interner Link auf eine Seite, die die Website nicht ausliefert (nicht
+ * veröffentlicht, ungültiger Inhalt oder fail-closed wegen der Abholadresse – Review RC-4);
+ * veröffentlichte Seite, die wegen der exakten Abholadresse in Titel/Meta-Titel entfällt;
+ * Regionsseiten mit nahezu identischem Text (Jaccard der Wort-3-Gramme, zusätzlich Teilkopien
+ * über Containment – Review RC-3); Produktname/-beschreibung/-verkaufseinheit mit Preis-Freitext
+ * (Design D13, Review RC-1). Meldungen sind deutsch, ohne Codes und zitieren nie einen Preis oder
+ * die Adresse.
  */
 
 export const META_TITLE_MIN = 20;
 export const META_TITLE_MAX_RECOMMENDED = 60;
 export const META_DESCRIPTION_MIN = 50;
 export const META_DESCRIPTION_MAX_RECOMMENDED = 160;
-/** Jaccard-Ähnlichkeit der Wort-3-Gramme, ab der zwei Regionsseiten als nahezu identisch gelten. */
+/**
+ * Ähnlichkeit der Wort-3-Gramme (Jaccard bzw. Containment), ab der zwei Regionsseiten als
+ * nahezu identisch gelten.
+ */
 export const REGION_SIMILARITY_THRESHOLD = 0.6;
+/**
+ * Phase 17 (Review RC-3): Containment (Schnitt / kleinere Menge) erkennt Teilkopien („Ortsnamen-
+ * Tausch + ein Block entfernt“), gilt aber erst ab dieser Größe der kleineren Trigramm-Menge –
+ * sonst würden kurze Seiten mit wenigen gemeinsamen Sätzen als Kopie gelten.
+ */
+export const REGION_CONTAINMENT_MIN_TRIGRAMS = 30;
 /** App-Pfade (keine CMS-Seiten), die für die Linkprüfung immer existieren; `/konto/…` zählt ebenfalls. */
 export const SEO_APP_PATHS: readonly string[] = ['/', '/konfigurator', '/konto'];
 
 export type SeoWarningScope = 'draft' | 'published' | 'catalog';
 export type SeoWarningField =
-  'metaTitle' | 'metaDescription' | 'content' | 'links' | 'description' | 'name';
+  'metaTitle' | 'metaDescription' | 'content' | 'links' | 'description' | 'name' | 'saleUnit';
 export type SeoWarningCode =
   | 'META_TITLE_MISSING'
   | 'META_TITLE_SHORT'
@@ -54,8 +71,10 @@ export type SeoWarningCode =
   | 'PAGE_EMPTY'
   | 'BROKEN_INTERNAL_LINK'
   | 'REGION_NEAR_DUPLICATE'
+  | 'PAGE_SUPPRESSED'
   | 'PRODUCT_DESCRIPTION_PRICE_HIDDEN'
-  | 'PRODUCT_NAME_PRICE_HIDDEN';
+  | 'PRODUCT_NAME_PRICE_HIDDEN'
+  | 'PRODUCT_UNIT_PRICE_HIDDEN';
 
 export interface SeoWarning {
   code: SeoWarningCode;
@@ -91,14 +110,23 @@ export interface SeoCheckProduct {
   slug: string;
   name: string;
   description: string | null;
+  /** Verkaufseinheit (öffentlich `unitLabel`) – Freitext, daher ebenfalls preisgeprüft (Review RC-1). */
+  saleUnit: string;
 }
 
 export interface SeoCheckInput {
   entries: readonly SeoCheckEntry[];
-  /** AKTIVE Produkte (nur Slug, Name, Beschreibung – keine Preise). */
+  /** AKTIVE Produkte (nur Slug, Name, Beschreibung, Verkaufseinheit – keine Preise). */
   products: readonly SeoCheckProduct[];
-  /** Pfade aller aktuell veröffentlichten CMS-Seiten (Grundlage der Linkprüfung). */
-  publishedPaths: readonly string[];
+  /**
+   * Prüffragmente der exakten Abholadresse (`exactAddressFragments`): eine veröffentlichte Seite
+   * mit der Adresse in Titel oder Meta-Titel liefert die Website fail-closed nicht aus
+   * (`PublicSiteService.publishedPages`). Fehlt der Wert, entfällt nur diese Prüfung.
+   * Die Pfade der tatsächlich erreichbaren Seiten (Grundlage der Linkprüfung) leitet
+   * `computeSeoWarnings` aus den veröffentlichten Revisionen ab (gültiger Inhalt, keine Adresse
+   * in Titel/Meta-Titel) – Review RC-4.
+   */
+  addressFragments?: readonly string[] | undefined;
 }
 
 export interface SeoCheckResult {
@@ -183,13 +211,38 @@ export function wordTrigrams(text: string): Set<string> {
   return grams;
 }
 
+function intersectionSize(a: ReadonlySet<string>, b: ReadonlySet<string>): number {
+  let intersection = 0;
+  for (const item of a) if (b.has(item)) intersection += 1;
+  return intersection;
+}
+
 /** Jaccard-Ähnlichkeit zweier Mengen (0 … 1); zwei leere Mengen gelten als unähnlich. */
 export function jaccardSimilarity(a: ReadonlySet<string>, b: ReadonlySet<string>): number {
   if (a.size === 0 || b.size === 0) return 0;
-  let intersection = 0;
-  for (const item of a) if (b.has(item)) intersection += 1;
+  const intersection = intersectionSize(a, b);
   const union = a.size + b.size - intersection;
   return union === 0 ? 0 : intersection / union;
+}
+
+/**
+ * Containment (Review RC-3): Anteil der kleineren Menge, der in der größeren enthalten ist
+ * (0 … 1) – erkennt Teilkopien, bei denen Jaccard durch den weggelassenen Teil sinkt.
+ */
+export function containmentSimilarity(a: ReadonlySet<string>, b: ReadonlySet<string>): number {
+  if (a.size === 0 || b.size === 0) return 0;
+  return intersectionSize(a, b) / Math.min(a.size, b.size);
+}
+
+/**
+ * Ähnlichkeit zweier Regionsseiten: Jaccard; sobald die kleinere Trigramm-Menge mindestens
+ * `REGION_CONTAINMENT_MIN_TRIGRAMS` Elemente hat, zusätzlich Containment – der höhere Wert gilt
+ * (Review RC-3: „Ortsnamen-Tausch + ein Block entfernt“ bleibt eine Kopie).
+ */
+export function regionSimilarity(a: ReadonlySet<string>, b: ReadonlySet<string>): number {
+  const jaccard = jaccardSimilarity(a, b);
+  if (Math.min(a.size, b.size) < REGION_CONTAINMENT_MIN_TRIGRAMS) return jaccard;
+  return Math.max(jaccard, containmentSimilarity(a, b));
 }
 
 /** Interner Pfad ohne Fragment und ohne Schluss-Slash (`/faq/#oben` ⇒ `/faq`, `/#top` ⇒ `/`). */
@@ -199,11 +252,14 @@ export function normalizeInternalPath(href: string): string {
   return trimmed === '' ? '/' : trimmed;
 }
 
-/** App-Pfad (`/`, `/konfigurator`, `/konto`, `/konto/…`) oder veröffentlichte CMS-Seite? */
-export function internalPathExists(path: string, publishedPaths: ReadonlySet<string>): boolean {
+/**
+ * App-Pfad (`/`, `/konfigurator`, `/konto`, `/konto/…`) oder CMS-Seite, die die Website
+ * tatsächlich ausliefert (`reachablePaths`, siehe `computeSeoWarnings`)?
+ */
+export function internalPathExists(path: string, reachablePaths: ReadonlySet<string>): boolean {
   if (SEO_APP_PATHS.includes(path)) return true;
   if (path.startsWith('/konto/')) return true;
-  return publishedPaths.has(path);
+  return reachablePaths.has(path);
 }
 
 /** Deterministische Serialisierung (sortierte Schlüssel) für den Vergleich zweier Revisionen. */
@@ -243,9 +299,34 @@ interface PageRevisionView {
    * nur solche Entwürfe erhalten eigene Hinweise; `published`-Sichten sind immer „pending“.
    */
   pending: boolean;
+  /**
+   * Veröffentlichte Sicht, die wegen der exakten Abholadresse in Titel oder Meta-Titel von der
+   * Website fail-closed nicht ausgeliefert wird (Review RC-4a; Entwürfe: immer false).
+   */
+  addressSuppressed: boolean;
+  /**
+   * Veröffentlichte Sicht, die die Website tatsächlich ausliefert: gültiger Inhalt und keine
+   * Adresse in Titel/Meta-Titel (Review RC-4; Entwürfe: immer false).
+   */
+  reachable: boolean;
 }
 
-function pageViews(entries: readonly SeoCheckEntry[]): {
+/** Wie `PublicSiteService.publishedPages`: Adresse im Seitentitel oder Meta-Titel ⇒ Seite entfällt. */
+function titleRevealsAddress(
+  content: CmsPageContent,
+  revision: SeoCheckRevision,
+  fragments: readonly string[],
+): boolean {
+  if (fragments.length === 0) return false;
+  return [content.title, revision.metaTitle].some(
+    (text) => text !== null && containsExactAddress(text, fragments),
+  );
+}
+
+function pageViews(
+  entries: readonly SeoCheckEntry[],
+  fragments: readonly string[],
+): {
   published: PageRevisionView[];
   drafts: PageRevisionView[];
 } {
@@ -258,14 +339,19 @@ function pageViews(entries: readonly SeoCheckEntry[]): {
       return parsed.success ? parsed.data : null;
     };
     if (entry.published !== null) {
+      const content = parse(entry.published);
+      const addressSuppressed =
+        content !== null && titleRevealsAddress(content, entry.published, fragments);
       published.push({
         entryId: entry.entryId,
         path: entry.path,
         pageType: entry.pageType,
         scope: 'published',
         revision: entry.published,
-        content: parse(entry.published),
+        content,
         pending: true,
+        addressSuppressed,
+        reachable: content !== null && !addressSuppressed,
       });
     }
     drafts.push({
@@ -276,6 +362,8 @@ function pageViews(entries: readonly SeoCheckEntry[]): {
       revision: entry.draft,
       content: parse(entry.draft),
       pending: entry.published === null || !sameRevision(entry.draft, entry.published),
+      addressSuppressed: false,
+      reachable: false,
     });
   }
   return { published, drafts };
@@ -368,10 +456,21 @@ function metaWarnings(view: PageRevisionView): SeoWarning[] {
 
 function contentWarnings(
   view: PageRevisionView,
-  publishedPaths: ReadonlySet<string>,
+  reachablePaths: ReadonlySet<string>,
 ): SeoWarning[] {
   if (view.content === null) return [];
   const out: SeoWarning[] = [];
+  // Review RC-4a: die Website liefert die Seite nicht aus – Hinweis ohne die Adresse zu zitieren.
+  if (view.addressSuppressed) {
+    out.push(
+      warn(
+        view,
+        'PAGE_SUPPRESSED',
+        'content',
+        'Die veröffentlichte Seite wird auf der Website nicht ausgeliefert, weil Titel oder Meta-Titel die exakte Abholadresse enthalten.',
+      ),
+    );
+  }
   if (view.content.blocks.length === 0) {
     out.push(
       warn(
@@ -395,7 +494,7 @@ function contentWarnings(
   for (const href of collectCmsHrefs(view.content.blocks)) {
     if (!href.startsWith('/')) continue;
     const path = normalizeInternalPath(href);
-    if (!internalPathExists(path, publishedPaths)) broken.add(path);
+    if (!internalPathExists(path, reachablePaths)) broken.add(path);
   }
   for (const path of [...broken].sort()) {
     out.push(
@@ -464,7 +563,7 @@ function regionWarnings(views: readonly PageRevisionView[]): SeoWarning[] {
       const a = regions[i]!;
       const b = regions[j]!;
       if (!a.view.pending && !b.view.pending) continue;
-      const similarity = jaccardSimilarity(a.grams, b.grams);
+      const similarity = regionSimilarity(a.grams, b.grams);
       if (similarity < REGION_SIMILARITY_THRESHOLD) continue;
       const percent = Math.round(similarity * 100);
       for (const [self, other] of [
@@ -486,6 +585,14 @@ function regionWarnings(views: readonly PageRevisionView[]): SeoWarning[] {
   return out;
 }
 
+/** Katalog-Hinweis (kein Eintrag, kein Pfad). */
+function catalogWarning(code: SeoWarningCode, field: SeoWarningField, message: string): SeoWarning {
+  return { code, scope: 'catalog', entryId: null, path: null, field, message };
+}
+
+/** Produktverwaltung des Commerce-Moduls (Staff `/produkte`) – dort werden Name, Beschreibung, Verkaufseinheit gepflegt. */
+const PRODUCT_ADMIN_LABEL = 'in der Produktverwaltung („Produkte & Preise“)';
+
 function productWarnings(list: readonly SeoCheckProduct[]): SeoWarning[] {
   const out: SeoWarning[] = [];
   for (const product of list) {
@@ -493,24 +600,32 @@ function productWarnings(list: readonly SeoCheckProduct[]): SeoWarning[] {
     // Ein Name mit Preisangabe wird nie zitiert – dann genügt der Slug.
     const label = nameHasPrice ? `mit dem Kürzel „${product.slug}“` : `„${product.name}“`;
     if (nameHasPrice) {
-      out.push({
-        code: 'PRODUCT_NAME_PRICE_HIDDEN',
-        scope: 'catalog',
-        entryId: null,
-        path: null,
-        field: 'name',
-        message: `Der Name des Produkts ${label} enthält eine Preisangabe. Das Produkt wird auf der Website deshalb nicht angezeigt – bitte den Namen in „Produkte & Preise“ anpassen.`,
-      });
+      out.push(
+        catalogWarning(
+          'PRODUCT_NAME_PRICE_HIDDEN',
+          'name',
+          `Der Name des Produkts ${label} enthält eine Preisangabe. Das Produkt wird auf der Website deshalb nicht angezeigt – bitte den Namen ${PRODUCT_ADMIN_LABEL} anpassen.`,
+        ),
+      );
+    }
+    // Review RC-1: die Verkaufseinheit blendet das Produkt ebenso aus wie der Name.
+    if (containsPriceText(product.saleUnit)) {
+      out.push(
+        catalogWarning(
+          'PRODUCT_UNIT_PRICE_HIDDEN',
+          'saleUnit',
+          `Die Verkaufseinheit des Produkts ${label} enthält eine Preisangabe. Das Produkt wird auf der Website deshalb nicht angezeigt – bitte die Verkaufseinheit ${PRODUCT_ADMIN_LABEL} anpassen.`,
+        ),
+      );
     }
     if (product.description !== null && containsPriceText(product.description)) {
-      out.push({
-        code: 'PRODUCT_DESCRIPTION_PRICE_HIDDEN',
-        scope: 'catalog',
-        entryId: null,
-        path: null,
-        field: 'description',
-        message: `Die Beschreibung des Produkts ${label} enthält eine Preisangabe. Auf der Website wird die Beschreibung deshalb nicht angezeigt – Preise kommen ausschließlich aus „Produkte & Preise“.`,
-      });
+      out.push(
+        catalogWarning(
+          'PRODUCT_DESCRIPTION_PRICE_HIDDEN',
+          'description',
+          `Die Beschreibung des Produkts ${label} enthält eine Preisangabe. Auf der Website wird die Beschreibung deshalb nicht angezeigt – Preise kommen ausschließlich aus der Produktverwaltung („Produkte & Preise“).`,
+        ),
+      );
     }
   }
   return out;
@@ -531,14 +646,21 @@ function compareWarnings(a: SeoWarning, b: SeoWarning): number {
 /**
  * Reine Prüfung (ohne Datenbank). Reihenfolge der Ausgabe: veröffentlicht, Entwurf, Katalog;
  * innerhalb nach Pfad, Code, Meldung – deterministisch.
+ *
+ * Erreichbare Pfade für die Linkprüfung (Review RC-4) = veröffentlichte Revisionen mit gültigem
+ * Inhalt und ohne Adresse in Titel/Meta-Titel – dieselben Regeln wie der öffentliche Bootstrap
+ * (`PublicSiteService.publishedPages`), damit „kaputter Link“ und „Seite nicht gefunden“
+ * zusammenfallen.
  */
 export function computeSeoWarnings(input: SeoCheckInput): SeoWarning[] {
-  const publishedPaths = new Set(input.publishedPaths);
-  const { published, drafts } = pageViews(input.entries);
+  const { published, drafts } = pageViews(input.entries, input.addressFragments ?? []);
+  const reachablePaths = new Set(
+    published.filter((view) => view.reachable).map((view) => view.path),
+  );
   const pendingDrafts = drafts.filter((view) => view.pending);
   const out: SeoWarning[] = [];
   for (const view of [...published, ...pendingDrafts]) {
-    out.push(...metaWarnings(view), ...contentWarnings(view, publishedPaths));
+    out.push(...metaWarnings(view), ...contentWarnings(view, reachablePaths));
   }
   for (const field of ['metaTitle', 'metaDescription'] as const) {
     out.push(...duplicateWarnings(published, field), ...duplicateWarnings(drafts, field));
@@ -551,8 +673,9 @@ export function computeSeoWarnings(input: SeoCheckInput): SeoWarning[] {
 // ── Datenbeschaffung ─────────────────────────────────────────────────────────
 
 /**
- * Alle Einträge mit Entwurfs- und veröffentlichter Revision (ein Join) sowie die AKTIVEN
- * Produkte (nur Slug, Name, Beschreibung). Einträge ohne Entwurf (noch keine Revision) entfallen.
+ * Alle Einträge mit Entwurfs- und veröffentlichter Revision (ein Join), die AKTIVEN Produkte
+ * (nur Slug, Name, Beschreibung, Verkaufseinheit) und die Prüffragmente der exakten Abholadresse
+ * (dieselbe Quelle wie die öffentliche Projektion). Einträge ohne Entwurf entfallen.
  */
 export async function loadSeoCheckInput(executor: DatabaseExecutor): Promise<SeoCheckInput> {
   const draft = alias(cmsRevisions, 'draft_revision');
@@ -600,16 +723,19 @@ export async function loadSeoCheckInput(executor: DatabaseExecutor): Promise<Seo
     });
   }
   const productRows = await executor
-    .select({ slug: products.slug, name: products.name, description: products.description })
+    .select({
+      slug: products.slug,
+      name: products.name,
+      description: products.description,
+      saleUnit: products.saleUnit,
+    })
     .from(products)
     .where(eq(products.active, true))
     .orderBy(asc(products.sortOrder), asc(products.name));
   return {
     entries,
     products: productRows,
-    publishedPaths: entries
-      .filter((entry) => entry.kind === 'page' && entry.path !== null && entry.published !== null)
-      .map((entry) => entry.path!),
+    addressFragments: exactAddressFragments(await getPickupExactAddress(executor)),
   };
 }
 

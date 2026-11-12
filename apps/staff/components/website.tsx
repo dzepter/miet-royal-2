@@ -78,7 +78,9 @@ export function CmsNoAccess({ title }: { title: string }) {
  * `GET /staff/cms/seo-check`. Reine Redaktionshinweise – nichts wird blockiert, kein Score.
  * Farbe nie allein (UX_RULES): Textlabel „Hinweis“, Scope als Text. Ohne Hinweise wird nichts
  * gerendert. Je Zeile: Scope, Pfad, Meldung des Servers und – nur mit `entryId` und außerhalb
- * des eigenen Editors – ein Link „Bearbeiten“; Katalog-Hinweise verlinken `catalogHref`.
+ * des eigenen Editors – ein Link „Bearbeiten“; Katalog-Hinweise verlinken `catalogHref`
+ * (Phase 17, Review RC-5: die Produktverwaltung `/produkte`, in der Name, Beschreibung und
+ * Verkaufseinheit geändert werden – nicht die Lesesicht, die das Produkt ausblendet).
  */
 export function SeoWarningsBox({
   warnings,
@@ -97,7 +99,7 @@ export function SeoWarningsBox({
   headingLevel?: 2 | 3;
   /** Eintrag, in dessen Editor der Kasten steht: kein Selbst-Link, kein Pfad je Zeile. */
   currentEntryId?: string;
-  /** Ziel für Katalog-Hinweise (Scope „Produkte & Preise“); ohne Angabe kein Link. */
+  /** Ziel für Katalog-Hinweise (Scope „Produkte & Preise“: die Produktverwaltung); ohne Angabe kein Link. */
   catalogHref?: string | undefined;
 }) {
   if (warnings.length === 0) return null;
@@ -144,7 +146,7 @@ export function SeoWarningsBox({
               {productsHref !== null && (
                 <>
                   {' '}
-                  <Link href={productsHref}>Produkte &amp; Preise ansehen</Link>
+                  <Link href={productsHref}>Produkte &amp; Preise öffnen</Link>
                 </>
               )}
             </li>

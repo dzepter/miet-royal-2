@@ -1,8 +1,10 @@
+import { cmsPageContentSchema, exactAddressFragments } from '@mietroyal/validation/cms';
 import { describe, expect, it } from 'vitest';
 import { CMS_BOOTSTRAP_ENTRIES } from '../src/cms/bootstrap-content.ts';
 import {
   collectCmsHrefs,
   computeSeoWarnings,
+  containmentSimilarity,
   editorialStrings,
   internalPathExists,
   jaccardSimilarity,
@@ -11,7 +13,10 @@ import {
   META_TITLE_MAX_RECOMMENDED,
   META_TITLE_MIN,
   normalizeInternalPath,
+  pageComparisonText,
+  REGION_CONTAINMENT_MIN_TRIGRAMS,
   REGION_SIMILARITY_THRESHOLD,
+  regionSimilarity,
   wordTrigrams,
   type SeoCheckEntry,
   type SeoCheckInput,
@@ -23,6 +28,9 @@ import {
  * Phase 17 (SEO, Order §11/§24, Design D12): reine Prüffunktion `computeSeoWarnings` – jede
  * Regel positiv und negativ, Geltungsbereiche (veröffentlicht/Entwurf/Katalog), deterministische
  * Reihenfolge, deutsche Meldungen ohne Codes und ohne Preise. Namen laufen als „SEO-U<n>“.
+ * Review C (RC-1/RC-3/RC-4/RC-5): Verkaufseinheit mit Preis (U12), Erreichbarkeit statt bloßer
+ * Veröffentlichung in der Linkprüfung (U13), Adresse nachträglich in Titel/Meta-Titel (U14),
+ * Teilkopien von Regionsseiten (U8), Meldungstexte zur Produktverwaltung (U9).
  */
 
 const GOOD_TITLE = 'Slushmaschine mieten in Mainz | Miet-Royal';
@@ -74,12 +82,24 @@ function check(
   return computeSeoWarnings({
     entries,
     products: extra.products ?? [],
-    publishedPaths:
-      extra.publishedPaths ??
-      entries
-        .filter((entry) => entry.kind === 'page' && entry.published !== null)
-        .map((entry) => entry.path!),
+    addressFragments: extra.addressFragments ?? [],
   });
+}
+
+/** Zwei CTA-Blöcke mit bis zu vier internen Links (für Linkprüfungen). */
+function linkBlocks(...hrefs: string[]) {
+  const blocks: unknown[] = [];
+  for (let index = 0; index < hrefs.length; index += 2) {
+    const primary = hrefs[index]!;
+    const secondary = hrefs[index + 1];
+    blocks.push({
+      type: 'cta',
+      heading: `Weiter ${index}`,
+      primary: { label: 'Primär', href: primary },
+      ...(secondary === undefined ? {} : { secondary: { label: 'Sekundär', href: secondary } }),
+    });
+  }
+  return blocks;
 }
 
 const codes = (warnings: SeoWarning[]) => warnings.map((warning) => warning.code);
@@ -461,27 +481,154 @@ describe('Phase 17 – SEO-Check (reine Funktion)', () => {
     expect(
       check([mainz, slushCopy]).filter((warning) => warning.code === 'REGION_NEAR_DUPLICATE'),
     ).toEqual([]);
-    // Ähnlichkeitsmaß
+    // Review RC-3: Ortsnamen-Tausch + ein Block entfernt – Jaccard fällt unter die Schwelle,
+    // das Containment (Anteil der kleineren Trigramm-Menge) erkennt die Teilkopie weiterhin;
+    // der Prozentwert in der Meldung ist der höhere Wert.
+    const partial = structuredClone(swapped) as { title: string; blocks: unknown[] };
+    partial.blocks = partial.blocks.filter((_, index) => index !== 1);
+    const mainzGrams = wordTrigrams(
+      pageComparisonText(cmsPageContentSchema.parse(mainzEntry.content)),
+    );
+    const partialGrams = wordTrigrams(pageComparisonText(cmsPageContentSchema.parse(partial)));
+    expect(Math.min(mainzGrams.size, partialGrams.size)).toBeGreaterThanOrEqual(
+      REGION_CONTAINMENT_MIN_TRIGRAMS,
+    );
+    expect(jaccardSimilarity(mainzGrams, partialGrams)).toBeLessThan(REGION_SIMILARITY_THRESHOLD);
+    expect(containmentSimilarity(mainzGrams, partialGrams)).toBeGreaterThanOrEqual(
+      REGION_SIMILARITY_THRESHOLD,
+    );
+    const partialCopy = page(
+      '/slushmaschine-mieten/ingelheim',
+      revision({
+        metaTitle: 'Slushmaschine mieten in Ingelheim | Miet-Royal',
+        metaDescription:
+          'Slushmaschine für Ingelheim: abholen in Mainz-Hechtsheim oder Lieferung anfragen. Sirup, Becher und Strohhalme inklusive.',
+        content: partial,
+      }),
+    );
+    const partialNear = check([mainz, partialCopy, wiesbaden]).filter(
+      (warning) => warning.code === 'REGION_NEAR_DUPLICATE',
+    );
+    expect(partialNear.map((warning) => [warning.scope, warning.path])).toEqual([
+      ['published', '/slushmaschine-mieten/ingelheim'],
+      ['published', '/slushmaschine-mieten/mainz'],
+    ]);
+    const percent = Math.round(regionSimilarity(mainzGrams, partialGrams) * 100);
+    expect(percent).toBeGreaterThan(Math.round(jaccardSimilarity(mainzGrams, partialGrams) * 100));
+    expect(partialNear[0]!.message).toBe(
+      `Der Text ähnelt stark der Regionsseite /slushmaschine-mieten/mainz (Ähnlichkeit ${percent} %). Regionsseiten brauchen eigenständige Inhalte – kein bloßer Ortsnamen-Tausch.`,
+    );
+    // Die drei eigenständigen Standard-Regionsseiten bleiben paarweise ohne Hinweis.
+    const kreuznachEntry = CMS_BOOTSTRAP_ENTRIES.find(
+      (entry) => entry.kind === 'page' && entry.path === '/slushmaschine-mieten/bad-kreuznach',
+    );
+    if (kreuznachEntry?.kind !== 'page') throw new Error('Bootstrap');
+    const kreuznach = page(
+      '/slushmaschine-mieten/bad-kreuznach',
+      revision({
+        metaTitle: kreuznachEntry.metaTitle ?? null,
+        metaDescription: kreuznachEntry.metaDescription ?? null,
+        content: kreuznachEntry.content,
+      }),
+    );
+    expect(
+      check([mainz, wiesbaden, kreuznach]).filter(
+        (warning) => warning.code === 'REGION_NEAR_DUPLICATE',
+      ),
+    ).toEqual([]);
+    // Mini-Seiten (unter 30 Trigrammen): Containment gilt nicht – ein gemeinsamer Satz ist keine Kopie.
+    const miniContent = (place: string) => ({
+      title: `Slush in ${place}`,
+      blocks: [
+        {
+          type: 'text',
+          body: `Slush für deine Feier in ${place} – eiskalt und bunt, Abholung in Mainz-Hechtsheim oder Lieferung.`,
+        },
+      ],
+    });
+    const miniA = page(
+      '/slushmaschine-mieten/nierstein',
+      revision({
+        metaTitle: 'Slushmaschine mieten in Nierstein | Miet-Royal',
+        metaDescription:
+          'Slushmaschine für Nierstein: abholen in Mainz-Hechtsheim oder Lieferung anfragen. Sirup, Becher und Strohhalme inklusive.',
+        content: miniContent('Nierstein'),
+      }),
+    );
+    const miniB = page(
+      '/slushmaschine-mieten/oppenheim',
+      revision({
+        metaTitle: 'Slushmaschine mieten in Oppenheim | Miet-Royal',
+        metaDescription:
+          'Slushmaschine für Oppenheim: abholen in Mainz-Hechtsheim oder Lieferung anfragen. Sirup, Becher und Strohhalme inklusive.',
+        content: miniContent('Oppenheim'),
+      }),
+    );
+    const miniGramsA = wordTrigrams(
+      pageComparisonText(cmsPageContentSchema.parse(miniContent('Nierstein'))),
+    );
+    const miniGramsB = wordTrigrams(
+      pageComparisonText(cmsPageContentSchema.parse(miniContent('Oppenheim'))),
+    );
+    expect(Math.min(miniGramsA.size, miniGramsB.size)).toBeLessThan(
+      REGION_CONTAINMENT_MIN_TRIGRAMS,
+    );
+    expect(containmentSimilarity(miniGramsA, miniGramsB)).toBeGreaterThanOrEqual(
+      REGION_SIMILARITY_THRESHOLD,
+    );
+    expect(regionSimilarity(miniGramsA, miniGramsB)).toBe(
+      jaccardSimilarity(miniGramsA, miniGramsB),
+    );
+    expect(
+      check([miniA, miniB]).filter((warning) => warning.code === 'REGION_NEAR_DUPLICATE'),
+    ).toEqual([]);
+    // Ähnlichkeitsmaße
     const a = wordTrigrams('Slush für deine Feier in Mainz – eiskalt und bunt');
     const b = wordTrigrams('Slush für deine Feier in Ingelheim – eiskalt und bunt');
     expect(jaccardSimilarity(a, a)).toBe(1);
     expect(jaccardSimilarity(a, new Set())).toBe(0);
     expect(jaccardSimilarity(a, b)).toBeGreaterThan(0);
     expect(jaccardSimilarity(a, b)).toBeLessThan(REGION_SIMILARITY_THRESHOLD);
+    expect(containmentSimilarity(a, a)).toBe(1);
+    expect(containmentSimilarity(a, new Set())).toBe(0);
+    expect(containmentSimilarity(a, b)).toBeGreaterThanOrEqual(jaccardSimilarity(a, b));
   });
 
-  it('SEO-U9. Produkte: Preisangabe in Beschreibung bzw. Name ⇒ Katalog-Hinweis mit Name bzw. Slug – nie der Preis', () => {
+  it('SEO-U9. Produkte: Preisangabe in Beschreibung bzw. Name (auch Cent-Beträge) ⇒ Katalog-Hinweis mit Name bzw. Slug und Verweis auf die Produktverwaltung – nie der Preis', () => {
     const warnings = check([], {
       products: [
-        { slug: 'slush-1x8', name: '1×8 L', description: 'Slushmaschine, Tagesmiete 60 €.' },
+        {
+          slug: 'slush-1x8',
+          name: '1×8 L',
+          description: 'Slushmaschine, Tagesmiete 60 €.',
+          saleUnit: 'Stück',
+        },
         {
           slug: 'slush-2x8',
           name: '2×8 L ab 100,-',
           description: 'Slushmaschine mit 2 Behältern.',
+          saleUnit: 'Stück',
         },
-        { slug: 'slush-1x10', name: 'Slush 75 Euro', description: 'EUR 75 pro Tag' },
-        { slug: 'sirup-kirsche', name: 'Sirup Kirsche', description: '1 L ergibt ca. 6 L Slush.' },
-        { slug: 'becher-25', name: 'Becher (25 Stück)', description: null },
+        {
+          slug: 'slush-1x10',
+          name: 'Slush 75 Euro',
+          description: 'EUR 75 pro Tag',
+          saleUnit: 'Stück',
+        },
+        {
+          slug: 'sirup-kirsche',
+          name: 'Sirup Kirsche',
+          description: '1 L ergibt ca. 6 L Slush.',
+          saleUnit: '1-L-Flasche',
+        },
+        { slug: 'becher-25', name: 'Becher (25 Stück)', description: null, saleUnit: '25er-Pack' },
+        // Review RC-2: Cent-Beträge sind Preisangaben.
+        {
+          slug: 'strohhalme-25',
+          name: 'Strohhalme (25 Stück)',
+          description: 'Pfand 50 Cent je Halm.',
+          saleUnit: '25er-Pack',
+        },
       ],
     });
     expect(warnings).toEqual([
@@ -492,7 +639,7 @@ describe('Phase 17 – SEO-Check (reine Funktion)', () => {
         path: null,
         field: 'description',
         message:
-          'Die Beschreibung des Produkts mit dem Kürzel „slush-1x10“ enthält eine Preisangabe. Auf der Website wird die Beschreibung deshalb nicht angezeigt – Preise kommen ausschließlich aus „Produkte & Preise“.',
+          'Die Beschreibung des Produkts mit dem Kürzel „slush-1x10“ enthält eine Preisangabe. Auf der Website wird die Beschreibung deshalb nicht angezeigt – Preise kommen ausschließlich aus der Produktverwaltung („Produkte & Preise“).',
       },
       {
         code: 'PRODUCT_DESCRIPTION_PRICE_HIDDEN',
@@ -501,7 +648,16 @@ describe('Phase 17 – SEO-Check (reine Funktion)', () => {
         path: null,
         field: 'description',
         message:
-          'Die Beschreibung des Produkts „1×8 L“ enthält eine Preisangabe. Auf der Website wird die Beschreibung deshalb nicht angezeigt – Preise kommen ausschließlich aus „Produkte & Preise“.',
+          'Die Beschreibung des Produkts „1×8 L“ enthält eine Preisangabe. Auf der Website wird die Beschreibung deshalb nicht angezeigt – Preise kommen ausschließlich aus der Produktverwaltung („Produkte & Preise“).',
+      },
+      {
+        code: 'PRODUCT_DESCRIPTION_PRICE_HIDDEN',
+        scope: 'catalog',
+        entryId: null,
+        path: null,
+        field: 'description',
+        message:
+          'Die Beschreibung des Produkts „Strohhalme (25 Stück)“ enthält eine Preisangabe. Auf der Website wird die Beschreibung deshalb nicht angezeigt – Preise kommen ausschließlich aus der Produktverwaltung („Produkte & Preise“).',
       },
       {
         code: 'PRODUCT_NAME_PRICE_HIDDEN',
@@ -510,7 +666,7 @@ describe('Phase 17 – SEO-Check (reine Funktion)', () => {
         path: null,
         field: 'name',
         message:
-          'Der Name des Produkts mit dem Kürzel „slush-1x10“ enthält eine Preisangabe. Das Produkt wird auf der Website deshalb nicht angezeigt – bitte den Namen in „Produkte & Preise“ anpassen.',
+          'Der Name des Produkts mit dem Kürzel „slush-1x10“ enthält eine Preisangabe. Das Produkt wird auf der Website deshalb nicht angezeigt – bitte den Namen in der Produktverwaltung („Produkte & Preise“) anpassen.',
       },
       {
         code: 'PRODUCT_NAME_PRICE_HIDDEN',
@@ -519,11 +675,11 @@ describe('Phase 17 – SEO-Check (reine Funktion)', () => {
         path: null,
         field: 'name',
         message:
-          'Der Name des Produkts mit dem Kürzel „slush-2x8“ enthält eine Preisangabe. Das Produkt wird auf der Website deshalb nicht angezeigt – bitte den Namen in „Produkte & Preise“ anpassen.',
+          'Der Name des Produkts mit dem Kürzel „slush-2x8“ enthält eine Preisangabe. Das Produkt wird auf der Website deshalb nicht angezeigt – bitte den Namen in der Produktverwaltung („Produkte & Preise“) anpassen.',
       },
     ]);
     for (const warning of warnings) {
-      expect(warning.message).not.toMatch(/60|100|75|€|EUR|Euro/);
+      expect(warning.message).not.toMatch(/60|100|75|50|€|EUR|Euro|Cent/);
     }
   });
 
@@ -555,6 +711,7 @@ describe('Phase 17 – SEO-Check (reine Funktion)', () => {
             slug: 'slush-1x8',
             name: '1×8 L',
             description: 'Slushmaschine mit 1 Behälter à 8 Liter.',
+            saleUnit: 'Stück',
           },
         ],
       }),
@@ -565,7 +722,7 @@ describe('Phase 17 – SEO-Check (reine Funktion)', () => {
     const faq = page('/faq', revision({ metaTitle: 'Kurz', metaDescription: null }));
     const draftOnly = page('/ablauf', revision({ metaTitle: null }), null, 'process');
     const warnings = check([draftOnly, faq], {
-      products: [{ slug: 'x', name: 'Ding 5 €', description: null }],
+      products: [{ slug: 'x', name: 'Ding 5 €', description: null, saleUnit: 'Stück' }],
     });
     expect(warnings.map((warning) => [warning.scope, warning.path, warning.code])).toEqual([
       ['published', '/faq', 'META_DESCRIPTION_MISSING'],
@@ -583,5 +740,221 @@ describe('Phase 17 – SEO-Check (reine Funktion)', () => {
       ['published', 'META_TITLE_SHORT'],
       ['draft', 'META_TITLE_SHORT'],
     ]);
+  });
+
+  it('SEO-U12. Verkaufseinheit mit Preisangabe ⇒ Katalog-Hinweis mit Produktname bzw. Slug (wenn auch der Name einen Preis trägt) – nie der Preis; saubere Einheiten ohne Hinweis (Review RC-1)', () => {
+    const warnings = check([], {
+      products: [
+        {
+          slug: 'sirup-kirsche',
+          name: 'Sirup Kirsche',
+          description: null,
+          saleUnit: 'Flasche (12 €)',
+        },
+        {
+          slug: 'slush-2x8',
+          name: '2×8 L ab 100,-',
+          description: null,
+          saleUnit: 'Tag – 100 Euro',
+        },
+        {
+          slug: 'becher-25',
+          name: 'Becher (25 Stück)',
+          description: 'Zusätzliche Becher.',
+          saleUnit: '25er-Pack',
+        },
+        { slug: 'sirup-cola', name: 'Sirup Cola', description: null, saleUnit: '1-L-Flasche' },
+        {
+          slug: 'mischkanister-6l',
+          name: '6-L-Mischkanister',
+          description: null,
+          saleUnit: 'Stück',
+        },
+      ],
+    });
+    expect(warnings).toEqual([
+      {
+        code: 'PRODUCT_NAME_PRICE_HIDDEN',
+        scope: 'catalog',
+        entryId: null,
+        path: null,
+        field: 'name',
+        message:
+          'Der Name des Produkts mit dem Kürzel „slush-2x8“ enthält eine Preisangabe. Das Produkt wird auf der Website deshalb nicht angezeigt – bitte den Namen in der Produktverwaltung („Produkte & Preise“) anpassen.',
+      },
+      {
+        code: 'PRODUCT_UNIT_PRICE_HIDDEN',
+        scope: 'catalog',
+        entryId: null,
+        path: null,
+        field: 'saleUnit',
+        message:
+          'Die Verkaufseinheit des Produkts mit dem Kürzel „slush-2x8“ enthält eine Preisangabe. Das Produkt wird auf der Website deshalb nicht angezeigt – bitte die Verkaufseinheit in der Produktverwaltung („Produkte & Preise“) anpassen.',
+      },
+      {
+        code: 'PRODUCT_UNIT_PRICE_HIDDEN',
+        scope: 'catalog',
+        entryId: null,
+        path: null,
+        field: 'saleUnit',
+        message:
+          'Die Verkaufseinheit des Produkts „Sirup Kirsche“ enthält eine Preisangabe. Das Produkt wird auf der Website deshalb nicht angezeigt – bitte die Verkaufseinheit in der Produktverwaltung („Produkte & Preise“) anpassen.',
+      },
+    ]);
+    for (const warning of warnings) {
+      expect(warning.message).not.toMatch(/12|100|€|Euro|Flasche \(|Tag –|[A-Z]{3,}_[A-Z]/);
+    }
+  });
+
+  it('SEO-U13. Veröffentlichte Seite mit ungültigem Inhalt liefert die Website nicht aus ⇒ Links darauf gelten als kaputt; die Seite selbst erzeugt keinen Inhalts-Hinweis und keinen Fehler (Review RC-4)', () => {
+    const home = page(
+      '/',
+      revision({
+        content: { title: 'Start', blocks: linkBlocks('/faq', '/konfigurator') },
+      }),
+      'same',
+      'home',
+    );
+    const invalidFaq = page(
+      '/faq',
+      revision({
+        metaTitle: 'Häufige Fragen zur Slush-Miete | Miet-Royal',
+        metaDescription:
+          'Antworten rund um deine Slush-Miete: Inklusivleistungen, Sirupsorten, Abholung und Rückgabe.',
+      }),
+      revision({
+        metaTitle: 'Häufige Fragen zur Slush-Miete | Miet-Royal',
+        metaDescription:
+          'Antworten rund um deine Slush-Miete: Inklusivleistungen, Sirupsorten, Abholung und Rückgabe.',
+        content: { title: 'Häufige Fragen', blocks: [{ type: 'unbekannter-block' }] },
+      }),
+    );
+    const warnings = check([home, invalidFaq]);
+    expect(warnings.filter((warning) => warning.code === 'BROKEN_INTERNAL_LINK')).toEqual([
+      {
+        code: 'BROKEN_INTERNAL_LINK',
+        scope: 'published',
+        entryId: 'entry-/',
+        path: '/',
+        field: 'links',
+        message:
+          'Der Link „/faq“ führt auf eine Seite, die derzeit nicht veröffentlicht ist. Die Website blendet diesen Link aus, bis die Seite veröffentlicht ist.',
+      },
+    ]);
+    // Ungültiger Inhalt: keine Inhalts-Hinweise an der Seite (kein PAGE_EMPTY, kein Absturz).
+    expect(
+      warnings.filter((warning) => warning.path === '/faq' && warning.field === 'content'),
+    ).toEqual([]);
+    // Gültig veröffentlicht ⇒ der Link ist in Ordnung.
+    expect(
+      check([home, page('/faq', invalidFaq.draft)]).filter(
+        (warning) => warning.code === 'BROKEN_INTERNAL_LINK',
+      ),
+    ).toEqual([]);
+  });
+
+  it('SEO-U14. Exakte Abholadresse (nachträglich gepflegt) in Titel oder Meta-Titel einer veröffentlichten Seite ⇒ PAGE_SUPPRESSED ohne die Adresse und kaputte Links darauf; nur in der Meta-Beschreibung ⇒ Seite bleibt erreichbar; ohne Fragmente keine Prüfung (Review RC-4a)', () => {
+    const addressFragments = exactAddressFragments('Teststraße 1, 55129 Mainz-Hechtsheim');
+    const home = page(
+      '/',
+      revision({
+        content: {
+          title: 'Start',
+          blocks: linkBlocks('/faq', '/ablauf', '/ueber-uns', '/konfigurator'),
+        },
+      }),
+      'same',
+      'home',
+    );
+    // Adresse im Seitentitel
+    const faq = page(
+      '/faq',
+      revision({
+        metaTitle: 'Häufige Fragen zur Slush-Miete | Miet-Royal',
+        metaDescription:
+          'Antworten rund um deine Slush-Miete: Inklusivleistungen, Sirupsorten, Abholung und Rückgabe.',
+        content: { title: 'Häufige Fragen – Abholung Teststraße 1', blocks: GOOD_CONTENT.blocks },
+      }),
+    );
+    // Adresse im Meta-Titel (andere Schreibweise)
+    const ablauf = page(
+      '/ablauf',
+      revision({
+        metaTitle: 'Ablauf der Slush-Miete – Teststr. 1 | Miet-Royal',
+        metaDescription:
+          'So läuft deine Slush-Miete ab: anfragen, Angebot erhalten, abholen oder liefern lassen, feiern, zurückgeben.',
+        content: { title: 'Ablauf', blocks: GOOD_CONTENT.blocks },
+      }),
+      'same',
+      'process',
+    );
+    // Adresse nur in der Meta-Beschreibung: die Website liefert die Seite (ohne Beschreibung) aus.
+    const about = page(
+      '/ueber-uns',
+      revision({
+        metaTitle: 'Über uns – Familienbetrieb aus Mainz | Miet-Royal',
+        metaDescription:
+          'Miet-Royal ist ein kleiner Familienbetrieb aus Mainz. Abholung in der Teststraße 1 in Mainz-Hechtsheim nach Absprache.',
+        content: { title: 'Über uns', blocks: GOOD_CONTENT.blocks },
+      }),
+      'same',
+      'about',
+    );
+    const relevant = (warnings: SeoWarning[]) =>
+      warnings.filter(
+        (warning) => warning.code === 'PAGE_SUPPRESSED' || warning.code === 'BROKEN_INTERNAL_LINK',
+      );
+    const warnings = check([home, faq, ablauf, about], { addressFragments });
+    const suppressedMessage =
+      'Die veröffentlichte Seite wird auf der Website nicht ausgeliefert, weil Titel oder Meta-Titel die exakte Abholadresse enthalten.';
+    expect(relevant(warnings)).toEqual([
+      {
+        code: 'BROKEN_INTERNAL_LINK',
+        scope: 'published',
+        entryId: 'entry-/',
+        path: '/',
+        field: 'links',
+        message:
+          'Der Link „/ablauf“ führt auf eine Seite, die derzeit nicht veröffentlicht ist. Die Website blendet diesen Link aus, bis die Seite veröffentlicht ist.',
+      },
+      {
+        code: 'BROKEN_INTERNAL_LINK',
+        scope: 'published',
+        entryId: 'entry-/',
+        path: '/',
+        field: 'links',
+        message:
+          'Der Link „/faq“ führt auf eine Seite, die derzeit nicht veröffentlicht ist. Die Website blendet diesen Link aus, bis die Seite veröffentlicht ist.',
+      },
+      {
+        code: 'PAGE_SUPPRESSED',
+        scope: 'published',
+        entryId: 'entry-/ablauf',
+        path: '/ablauf',
+        field: 'content',
+        message: suppressedMessage,
+      },
+      {
+        code: 'PAGE_SUPPRESSED',
+        scope: 'published',
+        entryId: 'entry-/faq',
+        path: '/faq',
+        field: 'content',
+        message: suppressedMessage,
+      },
+    ]);
+    for (const warning of warnings) {
+      expect(warning.message.toLowerCase()).not.toContain('teststr');
+      expect(warning.message).not.toContain('55129');
+    }
+    // Entwürfe erhalten keinen Ausblendungs-Hinweis (sie sind nicht öffentlich).
+    const draftOnly = page('/faq', faq.draft, null);
+    expect(
+      check([draftOnly], { addressFragments }).filter(
+        (warning) => warning.code === 'PAGE_SUPPRESSED',
+      ),
+    ).toEqual([]);
+    // Ohne gepflegte Adresse (keine Fragmente) ändert sich nichts.
+    expect(relevant(check([home, faq, ablauf, about]))).toEqual([]);
   });
 });

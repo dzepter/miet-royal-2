@@ -9,6 +9,7 @@ import {
   LEGACY_GONE,
   LEGACY_REDIRECTS,
   REDIRECT_CACHE_CONTROL,
+  SLASH_REDIRECT_CACHE_CONTROL,
   SAFE_PATH,
   decideLegacyRoute,
   goneHtml,
@@ -426,7 +427,7 @@ describe('Legacy-Routen: Redirects und 410 (Phase 17, SEO-R-U)', () => {
     );
     assert.match(source, /location: target\.href/);
     assert.equal(source.match(/new URL\(/g)?.length, 1, 'genau eine URL-Konstruktion');
-    assert.match(source, /'cache-control': REDIRECT_CACHE_CONTROL/);
+    assert.match(source, /'cache-control': decision\.cacheControl/);
     assert.match(source, /NextResponse\.next\(\)/);
     assert.doesNotMatch(code, /export const runtime/);
     assert.doesNotMatch(code, /NextResponse\.redirect\(/);
@@ -475,5 +476,35 @@ describe('Legacy-Routen: Redirects und 410 (Phase 17, SEO-R-U)', () => {
     ]) {
       assert.equal(matcher.test(included), true, `${included} muss durch den Proxy laufen`);
     }
+  });
+  it('SEO-R-U14. Cache-Header je Entscheidung: Tabellen-Redirects öffentlich 1 h, Slash-Normalisierung (auch Token-/Portal-/Vorschau-Pfade) `private, no-store`', () => {
+    assert.equal(SLASH_REDIRECT_CACHE_CONTROL, 'private, no-store');
+    const cacheOf = (pathname: string, search = '') => {
+      const decision = decideLegacyRoute(pathname, search);
+      assert.equal(decision.kind, 'redirect', pathname);
+      return decision.kind === 'redirect' ? decision.cacheControl : '';
+    };
+    for (const pathname of [
+      '/uber-uns',
+      '/uber-uns/',
+      '/buchung',
+      '/UBER-UNS/',
+      '/sitemap_index.xml',
+    ]) {
+      assert.equal(cacheOf(pathname), REDIRECT_CACHE_CONTROL, pathname);
+    }
+    for (const pathname of [
+      '/ablauf/',
+      '/konto/',
+      '/konto/anmelden/',
+      '/vorschau/seite/',
+      '/angebot/abcdefghijklmnopqrstuvwxyz0123456789/',
+      '/dokument/abcdefghijklmnopqrstuvwxyz0123456789/',
+      '/kontakt/abcdefghijklmnopqrstuvwxyz0123456789/',
+    ]) {
+      assert.equal(cacheOf(pathname), SLASH_REDIRECT_CACHE_CONTROL, pathname);
+    }
+    // Die Entscheidung trägt für jeden Redirect genau einen der beiden Werte.
+    assert.equal(cacheOf('/ablauf/', '?x=1'), SLASH_REDIRECT_CACHE_CONTROL);
   });
 });

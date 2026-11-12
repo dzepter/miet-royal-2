@@ -184,6 +184,12 @@ const STAFF_PORT = 3102;
 /** Phase 10: zweite API-/Staff-Instanz mit Lexware-Provider (Fake) – nur Projekt `lexware`. */
 const LEXWARE_API_PORT = 3104;
 const LEXWARE_STAFF_PORT = 3105;
+/**
+ * Phase 17 (E2E-SEO, Design D15): PRODUCTION-Build der Website mit Indexierung AN (nur Projekt
+ * `seo`) an der Haupt-API 3101 – deren Basis MAIL_PUBLIC_WEB_BASE_URL zeigt auf 3100, die
+ * Specs fragen über 3112 an (Beleg „keine Host-Ableitung“: Canonicals/Sitemap tragen 3100).
+ */
+const SEO_WEB_PORT = 3112;
 const LEXWARE_FAKE_PORT = 4555;
 /** Feste Fake-Organisation (identisch für Fake und API – organizationId-Pinning). */
 const LEXWARE_ORGANIZATION_ID = 'e2e-org-00000000-0000-4000-8000-000000000001';
@@ -317,6 +323,10 @@ export default defineConfig({
         /portal-demo\.spec\.ts$/,
         // Phase 16 (E2E): Szenario K (Website in der Demo) nur gegen Demo-API/Demo-Web.
         /website-demo\.spec\.ts$/,
+        // Phase 17 (E2E-SEO): seo-*.spec.ts laufen nur im Projekt `seo` (Production-Build 3112,
+        // Indexierung AN); website-seo-disabled.spec.ts bleibt hier (Dev-Web 3100, Indexierung AUS) –
+        // deshalb am Dateinamen verankert (sonst träfe `seo-…` auch `website-seo-disabled`).
+        /[\\/]seo-[^\\/]*\.spec\.ts$/,
       ],
     },
     ...(WEBKIT_ENABLED
@@ -370,6 +380,20 @@ export default defineConfig({
         baseURL: `http://127.0.0.1:${PROD_STAFF_PORT}`,
       },
       testMatch: /training-gates\.spec\.ts$/,
+    },
+    {
+      // Phase 17 (E2E-SEO, Design D15): SEO-/Redirect-/Link-/A11y-Specs gegen den PRODUCTION-Build
+      // der Website (Port 3112, WEB_INDEXING_ENABLED=true) an der Haupt-API 3101. Die API hat
+      // MAIL_PUBLIC_WEB_BASE_URL=http://127.0.0.1:3100 ⇒ Canonicals, Sitemap-URLs, og:url und
+      // JSON-LD müssen auf die KONFIGURIERTE Basis 3100 zeigen, nicht auf den Request-Host 3112.
+      // Gleiche Testdatenbank wie `chromium`, eigener Lauf (workers 1); jede Spec seedet neu.
+      name: 'seo',
+      use: {
+        ...devices['Desktop Chrome'],
+        ...chromiumLaunch,
+        baseURL: `http://127.0.0.1:${SEO_WEB_PORT}`,
+      },
+      testMatch: /[\\/]seo-[^\\/]*\.spec\.ts$/,
     },
   ],
   webServer: [
@@ -592,6 +616,24 @@ export default defineConfig({
       env: {
         STAFF_API_ORIGIN: `http://127.0.0.1:${PROD_API_PORT}`,
         STAFF_DIST_DIR: PROD_STAFF_DIST_DIR,
+      },
+    },
+    {
+      // Phase 17 (E2E-SEO, Design D15): Website als PRODUKTIONS-Build mit Indexierung AN gegen die
+      // Haupt-API (eigenes distDir `.next/seo` – die Dev-Instanzen 3100/3108 nutzen eigene
+      // Verzeichnisse). Nur so sind Proxy-Redirects/410, Metadaten, robots/sitemap und Performance
+      // wie im Betrieb prüfbar (next dev liefert andere Header). Keep-Alive wie die Staff-Builds.
+      // Bereitschaft über /robots.txt (dynamisch, braucht die laufende API 3101).
+      command: `pnpm --filter @mietroyal/web exec sh -c "next build && next start --port ${SEO_WEB_PORT} --keepAliveTimeout 70000"`,
+      url: `http://127.0.0.1:${SEO_WEB_PORT}/robots.txt`,
+      reuseExistingServer: false,
+      timeout: 360_000,
+      cwd: '../..',
+      env: {
+        WEB_DIST_DIR: '.next/seo',
+        WEB_API_ORIGIN: `http://127.0.0.1:${API_PORT}`,
+        WEB_INDEXING_ENABLED: 'true',
+        WEB_APP_ENV: 'development',
       },
     },
   ],

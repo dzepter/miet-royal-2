@@ -14,7 +14,7 @@ import {
 } from '@mietroyal/database';
 import { berlinDateTimeToUtc } from '@mietroyal/domain';
 import { CMS_PRIVACY_PATH } from '@mietroyal/validation/cms';
-import { eq } from 'drizzle-orm';
+import { eq, inArray } from 'drizzle-orm';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   DELIVERY_WINDOW_ORDER_MESSAGE,
@@ -944,6 +944,91 @@ describe('Phase 16 – Website-Anfrage (POST /public/inquiries)', () => {
       ]);
     }
     expect(await countRows(ctx.pool, 'processes')).toBe(0);
+  });
+
+  it('SEO-P8. Öffentlich ausgeblendete Produkte (Preisangabe im Namen oder in der Verkaufseinheit) sind auch in der Website-Anfrage nicht wählbar ⇒ 400 mit Feldpfad ohne Preistext, nichts gespeichert; Preis nur in der Beschreibung ⇒ 201 (Phase 17 D13, Review RC-1/RC-6.1)', async () => {
+    const touched = ['slush-2x10', 'sirup-kirsche', 'sirup-waldmeister'];
+    const originals = await ctx.db
+      .select({
+        slug: products.slug,
+        name: products.name,
+        description: products.description,
+        saleUnit: products.saleUnit,
+      })
+      .from(products)
+      .where(inArray(products.slug, touched));
+    const original = (slug: string) => originals.find((row) => row.slug === slug)!;
+    const priceTexts = ['120,-', '12 €', 'Flasche (12', 'Tagesmiete 120'];
+    try {
+      // Maschine mit Preis im Namen ⇒ 400 am Maschinenfeld (dieselbe Auflösung wie die Vorschau).
+      await ctx.db
+        .update(products)
+        .set({ name: '2×10 L – 120,-' })
+        .where(eq(products.slug, 'slush-2x10'));
+      const machine = await postInquiry(ctx, inquiryBody());
+      expect(machine.statusCode, machine.body).toBe(400);
+      expect(machine.json().error.code).toBe('VALIDATION_ERROR');
+      expect(machine.json().error.issues).toEqual([
+        {
+          path: 'body.machineSlug',
+          message: 'Diese Maschine ist gerade nicht wählbar. Bitte wähle eine andere.',
+        },
+      ]);
+      await ctx.db
+        .update(products)
+        .set({ name: original('slush-2x10').name })
+        .where(eq(products.slug, 'slush-2x10'));
+      // Sirup mit Preis im Namen ⇒ 400 am Sirupfeld.
+      await ctx.db
+        .update(products)
+        .set({ name: 'Kirsche 12 €' })
+        .where(eq(products.slug, 'sirup-kirsche'));
+      const syrup = await postInquiry(ctx, inquiryBody());
+      expect(syrup.statusCode, syrup.body).toBe(400);
+      expect(syrup.json().error.issues).toEqual([
+        { path: 'body.syrups.free.0.slug', message: 'Diese Sirupsorte ist gerade nicht wählbar.' },
+      ]);
+      await ctx.db
+        .update(products)
+        .set({ name: original('sirup-kirsche').name })
+        .where(eq(products.slug, 'sirup-kirsche'));
+      // Sirup mit Preis in der Verkaufseinheit (Review RC-1) ⇒ 400 am zweiten Gratis-Sirup.
+      await ctx.db
+        .update(products)
+        .set({ saleUnit: 'Flasche (12 €)' })
+        .where(eq(products.slug, 'sirup-waldmeister'));
+      const unit = await postInquiry(ctx, inquiryBody());
+      expect(unit.statusCode, unit.body).toBe(400);
+      expect(unit.json().error.issues).toEqual([
+        { path: 'body.syrups.free.1.slug', message: 'Diese Sirupsorte ist gerade nicht wählbar.' },
+      ]);
+      for (const response of [machine, syrup, unit]) {
+        for (const forbidden of priceTexts)
+          expect(response.body, forbidden).not.toContain(forbidden);
+      }
+      expect(await countRows(ctx.pool, 'processes')).toBe(0);
+      expect(await countRows(ctx.pool, 'customers')).toBe(0);
+      await ctx.db
+        .update(products)
+        .set({ saleUnit: original('sirup-waldmeister').saleUnit })
+        .where(eq(products.slug, 'sirup-waldmeister'));
+      // Preis nur in der Beschreibung: für die Anfrage unerheblich ⇒ 201, Antwort ohne Preistext.
+      await ctx.db
+        .update(products)
+        .set({ description: 'Slushmaschine, Tagesmiete 120 € inkl. Sirup.' })
+        .where(eq(products.slug, 'slush-2x10'));
+      const ok = await postInquiry(ctx, inquiryBody());
+      expect(ok.statusCode, ok.body).toBe(201);
+      for (const forbidden of priceTexts) expect(ok.body, forbidden).not.toContain(forbidden);
+      expect(await countRows(ctx.pool, 'processes')).toBe(1);
+    } finally {
+      for (const row of originals) {
+        await ctx.db
+          .update(products)
+          .set({ name: row.name, description: row.description, saleUnit: row.saleUnit })
+          .where(eq(products.slug, row.slug));
+      }
+    }
   });
 });
 

@@ -710,9 +710,12 @@
   gap: 0.25rem 1rem;
 }
 
+/* Kein `white-space: nowrap`: Preiszeilen wie „12,00 € je 1-L-Flasche · auf Kommission“ müssen bei
+   320/360 px umbrechen dürfen (Phase 17, Review RD-1 – sonst horizontaler Seiten-Overflow). Der
+   Betrag selbst bleibt dank geschütztem Leerzeichen der Währungsformatierung zusammen. */
 .listValue {
   font-weight: 600;
-  white-space: nowrap;
+  text-align: right;
 }
 
 .figure {

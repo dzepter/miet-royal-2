@@ -57,6 +57,12 @@ export function SiteFrame({
     (item) => item.href !== '/' && item.href !== PORTAL_PATH && item.href !== '/kontakt',
   );
 
+  // Marken-Link ohne jeden Text (dekoratives Logo, kein Slogan) bekommt einen expliziten Namen.
+  const brandNeedsLabel =
+    settings?.logo !== null &&
+    settings?.logo !== undefined &&
+    (settings.logo.decorative || settings.logo.alt.trim() === '') &&
+    !settings.tagline;
   return (
     <div className={styles.site} data-testid="site-frame">
       <a href="#inhalt" className={styles.skipLink}>
@@ -69,7 +75,11 @@ export function SiteFrame({
             href="/"
             prefetch={false}
             className={styles.brand}
-            aria-label={`${businessName} – Startseite`}
+            // Phase 17 (A11y, WCAG 2.5.3 „Label in Name“): Hat der Link sichtbaren Text
+            // (Wortmarke und/oder Slogan) oder ein Logo mit Alt-Text, ist dieser Text sein
+            // zugänglicher Name – ein abweichendes `aria-label` meldet Lighthouse/axe als
+            // `label-content-name-mismatch`. Nur ein dekoratives Logo ohne Slogan braucht den Namen.
+            aria-label={brandNeedsLabel ? `${businessName} – Startseite` : undefined}
             data-testid="site-brand"
           >
             {settings?.logo ? (

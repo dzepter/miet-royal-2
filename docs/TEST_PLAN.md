@@ -78,6 +78,19 @@ Recovery ⇒ genau eine Rechnung, Anzahlung/Kaution blockiert, kein PDF,
 Versand „ausstehend“, Zahlungsstatus, IDOR/Key-Leaks), E2E
 `tests/e2e/specs/lexware-flow.spec.ts` (A–N) im eigenen Playwright-Projekt.
 
+Phase 17 (Auftrag §27 A, Testflake Lexware E „Abgeschlossen“): Die Specs `lexware-flow`,
+`settlement-flow`, `voucher-flow` und `communication-lexware` öffnen die Vorgangsseite über
+`tests/e2e/helpers/process-page.ts` – `openProcessPage` wartet (vor der Navigation abonniert)
+auf die Antwort `GET /api/staff/processes/<id>` mit Status 200, `expectProcessMainStatus`
+prüft den Hauptstatus-Badge `data-testid="process-main-status"` mit exaktem Text („Abgeschlossen“,
+„Storniert“, „Offen“) und dem projektüblichen Timeout von 30 s. Ursache des Flakes war eine zu
+knappe Wartezeit (Playwright-Default 5 s) auf einer Seite mit zwei sequentiellen Round-Trips
+(AuthGuard, Vorgangsdaten) hinter dem `next dev`-Rewrite – kein Produktfehler, keine
+Produktprüfung entfällt, kein Sleep. Das Projekt `lexware` läuft ohne Service Worker
+(`serviceWorkers: 'block'`) und leitet die Ausgabe der Staff-Dev-Instanz ins Protokoll;
+`login()` in `helpers/settlement.ts` wartet nach dem Login bis 30 s auf „Heute“ (Turbopack-
+Kaltstart der Startseite).
+
 ## Gutschein
 - nur nach paid + schadenfrei
 - nur einmal
@@ -189,7 +202,8 @@ Zuordnung aller Pflicht-, E2E- und Review-Tests: Abschnitt „Kundenportal (Phas
 - keine Lagerzahl öffentlich
 Phase-16-Stand: alle Punkte sind Pflichttests (`public-configurator` PC*,
 `public-inquiry` PI*, Web `configurator.test.ts`); Zuordnung im Abschnitt
-„Website, CMS, Konfigurator, Bewertungen (Phase 16)“.
+„Website, CMS, Konfigurator, Bewertungen (Phase 16)“. Phase 17 (SEO, Redirects,
+technische QA): Abschnitt „SEO, Redirects, technische QA (Phase 17)“.
 
 ## Kommunikation (Phase 12)
 - Pflichttests 1–205 als Integrations-/Unit-Tests `apps/api/test/communication-*.test.ts`
@@ -212,14 +226,18 @@ Phase-16-Stand: alle Punkte sind Pflichttests (`public-configurator` PC*,
   assignment, route-changes, travel-status, security, end, active-gps,
   delay-risk), Domänentests `packages/domain/test/tours.test.ts`.
   Traceability: `docs/PHASE13_TEST_TRACEABILITY.md`.
-- Sperrfenster Integration (Berlin, festgestellt im Phase-15-Gate): Einige Touren-
-  Integrationstests legen Termine bei „jetzt + N Minuten“ an und verlangen das heutige
-  Berliner Tourdatum (`inMinutes` in `apps/api/test/tours-helpers.ts` klemmt nur negative
-  Versätze auf den Tagesbeginn). Größter Versatz: `tours-delay-risk` +240 min,
-  `tours-multi-active` und `offline-tour-lease` +200 min. Laufen diese Dateien ab etwa
-  20:00 Uhr, rutschen Termine auf den nächsten Tag (`APPOINTMENT_NOT_ON_TOUR_DATE`). Die
-  komplette Integrationssuite (Dauer etwa 45–60 min) deshalb nicht zwischen 19:00 und 00:00
-  Uhr starten, die genannten Dateien einzeln nicht zwischen 20:00 und 00:00 Uhr.
+- Zeitfenster Integration (Phase 17, Auftrag §27 B – kein Startzeitfenster mehr): Die Touren-
+  Integrationstests `tours-delay-risk` (+240 min), `tours-multi-active` und `offline-tour-lease`
+  (+200 min) sowie `tours-delay-accuracy` und `tours-delay-push` (+20 min) legen Termine bei
+  „jetzt + N Minuten“ an und verlangen das heutige Berliner Tourdatum
+  (`APPOINTMENT_NOT_ON_TOUR_DATE`, `TOUR_NOT_TODAY`). Ab 19:00 Uhr Berlin dreht
+  `pinMorningClockIfEvening` (`apps/api/test/tours-helpers.ts`; erste Zeile in `beforeAll`,
+  `restoreClock()` in `afterAll`) die Testuhr auf 09:00 desselben Tages zurück – nur `Date` wird
+  gefälscht (`vi.useFakeTimers({ toFake: ['Date'], shouldAdvanceTime: true })`), Timer laufen
+  echt, nie vorwärts (eine Uhr in der Zukunft würde die Staff-Session als `APP_LOCKED` sperren);
+  tagsüber ist der Helfer wirkungslos. `MR_TEST_FORCE_EVENING_PIN=1` erzwingt den Pin für
+  Beweisläufe (reine Test-Umgebungsvariable, nicht in `.env.example`/ENVIRONMENTS). Damit ist die
+  Integrationssuite vollständig ohne Zeitfenster; keine Produktlogik wurde geändert.
 - Keine echten Provider im Gate: `FakeRoutingGateway` in Integrationstests;
   in E2E der echte GraphHopper-Client gegen den lokalen Contract-Fake auf dem
   HTTPS-Dispatcher (4567, Präfix `/api/1`, Test-CA nur über
@@ -485,9 +503,16 @@ die App-Shell mit Service Worker brauchen.
   den Angebotsversand ohne SMTP-Weg hart blockiert – der Job `mail.send` läuft im Projekt nie,
   Angebotsmails bleiben `pending`; Staff 3111 als Produktions-Build. Login im Browser
   (Secure-/`__Host-`-Cookies auf http://127.0.0.1), genau zwei Logins je Lauf (Rate-Limits).
-- Sperrfenster (Berlin): `training-demo.spec.ts` (H) und `tours-demo.spec.ts` nicht zwischen
-  23:38 und 00:02 starten, `tours-flow.spec.ts` nicht zwischen 22:43 und 00:02 (Resttag zu
-  kurz, siehe Kopfkommentare).
+- Zeitfenster E2E (Berlin, Stand Phase 17): `training-demo.spec.ts` (H) und
+  `tours-offline-conflict.spec.ts` nicht zwischen 23:38 und 00:02 Uhr starten,
+  `tours-flow.spec.ts` nicht zwischen 22:43 und 00:02 Uhr (Minimalplan der Tour T1 = 75 min
+  Resttag). Grund ist die Produktregel `TOUR_NOT_TODAY` (Touren starten nur am heutigen Berliner
+  Tag) zusammen mit Terminen „heute relativ zu jetzt“ (`fitTodayTimeline`/`todayWindow`); die API
+  hat keine injizierbare Uhr (`page.clock` wirkt nur im Browser), eine Fake-Zeit wäre eine
+  Produktänderung. Der Abbruch ist deterministisch („Resttag zu kurz: … Lauf nicht zwischen
+  HH:MM und 00:02 Uhr Berlin starten.“, `helpers/tours.ts`). `tours-demo.spec.ts` (O) plant seit
+  Phase 17 auf morgen 10:00–11:00 Uhr (die Tour wird dort nie gestartet) und hat kein
+  Zeitfenster mehr.
 - Demo-Testadressen (Review-Fix F8): Die Demo-API des Projekts läuft mit
   `MAIL_DEMO_WHITELIST=@demo.test`; fünf Seed-Kunden der Mail-Übungen tragen deshalb
   `<lokalteil>@demo.test` (`lena.beispiel`, `verein`, `miriam.demoperson`, `jana.beispielhaft`,
@@ -557,9 +582,10 @@ Basis-Seed + `apps/api/scripts/e2e-portal-seed.ts` (echte Fachservices).
 | O 30-Day Session / no sliding | `portal-flow.spec.ts` (chromium) | Ablauf exakt 30 Tage, Aktivität verschiebt nichts |
 | P IDOR mit zwei Customers | `portal-flow.spec.ts` (chromium) | fremde Buchung/Dokument/Nachricht/Foto/Storno ⇒ 404, Client-IDs abgelehnt, Logout |
 
-- Sperrfenster (Berlin): `portal-flow.spec.ts` nicht zwischen 23:38 und 00:02 Uhr starten –
-  Szenario G legt eine Lieferung HEUTE an (`todayWindow(30, 90)`), sonst bricht `beforeAll`
-  mit „Resttag zu kurz“ ab (Kopfkommentar der Spec).
+- Zeitfenster (Berlin): `portal-flow.spec.ts` nicht zwischen 23:38 und 00:02 Uhr starten –
+  Szenario G legt eine Lieferung HEUTE an (`todayWindow(30, 90)`) und der Seed startet die Tour
+  (`TOUR_NOT_TODAY`), sonst bricht `beforeAll` deterministisch mit „Resttag zu kurz“ ab
+  (Kopfkommentar der Spec; Stand Phase 17, siehe „Touren … Phase 13“).
 - Einzige DB-Schreibhilfe im E2E ist die reine Zeitverschiebung von Session-Zeilen (H, O);
   weitere Seed-Abkürzungen (Live-Standort für G per SQL, Kopie der Dokument-Bytes ins
   Storage der E2E-API) stehen in OPEN_ITEMS „Phase 15“.
@@ -680,7 +706,7 @@ Review-Regressionstests (Review vom 2026-11-06; die Kürzel setzen die Reihen ob
 | inquiry-3 | Wunsch-Lieferzeitfenster am Veranstaltungstag: Ende ≤ Beginn ⇒ 400 an `body.fulfillment.windowTo` (keine Folgetag-Regel); Eventzeiten behalten die Folgetag-Regel | `public-inquiry.integration.test.ts` | PI23 |
 | demo_reviews-3 | `HEAD /public/reviews` ⇒ 404 ohne Gateway-Aufruf; GET-Limit bleibt 10/min | `reviews-public.integration.test.ts` | RV11 |
 | demo_reviews-1 | Web, Google-Modus: Richtlinienhinweis + https-Link (lokaler Fallback bei fehlenden/ungültigen Feldern), „Von Google übersetzt“, Originaltext nur bei übersetzten Bewertungen; Demo ohne alles davon | `apps/web/lib/reviews.test.ts` | W-R6–W-R8 |
-| demo_reviews-4 | Attribution „Google Maps“ mit `translate="no"` und nowrap; Demo nie „Google“ | `apps/web/lib/reviews.test.ts` | W-R9 |
+| demo_reviews-4 | Linktexte „Google Maps“ mit `translate="no"` und nowrap; Demo nie „Google“ (die Textattribution ist seit Phase 17 durch das Google-Maps-Logo ersetzt – SEO-W-REV1–REV3 im Abschnitt „SEO, Redirects, technische QA (Phase 17)“) | `apps/web/lib/reviews.test.ts` | W-R9 |
 | demo_reviews-2, web_security-1 | Antwort mit anderem Modus als der SSR-Modus ⇒ verworfen („nicht verfügbar“); Build-/Laufzeit-Origin-Abweichung ⇒ Sektion wie `disabled` | `apps/web/lib/reviews.test.ts` | W-R10–W-R12 |
 | demo_reviews-5 | Demo-Instanz immer noindex, auch mit `WEB_INDEXING_ENABLED=true` | `apps/web/lib/site-meta.test.ts` | W-I3 |
 | web_security-2 | Fallback-Startseite und „nicht erreichbar“ immer noindex; CMS-Routen (404/noindex); `/konfigurator` ohne Katalog/Maschine noindex | `apps/web/lib/site-meta.test.ts` | W-I4–W-I6 |
@@ -756,6 +782,75 @@ Hinweise: `next dev` ersetzt `Cache-Control` (no-cache) – Header-Assertions au
 tolerant halten (API-Header exakt); „Vorschau öffnen“ öffnet ein Popup (erst `about:blank`,
 dann die Vorschau-URL). Quality-Gate-Ergebnisse (Order §27) stehen im Phase-16-Abschlussbericht,
 nicht in diesem Dokument.
+
+## SEO, Redirects, technische QA (Phase 17)
+Fachdoku: docs/SEO_TECHNICAL.md, docs/REDIRECT_MATRIX.md, docs/SEO_STRUCTURED_DATA_NOTES.md,
+docs/WEBSITE_QA_REPORT.md. Testnamen tragen das Präfix `SEO-` am Anfang („SEO-W3. …“,
+„SEO-R-U7. …“, „SEO-API2. …“, E2E „SEO-R1 …“) – kollisionsfrei zu den Phase-15/16-Kürzeln
+(C*, S*, M*, R*). Lauf-Kommandos: Web `pnpm --filter @mietroyal/web test` (`node --test
+lib/*.test.ts`; einzeln `cd apps/web && node --test lib/legacy-routes.test.ts
+lib/redirect-matrix.test.ts`); API-Unit `cd apps/api && pnpm vitest run test/seo-check.test.ts`;
+Integration `cd apps/api && TEST_DATABASE_URL=… pnpm vitest run --config
+vitest.integration.config.ts test/cms-seo-check.integration.test.ts
+test/cms-public-site.integration.test.ts test/public-configurator.integration.test.ts`;
+Validation `cd packages/validation && pnpm vitest run`; E2E `pnpm --filter @mietroyal/e2e
+test:e2e --project=seo` (Production-Build der Website, siehe unten). Keine echten Provider, keine
+Live-Domain, kein Google-Aufruf.
+
+| Bereich | Thema | Datei | Testnamen |
+| --- | --- | --- | --- |
+| Web | Basis-Prüfung (https; http nur außerhalb production und nur localhost/127.0.0.1; keine Zugangsdaten/Query/Fragment/Pfad), Indexierbarkeits-Matrix fail-closed, Canonical-Normalisierung (Query, Slash, `?maschine`), Konfigurator-Kriterien, Social Image nur Hero/größte Variante/proportional, Metadaten (Canonical/og:url/Bild nur indexierbar, keine Keywords, keine Markendoppelung), robots beider Zustände (nicht indexierbar crawlbar ohne Sitemap; indexierbar mit `Allow: /api/public/cms/media/`, nur `Disallow: /api/`), Sitemap (Reihenfolge, lastModified nur publishedAt, Dubletten, Konfigurator), production-Regel für http-Basen | `apps/web/lib/site-seo.test.ts` | SEO-W1–W8, SEO-W17 |
+| Web | JSON-LD: WebSite ohne SearchAction, Organization nur vorhandene Felder (keine Adresse/Öffnungszeiten/Preise/Bewertungen, Vorschau-Logo entfällt, Telefon E.164), BreadcrumbList, Escaping `</script>` | `apps/web/lib/site-jsonld.test.ts` | SEO-W9–W12 |
+| Web | 404-Metadaten; `seoEnvFrom` (Basis nur aus dem Bootstrap, Demo über `environment`, Origin-Sperre, Altantwort ohne Feld; production über `WEB_APP_ENV` oder Bootstrap ⇒ http-Basis fail-closed); Brotkrume; Bootstrap-Form additiv | `apps/web/lib/site-meta.test.ts`, `site-nav.test.ts`, `site-api.test.ts` | SEO-W13, SEO-W14, SEO-W18 (+ angepasste W-I3–W-I6), SEO-W15, SEO-W16 |
+| Web | CSS-Invarianten (Quelltextprüfung `site.module.css`): `.listValue` ohne `white-space: nowrap` (Review RD-1), Brotkrumen-Einträge ≥ 44 px und umbrechend, Konfigurator-Raster `grid-template-columns: minmax(0, 1fr)` (schrumpft unter die Min-Content-Breite; der Fortschrittsbalken scrollt intern statt das Raster zu dehnen) | `apps/web/lib/site-css.test.ts` | SEO-W-CSS1–CSS3 |
+| Web | Alt-URLs: Legacy-Redirects mit/ohne Slash und Schreibweise (Query weg), 410-Pfade, keine Präfixregeln, Slash-Normalisierung (Query bleibt), keine Entscheidung für `/`, kanonische Pfade, 404-belassene Pfade, Open-Redirect-Pfade, Query erzeugt kein externes Ziel, Zeilenumbruch in der Query, Listen konsistent (kein Loop/keine Kette), Alt-Sitemaps, 410-HTML, 410-Header, Proxy-Quelltext (Matcher, kein `NextResponse.redirect`/`request.url`/Header-Zugriff/Logging), Cache-Header je Entscheidung (Tabelle `public, max-age=3600`, Slash `private, no-store`) | `apps/web/lib/legacy-routes.test.ts` | SEO-R-U1–U14 |
+| Web | Doku ↔ Code: jeder Code-Eintrag in docs/REDIRECT_MATRIX.md mit Ergebnis/Ziel/Begründung, jede Tabellenzeile stimmt mit `decideLegacyRoute` (inkl. Cache-Header), jedes Ziel ist eine Route, Testnamen existieren, Kopf nennt Verfahren/Host | `apps/web/lib/redirect-matrix.test.ts` | SEO-R-D1–D5 |
+| Web | `skipTrailingSlashRedirect` aktiv, keine `redirects()`, kein `trailingSlash` (ein Verfahren) | `apps/web/lib/next-config.test.ts` | SEO-W-H6 (W-H1–W-H5 unverändert) |
+| Web | Google-Maps-Logo-Attribution (google ⇒ Logo mit alt „Google Maps“, Link nur https; demo ⇒ Text ohne Logo), Asset byteidentisch (Hash, 98×18, nur Pfade), Proxy lässt den Logo-Pfad unberührt | `apps/web/lib/reviews.test.ts` | SEO-W-REV1–REV3 (W-R9 angepasst) |
+| Validation | Preis-Freitext erkennt Cent-Beträge („50 Cent“, „0,50 Cent“, „50 ct“), nicht „5 Prozent“, „40 cm“, „12,5 kg“ (Review RC-2) | `packages/validation/test/cms.test.ts` | beschreibende Testnamen (Block Preis-Freitext) |
+| API (Unit) | SEO-Check als reine Funktion: saubere Seite ohne Hinweise, fehlender/kurzer/langer Meta-Titel, Meta-Beschreibung, Duplikate (NFKC/trim/lowercase, veröffentlicht vs. Entwurf), leere Seite, kaputter interner Link (App-Pfade, Fragment, Slash, externe/mailto/tel nie), Regionsseiten (Ortsnamen-Tausch erkannt – auch als Teilkopie über Containment –, eigenständige Texte und Mini-Seiten nicht), Produkte mit Preisangabe inkl. Cent (nie der Preis), Standardinhalte ohne Hinweise, deterministische Reihenfolge; U12 Verkaufseinheit mit Preisangabe ⇒ `PRODUCT_UNIT_PRICE_HIDDEN`; U13 ungültiger veröffentlichter Inhalt ⇒ Links darauf kaputt, kein eigener Hinweis; U14 exakte Abholadresse in Titel/Meta-Titel ⇒ `PAGE_SUPPRESSED` (ohne die Adresse) + kaputte Links, nur Meta-Beschreibung ⇒ erreichbar | `apps/api/test/seo-check.test.ts` | SEO-U1–U14 |
+| API (Integration) | `GET /staff/cms/seo-check`: 401/403/200 mit nur `cms.edit` bzw. nur `cms.publish`, `no-store`; Duplikate veröffentlicht + abweichender Entwurf; Entwurf ohne Meta; Link auf unveröffentlichte Seite (verschwindet nach Publish); Produkt mit Preis in Beschreibung/Name/Verkaufseinheit (inaktive außen vor, Staff-Lesesicht ohne das Produkt); Standardinhalte nach `cms:bootstrap --publish-demo` ohne Hinweise, Ortsnamen-Kopie als Entwurf ⇒ Hinweis nur am Entwurf; keine Redaktionsnotizen/Staff-IDs/Texte in der Antwort; API9 exakte Abholadresse nachträglich gepflegt ⇒ `PAGE_SUPPRESSED` + `BROKEN_INTERNAL_LINK` ohne Adresse im Body, Seite nicht im Bootstrap und 404, nach Korrektur wieder erreichbar | `apps/api/test/cms-seo-check.integration.test.ts` | SEO-API1–API9 |
+| API (Integration) | Bootstrap `publicBaseUrl` exakt wie konfiguriert (Schluss-Slash entfernt), `null` ohne Konfiguration; `pages[].publishedAt` = `cms_entries.published_at`, ändert sich bei erneuter Veröffentlichung, Entwürfe fehlen; Preis-Freitext: Beschreibung ⇒ ohne Beschreibung im `product_grid` (Preis bleibt `priceCents`), Name ⇒ Produkt fehlt; Log nur Slug | `apps/api/test/cms-public-site.integration.test.ts` | SEO-API8, SEO-P2, SEO-P5 (S1 um die neuen Felder ergänzt) |
+| API (Integration) | Preis-Guard im Konfigurator: Beschreibung mit Preisangabe ⇒ `description null`, `priceCents` aus `product_prices`; Preis im Namen ⇒ Maschine fehlt in Katalog/Vorschau/Empfehlung (`MACHINE_UNAVAILABLE`); `GET /staff/products` unverändert; Beschreibung ohne Preis bleibt sichtbar; P7 Verkaufseinheit mit Preis („Flasche (12 €)“) ⇒ Sirup fehlt im Katalog, `SYRUP_UNAVAILABLE`, kein Preistext in Antworten, Log `price_text_suppressed` mit `field: saleUnit`; Verkaufseinheit mit exakter Adresse ⇒ Produkt fehlt, Log `exact_address_suppressed` ohne den Text | `apps/api/test/public-configurator.integration.test.ts` | SEO-P1, SEO-P3, SEO-P4, SEO-P6, SEO-P7 |
+| API (Integration) | Website-Anfrage: öffentlich ausgeblendete Produkte (Preis im Namen oder in der Verkaufseinheit) sind nicht wählbar ⇒ 400 `VALIDATION_ERROR` am Feld (`body.machineSlug`, `body.syrups.free.<i>.slug`), kein Preistext im Body, kein Vorgang/Kunde; Preis nur in der Beschreibung ⇒ 201 | `apps/api/test/public-inquiry.integration.test.ts` | SEO-P8 |
+| E2E (Projekt `seo`) | Redirects/410/404 gegen den Production-Build; jede Zeile beider Matrix-Tabellen wird zur Laufzeit geparst und geprüft: R1 genau EIN 308 (mit/ohne Slash, Großschreibung, eigene Location, Cache-Control Legacy public 1 h bzw. Slash private no-store), R2 kein Loop, R3 keine Kette (Slash-Normalisierung behält Query, private/no-store auch für Token-/Portal-Pfade), R4 Query/Doppel-Slash/Backslash/Prozentkodierung/gefälschte Host-Header erzeugen kein externes Ziel, R5 410 beide Schreibweisen (Unterpfade 404), R6 410 noindex (Meta + `X-Robots-Tag`), Links, HEAD, R7 zurückgezogene CMS-Seite 404 ohne Canonical und nicht in der Sitemap, R8 404 noindex mit Titel und Navigation (alle 404-Zeilen), R9 www-/Host-Regel dokumentiert, kein Hostname im Web-Code, Host-Header ändern den Canonical nicht; Durchreichung von API-Rewrite, Assets, Favicon, robots/sitemap | `tests/e2e/specs/seo-redirects.spec.ts` | SEO-R1–R9, SEO-R-Durchreichung |
+| E2E (Projekt `seo`) | Canonicals (C1 absolut auf die konfigurierte Basis 3100 statt Request-Host 3112, genau ein Canonical, og:url; C2 Konfigurator-Query; C3 Region self-canonical mit eigenem Titel/Description/H1; C4 Vorschau/Portal/Token nie index – auch mit echtem Vorschau-Token; C7 gefälschte Host-Header), Metadaten (M1 eindeutige Titel ohne Markendoppelung, M2 Description aus dem CMS, M3 OpenGraph inkl. crawlbarer og:image, M4 Twitter Card, M5 kein Preistext in Produktbeschreibungen bis zur Katalog-API, M6 genau ein H1, Favicon), Sitemap (S1 nur veröffentlichte Seiten + Konfigurator mit Basis 3100, S2 Entwürfe unsichtbar, S3 keine Portal-/Vorschau-/Token-/API-URLs, S4 zurückgezogene Region verschwindet, S5 neue Region erst nach Publish mit lastmod/Brotkrume, S6 lastmod nur echte Werte, S7 Konfigurator nur wenn nutzbar), strukturierte Daten (SD1 WebSite + Organization aus veröffentlichten Daten, SD2 BreadcrumbList = sichtbare Brotkrume, SD3/SD4 Verbotsliste und keine Adresse, SD6 Escaping, SD7/SD8 nichts auf Vorschau/Portal/Token/404/410/Konfigurator) | `tests/e2e/specs/seo-metadata.spec.ts` | SEO-C1–C4, SEO-C7, SEO-M1–M6, SEO-M-Favicon, SEO-S1–S7, SEO-SD1–SD8 |
+| E2E (Projekt `seo`) | Interne Links aller veröffentlichten Seiten: 200 (höchstens ein 308-Hop), kein 404/410, keine Vorschau-/Token-Platzhalter/Entwürfe, keine http://-Links außer eigenem Origin, keine leeren tel:/mailto:/#-Links, externe Links mit `rel=noopener`, Brotkrume nur auf Regions-/Secondary-Offer-Seiten, Startseite verlinkt Slush/Konfigurator/Kontakt, CTA-Texte ohne „buchen“, keine exakte Abholadresse | `tests/e2e/specs/seo-links.spec.ts` | SEO-L1–L8 |
+| E2E (Projekt `seo`) | Responsive/Accessibility: A1 kein horizontaler Überlauf in 320×568, 360×800, 390×844, 768×1024, 1024×768, 1440×900 (Start, Slush, Konfigurator, Region, Kontakt, Portal-Login, 404, 410); A2 Mobile-Navigation nur per Tastatur; A3 Konfigurator nur per Tastatur bis zur Zusammenfassung; A4 Fehlerzuordnung (`aria-invalid`/`aria-describedby`, Fehlerliste `role=alert` mit Fokus); A5 Skip-Link; A6 reduced-motion; A7 Zoom 200 % (640×400 bei deviceScaleFactor 2 und 320×568); A8 axe-Scan (`@axe-core/playwright` 4.14.0, WCAG 2.0/2.1 A/AA + Best Practices, 0 serious/critical); A9 keine modalen Dialoge, Mobile-Menü mit Fokusrückgabe; A10 Alt-Attribute; A11 ein `main`, `nav` mit `aria-label`; A12 `html[lang="de"]` | `tests/e2e/specs/seo-a11y.spec.ts` | SEO-A1–A12 |
+| E2E (Projekt `chromium`, Dev-Web 3100 ohne Schalter) | Indexierung AUS ist Default und fail-closed: robots.txt crawlbar (`Allow: /`, `Disallow: /api/`) ohne Sitemap-Zeile, Startseite/Slush/Konfigurator/Region noindex ohne Canonical/og:url/JSON-LD (DOM und rohes HTML), leere Sitemap, Brotkrume bleibt; Redirects (308) und 410 funktionieren unabhängig vom Schalter | `tests/e2e/specs/website-seo-disabled.spec.ts` | SEO-C6 (2 Tests) |
+| E2E (Projekt `demo-communication`, Demo-Web 3108) | Demo-Instanz nie indexierbar trotz gültiger Basis der Demo-API: robots ohne Sitemap-Zeile und ohne `Disallow: /`, leere Sitemap, Seiten noindex ohne Canonical/og:url/JSON-LD, Demo-Banner | `tests/e2e/specs/website-demo.spec.ts` | SEO-C5 (neben K1–K3) |
+| E2E (Projekt `chromium`, Staff) | SEO-Hinweise im Staff: Editor (nur `cms.edit`) speichert einen 14-Zeichen-Meta-Titel ⇒ `cms-seo-entry-warnings` mit `li[data-code="META_TITLE_SHORT"]` (Entwurf), Übersicht `cms-seo-warnings` + `cms-entry-seo-count` am Eintrag; gültiger Titel ⇒ Kasten/Zähler weg; öffentliche Seite unverändert | `tests/e2e/specs/website-cms.spec.ts` | SEO-ST1 |
+
+Projekt `seo` (`tests/e2e/playwright.config.ts`, Design D15): eigener Web-Server als
+Production-Build (`WEB_DIST_DIR=.next/seo`, `WEB_API_ORIGIN=http://127.0.0.1:3101`,
+`WEB_INDEXING_ENABLED=true`, `WEB_APP_ENV=development`, `next build && next start --port 3112
+--keepAliveTimeout 70000`, Bereitschaft über `/robots.txt`), baseURL `http://127.0.0.1:3112`,
+`testMatch: /[\\/]seo-[^\\/]*\.spec\.ts$/` (am Dateinamen verankert, damit
+`website-seo-disabled.spec.ts` im Projekt `chromium` bleibt; dort dieselbe `testIgnore`-Zeile),
+50 Tests in vier Dateien, Helfer `tests/e2e/helpers/seo.ts` (Staff-API-Session ohne UI,
+Sitemap-/robots-Parser mit Längste-Regel-Auswertung, Matrix-Parser für docs/REDIRECT_MATRIX.md,
+rohe HTTP-Anfragen für gefälschte Host-Header). Es nutzt die Haupt-API (3101), deren
+`MAIL_PUBLIC_WEB_BASE_URL` auf das dev-Web 3100 zeigt – Canonicals, Sitemap-URLs, og:url und
+JSON-LD zeigen deshalb auf Port 3100, nicht auf den Request-Host 3112 (Beleg „keine
+Host-Ableitung“). Jede Spec: `resetE2eDatabase()` + `seedWebsite('main')` im `beforeAll`;
+S2/S4/S5/S7 und R7 verändern den Zustand über die Staff-API direkt (Entwurf, Zurückziehen, neue
+Regionsseite, Produkt-Aktivierung) – die nächste Spec seedet neu. Keine Sleeps (nur
+`expect`/`expect.poll`/`toPass`/`waitForResponse`). Der zusätzliche `webServer`-Eintrag
+(Production-Build) startet bei JEDEM Playwright-Lauf mit (≈ 15–60 s mit Turbopack-Cache, ohne
+Cache bis ~2 min). Nicht im Seed enthalten und daher nur Unit-getestet: og:image-, Logo- und
+Instagram-Zweige (SEO-W5/W6/W10); SEO-C7 (ungültige/fehlende Basis) bleibt Unit (SEO-W1/W2),
+E2E prüft die Variante „Request-Host ≠ Basis“ und Host-Header-Poisoning.
+
+Lighthouse, Accessibility- und Responsive-Ergebnisse (keine Repo-Tests): docs/WEBSITE_QA_REPORT.md.
+
+Testflakes (Auftrag §27, Phase 17): A) Lexware „Abgeschlossen“ – Ursache war eine zu knappe
+Wartezeit (5-s-Default) auf einer Seite mit zwei sequentiellen Round-Trips, kein Produktfehler;
+Härtung `helpers/process-page.ts` (siehe „Lexware“). B) Touren-Zeitfenster – Integrationssuite
+ohne Fenster über den Testuhr-Pin (siehe „Touren … Phase 13“); verbleibende E2E-Fenster
+(tours-flow 22:43–00:02; portal-flow G, training-demo H, tours-offline-conflict 23:38–00:02)
+sind durch die Produktregel `TOUR_NOT_TODAY` bedingt und ohne Produktänderung (injizierbare
+API-Uhr) nicht behebbar – deterministischer Abbruch mit Fensterangabe statt stiller Flake
+(docs/OPEN_ITEMS.md „Phase 17“).
 
 ## Definition of Done
 Fachregel korrekt, Rechte serverseitig, Validierung, Fehlerfall,

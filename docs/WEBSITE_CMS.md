@@ -1,8 +1,11 @@
 # WEBSITE_CMS — Internes Website-CMS (Phase 16)
 
-Stand: Phase 16 (2026-11-06). Maßgeblich ist der Code; dieses Dokument beschreibt ihn.
+Stand: Phase 16 (2026-11-06), ergänzt Phase 17 (2026-11-12: SEO-Hinweise im Staff, Metadaten,
+Brotkrumen, Preis-Guard). Maßgeblich ist der Code; dieses Dokument beschreibt ihn.
 Verwandte Dokumente: [WEBSITE_CONFIGURATOR.md](WEBSITE_CONFIGURATOR.md) (Konfigurator und
 Website-Anfrage), [GOOGLE_REVIEWS_API_NOTES.md](GOOGLE_REVIEWS_API_NOTES.md) (Bewertungen),
+[SEO_TECHNICAL.md](SEO_TECHNICAL.md) (Indexierung, Canonicals, robots, Sitemap, Redirects),
+[SEO_STRUCTURED_DATA_NOTES.md](SEO_STRUCTURED_DATA_NOTES.md) (strukturierte Daten),
 [WEBSITE_MIGRATION_NOTES.md](WEBSITE_MIGRATION_NOTES.md) (Inventur der bisherigen Website),
 [DATA_MODEL.md](DATA_MODEL.md) „Website-CMS (Phase 16, Migration 0033)“, [PERMISSIONS.md](PERMISSIONS.md)
 „Website / CMS (Phase 16)“, [OPEN_ITEMS.md](OPEN_ITEMS.md) „Phase 16“.
@@ -99,10 +102,13 @@ Seite: `{ title (1–120), blocks (≤ 40) }`. `title` ist die H1, außer der er
 
 - **Links** (`cmsHrefSchema`): interner Pfad, `https:`-URL ohne Zugangsdaten, `mailto:` oder
   `tel:` – nie `javascript:`/`data:`. Der Web-Renderer blendet interne Links auf
-  unveröffentlichte CMS-Seiten aus.
+  unveröffentlichte CMS-Seiten aus; der SEO-Check meldet solche Links der Redaktion
+  (`BROKEN_INTERNAL_LINK`, Phase 17).
 - **Bilder**: nur über die opake `mediaId`; Alt-Text (≥ 3 Zeichen) oder ausdrücklich
   `decorative: true` mit leerem Alt-Text.
 - **Meta**: Meta-Titel 1–70, Meta-Beschreibung 1–170 Zeichen (reiner Text). Leere Werte ⇒ null.
+  Der SEO-Check (Phase 17) empfiehlt 20–60 bzw. 50–160 Zeichen und je Seite eindeutige Werte –
+  Hinweise, keine Sperre (Abschnitt „SEO-Hinweise im Staff (Phase 17)“).
 - **Redaktionsnotiz** (`editorNote`): intern, ≤ 2000 Zeichen, nie öffentlich (Konvention:
   interne Prüfliste „vor Veröffentlichung …“).
 - **Website-Einstellungen** (`cmsSiteSettingsSchema`): `businessName` (Pflicht), `tagline`,
@@ -169,6 +175,7 @@ Entwurf), Vorschau erzeugen, veröffentlichen und zurückziehen, aber nicht bear
 | PATCH | `/staff/cms/media/:id` | `cms.edit` | `{ label?, defaultAlt?: string \| null }` ⇒ 200 `StaffCmsMedia` |
 | GET | `/staff/cms/media/:id/:width` | edit \| publish | Bild `image/webp`, `private, no-store` |
 | GET | `/staff/cms/catalog` | `product.view` | öffentliche Katalog-Projektion („Produkte & Preise“, Lesesicht) |
+| GET | `/staff/cms/seo-check` | edit \| publish | Phase 17: `{ checkedAt, warnings: SeoWarning[] }` – Hinweise zur Suchmaschinen-Darstellung; `Cache-Control: no-store`, nie blockierend, kein Audit (Abschnitt „SEO-Hinweise im Staff (Phase 17)“) |
 
 Öffentliche Routen (Web-SSR bzw. Browser über den Same-Origin-Rewrite `/api/*`; keine
 CORS-Header):
@@ -347,9 +354,26 @@ nicht eine Staff-Nachbildung. Es wird keine Staff-Session an die Web-Origin übe
   Konfigurator-Katalog, Staff-Lesesicht `/staff/cms/catalog`; im Konfigurator zusätzlich nicht
   wählbar und nie empfohlen). Log `public.catalog.exact_address_suppressed` nur mit
   `productSlug`, nie dem Text.
+- Preisangaben in Produktdaten (Phase 17, Auftrag §23, fail-closed – Preis-Guard,
+  `apps/api/src/public/catalog.ts`): enthält die Produktbeschreibung einen Preis-Freitext
+  (`containsPriceText`, dieselbe Erkennung wie die CMS-Prüfregel inkl. Cent-Beträgen) ⇒
+  `description: null`; enthält der Produktname oder die Verkaufseinheit (`saleUnit`, öffentlich
+  `unitLabel`) einen ⇒ das Produkt entfällt öffentlich ganz (Katalog, `product_grid`,
+  `included_items`, Konfigurator-Auswahl, Inklusiv-Pack, Empfehlung, Website-Anfrage,
+  Staff-Lesesicht) – wie beim Adress-Guard, der seit Phase 17 ebenfalls die Verkaufseinheit
+  prüft. Der Preis bleibt ausschließlich `priceCents` aus `product_prices`; Log
+  `public.catalog.price_text_suppressed` nur mit `productSlug` und Feldname. Interne
+  Produktdaten (`/staff/products`) bleiben unverändert; der SEO-Check meldet den Fall
+  (`PRODUCT_*_PRICE_HIDDEN`). **Für die Redaktion: Preise gehören nicht in Produktnamen,
+  -beschreibungen oder Verkaufseinheiten – die Website blendet sie aus.**
 - Nie enthalten: Redaktionsnotiz, Staff-IDs, Storage-Keys, Entwurfsinhalte.
-- `pages` im Bootstrap listet nur veröffentlichte Seiten (Pfad, Typ, Titel, Meta-Beschreibung);
-  Navigation, Fußzeile und Links des Web-Renderers richten sich danach.
+- `pages` im Bootstrap listet nur veröffentlichte Seiten (Pfad, Typ, Titel, Meta-Beschreibung;
+  seit Phase 17 `publishedAt` = ISO-Zeitpunkt der letzten Veröffentlichung als Grundlage für
+  `lastModified` der Sitemap; Einträge ohne `published_at` entfallen fail-closed); Navigation,
+  Fußzeile und Links des Web-Renderers richten sich danach. Der Bootstrap enthält seit Phase 17
+  außerdem `publicBaseUrl: string | null` (= `MAIL_PUBLIC_WEB_BASE_URL` ohne Schluss-Slash, ohne
+  Konfiguration `null`) – die einzige Quelle absoluter SEO-URLs des Web (Canonical, `og:url`,
+  Sitemap, JSON-LD; nie Host-Header), siehe [SEO_TECHNICAL.md](SEO_TECHNICAL.md).
 
 ## Bootstrap (`pnpm cms:bootstrap`)
 
@@ -382,7 +406,7 @@ Root-Skript → `pnpm --filter @mietroyal/api cms:bootstrap` → `apps/api/scrip
 | --- | --- | --- |
 | Website-Einstellungen | – | Firmenname „Miet-Royal“, Kurzbeschreibung, Kontaktwerte aus der bisherigen Website als ENTWURF („vor Veröffentlichung bestätigen“), KEINE Instagram-URL, KEIN Logo, `recommendationRules: []` |
 | Startseite | `/` | Hero mit „Slush konfigurieren“ → `/konfigurator` und „Unverbindlich anfragen“ → `/kontakt` |
-| Slush | `/slushmaschine-mieten` | Produkte/Inklusivleistungen nur über `product_grid`/`included_items` |
+| Slush | `/slushmaschine-mieten` | Produkte/Inklusivleistungen nur über `product_grid`/`included_items`; Meta-Titel in Phase 17 auf ≤ 60 Zeichen gekürzt (SEO-Check ohne Hinweis) |
 | Ablauf | `/ablauf` | |
 | FAQ | `/faq` | |
 | Über uns | `/ueber-uns` | Fakten nur von der bisherigen Website ⇒ Inhaber-Bestätigung nötig |
@@ -408,6 +432,12 @@ Navigationseintrag „Website“ bei `cms.edit` ODER `cms.publish` (`apps/staff/
 - **Übersicht** `/website` (`apps/staff/app/website/page.tsx`): Gruppen Einstellungen,
   Hauptseiten, Regionale Seiten, Sekundäre Angebote, Rechtliches; Status als Text (nie nur
   Farbe), Revisionsnummern, Datum; „Regionale Seite anlegen“ (`cms.edit`).
+  Phase 17: Kasten „Hinweise zur Suchmaschinen-Darstellung“ (`cms-seo-warnings`) oberhalb der
+  Gruppen – nur wenn Hinweise vorliegen – mit dem Satz „Das sind Hinweise für die Redaktion –
+  nichts wird blockiert.“; je Eintrag die Zählzeile „n Hinweise zur Suchmaschinen-Darstellung“
+  (`cms-entry-seo-count`); Katalog-Hinweise verlinken „Produkte & Preise öffnen“ auf die
+  Produktverwaltung `/produkte` (nur mit `product.view`). Details Abschnitt „SEO-Hinweise im
+  Staff (Phase 17)“.
 - **Editor** `/website/eintrag/[id]` (`apps/staff/app/website/eintrag/[id]/page.tsx`): Titel,
   Meta-Titel/-Beschreibung mit Zeichenzählern, Blockliste (hinzufügen – Hero nur als erster
   Block, Rechtstexte nur Text –, verschieben, entfernen mit Bestätigung), Formulare je Blocktyp
@@ -419,6 +449,10 @@ Navigationseintrag „Website“ bei `cms.edit` ODER `cms.publish` (`apps/staff/
   „Ansehen“, Vorschau einer alten Revision und „Als neuen Entwurf übernehmen“ (`cms.edit`).
   Nur-Publisher ⇒ Lesemodus. Konflikt (`CMS_DRAFT_CONFLICT`/`CMS_PUBLISH_STALE`) ⇒ „Der Entwurf
   wurde inzwischen geändert – bitte neu laden.“
+  Phase 17: unter der Meta-Beschreibung der Kasten „Hinweise zu Titel, Beschreibung und
+  Inhalt“ (`cms-seo-entry-warnings`, nur die Hinweise dieses Eintrags, Geltungsbereich als Text
+  „Veröffentlicht“/„Entwurf“), neu geladen nach Speichern, Veröffentlichen, Zurückziehen und
+  „Als neuen Entwurf übernehmen“; kein Knopf hängt davon ab.
 - **Website-Einstellungen** im selben Editor (`apps/staff/components/cms-settings-form.tsx`):
   Firmenname, Kurzbeschreibung, Logo, Fußzeile, Telefon, E-Mail, Instagram-Link,
   Empfehlungsregeln (Gäste ab/bis ⇒ Maschine nur aus `GET /staff/cms/catalog`, Überschneidungen
@@ -455,11 +489,15 @@ Navigationseintrag „Website“ bei `cms.edit` ODER `cms.publish` (`apps/staff/
     Bewertungs-Sektion (der Klick ginge sonst über den eingebackenen Rewrite an eine andere
     Umgebung). Eine Antwort, deren `mode` nicht dem Modus der Seite entspricht, wird verworfen
     ⇒ „Bewertungen sind gerade nicht verfügbar.“
-  - Google-Modus: Attribution „Google Maps“ (`translate="no"`, ohne Zeilenumbruch – auch in
-    den Links „Alle Bewertungen auf Google Maps“ und „Auf Google Maps ansehen“), der
-    Richtlinienhinweis von Google mit Link „Zur Richtlinie von Google für Bewertungen“ (lokaler
-    Fallback, falls die API-Felder fehlen), bei übersetzten Bewertungen „Von Google übersetzt“
-    und der Originaltext optional zum Aufklappen („Originaltext anzeigen“).
+  - Google-Modus: Attribution mit dem offiziellen Google-Maps-Logo (Phase 17: unverändertes
+    Asset aus `apps/web/public/google-maps-logo-gray.svg`, 18 px hoch, `alt="Google Maps"`,
+    `translate="no"`, eigenständig neben der Gesamtbewertung, verlinkt auf den Ort bei Google
+    Maps; Details [GOOGLE_REVIEWS_API_NOTES.md](GOOGLE_REVIEWS_API_NOTES.md) „Logo-Attribution“);
+    „Google Maps“ in den Linktexten „Alle Bewertungen auf Google Maps“ und „Auf Google Maps
+    ansehen“ weiterhin `translate="no"` ohne Zeilenumbruch; der Richtlinienhinweis von Google mit
+    Link „Zur Richtlinie von Google für Bewertungen“ (lokaler Fallback, falls die API-Felder
+    fehlen), bei übersetzten Bewertungen „Von Google übersetzt“ und der Originaltext optional zum
+    Aufklappen („Originaltext anzeigen“).
   - Demo: „DEMO – synthetische Beispielbewertungen“, nie „Google“.
 - `contact_details` (Logik `contactDetailsPlan` in `apps/web/lib/site-blocks.ts`): Telefon-Links
   ohne die geklammerte Verkehrsausscheidungsziffer nach der Ländervorwahl (aus „+49 (0) …“ wird
@@ -468,12 +506,25 @@ Navigationseintrag „Website“ bei `cms.edit` ODER `cms.publish` (`apps/staff/
   „Unverbindlich anfragen“ → `/konfigurator` (der Konfigurator kann nur Slush); ohne gepflegte
   Kontaktwerte dort „Unsere Kontaktdaten ergänzen wir hier in Kürze.“ (ohne
   Konfigurator-Verweis). Andere Seitentypen unverändert.
-- Meta: Titel aus `metaTitle` bzw. `title` (+ „ – Miet-Royal“, wenn nicht enthalten), Beschreibung
-  aus `metaDescription`; KEIN Titel-Template im Root-Layout (Portal-/Token-Titel unverändert).
-  Indexierung bis Phase 17 aus (`WEB_INDEXING_ENABLED`, [ENVIRONMENTS.md](ENVIRONMENTS.md)); die
-  Demo-Web-Instanz ist immer noindex, unabhängig vom Schalter (`siteRobots`), ebenso
-  Zustandsseiten (Fallback-Startseite, „Gleich wieder da“) und `/konfigurator` ohne Katalog
-  bzw. ohne wählbare Maschine (`apps/web/lib/site-meta.ts`).
+- Meta (Phase 17, Details [SEO_TECHNICAL.md](SEO_TECHNICAL.md)): Titel aus `metaTitle` bzw.
+  `title` (+ „ – Miet-Royal“, wenn nicht enthalten), Beschreibung aus `metaDescription` (fehlt
+  sie, gibt es keine – nichts wird erfunden); KEIN Titel-Template im Root-Layout (Portal-/
+  Token-Titel unverändert), das Root-Layout setzt `robots` immer auf noindex. Jede Website-Seite
+  setzt `robots`, Canonical, OpenGraph (`type website`, `locale de_DE`, `siteName` = Firmenname)
+  und Twitter Card selbst; `index, follow`, Canonical, `og:url` und Social Image gibt es nur im
+  indexierbaren Kontext (`WEB_INDEXING_ENABLED=true`, keine Demo, gültige Basis `publicBaseUrl`,
+  keine Origin-Sperre) und nur für veröffentlichte Seiten. Social Image: nur das Bild eines
+  `hero`-Blocks an erster Stelle (größte veröffentlichte Variante als absolute Medien-URL, `alt`
+  nur wenn nicht dekorativ) – ohne Hero-Bild bleiben OpenGraph/Twitter ohne Bild; das Logo der
+  Einstellungen ist kein `og:image`. Immer noindex: Demo-Web-Instanz, Zustandsseiten
+  (Fallback-Startseite, „Gleich wieder da“), `/konfigurator` ohne Katalog, ohne wählbare
+  Maschine, ohne veröffentlichte Datenschutzhinweise oder mit Origin-Sperre
+  (`apps/web/lib/site-meta.ts`). 404: Titel „Seite nicht gefunden – Miet-Royal“, Status 404,
+  noindex – auch für unveröffentlichte oder zurückgezogene CMS-Seiten.
+- Brotkrume (Phase 17): nur auf Regionsseiten (`Start › <Titel der veröffentlichten
+  Slush-Seite> › <Seitentitel>`) und sekundären Angeboten (`Start › <Seitentitel>`), mit
+  `BreadcrumbList`-JSON-LD nur auf indexierbaren Seiten; in der Vorschau sichtbar ohne JSON-LD.
+  Startseite und Hauptseiten haben keine Brotkrume.
 - Gestaltung und Navigation: [UX_RULES.md](UX_RULES.md) „Website“.
 
 ## Demo und Umgebungen
@@ -486,15 +537,61 @@ Navigationseintrag „Website“ bei `cms.edit` ODER `cms.publish` (`apps/staff/
 - In demo unterliegen alle CMS-Mutationen (`/staff/cms/*` und `POST
   /public/cms/preview/consume`) Reset-Gate und Barrier (503 `DEMO_RESET`).
 
-## Bewusst nicht in Phase 16 (Phase 17)
+## SEO-Hinweise im Staff (Phase 17)
 
-Redirect-Matrix Alt → Neu, Sitemap, Robots-Finalisierung, Canonical-QA, strukturierte Daten,
-Core-Web-Vitals-/Performance-QA, SEO-Content- und Ranking-Prüfung. Phase 16 liefert nur
-Meta-Titel/-Beschreibung im CMS, semantische Überschriften, serverseitig gerenderte Inhalte,
-stabile URLs, Alt-Texte und responsive Layouts.
+`GET /staff/cms/seo-check` (Recht `cms.edit` ODER `cms.publish`, `Cache-Control: no-store`, kein
+Audit; Kernfunktion `computeSeoWarnings` in `apps/api/src/cms/seo-check.ts`) liefert
+`{ checkedAt, warnings: SeoWarning[] }` mit
+`SeoWarning { code, scope: 'published' | 'draft' | 'catalog', entryId, path, field, message }`.
+Geltungsbereiche: `published` = veröffentlichte Revision; `draft` = aktueller Entwurf nur, wenn er
+vom veröffentlichten Stand abweicht oder nie veröffentlicht wurde (keine doppelten Hinweise);
+`catalog` = Produktdaten der öffentlichen Projektion (ohne `entryId`/`path`). Reihenfolge:
+veröffentlicht, Entwurf, Katalog; darin Pfad, Code, Meldung. Meldungen sind deutsch, ohne Code
+und nennen nie einen Preis oder die Adresse. **Nie blockierend:** Speichern, Vorschau und
+Veröffentlichen hängen nicht an den Hinweisen; kein Score, keine automatische Umschreibung –
+die Redaktion entscheidet. `site_settings` werden nicht geprüft.
+
+| Code | Bedeutung |
+| --- | --- |
+| `META_TITLE_MISSING` | Meta-Titel fehlt (Entwurf: ohne Meta-Titel kein Veröffentlichen möglich) |
+| `META_TITLE_SHORT` / `META_TITLE_LONG` | Meta-Titel < 20 bzw. > 60 Zeichen (Suchmaschinen kürzen; Empfehlung, keine Grenze des Schemas) |
+| `META_DESCRIPTION_MISSING` | Meta-Beschreibung fehlt |
+| `META_DESCRIPTION_SHORT` / `META_DESCRIPTION_LONG` | Meta-Beschreibung < 50 bzw. > 160 Zeichen |
+| `META_TITLE_DUPLICATE` / `META_DESCRIPTION_DUPLICATE` | exakt gleicher Wert auf mehreren Seiten (NFKC, getrimmt, klein, Leerraum zusammengefasst; veröffentlichte Seiten und Entwürfe getrennt; Meldung nennt alle Pfade) |
+| `PAGE_EMPTY` | Seite ohne Blöcke bzw. ohne eigenen Text (nur Bilder/automatisch befüllte Bausteine) |
+| `BROKEN_INTERNAL_LINK` | interner Link auf eine CMS-Seite, die die Website nicht ausliefert (nicht veröffentlicht, ungültiger Inhalt oder fail-closed wegen der Abholadresse); App-Pfade `/`, `/konfigurator`, `/konto/…` gelten als vorhanden |
+| `REGION_NEAR_DUPLICATE` | zwei Regionsseiten mit nahezu identischem Text (Jaccard der Wort-3-Gramme ≥ 0,6, ab 30 Trigrammen zusätzlich Containment ≥ 0,6 für Teilkopien – ein Ortsnamen-Tausch wird erkannt) |
+| `PAGE_SUPPRESSED` | veröffentlichte Seite, die die Website fail-closed nicht ausliefert, weil Titel oder Meta-Titel die exakte Abholadresse enthalten |
+| `PRODUCT_DESCRIPTION_PRICE_HIDDEN` | Produktbeschreibung mit Preisangabe – die Website blendet die Beschreibung aus |
+| `PRODUCT_NAME_PRICE_HIDDEN` / `PRODUCT_UNIT_PRICE_HIDDEN` | Produktname bzw. Verkaufseinheit mit Preisangabe – das Produkt erscheint nicht auf der Website; in der Produktverwaltung („Produkte & Preise“, `/produkte`) anpassen |
+
+Staff-Darstellung (`SeoWarningsBox`, `apps/staff/components/website.tsx`): Übersicht
+`/website` Kasten „Hinweise zur Suchmaschinen-Darstellung“ (`cms-seo-warnings`, je Zeile
+`cms-seo-warning` mit `data-code`/`data-scope`/`data-entry-id`, Link „Bearbeiten“ zum Eintrag,
+bei Katalog-Hinweisen „Produkte & Preise öffnen“ → `/produkte` nur mit `product.view`) und
+Zählzeile je Eintrag; Editor Kasten „Hinweise zu Titel, Beschreibung und Inhalt“
+(`cms-seo-entry-warnings`) unter den Meta-Feldern, neu geladen nach jeder Änderung des Eintrags.
+Geltungsbereich als Text („Veröffentlicht“, „Entwurf“, „Produkte & Preise“); unbekannte Codes
+werden mit ihrer Meldung angezeigt. Schlägt der Abruf fehl (401/403, offline, 5xx, Demo-Reset),
+fehlt der Kasten still – kein Fehlerhinweis, keine Sperre.
+
+## Phase 17 (umgesetzt)
+
+Phase 16 lieferte Meta-Titel/-Beschreibung im CMS, semantische Überschriften, serverseitig
+gerenderte Inhalte, stabile URLs, Alt-Texte und responsive Layouts. Phase 17 ergänzt: fail-closed
+Indexierbarkeit mit konfigurierter Basis, Canonicals, robots.txt, dynamische Sitemap aus
+veröffentlichten Seiten, OpenGraph/Twitter, strukturierte Daten, Brotkrumen, 404-Metadaten,
+410-Seite und Redirect-/410-Matrix der Alt-URLs ([SEO_TECHNICAL.md](SEO_TECHNICAL.md),
+[REDIRECT_MATRIX.md](REDIRECT_MATRIX.md), [SEO_STRUCTURED_DATA_NOTES.md](SEO_STRUCTURED_DATA_NOTES.md)),
+die SEO-Hinweise im Staff, den Preis-Guard der Produktprojektion und die technische QA
+([WEBSITE_QA_REPORT.md](WEBSITE_QA_REPORT.md)). Nicht Teil von Phase 17: DNS-Umschaltung,
+Indexierung einschalten, Search Console, Ranking-Prüfung, juristische Freigabe der Rechtstexte
+([OPEN_ITEMS.md](OPEN_ITEMS.md) „Phase 17“).
 
 ## Tests
 
 Siehe [TEST_PLAN.md](TEST_PLAN.md) „Website, CMS, Konfigurator, Bewertungen (Phase 16)“
 (u. a. `apps/api/test/cms-*.integration.test.ts`, `packages/validation/test/cms.test.ts`,
-`apps/api/test/cms-bootstrap-content.test.ts`, `apps/web/lib/*.test.ts`).
+`apps/api/test/cms-bootstrap-content.test.ts`, `apps/web/lib/*.test.ts`) und „SEO, Redirects,
+technische QA (Phase 17)“ (SEO-Check SEO-U*/SEO-API*, Preis-Guard SEO-P*, Web SEO-W*, E2E-Projekt
+`seo`).

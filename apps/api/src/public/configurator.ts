@@ -102,9 +102,9 @@ function mergeEntries(
 }
 
 /**
- * Öffentlich wählbare (aktive) Produkte je Slug – ohne Produkte, deren Name die exakte
- * Abholadresse (Review pricing-3) oder einen Preis-Freitext (Phase 17, Design D13) enthält:
- * sie existieren öffentlich nicht – wie im Katalog.
+ * Öffentlich wählbare (aktive) Produkte je Slug – ohne Produkte, deren Name oder
+ * Verkaufseinheit (Review RC-1) die exakte Abholadresse (Review pricing-3) oder einen
+ * Preis-Freitext (Phase 17, Design D13) enthält: sie existieren öffentlich nicht – wie im Katalog.
  */
 async function publicActiveProducts(
   executor: DatabaseExecutor,
@@ -216,8 +216,8 @@ export async function resolveConfiguratorSelection(
       return product;
     },
     // Wie im Angebot: Inklusiv-Packs unabhängig von der Auswahl, fehlend ⇒ null; ein Pack,
-    // dessen Name die exakte Abholadresse oder einen Preis-Freitext enthält, gilt öffentlich
-    // als fehlend (Review pricing-3, Phase 17 D13).
+    // dessen Name oder Verkaufseinheit die exakte Abholadresse oder einen Preis-Freitext
+    // enthält, gilt öffentlich als fehlend (Review pricing-3, Phase 17 D13, Review RC-1).
     includedPack: async (slug) => {
       const pack =
         pricingProducts.get(slug) ??

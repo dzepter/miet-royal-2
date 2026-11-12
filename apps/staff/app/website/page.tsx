@@ -253,7 +253,11 @@ function WebsiteOverview() {
           testId="cms-seo-warnings"
           warnings={seoWarnings}
           intro="Das sind Hinweise für die Redaktion – nichts wird blockiert."
-          catalogHref={hasPermission(me, 'product.view') ? '/website/produkte' : undefined}
+          // Phase 17 (Review RC-5): Katalog-Hinweise führen in die Produktverwaltung des
+          // Commerce-Moduls (`/produkte`, Recht product.view wie die Route selbst) – dort werden
+          // Name, Beschreibung und Verkaufseinheit gepflegt; die Lesesicht `/website/produkte`
+          // zeigt ausgeblendete Produkte gar nicht.
+          catalogHref={hasPermission(me, 'product.view') ? '/produkte' : undefined}
         />
       )}
       {entries !== null && entries.length === 0 && (

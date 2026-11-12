@@ -5,6 +5,10 @@
 
 .layout {
   display: grid;
+  /* Phase 17 (Responsive, 320 px): die Spalte darf unter die Min-Content-Breite des
+     Fortschrittsbalkens schrumpfen (dieser scrollt dann intern), sonst wächst das Raster
+     um einige Pixel in den Seitenrand. */
+  grid-template-columns: minmax(0, 1fr);
   gap: 1.5rem;
   padding: clamp(1.5rem, 5vw, 3rem) 0 clamp(2.5rem, 7vw, 4rem);
 }
@@ -24,7 +28,8 @@
 
 .progress {
   display: flex;
-  gap: 0.35rem;
+  /* 6 Schritte × 44 px Touchfläche + 5 Abstände müssen in 288 px (320-px-Viewport) passen. */
+  gap: 0.25rem;
   margin: 0 0 1.5rem;
   padding: 0;
   list-style: none;

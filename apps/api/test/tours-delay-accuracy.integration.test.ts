@@ -19,6 +19,7 @@ import {
   delayIncidents,
   destroyToursWorld,
   inMinutes,
+  pinMorningClockIfEvening,
   resetToursWorld,
   sendLocation,
   setLiveLocation,
@@ -29,12 +30,17 @@ import {
 } from './tours-helpers.ts';
 
 let world: ToursWorld;
+// Phase 17 (§27): ab 19:00 Berlin Testuhr auf 09:00 zurückdrehen (Termine „jetzt + 20 min“ müssen
+// am heutigen Tourdatum liegen) – tagsüber wirkungslos, siehe tours-helpers.ts.
+let restoreClock: () => void = () => {};
 
 beforeAll(async () => {
+  restoreClock = pinMorningClockIfEvening();
   world = await createToursWorld({ locationMinIntervalMs: 0, captureLog: true });
 });
 afterAll(async () => {
   await destroyToursWorld(world);
+  restoreClock();
 });
 beforeEach(async () => {
   await resetToursWorld(world);
