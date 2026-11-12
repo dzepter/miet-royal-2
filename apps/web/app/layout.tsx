@@ -1,27 +1,23 @@
 import type { Metadata } from 'next';
 import { connection } from 'next/server';
-import { cache, type ReactNode } from 'react';
-import { DEMO_BANNER_TEXT, resolveDemoBanner } from '../lib/environment';
-import { readIndexingEnabled, siteRobots } from '../lib/site-meta';
-
-/** Je Request EINE Entscheidung (Metadaten und Banner teilen sich die /health-Abfrage). */
-const getDemoBanner = cache(() => resolveDemoBanner());
+import type { ReactNode } from 'react';
+import { getDemoMode } from '../components/site/site-data';
+import { DEMO_BANNER_TEXT } from '../lib/environment';
+import { NOINDEX_ROBOTS } from '../lib/site-meta';
 
 /**
  * Phase 16 (WEB, Design §1.7/§5/§11.2.9): schlanke Root-Metadaten – KEIN Titel-Template
  * (Portal-/Token-Titel bleiben unverändert; Website-Seiten setzen ihren Titel selbst).
- * Indexierung zur Laufzeit aus WEB_INDEXING_ENABLED (Default aus ⇒ noindex für alles);
- * die Demo-Instanz (WEB_APP_ENV=demo bzw. API meldet `demo`) ist IMMER noindex (Review
- * demo_reviews-5). Token-Seiten, /konto und /vorschau überschreiben `robots` in ihren Layouts
- * immer mit noindex.
+ * Phase 17 (WEB-META, Design D2): `robots` ist hier IMMER noindex/nofollow – der fail-closed
+ * Default für alles, was sich nicht ausdrücklich freigibt. Jede Website-Seite entscheidet selbst
+ * über `seoContext` (index nur mit WEB_INDEXING_ENABLED=true, ohne Demo, mit gültiger
+ * öffentlicher Basis, ohne Origin-Sperre und nur für veröffentlichte Inhalte). Token-Seiten,
+ * /konto, /vorschau und die 404-Seite setzen `robots` in ihren Layouts/Metadaten immer noindex.
  */
-export async function generateMetadata(): Promise<Metadata> {
-  await connection();
-  return {
-    title: 'Miet-Royal',
-    robots: siteRobots({ indexingEnabled: readIndexingEnabled(), demo: await getDemoBanner() }),
-  };
-}
+export const metadata: Metadata = {
+  title: 'Miet-Royal',
+  robots: { ...NOINDEX_ROBOTS },
+};
 
 /**
  * Phase 14 (Design §3): fester Demo-Banner auf ALLEN öffentlichen Seiten der
@@ -58,8 +54,10 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
   // die Demo-Instanz MUSS WEB_APP_ENV=demo setzen (docs/ENVIRONMENTS.md).
   // Review F6: zusätzlich zählt `environment: 'demo'` aus GET <WEB_API_ORIGIN>/health
   // (Timeout 1 s, no-store; Fehler ⇒ nur WEB_APP_ENV) – nie ausblenden bei WEB_APP_ENV=demo.
+  // Phase 17: dieselbe je Request deduplizierte Entscheidung (`getDemoMode`, site-data.ts)
+  // nutzen auch die Seiten-Metadaten (Demo ⇒ noindex), robots.txt und die Sitemap.
   await connection();
-  const showDemoBanner = await getDemoBanner();
+  const showDemoBanner = await getDemoMode();
   return (
     <html lang="de">
       <body

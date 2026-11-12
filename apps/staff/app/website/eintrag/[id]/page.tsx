@@ -30,6 +30,7 @@ import { ConfirmDialog } from '../../../../components/confirm-dialog';
 import {
   CmsNoAccess,
   CmsStatusBadge,
+  SeoWarningsBox,
   WebsiteSubnav,
   canReadCms,
 } from '../../../../components/website';
@@ -47,9 +48,14 @@ import {
   issuesFromSchema,
   newCmsBlock,
   normalizeIssuePath,
+  seoWarningsForEntry,
+  seoWarningsOf,
+  sortSeoWarnings,
   type CmsCatalog,
   type CmsCatalogMachine,
   type CmsPreviewAccess,
+  type SeoCheckResponse,
+  type SeoWarning,
   type StaffCmsEntryDetail,
   type StaffCmsHistoryItem,
   type StaffCmsMedia,
@@ -70,6 +76,11 @@ import { formatBerlin } from '../../../../lib/handover';
  * - Nur `cms.publish` ⇒ Lesemodus (alle Felder gesperrt).
  * Alle Aktionen brauchen eine Verbindung (Offline-Router ⇒ ONLINE_REQUIRED). Die Rechte
  * prüft der Server; ausgeblendete Knöpfe sind nur UX.
+ *
+ * Phase 17 (Design D12): Unter den Meta-Feldern stehen die Hinweise zur Suchmaschinen-
+ * Darstellung dieses Eintrags (`GET /staff/cms/seo-check`, nach Speichern/Veröffentlichen/
+ * Zurückziehen/Übernehmen neu geladen). Reine Redaktionshinweise – Speichern und
+ * Veröffentlichen bleiben davon unberührt; Fehler beim Abruf ⇒ kein Kasten.
  */
 
 const CONFLICT_MESSAGE = 'Der Entwurf wurde inzwischen geändert – bitte neu laden.';
@@ -278,6 +289,7 @@ function EntryEditor() {
   const [machines, setMachines] = useState<CmsCatalogMachine[] | null>(null);
   const [viewRevision, setViewRevision] = useState<StaffCmsRevision | null>(null);
   const [previewLink, setPreviewLink] = useState<CmsPreviewAccess | null>(null);
+  const [seoWarnings, setSeoWarnings] = useState<SeoWarning[]>([]);
 
   const applyDetail = useCallback((next: StaffCmsEntryDetail) => {
     const nextModel = modelFrom(next);
@@ -310,11 +322,20 @@ function EntryEditor() {
     });
   }, []);
 
+  // SEO-Hinweise dieses Eintrags – optional, nie blockierend; jeder Fehler ⇒ kein Kasten.
+  const loadSeo = useCallback(async () => {
+    const result = await apiFetch<SeoCheckResponse>('/staff/cms/seo-check');
+    setSeoWarnings(
+      result.ok ? seoWarningsForEntry(sortSeoWarnings(seoWarningsOf(result.data)), entryId) : [],
+    );
+  }, [entryId]);
+
   useEffect(() => {
     if (!allowed) return;
     void load();
     loadMedia();
-  }, [allowed, load, loadMedia]);
+    void loadSeo();
+  }, [allowed, load, loadMedia, loadSeo]);
 
   // Produktauswahl (product_grid) und Maschinen (Empfehlungsregeln) nur mit product.view;
   // nur beim Wechsel der Eintragsart laden, nicht bei jeder Detailänderung.
@@ -453,6 +474,7 @@ function EntryEditor() {
       return;
     }
     applyDetail(result.data);
+    void loadSeo();
     setNotice(
       `Entwurf gespeichert (Revision ${result.data.draft.revisionNumber}). Die öffentliche Website ist unverändert.`,
     );
@@ -474,6 +496,7 @@ function EntryEditor() {
       return;
     }
     applyDetail(result.data);
+    void loadSeo();
     setNotice(`Revision ${revisionNumber} ist veröffentlicht.`);
   }
 
@@ -492,6 +515,7 @@ function EntryEditor() {
       return;
     }
     applyDetail(result.data);
+    void loadSeo();
     setNotice(
       'Die Seite ist zurückgezogen und nicht mehr öffentlich. Entwurf und Historie bleiben erhalten.',
     );
@@ -512,6 +536,7 @@ function EntryEditor() {
       return;
     }
     applyDetail(result.data);
+    void loadSeo();
     setViewRevision(null);
     setNotice(
       `Revision ${item.revisionNumber} wurde als neuer Entwurf übernommen (Revision ${result.data.draft.revisionNumber}). Veröffentlicht ist weiterhin der bisherige Stand.`,
@@ -719,6 +744,14 @@ function EntryEditor() {
                   multiline
                   rows={2}
                   onChange={(metaDescription) => setMeta({ ...meta, metaDescription })}
+                />
+                <SeoWarningsBox
+                  testId="cms-seo-entry-warnings"
+                  title="Hinweise zu Titel, Beschreibung und Inhalt"
+                  intro="Bezieht sich auf den gespeicherten Entwurf und den veröffentlichten Stand – nichts wird blockiert."
+                  headingLevel={3}
+                  warnings={seoWarnings}
+                  currentEntryId={detail.id}
                 />
               </section>
             )}

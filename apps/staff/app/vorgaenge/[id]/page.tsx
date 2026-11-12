@@ -583,7 +583,10 @@ function ProcessView() {
           )}
           {' · '}Event: <strong>{formatEventDate(process.eventDate)}</strong>
           {' · '}
-          <span className={`badge ${STATUS_BADGE_CLASS[process.mainStatus]}`}>
+          <span
+            className={`badge ${STATUS_BADGE_CLASS[process.mainStatus]}`}
+            data-testid="process-main-status"
+          >
             {STATUS_LABELS[process.mainStatus]}
           </span>
         </p>

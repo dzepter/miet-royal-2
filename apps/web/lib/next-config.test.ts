@@ -115,3 +115,11 @@ describe('next.config.ts – Header-Matrix (Phase 16)', () => {
     assert.equal(nextConfig.poweredByHeader, false);
   });
 });
+
+describe('next.config.ts – Redirect-Verfahren (Phase 17)', () => {
+  it('SEO-W-H6. skipTrailingSlashRedirect aktiv (Proxy normalisiert in EINEM Hop); keine redirects()-Funktion, kein trailingSlash – ein Verfahren (308 im Proxy)', () => {
+    assert.equal(nextConfig.skipTrailingSlashRedirect, true);
+    assert.equal(nextConfig.redirects, undefined);
+    assert.equal(nextConfig.trailingSlash, undefined);
+  });
+});

@@ -47,6 +47,9 @@ import { loadPublishedEntry } from './published-content.ts';
  *   Geloggt wird nur die Eintrags-ID.
  * - `reviews`-Blöcke entfallen, solange kein Bewertungs-Provider aktiv ist.
  * - Keine Redaktionsnotizen, keine Staff-IDs, keine Storage-Keys.
+ * - Phase 17 (SEO, Design D1/D8): der Bootstrap trägt die konfigurierte Web-Basis
+ *   (`publicBaseUrl`) und je Seite den Veröffentlichungszeitpunkt (`publishedAt`); beides
+ *   dient dem Web nur als SEO-Grundlage (Canonicals, Sitemap) – nie aus Request-Headern.
  */
 
 export const PUBLIC_MEDIA_URL_BASE = '/api/public/cms/media';
@@ -118,6 +121,12 @@ export interface PublicSitePageSummary {
   pageType: CmsPageTypeName;
   title: string;
   metaDescription: string | null;
+  /**
+   * Phase 17 (SEO, Design D8): Zeitpunkt der Veröffentlichung (ISO, `cms_entries.published_at`)
+   * – Grundlage für `lastModified` der Sitemap; nie erfunden, ändert sich mit jeder erneuten
+   * Veröffentlichung. Einträge ohne Zeitpunkt gelten als nicht veröffentlicht und fehlen hier.
+   */
+  publishedAt: string;
 }
 
 export interface PublicSiteBootstrap {
@@ -126,6 +135,13 @@ export interface PublicSiteBootstrap {
   pages: PublicSitePageSummary[];
   reviews: { mode: ReviewMode };
   pickupArea: string;
+  /**
+   * Phase 17 (SEO, Design D1): konfigurierte öffentliche Web-Basis (`MAIL_PUBLIC_WEB_BASE_URL`,
+   * ohne Schluss-Slash) oder null – EINZIGE Quelle absoluter SEO-URLs (Canonical, og:url,
+   * Sitemap, robots-Sitemap-Zeile, JSON-LD). Nie aus Host-/Forwarded-Headern abgeleitet; ohne
+   * Wert bleibt die Indexierung fail-closed (keine Canonicals, keine Sitemap).
+   */
+  publicBaseUrl: string | null;
 }
 
 export interface PublicPreviewPage {
@@ -149,6 +165,18 @@ export interface PublicSiteServiceOptions {
   environment: AppEnvironment;
   reviewsMode: ReviewMode;
   logger: PublicSiteLogger;
+  /**
+   * Phase 17 (SEO): `config.mail.publicWebBaseUrl` (MAIL_PUBLIC_WEB_BASE_URL); wird unverändert
+   * – nur ohne Schluss-Slash, leer ⇒ null – als `publicBaseUrl` im Bootstrap ausgegeben.
+   */
+  publicWebBaseUrl: string | null;
+}
+
+/** Konfigurierte Web-Basis ohne Schluss-Slash; leer/fehlend ⇒ null (fail-closed). */
+export function normalizePublicBaseUrl(value: string | null | undefined): string | null {
+  if (value === undefined || value === null) return null;
+  const trimmed = value.trim().replace(/\/+$/, '');
+  return trimmed === '' ? null : trimmed;
 }
 
 /** Kontext EINES Requests (Adressfragmente und Katalog nur einmal laden). */
@@ -194,6 +222,7 @@ export class PublicSiteService {
       pages: await this.publishedPages(ctx),
       reviews: { mode: this.options.reviewsMode },
       pickupArea: await publicPickupArea(this.db, ctx.fragments),
+      publicBaseUrl: normalizePublicBaseUrl(this.options.publicWebBaseUrl),
     };
   }
 
@@ -285,6 +314,8 @@ export class PublicSiteService {
     const out: PublicSitePageSummary[] = [];
     for (const row of rows) {
       if (row.entry.path === null || row.entry.pageType === null) continue;
+      // Phase 17 (SEO): ohne Veröffentlichungszeitpunkt gilt der Eintrag als nicht veröffentlicht.
+      if (row.entry.publishedAt === null) continue;
       const parsed = cmsPageContentSchema.safeParse(row.revision.content);
       if (!parsed.success) {
         this.options.logger.warn({ entryId: row.entry.id }, 'cms.public.content_invalid');
@@ -301,6 +332,7 @@ export class PublicSiteService {
         metaDescription: hasAddress(ctx, row.revision.metaDescription)
           ? null
           : row.revision.metaDescription,
+        publishedAt: row.entry.publishedAt.toISOString(),
       });
     }
     return out;

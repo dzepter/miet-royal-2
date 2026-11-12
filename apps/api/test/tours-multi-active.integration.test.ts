@@ -31,6 +31,7 @@ import {
   delayIncidents,
   destroyToursWorld,
   inMinutes,
+  pinMorningClockIfEvening,
   resetToursWorld,
   sendLocation,
   setLiveLocation,
@@ -42,13 +43,17 @@ import {
 } from './tours-helpers.ts';
 
 let world: ToursWorld;
+/** Phase 17 (§27 B): abends Testuhr auf 09:00 Berlin zurück – `inMinutes(+N)` bleibt am Tourtag. */
+let restoreClock: () => void = () => {};
 const CONFLICT_MESSAGE = 'Mehrere aktive Touren gleichzeitig – Planung prüfen.';
 
 beforeAll(async () => {
+  restoreClock = pinMorningClockIfEvening();
   world = await createToursWorld({ locationMinIntervalMs: 0 });
 });
 afterAll(async () => {
   await destroyToursWorld(world);
+  restoreClock();
 });
 beforeEach(async () => {
   await resetToursWorld(world);

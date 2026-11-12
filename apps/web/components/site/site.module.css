@@ -1135,3 +1135,62 @@
     scroll-behavior: auto !important;
   }
 }
+
+/* ── Phase 17: Brotkrumen (Design D11) ───────────────────────────────────── */
+
+.breadcrumbs {
+  padding-top: 0.5rem;
+}
+
+.breadcrumbList {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 0.95rem;
+  color: var(--mr-ink-soft);
+}
+
+.breadcrumbList li {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  max-width: 100%;
+}
+
+/* Trennzeichen rein grafisch (Chevron aus Rahmenlinien) – kein Text im DOM, nichts für Screenreader. */
+.breadcrumbList li + li::before {
+  content: '';
+  display: inline-block;
+  flex: none;
+  width: 0.45em;
+  height: 0.45em;
+  margin: 0 0.65rem 0 0.5rem;
+  border-top: 2px solid var(--mr-bronze-mid);
+  border-right: 2px solid var(--mr-bronze-mid);
+  transform: rotate(45deg);
+}
+
+.breadcrumbList a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  overflow-wrap: anywhere;
+}
+
+.breadcrumbList [aria-current='page'] {
+  color: var(--mr-ink);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+/* ── Phase 17: Responsive – lange Wörter in Überschriften umbrechen statt überlaufen ──── */
+
+.h1,
+.h2,
+.h3 {
+  overflow-wrap: anywhere;
+  hyphens: auto;
+}

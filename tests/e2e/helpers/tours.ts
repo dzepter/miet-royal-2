@@ -261,6 +261,21 @@ export function berlinTodayAt(minutesOfDay: number, now = new Date()): Date {
   return new Date(naive - offset * 60_000);
 }
 
+/**
+ * Zeitpunkt „Berliner Kalendertag heute + `dayOffset` Tage um HH:MM“ (UTC-korrekt).
+ * Phase 17 (§27 B): für Pläne, die NICHT heute liegen müssen – z. B. tours-demo (O) plant
+ * und übernimmt nur, startet die Tour nicht –: fester Folgetag statt „heute relativ zu
+ * jetzt“ ⇒ kein Resttag-Sperrfenster. Für Touren, die gestartet werden, gilt weiter
+ * `fitTodayTimeline`/`todayWindow` (Produktregel TOUR_NOT_TODAY).
+ */
+export function berlinDayAt(dayOffset: number, minutesOfDay: number, now = new Date()): Date {
+  const [y, m, d] = berlinTodayIso(now).split('-').map(Number);
+  const naive =
+    Date.UTC(y ?? 1970, (m ?? 1) - 1, (d ?? 1) + dayOffset, 0, 0, 0) + minutesOfDay * 60_000;
+  const offset = berlinOffsetMinutes(new Date(naive));
+  return new Date(naive - offset * 60_000);
+}
+
 /** „HH:MM“ (Berlin) eines Zeitpunkts – wie die Staff-App (berlinTime). */
 export function berlinClock(at: Date | string): string {
   return new Intl.DateTimeFormat('de-DE', {

@@ -30,9 +30,12 @@ export interface SiteNavItem {
   cms: boolean;
 }
 
+/** Beschriftung der Startseite in Navigation und Brotkrume. */
+export const HOME_LABEL = 'Start';
+
 /** Hauptnavigation (Order §3): Start, Slush, Ablauf, FAQ, Über uns, Kontakt, Kundenbereich. */
 export const SITE_NAV_ITEMS: readonly SiteNavItem[] = [
-  { label: 'Start', href: HOME_PATH, cms: false },
+  { label: HOME_LABEL, href: HOME_PATH, cms: false },
   { label: 'Slush', href: SLUSH_PATH, cms: true },
   { label: 'Ablauf', href: '/ablauf', cms: true },
   { label: 'FAQ', href: '/faq', cms: true },
@@ -165,4 +168,36 @@ export function safeInstagramUrl(value: string | null | undefined): string | nul
   } catch {
     return null;
   }
+}
+
+// ── Brotkrumen (Phase 17, Design D11) ────────────────────────────────────────
+
+export interface BreadcrumbItem {
+  name: string;
+  href: string;
+}
+
+/**
+ * Sichtbare Brotkrume (und Grundlage der `BreadcrumbList`) – nur wo sie die Orientierung
+ * verbessert: Regionsseiten `Start › Slushmaschine mieten › <Seitentitel>` (die Slush-Seite
+ * nur, wenn sie veröffentlicht ist; Beschriftung = ihr veröffentlichter Titel) und
+ * Secondary-Offer-Seiten `Start › <Seitentitel>`. Alle anderen Seitentypen: keine Brotkrume.
+ */
+export function breadcrumbItems(
+  page: { pageType: SitePageType | string; title: string; path: string },
+  pages: readonly PublicSitePageSummary[] | null | undefined,
+): BreadcrumbItem[] {
+  const current: BreadcrumbItem = { name: page.title, href: page.path };
+  if (page.pageType === 'region') {
+    const slush = (pages ?? []).find(
+      (candidate) => candidate.path === SLUSH_PATH && candidate.pageType === 'slush',
+    );
+    return [
+      { name: HOME_LABEL, href: HOME_PATH },
+      ...(slush === undefined ? [] : [{ name: slush.title, href: SLUSH_PATH }]),
+      current,
+    ];
+  }
+  if (page.pageType === 'secondary_offer') return [{ name: HOME_LABEL, href: HOME_PATH }, current];
+  return [];
 }

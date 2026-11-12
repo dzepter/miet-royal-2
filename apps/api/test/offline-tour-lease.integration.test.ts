@@ -39,6 +39,7 @@ import {
   createToursWorld,
   destroyToursWorld,
   inMinutes,
+  pinMorningClockIfEvening,
   resetToursWorld,
   sendLocation,
   sleep,
@@ -50,6 +51,8 @@ import {
 } from './tours-helpers.ts';
 
 let world: ToursWorld;
+/** Phase 17 (§27 B): abends Testuhr auf 09:00 Berlin zurück – `inMinutes(+N)` bleibt am Tourtag. */
+let restoreClock: () => void = () => {};
 const DEVICE = '0f6a9d2e-1b3c-4d5e-8f70-1234567890ab';
 const DEVICE_B = '9f6a9d2e-1b3c-4d5e-8f70-1234567890cd';
 const ENVIRONMENT = 'development';
@@ -74,10 +77,12 @@ const PHASE8_DATA_PERMISSIONS: readonly PermissionKey[] = [
 ];
 
 beforeAll(async () => {
+  restoreClock = pinMorningClockIfEvening();
   world = await createToursWorld();
 });
 afterAll(async () => {
   await destroyToursWorld(world);
+  restoreClock();
 });
 beforeEach(async () => {
   await resetToursWorld(world);

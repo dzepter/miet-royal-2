@@ -28,6 +28,7 @@ import { createHash } from 'node:crypto';
 import { expect, test, type Page } from '@playwright/test';
 import { singleMailDelivery } from '../helpers/jobs.ts';
 import { clearSink, expectMailCount, voucherCodeFromMail } from '../helpers/mail.ts';
+import { expectProcessMainStatus, openProcessPage } from '../helpers/process-page.ts';
 import { ADMIN_EMAIL, ADMIN_PASSWORD, resetE2eDatabase } from '../helpers/seed.ts';
 import {
   berlinDayPlus,
@@ -672,8 +673,9 @@ test('J: Dokumentierter Schaden + bezahlte Abrechnung + Reinigung abgeschlossen 
   expect(vouchersOfCustomer(customerDora)).toHaveLength(0);
   expect(allVouchers()).toHaveLength(1); // weiterhin nur Wandas Gutschein
   await expectNoCustomerVoucherCard(staff, customerDora);
-  await staff.goto(`/vorgaenge/${processId}`);
-  await expect(staff.locator('.badge', { hasText: 'Abgeschlossen' }).first()).toBeVisible();
+  // Hauptstatus exakt „Abgeschlossen“ nach geladenen Vorgangsdaten (Phase 17 §27 A).
+  await openProcessPage(staff, processId);
+  await expectProcessMainStatus(staff, 'Abgeschlossen');
   await expect(staff.getByTestId('process-voucher')).toHaveCount(0);
   expect((await processDetail(staff, processId)).voucher).toBeNull();
 });

@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
+  HOME_LABEL,
   SITE_NAV_ITEMS,
+  breadcrumbItems,
   footerLegalLinks,
   isCurrentNavItem,
   isPrivacyPublished,
@@ -149,5 +151,50 @@ describe('Navigation und Seitenlogik (Phase 16)', () => {
     assert.equal(safeInstagramUrl('https://instagram.com.evil.example/x'), null);
     assert.equal(safeInstagramUrl('javascript:alert(1)'), null);
     assert.equal(safeInstagramUrl(null), null);
+  });
+
+  it('SEO-W15. Brotkrume (Phase 17, D11): Region = Start › Slush-Seite (nur veröffentlicht, mit ihrem Titel) › Seitentitel; Secondary Offer = Start › Seitentitel; sonst keine', () => {
+    const region = {
+      pageType: 'region',
+      title: 'Slushmaschine mieten in Mainz',
+      path: '/slushmaschine-mieten/mainz',
+    } as const;
+    const withSlush = [
+      page('/', 'home'),
+      page('/slushmaschine-mieten', 'slush', 'Slushmaschine mieten'),
+      page('/slushmaschine-mieten/mainz', 'region', region.title),
+    ];
+    const withoutSlush = [page('/', 'home'), page('/faq', 'faq')];
+    assert.equal(HOME_LABEL, 'Start');
+    assert.deepEqual(breadcrumbItems(region, withSlush), [
+      { name: 'Start', href: '/' },
+      { name: 'Slushmaschine mieten', href: '/slushmaschine-mieten' },
+      { name: 'Slushmaschine mieten in Mainz', href: '/slushmaschine-mieten/mainz' },
+    ]);
+    // Slush-Seite nicht veröffentlicht ⇒ Elternteil entfällt (kein Link auf eine 404-Seite).
+    assert.deepEqual(breadcrumbItems(region, withoutSlush), [
+      { name: 'Start', href: '/' },
+      { name: 'Slushmaschine mieten in Mainz', href: '/slushmaschine-mieten/mainz' },
+    ]);
+    assert.equal(breadcrumbItems(region, null).length, 2);
+    // Der Pfad /slushmaschine-mieten zählt nur mit Seitentyp slush (sonst liefert die Route 404).
+    assert.equal(breadcrumbItems(region, [page('/slushmaschine-mieten', 'faq', 'X')]).length, 2);
+    assert.deepEqual(
+      breadcrumbItems(
+        {
+          pageType: 'secondary_offer',
+          title: 'Popcornmaschine mieten',
+          path: '/popcornmaschine-mieten',
+        },
+        withSlush,
+      ),
+      [
+        { name: 'Start', href: '/' },
+        { name: 'Popcornmaschine mieten', href: '/popcornmaschine-mieten' },
+      ],
+    );
+    for (const pageType of ['home', 'slush', 'process', 'faq', 'about', 'contact', 'legal']) {
+      assert.deepEqual(breadcrumbItems({ pageType, title: 'X', path: '/x' }, withSlush), []);
+    }
   });
 });

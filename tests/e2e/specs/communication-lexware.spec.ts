@@ -33,6 +33,7 @@ import {
   pdfAttachment,
   waitForMail,
 } from '../helpers/mail.ts';
+import { expectProcessMainStatus, openProcessPage } from '../helpers/process-page.ts';
 import { ADMIN_EMAIL, ADMIN_PASSWORD, resetE2eDatabase } from '../helpers/seed.ts';
 import {
   ensureInitialStock,
@@ -137,8 +138,9 @@ test('F. Lexware-Rechnung per E-Mail: PDF transient aus Lexware geladen und gema
     },
   ]);
   await expectMailCount({ to: F_EMAIL, subject: /^Rechnung / }, 0);
-  await staff.goto(`/vorgaenge/${processId}`);
-  await expect(staff.locator('.badge', { hasText: 'Abgeschlossen' }).first()).toBeVisible();
+  // Vorgang bleibt abgeschlossen (Hauptstatus exakt, nach geladenen Vorgangsdaten – Phase 17 §27 A).
+  await openProcessPage(staff, processId);
+  await expectProcessMainStatus(staff, 'Abgeschlossen');
 
   // Retry fällig ⇒ PDF erneut transient geladen ⇒ Mail zugestellt.
   releaseMailRetries(retrying.id);

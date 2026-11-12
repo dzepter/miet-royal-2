@@ -3,16 +3,18 @@
 import { useRef, useState } from 'react';
 import { ratingStars, ratingText } from '../../lib/site-format';
 import {
+  GOOGLE_MAPS_LOGO,
   REVIEWS_TEXT,
-  attributionText,
   displayableReviews,
   fetchReviews,
   originalTextOf,
+  reviewsAttribution,
   reviewsNotice,
   reviewsPolicyNotice,
   safeHttpsUrl,
   translationLabel,
 } from '../../lib/reviews';
+import type { ReviewsAttribution } from '../../lib/reviews';
 import type { PublicReviewsResponse, ReviewMode } from '../../lib/site-types';
 import styles from './site.module.css';
 
@@ -26,10 +28,11 @@ type Phase =
  * Phase 16 (WEB, Order §18, Design §1.5/§4/§11.2.6): Bewertungen per Klick-zum-Laden.
  * Vor dem Klick wird nichts von Google geladen (kein Script, kein Widget, keine Bilder).
  * Google: Pflicht-Attribution (Autorname + Link, Profilbild mit `referrerPolicy="no-referrer"`,
- * „Google Maps“ mit `translate="no"` + nowrap, Sortierhinweis, Richtlinienhinweis + Link,
- * Übersetzungshinweis, Originaltext aufklappbar, Meldelink). Demo: eindeutig „DEMO“, nie
- * „Google“. Eine Antwort mit anderem Modus als `mode` (SSR) wird verworfen. Ein Ausfall
- * betrifft nur diese Sektion („Bewertungen sind gerade nicht verfügbar.“).
+ * offizielles Google-Maps-Logo als Attribution (Phase 17, Design D19 – `GoogleMapsAttribution`),
+ * „Google Maps“ in Linktexten mit `translate="no"` + nowrap, Sortierhinweis, Richtlinienhinweis +
+ * Link, Übersetzungshinweis, Originaltext aufklappbar, Meldelink). Demo: eindeutig „DEMO“, nie
+ * „Google“, nie das Logo. Eine Antwort mit anderem Modus als `mode` (SSR) wird verworfen. Ein
+ * Ausfall betrifft nur diese Sektion („Bewertungen sind gerade nicht verfügbar.“).
  */
 export function ReviewsSection({
   mode,
@@ -95,7 +98,7 @@ export function ReviewsSection({
   );
 }
 
-/** „Google Maps“ nie übersetzen und nie umbrechen (Google-Attribution, POL). */
+/** „Google Maps“ in Linktexten nie übersetzen und nie umbrechen (Google-Attribution, POL). */
 function GoogleMapsName({ testId }: { testId?: string | undefined }) {
   return (
     <span translate="no" className={styles.noWrap} data-testid={testId}>
@@ -104,10 +107,60 @@ function GoogleMapsName({ testId }: { testId?: string | undefined }) {
   );
 }
 
+/**
+ * Phase 17 (REVIEWS-QA, Design D19 / Auftrag §25): Attribution mit dem OFFIZIELLEN Google-Maps-
+ * Logo statt Text (POL 2026-11-09: „Attribution should take the form of the Google Maps logo
+ * whenever possible“ – eine Website-Sektion hat keinen Platzmangel).
+ * - Unverändertes Asset aus `apps/web/public/` (Gray-Variante auf dem Creme-Hintergrund; kein
+ *   Nachbau, keine Farb-/Formänderung, kein Filter), `width`/`height` im nativen Verhältnis
+ *   98:18 (kein Layout-Shift), CSS-Höhe 18 px (POL 16–19 dp), Breite auto.
+ * - Eigenständiges Element oben im Inhalt der Sektion (neben der Gesamtbewertung, gleicher
+ *   Container) – nie inline in einem Satz; `translate="no"`; Accessibility-Label „Google Maps“ als
+ *   alt-Text (kein zusätzlicher versteckter Text nötig).
+ * - Freiraum ≥ 10 px: vertikal durch Innenabstand (`clearSpacePx`, zugleich 44 px Touchfläche
+ *   des Links), horizontal durch Flex-Abstand 1rem (`.reviewSummary`) und Seitenrand (`.container`).
+ * - Verlinkt auf den Ort bei Google Maps (`placeUri`), nur wenn vorhanden und https; sonst Logo
+ *   ohne Link. Nur im Modus `google` gerendert – Demo zeigt Text, nie das Logo.
+ */
+function GoogleMapsAttribution({
+  attribution,
+}: {
+  attribution: Extract<ReviewsAttribution, { kind: 'google-maps-logo' }>;
+}) {
+  const logo = (
+    <img
+      src={attribution.src}
+      alt={attribution.alt}
+      width={attribution.width}
+      height={attribution.height}
+      decoding="async"
+      style={{ display: 'block', height: `${attribution.height}px`, width: 'auto' }}
+    />
+  );
+  const clearSpace = { display: 'block', padding: `${GOOGLE_MAPS_LOGO.clearSpacePx}px 0` } as const;
+  return (
+    <div
+      translate="no"
+      data-testid="reviews-attribution"
+      data-attribution="google-maps-logo"
+      style={{ display: 'flex', alignSelf: 'center' }}
+    >
+      {attribution.href !== null ? (
+        <a href={attribution.href} rel="noopener noreferrer" target="_blank" style={clearSpace}>
+          {logo}
+        </a>
+      ) : (
+        <span style={clearSpace}>{logo}</span>
+      )}
+    </div>
+  );
+}
+
 function ReviewsList({ data }: { data: PublicReviewsResponse }) {
   const reviews = displayableReviews(data);
   const google = data.mode === 'google';
   const placeUri = google ? safeHttpsUrl(data.placeUri) : null;
+  const attribution = reviewsAttribution(data);
   const policy = reviewsPolicyNotice(data);
   const translatedLabel = translationLabel(data);
   return (
@@ -122,17 +175,24 @@ function ReviewsList({ data }: { data: PublicReviewsResponse }) {
             {data.total !== null ? ` · ${data.total} Bewertungen` : null}
           </p>
         ) : null}
-        <p className={`${styles.flush} ${styles.small}`} data-testid="reviews-attribution">
-          Quelle: {google ? <GoogleMapsName testId="reviews-google-maps" /> : attributionText(data)}
-          {placeUri !== null ? (
-            <>
-              {' · '}
-              <a href={placeUri} rel="noopener noreferrer" target="_blank">
-                Alle Bewertungen auf <GoogleMapsName />
-              </a>
-            </>
-          ) : null}
-        </p>
+        {attribution.kind === 'google-maps-logo' ? (
+          <GoogleMapsAttribution attribution={attribution} />
+        ) : (
+          <p
+            className={`${styles.flush} ${styles.small}`}
+            data-testid="reviews-attribution"
+            data-attribution="text"
+          >
+            Quelle: {attribution.text}
+          </p>
+        )}
+        {placeUri !== null ? (
+          <p className={`${styles.flush} ${styles.small}`}>
+            <a href={placeUri} rel="noopener noreferrer" target="_blank">
+              Alle Bewertungen auf <GoogleMapsName />
+            </a>
+          </p>
+        ) : null}
       </div>
       {policy !== null ? (
         <p className={`${styles.muted} ${styles.small}`} data-testid="reviews-policy">

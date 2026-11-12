@@ -2,13 +2,15 @@ import { PassThrough } from 'node:stream';
 import { productPrices, products } from '@mietroyal/database';
 import { eq, inArray } from 'drizzle-orm';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { cmsEntries } from '@mietroyal/database';
 import { PICKUP_EXACT_ADDRESS_KEY, setStringSetting } from '../src/crm/settings-service.ts';
 import type { PlaceReviewsResult, ReviewGateway } from '../src/reviews/types.ts';
-import { destroyTestContext, type TestContext } from './auth-helpers.ts';
+import { createTestContext, destroyTestContext, type TestContext } from './auth-helpers.ts';
 import { publishCmsForTests } from './cms-helpers.ts';
 import {
   call,
   CMS_TEST_EXACT_ADDRESS,
+  CMS_TEST_WEB_BASE,
   createCmsTestContext,
   faqContent,
   resetCmsWorld,
@@ -119,10 +121,12 @@ describe('Phase 16 – öffentliche Site-Routen', () => {
           pageType: 'faq',
           title: 'Häufige Fragen',
           metaDescription: 'Antworten rund um die Slushmaschine.',
+          publishedAt: expect.any(String), // Phase 17 (SEO-API8 prüft den Wert)
         },
       ],
       reviews: { mode: 'disabled' },
       pickupArea: 'Mainz-Hechtsheim',
+      publicBaseUrl: CMS_TEST_WEB_BASE, // Phase 17 (SEO, D1)
     });
     for (const forbidden of [
       'recommendationRules',
@@ -455,6 +459,166 @@ describe('Phase 16 – öffentliche Site-Routen', () => {
       expect(staff.statusCode).toBe(200);
       expect(staff.json().canister.description).toBeNull();
       expect(staff.body.toLowerCase()).not.toContain('teststr');
+    } finally {
+      for (const original of originals) {
+        await ctx.db
+          .update(products)
+          .set({ name: original.name, description: original.description })
+          .where(eq(products.slug, original.slug));
+      }
+    }
+  });
+});
+
+describe('Phase 17 – Bootstrap-Erweiterung für SEO (Design D1/D8)', () => {
+  it('SEO-API8. publicBaseUrl exakt wie konfiguriert (Schluss-Slash entfernt), null ohne Konfiguration; pages[].publishedAt = cms_entries.published_at (ISO), ändert sich beim erneuten Veröffentlichen; Entwürfe fehlen', async () => {
+    const first = new Date('2026-11-12T08:00:00.000Z');
+    const second = new Date('2026-11-12T09:30:00.000Z');
+    const faq = await seedPage(
+      world,
+      { pageType: 'faq', path: '/faq' },
+      { content: faqContent(), metaTitle: 'Häufige Fragen | Miet-Royal' },
+    );
+    await world.cms.publish(
+      world.publisher.id,
+      faq.id,
+      { revisionId: faq.draft.revisionId },
+      { now: first },
+    );
+    // Entwurf (nie veröffentlicht) bleibt außen vor.
+    await seedPage(
+      world,
+      { pageType: 'about', path: '/ueber-uns' },
+      { content: { title: 'Über uns', blocks: [] }, metaTitle: 'Über uns' },
+    );
+    const site = (await call(ctx, 'GET', '/public/site/settings')).json();
+    expect(site.publicBaseUrl).toBe(CMS_TEST_WEB_BASE);
+    expect(site.publicBaseUrl.endsWith('/')).toBe(false);
+    expect(site.pages).toEqual([
+      {
+        path: '/faq',
+        pageType: 'faq',
+        title: 'Häufige Fragen',
+        metaDescription: null,
+        publishedAt: first.toISOString(),
+      },
+    ]);
+    const row = (await ctx.db.select().from(cmsEntries).where(eq(cmsEntries.id, faq.id)))[0]!;
+    expect(row.publishedAt?.toISOString()).toBe(site.pages[0].publishedAt);
+    // Erneut veröffentlichen ⇒ neuer Zeitpunkt (Grundlage für lastModified der Sitemap).
+    const changed = await world.cms.saveDraft(world.editor.id, faq.id, {
+      baseRevisionId: faq.draft.revisionId,
+      content: faqContent('Abholung in Mainz-Hechtsheim, Lieferung auf Anfrage.'),
+      metaTitle: 'Häufige Fragen | Miet-Royal',
+    });
+    await world.cms.publish(
+      world.publisher.id,
+      faq.id,
+      { revisionId: changed.draft.revisionId },
+      { now: second },
+    );
+    const again = (await call(ctx, 'GET', '/public/site/settings')).json();
+    expect(again.pages[0].publishedAt).toBe(second.toISOString());
+    // Konfigurierte Basis mit Schluss-Slash ⇒ ohne Slash; ohne Konfiguration ⇒ null (fail-closed).
+    const slashed = await createCmsTestContext({
+      env: { MAIL_PUBLIC_WEB_BASE_URL: `${CMS_TEST_WEB_BASE}/` },
+    });
+    try {
+      expect((await call(slashed, 'GET', '/public/site/settings')).json().publicBaseUrl).toBe(
+        CMS_TEST_WEB_BASE,
+      );
+    } finally {
+      await destroyTestContext(slashed);
+    }
+    const unconfigured = await createTestContext();
+    try {
+      const body = (await call(unconfigured, 'GET', '/public/site/settings')).json();
+      expect(body.publicBaseUrl).toBeNull();
+      expect(body.pages.map((item: { path: string }) => item.path)).toEqual(['/faq']);
+    } finally {
+      await destroyTestContext(unconfigured);
+    }
+  });
+});
+
+describe('Phase 17 – Preis-Guard der öffentlichen Produktprojektion (Order §23, Design D13)', () => {
+  it('SEO-P2/P5. Preis-Freitext: Beschreibung ⇒ ohne Beschreibung im product_grid (Preis bleibt priceCents), Name ⇒ Produkt fehlt in product_grid/included_items und Staff-Lesesicht; Log nur Slug', async () => {
+    const touched = ['slush-1x8', 'sirup-waldmeister', 'mischkanister-6l'];
+    const originals = await ctx.db
+      .select({ slug: products.slug, name: products.name, description: products.description })
+      .from(products)
+      .where(inArray(products.slug, touched));
+    const priceTexts = ['Tagesmiete 60 €', '12,- je Liter', 'EUR 5'];
+    try {
+      await ctx.db
+        .update(products)
+        .set({ description: 'Slushmaschine, Tagesmiete 60 € inkl. Sirup.' })
+        .where(eq(products.slug, 'slush-1x8'));
+      await ctx.db
+        .update(products)
+        .set({ name: 'Waldmeister 12,- je Liter' })
+        .where(eq(products.slug, 'sirup-waldmeister'));
+      await ctx.db
+        .update(products)
+        .set({ description: 'Kauf: EUR 5 je Kanister.' })
+        .where(eq(products.slug, 'mischkanister-6l'));
+      await publishPage(
+        'slush',
+        '/slushmaschine-mieten',
+        {
+          title: 'Slushmaschine mieten',
+          blocks: [
+            { type: 'product_grid', heading: 'Unsere Maschinen' },
+            {
+              type: 'product_grid',
+              heading: 'Sirup',
+              productSlugs: ['sirup-kirsche', 'sirup-waldmeister'],
+            },
+            { type: 'included_items', heading: 'Inklusive' },
+          ],
+        },
+        { metaTitle: 'Slushmaschine mieten' },
+      );
+      logBuffer = '';
+      const response = await call(ctx, 'GET', '/public/site/page?path=/slushmaschine-mieten');
+      expect(response.statusCode).toBe(200);
+      const page = response.json();
+      const machines = page.blocks[0].products as Array<{
+        slug: string;
+        description: string | null;
+        priceCents: number;
+      }>;
+      expect(machines.find((item) => item.slug === 'slush-1x8')).toMatchObject({
+        description: null,
+        priceCents: 6000,
+      });
+      expect(machines.find((item) => item.slug === 'slush-2x8')?.description).toBe(
+        'Slushmaschine mit 2 Behältern à 8 Liter.',
+      );
+      expect(page.blocks[1].products.map((item: { slug: string }) => item.slug)).toEqual([
+        'sirup-kirsche',
+      ]);
+      expect(page.blocks[2].syrups.map((item: { slug: string }) => item.slug)).not.toContain(
+        'sirup-waldmeister',
+      );
+      expect(page.blocks[2].canister).toMatchObject({
+        slug: 'mischkanister-6l',
+        description: null,
+        priceCents: 500,
+      });
+      for (const forbidden of priceTexts) expect(response.body, forbidden).not.toContain(forbidden);
+      // Log: Ereignis + Slug, nie der Text
+      expect(logBuffer).toContain('public.catalog.price_text_suppressed');
+      for (const slug of touched) expect(logBuffer, slug).toContain(slug);
+      for (const forbidden of priceTexts) expect(logBuffer, forbidden).not.toContain(forbidden);
+      // Staff-Lesesicht „Produkte & Preise“ ist dieselbe öffentliche Projektion
+      const staff = await call(ctx, 'GET', '/staff/cms/catalog', { cookie: world.viewer.cookie });
+      expect(staff.statusCode).toBe(200);
+      expect(staff.json().canister).toMatchObject({ description: null, priceCents: 500 });
+      expect(staff.json().syrups.map((item: { slug: string }) => item.slug)).not.toContain(
+        'sirup-waldmeister',
+      );
+      for (const forbidden of priceTexts) expect(staff.body, forbidden).not.toContain(forbidden);
     } finally {
       for (const original of originals) {
         await ctx.db

@@ -334,6 +334,12 @@ export default defineConfig({
         ...devices['Desktop Chrome'],
         ...chromiumLaunch,
         baseURL: `http://127.0.0.1:${LEXWARE_STAFF_PORT}`,
+        // Phase 17 (§27 A): Die Lexware-Specs brauchen keinen Service Worker (Offline/PWA ist hier
+        // irrelevant, s. Kopfkommentar Phase 10). Die Staff-PWA registriert sw.js auch auf der
+        // `next dev`-Instanz; dessen network-first-Fallback (6 s) wäre eine zusätzliche, nicht
+        // deterministische Ladequelle der Vorgangsseite. Die Chromium-Specs (Produktions-Build,
+        // Offline-Szenarien) behalten den Service Worker.
+        serviceWorkers: 'block',
       },
       testMatch: /(lexware-flow|voucher-lexware|communication-lexware)\.spec\.ts$/,
     },
@@ -470,6 +476,9 @@ export default defineConfig({
       reuseExistingServer: false,
       timeout: 180_000,
       cwd: '../..',
+      // Phase 17 (§27 A): Compile-/Proxy-Meldungen des Dev-Servers ins Testprotokoll – ein
+      // einmaliger Aussetzer der Vorgangsseite (Phase-16-Gate) war ohne sie nicht diagnostizierbar.
+      stdout: 'pipe',
       env: {
         STAFF_API_ORIGIN: `http://127.0.0.1:${LEXWARE_API_PORT}`,
       },

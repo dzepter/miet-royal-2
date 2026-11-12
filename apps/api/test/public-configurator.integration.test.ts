@@ -16,6 +16,7 @@ import {
 } from './auth-helpers.ts';
 import { publishCmsForTests } from './cms-helpers.ts';
 import { productServiceFor, setPickupExactAddress } from './commerce-helpers.ts';
+import { createStaffWithPermissions } from './crm-helpers.ts'; // Phase 17 (SEO-P4)
 import {
   forbiddenPublicFields,
   postPreview,
@@ -607,6 +608,115 @@ describe('Phase 16 – laufende Preisübersicht (POST /public/configurator/previ
         .set({ description: 'Zum Nachmischen.' })
         .where(eq(products.slug, 'mischkanister-6l'));
       expect((await catalog()).body.canister.description).toBe('Zum Nachmischen.');
+    } finally {
+      for (const original of originals) {
+        await ctx.db
+          .update(products)
+          .set({ name: original.name, description: original.description })
+          .where(eq(products.slug, original.slug));
+      }
+    }
+  });
+});
+
+describe('Phase 17 – Preis-Guard der öffentlichen Produktprojektion (Order §23, Design D13)', () => {
+  it('SEO-P1/P3/P4/P6. Preisangabe in der Beschreibung ⇒ description null, priceCents bleibt; Preisangabe im Namen ⇒ Maschine fehlt in Katalog, Vorschau und Empfehlung; Staff-Produktdaten unverändert; Beschreibung ohne Preis bleibt sichtbar', async () => {
+    const touched = ['slush-1x8', 'slush-2x10', 'mischkanister-6l'];
+    const originals = await ctx.db
+      .select({ slug: products.slug, name: products.name, description: products.description })
+      .from(products)
+      .where(inArray(products.slug, touched));
+    const priceTexts = ['60 €', '120,-', 'EUR 5', 'Tagesmiete'];
+    try {
+      await ctx.db
+        .update(products)
+        .set({ description: 'Slushmaschine, Tagesmiete 60 € inkl. Sirup.' })
+        .where(eq(products.slug, 'slush-1x8'));
+      await ctx.db
+        .update(products)
+        .set({ name: '2×10 L – 120,-' })
+        .where(eq(products.slug, 'slush-2x10'));
+      await ctx.db
+        .update(products)
+        .set({ description: 'Kauf: EUR 5 je Kanister.' })
+        .where(eq(products.slug, 'mischkanister-6l'));
+      await publishCmsForTests(
+        ctx.db,
+        { kind: 'site_settings' },
+        {
+          content: {
+            businessName: 'Miet-Royal',
+            contact: {},
+            recommendationRules: [{ guestMin: 100, machineProductSlug: 'slush-2x10' }],
+          },
+        },
+      );
+      // SEO-P1: Beschreibung mit Preisangabe entfällt, der Preis kommt weiter aus product_prices.
+      const { response, body } = await catalog();
+      expect(body.machines.find((m: { slug: string }) => m.slug === 'slush-1x8')).toMatchObject({
+        description: null,
+        priceCents: 6000,
+      });
+      expect(body.canister).toMatchObject({
+        slug: 'mischkanister-6l',
+        description: null,
+        priceCents: 500,
+      });
+      // SEO-P3: Maschine mit Preis im Namen existiert öffentlich nicht …
+      expect(body.machines.map((m: { slug: string }) => m.slug)).toEqual([
+        'slush-1x8',
+        'slush-2x8',
+        'slush-1x10',
+      ]);
+      for (const forbidden of priceTexts) expect(response.body, forbidden).not.toContain(forbidden);
+      // … ist nicht wählbar und wird nie empfohlen (Fallback statt Name mit Preis).
+      const result = await preview({ guests: 300, machineSlug: 'slush-2x10' });
+      expect(result.recommendation).toEqual({
+        machineSlug: null,
+        message: RECOMMENDATION_FALLBACK_MESSAGE,
+      });
+      expect(result.issues.map((issue: { code: string }) => issue.code)).toEqual([
+        'MACHINE_UNAVAILABLE',
+      ]);
+      expect(result.fixed).toEqual([]);
+      for (const forbidden of priceTexts) {
+        expect(JSON.stringify(result), forbidden).not.toContain(forbidden);
+      }
+      // Maschine mit ausgeblendeter Beschreibung bleibt normal berechenbar.
+      expect((await preview({ machineSlug: 'slush-1x8' })).fixedTotalCents).toBe(6000);
+      // SEO-P4: interne Produktdaten unverändert (Staff-Route zeigt Name und Beschreibung weiter).
+      const staff = await createStaffWithPermissions(ctx, adminId, {
+        firstName: 'Vera',
+        lastName: 'Produkte',
+        email: 'produkte@seo.test',
+        password: 'produkte-passwort-123',
+        permissionKeys: ['product.view'],
+      });
+      const list = await ctx.app.inject({
+        method: 'GET',
+        url: '/staff/products',
+        headers: { cookie: staff.cookie },
+      });
+      expect(list.statusCode).toBe(200);
+      const bySlug = new Map(
+        (
+          list.json().products as Array<{ slug: string; name: string; description: string | null }>
+        ).map((product) => [product.slug, product]),
+      );
+      expect(bySlug.get('slush-2x10')?.name).toBe('2×10 L – 120,-');
+      expect(bySlug.get('slush-1x8')?.description).toBe(
+        'Slushmaschine, Tagesmiete 60 € inkl. Sirup.',
+      );
+      expect(bySlug.get('mischkanister-6l')?.description).toBe('Kauf: EUR 5 je Kanister.');
+      // SEO-P6: Beschreibung ohne Preisangabe bleibt öffentlich sichtbar.
+      await ctx.db
+        .update(products)
+        .set({ description: 'Slushmaschine mit 1 Behälter à 8 Liter – ideal für kleine Runden.' })
+        .where(eq(products.slug, 'slush-1x8'));
+      expect(
+        (await catalog()).body.machines.find((m: { slug: string }) => m.slug === 'slush-1x8')
+          .description,
+      ).toBe('Slushmaschine mit 1 Behälter à 8 Liter – ideal für kleine Runden.');
     } finally {
       for (const original of originals) {
         await ctx.db

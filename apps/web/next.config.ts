@@ -11,6 +11,13 @@ const nextConfig: NextConfig = {
   // Nur serverseitig referenziert – nie in Client-Komponenten verwenden.
   env: { MR_BUILD_API_ORIGIN: API_ORIGIN },
   poweredByHeader: false,
+  // Phase 17 (WEB-ROUTES, Design D4): Nexts eigener Trailing-Slash-Redirect (`/pfad/` → `/pfad`,
+  // 308) läuft VOR dem Proxy und würde Alt-URLs wie `/uber-uns/` erst auf `/uber-uns` und dann
+  // (Proxy) auf `/ueber-uns` leiten – eine Redirect-Kette. Deshalb abgeschaltet: `proxy.ts`
+  // erledigt Legacy-Redirect (308), Legacy-410 und Slash-Normalisierung in EINEM Hop (Regeln
+  // `lib/legacy-routes.ts`, Tabelle docs/REDIRECT_MATRIX.md). Kein `trailingSlash`, keine
+  // `redirects()` – projektweit ein Verfahren.
+  skipTrailingSlashRedirect: true,
   allowedDevOrigins: ['127.0.0.1'],
   // Phase 14 (E2E-Fix): optional eigenes Build-/Dev-Verzeichnis je Instanz (z. B. `.next/demo`
   // für die Demo-Web-Instanz der E2E-Suite mit WEB_APP_ENV=demo). `next dev` sperrt sein

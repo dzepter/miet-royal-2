@@ -225,6 +225,11 @@ export interface PublicSitePageSummary {
   pageType: SitePageType;
   title: string;
   metaDescription: string | null;
+  /**
+   * Phase 17 (Design D8): Veröffentlichungszeitpunkt (ISO) für `lastModified` der Sitemap –
+   * optional, damit Antworten älterer API-Versionen gültig bleiben (dann kein lastModified).
+   */
+  publishedAt?: string;
 }
 
 export type ReviewMode = 'disabled' | 'google' | 'demo';
@@ -237,6 +242,13 @@ export interface PublicSiteBootstrap {
   reviews: { mode: ReviewMode };
   /** Öffentliche Abholregion – nie die exakte Adresse. */
   pickupArea: string;
+  /**
+   * Phase 17 (Design D1): konfigurierte öffentliche Web-Basis (MAIL_PUBLIC_WEB_BASE_URL ohne
+   * Schluss-Slash) – EINZIGE Quelle absoluter SEO-URLs (Canonical, og:url, Sitemap, JSON-LD);
+   * nie aus Request-Headern. `null`/fehlend ⇒ fail-closed keine absoluten URLs. Optional, damit
+   * Antworten älterer API-Versionen gültig bleiben.
+   */
+  publicBaseUrl?: string | null;
 }
 
 export interface PublicPreviewPage {
