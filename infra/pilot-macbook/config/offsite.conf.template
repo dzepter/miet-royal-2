@@ -1,0 +1,9 @@
+# Off-site-Backup per SFTP (STRATO). Kein Secret: Schlüssel liegt in secrets/offsite_ed25519,
+# Host-Key gepinnt in config/offsite_known_hosts (beim ersten Setup mit ssh-keyscan + manueller Prüfung).
+OFFSITE_ENABLED=false
+OFFSITE_HOST=
+OFFSITE_PORT=22
+OFFSITE_USER=
+# Nicht öffentlich erreichbares Verzeichnis (nie innerhalb eines Webroots)
+OFFSITE_DIR=backups/mietroyal-pilot
+OFFSITE_KEEP=14

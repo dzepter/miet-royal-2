@@ -9,6 +9,9 @@ ein Squash-Commit auf `main` (SHA: `git log -1 -- docs/PHASE19_PILOT_REPORT.md`;
 | **REAL PILOT EXECUTED** | **NEIN** – es existiert kein Zielsystem (Hosting, Hostnamen, TLS, Postfach), keine Pilotgruppe und keine Freigabe; Phase 19 hat keinen echten Kunden kontaktiert, keinen echten Provider aufgerufen und keine Produktionsdaten angefasst |
 | **PHASE 19 FINAL** | **NEIN** – FINAL setzt einen durchgeführten echten Pilot voraus; dafür sind die unten gelisteten Entscheidungen/Freigaben des Inhabers nötig (Blocker, nicht autonom lösbar) |
 
+Fortsetzung 2026-11-21 (Pilot-Zielsystem MacBook, Kit `infra/pilot-macbook/`): Abschnitt 21 –
+der Mac war aus der Session nicht erreichbar, auf dem Gerät wurde nichts installiert.
+
 Phase 20 wurde nicht begonnen. Keine DNS-Änderung, keine Änderung der öffentlichen Website,
 WordPress unangetastet, `WEB_INDEXING_ENABLED` in production nicht gesetzt (Default false),
 keine Search Console, keine Rechtstexte veröffentlicht, keine Entscheidung zu Google
@@ -430,3 +433,148 @@ markierbar; Rechtstexte/Logo/Kontaktdaten unbestätigt.
 **Go-live-Blocker Phase 20 (unverändert, aus Phase 18 + 19):** Hosting/DNS/TLS/Firewall,
 Mail-Betrieb, Buchhaltungs-Steuerkonfiguration und Lexware-Smoke, Rechtstexte, Backup-
 Automatisierung, Monitoring/Alarm, Google Reviews/EWR, Routing-Vertrag, benannte Freigabe.
+
+## 21. Fortsetzung 2026-11-21: Pilot-Zielsystem MacBook (Kit vorbereitet, Mac nicht erreichbar)
+
+**Auftrag:** Das dauerhaft laufende MacBook (Heim-Internet, STRATO-Domain `miet-royal.de`) wird
+ohne zusätzliche Hostingkosten zum realen Pilot-Zielsystem. Grenzen (eingehalten): keine Änderung
+an `www`, Apex, MX, WordPress oder STRATO-Website; `WEB_INDEXING_ENABLED` nie `true`; Lexware,
+Routing, WhatsApp, Reviews `disabled`; keine Produktivdaten; Phase 20 nicht begonnen.
+
+**Zugriffslage (Blocker für die Ausführung auf dem Mac):** Aus dieser Cloud-Session gab es
+keinen Zugriff auf das MacBook – kein per Remote Control freigegebener Ordner
+(`list_computer_folders` leer), keine Claude-Session auf dem Mac. **Auf dem MacBook wurde daher
+nichts installiert, nichts konfiguriert und nichts gemessen.** Alles Mac-Spezifische
+(Homebrew-Installation, launchd-Agents, `pmset`, Caddy/ACME, Inventar, FileVault-/Firewall-Audit,
+Neustart-Test, externer Portcheck) ist **vorbereitet, nicht ausgeführt**. Inventar:
+`docs/PILOT_MACBOOK_INVENTORY.md` ist eine Vorlage („NOCH NICHT ERHOBEN“), die `inventory.sh` beim
+Bootstrap füllt (ohne Seriennummern/Secrets).
+
+**Was gebaut wurde – Kit `infra/pilot-macbook/` (vollständig, secret-frei, im Repo):**
+
+| Baustein | Inhalt |
+| --- | --- |
+| `bootstrap.sh` | Einmaliger Aufbau: Basis `/opt/mietroyal` (sudo einmalig) oder `~/mietroyal`; Verzeichnisse (`secrets`/`storage`/`backups` 700); Homebrew `node@22 postgresql@18 caddy age jq git`, pnpm über Corepack aus `packageManager`; Inventar; PostgreSQL (localhost, scram, eigene Rolle/DB, Zufallspasswort); Schlüssel (`AUTH_SECRET_KEY`, `COMMUNICATION_PAYLOAD_KEY`), age-Backup-Identität; erstes Deployment; Migrations-Idempotenz (zweiter Lauf = No-op); launchd; `pmset` (Sicherung vorher, dann kein Systemschlaf am Netz, Display darf schlafen, Akku unverändert, autorestart); Caddy erst nach DNS-Prüfung; erstes Backup; Status |
+| `scripts/deploy.sh` | Lock, Bare-Mirror + `git archive` nach `releases/<sha>`, `pnpm install --frozen-lockfile`, Production-Builds Web/Staff, Preflight (Pflichtvariablen, https-Basis ≠ www/localhost, Indexierung aus, Storage 700, Node ≥ 22, DB, Speicher, Offline-Lease-Schlüssel), Backup vor Migration, Migration, atomarer `current`-Wechsel, Neustart, Health/Ready/Smoke (`environment` = APP_ENV, robots ohne Sitemap), ≥ 3 Releases behalten, bei Fehlschlag automatisch zurück auf das vorige Release (Datenbank/Migrationen unangetastet) |
+| `scripts/rollback.sh` | Nur App-Version (previous/gegebener SHA), keine Down-Migration, keine Löschung |
+| `scripts/backup.sh`, `backup-verify.sh`, `restore-test.sh`, `backup-offsite.sh` | `pg_dump -Fc` + Storage-Tar + Secrets-Tar, age-verschlüsselt an alle Empfänger; Manifest (Git-SHA, Migrationsstand, Zählstände, Dateianzahl, Größen), `storage-files.sha256`, `backup.sha256`, atomares `.completed`; Platzprüfung; Retention 7 täglich / 4 wöchentlich (pre-deploy ausgenommen); Restore-Test in neue Wegwerf-DB + neues Verzeichnis (Zählstände, Migration No-op, jede Storage-Datei und jede Datei-Referenz byteidentisch, API gegen den Restore); Off-site per SFTP mit Ed25519-Schlüssel und gepinntem Host-Key |
+| `scripts/install-launchd.sh`, `run-*.sh` | LaunchAgents `de.mietroyal.pilot.*` für API/Worker/Web/Staff/Caddy (KeepAlive nur bei echtem Absturz, Throttle 30 s, Logs), Timer Watchdog 2 min, Backup 03:17, Off-site 03:50, Restore-Test 04:20, Logrotation 05:05, DynDNS 5 min |
+| `caddy/Caddyfile.template`, `render-caddyfile.sh`, `caddy-enable.sh` | HTTP→HTTPS, Host-Allowlist (unbekannte Hosts: Abbruch), Body-Limits 13 MiB (Web/Staff, Offline-Sync 12 MiB) / 2 MiB (API), `api-pilot` nur `/webhooks/*`, `/public/calendar/*`, `/health`, `/ready`; X-Forwarded-*; Zugriffslog ohne Query-Strings/Cookies/Authorization/Referer, maskierte IPs, `log_skip` für Token-Pfade; ACME erst nach erfolgreicher DNS-Prüfung |
+| `scripts/watchdog.sh`, `status.sh`, `pilot-check.sh`, `rotate-logs.sh`, `secret-scan.sh` | Watchdog mit Neustart-Backoff (3/h), Schwellen 20 %/10 %, dead-/überfällige Jobs, Backup-Alter, Restore-Status; PASS/FAIL-Liste (DNS, HTTPS/Zertifikat, Redirect, Caddy, Web, Staff, API, DB, Jobs, Worker, Storage, Backup, Restore, Off-site, Mail, Speicher, Indexierung, noindex, Canonical, Env-Isolation, Git-SHA); Logrotation (copytruncate, gzip, 14); Secret-Scan (tatsächliche Werte + Schlüsselmuster, nur Trefferzahlen) |
+| `scripts/configure-secrets.sh`, `setup-postgres.sh`, `dyndns-update.sh`, `mail-smoke.sh`, `inventory.sh` | Verdeckte Eingabe (`read -s`), nie Argumente/History/Logs/Git; STRATO-DynDNS (dyndns2, nur `pilot`/`staff-pilot`/`api-pilot`, Update nur bei IP-Wechsel, `www`/Apex ausgeschlossen); STRATO-Mail (smtp 465 SSL / imap 993) vorbereitet, `MAIL_ENABLED=false` bis zum Postfach |
+| `config/*.template` | `pilot.env` (production, Loopback-Ports, fs-Storage, Lexware/Routing/WhatsApp/Reviews aus, Indexierung ungesetzt), Secrets-Vorlage, Off-site, DynDNS |
+
+**Umgebung des Piloten:** `APP_ENV=production` (staging würde die Mail-Whitelist erzwingen und
+den Pilotbetrieb blockieren; alle Production-Gates sind mit dem Kit erfüllbar). Pilot-Hosts
+`pilot.miet-royal.de` (Web/Portal), `staff-pilot.miet-royal.de` (Staff), `api-pilot.miet-royal.de`
+(nur Webhooks/Kalender-Feed/Health). Alles andere ausschließlich `127.0.0.1`. Nichts läuft als
+Dev-/Watch-Prozess.
+
+**Tatsächlich ausgeführt – Linux-Durchlauf des Kits mit dem echten Repo-Stand (Ersatz für den
+nicht erreichbaren Mac; PostgreSQL 18 im Container über Client-Shims, launchd durch den
+PID-Fallback der Skripte ersetzt):**
+
+| Schritt (Linux, PostgreSQL 18, Repo-Stand `08ccc0b`) | Ergebnis |
+| --- | --- |
+| `deploy.sh f947fb5 --no-backup` (erstes Release: Mirror, `git archive`, `pnpm install`, Builds Web/Staff, Preflight, Migration, Umschalten, Health/Ready/Smoke) | OK – Exit 0; Web- und Staff-Build im Release, 34 Migrationen, 119 Tabellen, Health/Ready 200, `environment=production`, robots ohne Sitemap |
+| `deploy.sh 08ccc0b` (zweites Release mit Pre-Deploy-Backup aus demselben DB-Snapshot) | OK – Exit 0; Pre-Deploy-Backup (DB 457 KiB, 0 Storage-Dateien, 34 Migrationen) aus Snapshot; `current` ⇒ 08ccc0b, `previous` ⇒ f947fb5, keine Streu-Symlinks |
+| `deploy.sh deadbeef` (unbekannter Commit – darf nichts verändern) | OK – Exit 1 „Commit nicht gefunden“, `current`/`previous` unverändert |
+| `rollback.sh` (zurück auf f947fb5, nur App-Version) und erneutes Vorwärts-Deployment | OK – Rollback Exit 0 (`current` ⇒ f947fb5, `previous` ⇒ 08ccc0b, Health 200), Vorwärts-Deployment Exit 0 (Release-Baum wiederverwendet) |
+| Simulierter Fehlschlag (Web-Port blockiert ⇒ Health scheitert) | OK – Exit 1 wie erwartet: „Web nicht erreichbar“ ⇒ automatischer Rückfall auf 08ccc0b, Health/Ready 200, Datenbank unverändert, `previous` wiederhergestellt |
+| `backup.sh daily` (Stream in `age`, Storage-Dateiliste, Manifest) + `backup-verify.sh` | OK – Exit 0/0; 3 synthetische Storage-Dateien (4104 KiB) + DB 457 KiB verschlüsselt, Prüfsummen und Entschlüsselbarkeit geprüft, Manifest vollständig |
+| `restore-test.sh` (neue Wegwerf-DB, `pg_restore`, Zählstände, Migration No-op, Storage-Dateien, Datei-Referenzen, API gegen den Restore) | PASS – Zählstände identisch, Migration No-op (34), Storage-Dateien 3/3 byteidentisch, Datei-Referenzen 0/0, Restore-API health/ready 200, Wegwerf-DB und Temporärdaten entfernt, kein verwaister Prozess |
+| `watchdog.sh`, `status.sh`, `rotate-logs.sh`, `secret-scan.sh` | OK – Watchdog WARN nur „Caddy nicht freigegeben“ (erwartet ohne caddy-enable.sh); Status vollständig; 7 Logs rotiert (gzip); Secret-Scan 0 Treffer (Werte + Muster, inkl. Repo-`infra/` und `docs/`) |
+| `pilot-check.sh` | 15 PASS, 4 INFO, 10 FAIL – alle 10 FAIL Linux-bedingt (3× DNS, 3× HTTPS, 3× HTTP→HTTPS, 1× Caddy: keine Pilot-Hosts, kein Caddy); Web/Staff/API/DB/Jobs/Worker/Storage/Backup/Restore/Speicher/Indexierung/noindex/Canonical/Git-SHA PASS |
+| `stop.sh` (Wartungsmarke) – keine Restprozesse | OK – alle Dienste beendet, 0 Restprozesse, `run/maintenance` gesetzt |
+
+
+Sieben vollständige Testläufe; die ersten sechs deckten die unten gelisteten Defekte auf (jeweils behoben, erneuter Lauf), der siebte ist der oben protokollierte. Die danach umgesetzten Caddy-/DynDNS-/TLS-Härtungen aus der letzten Review-Linse wurden gezielt nachgeprüft: `start/status/pilot-check/watchdog/deploy --skip-build/render-caddyfile/stop` erneut auf Linux (gleiches Ergebnisbild) und der DynDNS-Updater gegen einen lokalen dyndns2-Fake in sechs Fällen (`www`/Apex/MX/`&hostname=`-Smuggling abgewiesen ohne Request; Kurzform/Großschreibung/Punkt normalisiert; drei `nochg`-Updates; unveränderte IP ⇒ kein Request; `badauth` ⇒ Stopp-Marke nach genau einem Request; Passwort nirgends in Argumenten/Logs).
+
+Vor dem Commit behobene Kit-Defekte (Linux-Durchlauf + adversariales Review der Skripte):
+
+- **Symlink-Wechsel:** `mv tmp current` verschob den neuen Link IN das alte Release-Verzeichnis,
+  wenn `current` bereits auf ein Verzeichnis zeigte – das zweite Deployment blieb wirkungslos
+  (Health prüfte das alte Release). Jetzt rename(2) über ein Hilfsverzeichnis mit Nachprüfung.
+- **Pilot-Check:** jede PASS-Zeile erzeugte zusätzlich eine FAIL-Zeile (`res` lieferte Exit 1 in
+  `a && res PASS || res FAIL`); Statuscode-Helfer lieferte `000000` statt `000`.
+- **Watchdog:** SQL mit `FILTER` an einer Nicht-Aggregatfunktion ⇒ „PostgreSQL nicht erreichbar“
+  obwohl erreichbar; kein Wartungsmodus (hätte nach `stop.sh` Dienste wieder gestartet, auch
+  während eines manuellen Restores); jetzt `run/maintenance` + Rücksicht auf das Deploy-Lock.
+- **Restore-Test:** Test-API wurde als Subshell gestartet, `kill $!` traf nur die Subshell – ab dem
+  zweiten Tag hätte ein verwaister Prozess Port 3101 belegt und der Test wäre dauerhaft FAIL
+  gewesen; RT-URL ohne Prüfung (hätte bei URL ohne Datenbanknamen auf die Pilot-DB gezeigt).
+- **Secrets in Prozessargumenten:** `psql/pg_dump/pg_restore "$DATABASE_URL"` und
+  `grep -F <secret>` zeigten Passwörter in `ps`; jetzt PG*-Umgebung aus der URL bzw. Musterdatei
+  (600). `setup-postgres.sh` legte das Rollenpasswort im Klartext im SQL-Text an und sperrte sich
+  mit dem pg_hba-Umbau selbst aus; jetzt clientseitiger SCRAM-SHA-256-Verifier (node, Passwort
+  nur in der Umgebung) und Admin-Verbindungen über den Unix-Socket.
+- **Backup:** Klartext-Zwischendateien (Dump, Storage, Secrets) lagen bis zur Verschlüsselung auf
+  der Platte und blieben bei Fehlern liegen; jetzt Stream direkt in `age`, Aufräumen abgebrochener
+  Läufe, Empfängerprüfung (`age1…`), Retention nur mit geprüften Ganzzahlen (fail-closed);
+  Prüfsummenliste aller Storage-Dateien als Grundlage des Restore-Tests; Off-site lädt
+  Metadaten nur verschlüsselt hoch.
+- **Deployment:** Aufräumen alter Releases schützte das `previous`-Ziel nicht und zählte
+  `.partial`-Reste mit; Kollision eines unvollständigen Release-Baums beim `mv`; `set -e`-Lücken im
+  Umschalt-/Rückfallpfad; Zugangsdaten in `MR_GIT_REMOTE` werden abgewiesen.
+- **Caddy:** Regex-Quoting der Query-String-Maskierung (`"\?.*$"`), `log_skip` auch für
+  `/public/calendar/*` und `/qr/*`, `handle_errors` (sonst volle URI im Fehlerlog bei 502),
+  Validierung der gerenderten Caddyfile VOR dem Austausch.
+- **Bootstrap/Betrieb:** Wiederholter Bootstrap deployte ohne Backup und überschrieb die
+  pmset-Sicherung; Skriptkopie überschrieb laufende Skripte in-place; netrc-Dateien ohne
+  Aufräum-Trap; Inventar ohne Gerätenamen/Gateway/vollständige Port-Liste; `with-env.sh` statt
+  `set -a`-Sourcing der Secrets in der interaktiven Shell; Secret-Scan erkennt zusätzlich
+  Zugangsdaten in URLs und GitHub-Tokens.
+- **macOS/launchd (nur auf dem Mac sichtbar, aus dem Review):** Bootstrap deployte vor dem Anlegen
+  der LaunchAgents (Dienste wären nicht startbar gewesen); `install-launchd.sh` startete bei jedem
+  Lauf alle Dienste neu und konnte nach `bootout` am sofortigen `bootstrap` scheitern (jetzt
+  Vergleich der plist, Warten auf Entladen, Wiederholung); Caddy-Agent lief vor der DNS-Freigabe in
+  einer 30-s-Neustartschleife (jetzt Freigabemarke `run/caddy-enabled`, Wrapper beenden sich ohne
+  Release/Freigabe mit Exit 0); Kalendertimer holen Termine nach „aus“ nicht nach (Catch-up im
+  Watchdog); `ProcessType Background` drosselte die Dienste (jetzt `Interactive`); `dig +short`
+  lieferte bei CNAME-Ketten keinen A-Record; Anwendungsfirewall-Freigabe für das Homebrew-Caddy;
+  Deckel-Schlaf trotz `pmset` dokumentiert und im Inventar erfasst.
+
+- **Caddy/Netz (Review-Linse Caddy):** DynDNS-Updater schützte `www`/Apex nur über eine
+  Zwei-Muster-Sperrliste (Groß-/Kleinschreibung, Punkt am Ende, MX-Host, `&hostname=`-Smuggling
+  wären durchgegangen) – jetzt Allowlist exakt der drei Pilot-Hosts aus `pilot.env`,
+  Normalisierung, URL-Encoding, Stopp bei fatalen dyndns2-Antworten (`badauth`, `abuse`, …) und
+  Probe-Update vor der Aktivierung; HTTP/3 abgeschaltet (Router leitet nur TCP weiter); HSTS für
+  die Pilot-Hosts; `/api/staff/*` und `/api/auth/*` auf dem Web-Host gesperrt; Zertifikats-
+  Restlaufzeit (< 14 Tage) in Pilot-Check und Watchdog; lokale vHost-Prüfung über Caddy statt
+  nur über die öffentliche Adresse (NAT-Loopback); `status.sh` prüfte Web/Staff auf `/health`
+  (404); `render-caddyfile.sh` lädt Caddy nach Änderungen neu und `deploy.sh` übernimmt eine
+  geänderte Vorlage; `AUTH_ALLOWED_ORIGINS` für die Pilot-Hosts (Browser ohne Sec-Fetch-Site);
+  Symlink-Auflösung des Homebrew-Binaries für die Firewall-Freigabe; Zeitbudget des Next-Proxys
+  (30 s) dokumentiert statt der irreführenden 120 s.
+
+**Nicht ausgeführt (nur auf dem Mac möglich):** Homebrew/Node/PostgreSQL/Caddy-Installation,
+launchd-Agents, `pmset`, FileVault-/Firewall-/Freigaben-Audit, Caddy-Start und ACME-Zertifikate,
+DNS/DynDNS-Abgleich, externer Portcheck, Neustart- und Netzausfall-Test, Mailtests 1–8,
+Pilotvorgang/Offline/Mobil über die echten Hosts. `caddy validate` lief nicht (kein Caddy in der
+Cloud-Umgebung; `render-caddyfile.sh` validiert auf dem Mac vor dem Start).
+
+**Vollständiges Gate auf dem Commit-Baum (2026-11-21, 21:39–23:28 Uhr Berlin; Phase-19-Gate unverändert
+wiederverwendet):** S3-Storage 4/4 · statisch (Lint, Typecheck, Unit: domain 115, validation 27,
+offline 54, integrations 26, api 222, web) grün · Migrationen zweimal 34/34, Journal 34, 119 Tabellen,
+Drift „No schema changes“ · Integration 176 Dateien / 1953 Tests bestanden · Env-Isolation 13/13 ·
+Smoke (Health, Ready, Auth, Portal, CORS, Rechtstext-Gate, PII-Grep 0) · Backup/Restore fs identisch
+(DB-Prüfsummen, 7 Dateien, Dokument byteidentisch) · PII_TOTAL 0 · Production-Builds · E2E-Kette
+chromium_full 180/7 skipped, seo 50, iso_website 17, iso_website_demo 4, iso_portal 15, iso_comm 20,
+iso_offline 21, iso_voucher 11, iso_p14live 1/7 skipped, demo 28/1 skipped, lexware 16, prod 3 · WebKit
+pwa-smoke 1 · Lighthouse mobil perf 98/99/98, desktop 100, a11y/bp/seo je 100. **`iso_tours`** fiel in
+der Kette um 23:03 Uhr Berlin mit dem eingebauten Zeitfenster-Schutz der Spezifikation aus
+(„Lauf nicht zwischen 22:43 und 00:02 Uhr Berlin starten“, 1 abgebrochen, 13 nicht gelaufen) und
+wurde nach dem Fenster isoliert wiederholt: **19/19 bestanden** (00:03–00:07 Uhr Berlin, isolierter Lauf desselben Projekts, Exit 0). Kein Anwendungscode geändert; die
+nach dem Gate-Start noch geänderten Dateien (Kit-Skripte, Caddyfile-Vorlage, Dokumentation) sind nicht
+Gegenstand der Test-Schritte; `pnpm format:check` lief erneut auf dem finalen Baum (grün).
+
+**Zwingende manuelle Schritte (Dennis), danach finale Verifikation:** siehe
+`docs/OPEN_ITEMS.md` („Phase 19 Fortsetzung – Pilot-Zielsystem MacBook“) und
+`docs/PRE_START_CHECKLIST.md` („MacBook als Pilot-Zielsystem“): 1 Mac verbinden/Bootstrap,
+2 STRATO-DynDNS, 3 Router (nur 80/443), 4 Postfach, 5 SFTP-Off-site. Verifikation anschließend:
+`pilot-check.sh` PASS, externer Portcheck (Mobilfunk), Neustart-Test, Deploy/Rollback-Test,
+Mailtests, Pilotvorgang Standard/Edge/Offline, Mobil-Prüfung.
+
+**Bewertung:** TECHNICAL PILOT READINESS bleibt JA (Kit vollständig und auf Linux
+nachgewiesen); REAL PILOT EXECUTED NEIN; PHASE 19 FINAL NEIN (kein Zielsystem in Betrieb, keine
+Pilotgruppe, keine Freigaben); Phase 20 nicht begonnen.

@@ -1,0 +1,11 @@
+# STRATO Dynamic DNS (nur wenn der Router kein STRATO-DynDNS übernimmt). Passwort: secrets/dyndns.secret (600).
+# Protokoll dyndns2: https://dyndns.strato.com/nic/update?hostname=<host>&myip=<ip> mit HTTP-Basic-Auth
+# (Benutzer = Domain, Passwort = DynDNS-Passwort aus dem STRATO-Kundenlogin). Antworten: good <ip> | nochg <ip>.
+DYNDNS_ENABLED=false
+DYNDNS_UPDATE_URL=https://dyndns.strato.com/nic/update
+DYNDNS_USER=miet-royal.de
+# Kommagetrennt; nur die Pilot-Hosts – niemals www oder Apex.
+DYNDNS_HOSTS=pilot.miet-royal.de,staff-pilot.miet-royal.de,api-pilot.miet-royal.de
+# IPv4-Ermittlung (öffentliche IP) – Dienst liefert nur die eigene IP.
+DYNDNS_IP_URL=https://api.ipify.org
+DYNDNS_IPV6=false

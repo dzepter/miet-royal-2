@@ -1,0 +1,133 @@
+# Miet-Royal Pilot – Caddy (Reverse-Proxy, automatisches HTTPS). Platzhalter ersetzt bootstrap.sh/render-caddyfile.sh:
+# __WEB_HOST__ __STAFF_HOST__ __API_HOST__ __WEB_PORT__ __STAFF_PORT__ __API_PORT__ __ACME_EMAIL__ __LOGS_DIR__
+# Grundsätze (Phase-19-Topologie): nur die drei Pilot-Hosts, unbekannte Hosts verwerfen, HTTP → HTTPS,
+# X-Forwarded-For nur vom Proxy (API_TRUST_PROXY_HOPS=1), Body-Limits wie Offline-Sync (13 MiB),
+# Access-Log minimal: keine Cookies/Authorization (Caddy entfernt Credential-Header seit 2.5), Query-Strings
+# gelöscht, Token-Pfade gar nicht geloggt, Client-IP maskiert.
+{
+	email __ACME_EMAIL__
+	# Keine trusted_proxies: vor Caddy steht kein weiterer Proxy, eingehende X-Forwarded-For-Header von
+	# Clients werden verworfen und durch die echte Client-IP ersetzt (API_TRUST_PROXY_HOPS=1).
+	# Nur HTTP/1.1 + HTTP/2: der Router leitet ausschließlich TCP 80/443 weiter – ohne UDP 443 würde ein
+	# beworbenes HTTP/3 (Alt-Svc) bei Clients zu Timeouts führen.
+	servers {
+		protocols h1 h2
+	}
+}
+
+(common_log) {
+	log {
+		output file __LOGS_DIR__/caddy-access.log {
+			roll_size 20MiB
+			roll_keep 5
+		}
+		format filter {
+			wrap json
+			fields {
+				request>uri regexp "\?.*$" ""
+				request>headers>Cookie delete
+				request>headers>Authorization delete
+				request>headers>Referer delete
+				request>remote_ip ip_mask {
+					ipv4 24
+					ipv6 56
+				}
+				request>client_ip ip_mask {
+					ipv4 24
+					ipv6 56
+				}
+			}
+		}
+	}
+	# Token- und Kundenpfade nie protokollieren (Phase 12 H8 / Phase 19 Log-Maskierung).
+	@sensitive path /dokument/* /angebot/* /kontakt/* /konto* /api/portal/* /api/public/* /public/calendar/* /qr/* /vorschau* /webhooks/* /api/auth/*
+	log_skip @sensitive
+	# Fehler (z. B. 502 während eines Neustarts) über handle_errors beantworten: Caddy protokolliert sie dann nicht
+	# mehr mit vollständiger URI im Fehlerlog (Token-Pfade bleiben auch dort geheim).
+	handle_errors {
+		header -Server
+		respond "{err.status_code} {err.status_text}" {err.status_code}
+	}
+}
+
+(proxy_headers) {
+	header_up X-Forwarded-Proto {scheme}
+	header_up X-Forwarded-Host {host}
+}
+
+(security_headers) {
+	header {
+		X-Content-Type-Options nosniff
+		Referrer-Policy strict-origin-when-cross-origin
+		# HSTS nur für diesen Host (kein includeSubDomains/preload – www/Apex bleiben unberührt)
+		Strict-Transport-Security "max-age=31536000"
+		-Server
+	}
+}
+
+# Unbekannte Hosts auf 80/443 verwerfen (Caddy liefert ohne passendes Zertifikat keinen TLS-Handshake;
+# HTTP ohne bekannten Host wird abgebrochen).
+http:// {
+	abort
+}
+
+# Website + Kundenportal. Die Website nutzt nur /api/public/* und /api/portal/* – Staff-/Login-Routen der
+# API sind auf diesem Host nicht erreichbar (kleinere öffentliche Angriffsfläche).
+__WEB_HOST__ {
+	import common_log
+	import security_headers
+	request_body {
+		max_size 13MB
+	}
+	@notweb path /api/staff/* /api/auth/*
+	handle @notweb {
+		respond 404
+	}
+	handle {
+		reverse_proxy 127.0.0.1:__WEB_PORT__ {
+			import proxy_headers
+			transport http {
+				read_timeout 60s
+				write_timeout 60s
+				dial_timeout 5s
+			}
+		}
+	}
+}
+
+# Staff-App (Same-Origin-Proxy /api/* zur API läuft im Next-Server, Puffer 13 MiB). Zeitbudget: der Next-Proxy
+# selbst beendet Upstream-Antworten nach 30 s (Next-Default proxyTimeout) – die 120 s hier sind nur die
+# Obergrenze der Caddy-Verbindung; maßgeblich sind die 30 s (Offline-Sync verarbeitet 12 MiB deutlich schneller).
+__STAFF_HOST__ {
+	import common_log
+	import security_headers
+	request_body {
+		max_size 13MB
+	}
+	reverse_proxy 127.0.0.1:__STAFF_PORT__ {
+		import proxy_headers
+		transport http {
+			read_timeout 120s
+			write_timeout 120s
+			dial_timeout 5s
+		}
+	}
+}
+
+# API-Direktrouten: ausschließlich Webhooks, öffentlicher Kalender, Health/Ready – alles andere 404.
+__API_HOST__ {
+	import common_log
+	import security_headers
+	request_body {
+		max_size 2MB
+	}
+	@allowed path /webhooks/* /public/calendar/* /health /ready
+	handle @allowed {
+		reverse_proxy 127.0.0.1:__API_PORT__ {
+			import proxy_headers
+		}
+	}
+	handle {
+		respond 404
+	}
+}

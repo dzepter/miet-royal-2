@@ -5337,6 +5337,34 @@ Lexware-Fakes) und die Betriebsfähigkeit gehärtet. Ergebnisse: docs/PHASE19_PI
   (Phase 15): `experimental.proxyClientMaxBodySize = 13 MiB` in `apps/staff/next.config.ts`;
   Regressionstest `staff-proxy-body-limit.test.ts` hält die Kette „Puffer ≥ API-Limit + Reserve“
   fest (das Routen-Limit ist dafür exportiert). Reverse-Proxy weiterhin `client_max_body_size 13m`.
+- **Pilot-Zielsystem auf dem MacBook (P19-M1, Kit `infra/pilot-macbook/`).** Dennis stellt ein dauerhaft
+  laufendes MacBook, STRATO-Domain/DynDNS, Heimanschluss und STRATO-Postfach bereit; zusätzliche
+  Hostingkosten sollen vermieden werden. Entscheidungen (Begründung in `infra/pilot-macbook/README.md`):
+  `APP_ENV=production` für echte Pilotkunden (Training-Gate, Fake-Verbot, https-Pflicht; `staging`
+  würde Schutznetze bewusst nicht erzwingen); Pilot-Hosts `pilot.`, `staff-pilot.`, `api-pilot.miet-royal.de`
+  (api-pilot nur für Webhooks/Kalender/Health – Browser nutzen den Same-Origin-`/api`-Proxy);
+  Indexierung aus; Lexware/Routing/WhatsApp/Reviews deaktiviert bis zur Freigabe; `STORAGE_DRIVER=fs`
+  (S3 bleibt möglich); Caddy statt nginx (automatisches HTTPS, eine Proxy-Schicht), Access-Log minimal
+  ohne Token-Pfade/Cookies/Query; launchd-**LaunchAgents** des angemeldeten Benutzers statt eines
+  Headless-Serviceaccounts (kein `sudo` im Betrieb, macOS erlaubt Nicht-root-Bindung an 80/443,
+  FileVault verlangt nach Neustart ohnehin die Anmeldung; Isolation über Dateirechte 700/600);
+  Basisverzeichnis `/opt/mietroyal` (einmalig sudo) mit Fallback `~/mietroyal`; Releases als
+  `git archive` eines Commits mit eigenem `pnpm install`/Builds, atomarer `current`-Symlink,
+  automatischer Rückfall bei rotem Smoke, Rollback ohne Datenbankänderung; Backups `pg_dump -Fc` +
+  Storage-Tar + Secrets, `age`-verschlüsselt, Manifest/SHA-256, täglicher Restore-Test in Wegwerf-DB;
+  Off-site per STRATO-SFTP mit Ed25519-Key und gepinntem Host-Key; DynDNS bevorzugt im Router, sonst
+  dyndns2-Updater. Härtungen aus dem adversarialen Kit-Review: Datenbankzugang nur über die
+  `PG*`-Umgebung (nie `DATABASE_URL` als Prozessargument), Rollenpasswort als clientseitig
+  berechneter SCRAM-SHA-256-Verifier (nie Klartext im SQL/Serverlog), Backups als Stream direkt in
+  `age` (kein Klartext auf der Platte) mit Zählständen aus demselben exportierten Snapshot wie der
+  Dump, Retention nur mit geprüften Ganzzahlen (fail-closed), Wartungsmarke `run/maintenance`
+  gegen Watchdog-Neustarts während `stop.sh`/Restore, Caddy-Start nur mit Freigabemarke nach der
+  DNS-Prüfung, DynDNS-Updater mit Allowlist exakt der Pilot-Hosts (nie `www`/Apex/MX) und Stopp bei
+  fatalen dyndns2-Antworten, Catch-up überfälliger Timer durch den Watchdog (launchd holt Kalendertermine nur
+  nach dem Schlaf nach). Die Cloud-Sitzung hatte keinen Zugriff auf das MacBook: das Kit wurde unter
+  Linux mit PostgreSQL-18-Shims getestet (Deploy/Rollback/Fehlschlag mit Rückfall/Backup/Restore/
+  Watchdog/Checks); macOS-spezifische Teile (launchd, pmset, Caddy, Homebrew) sind nicht ausgeführt
+  und im Runbook/Bericht als offen markiert.
 - **Bewusst nicht geändert (bewertet):** Web-Push bleibt at-least-once (rein informativ, kein
   Fachzustand hängt an genau einer Zustellung); Rate-Limits bleiben prozesslokal (Pilot mit
   genau einer API-Instanz hinter nginx, `API_TRUST_PROXY_HOPS=1` – vor horizontaler Skalierung

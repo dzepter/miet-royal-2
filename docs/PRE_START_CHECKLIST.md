@@ -284,6 +284,16 @@ trifft Claude Code:
   stillschweigend als development).
 - **Rollback vorbereitet:** Git-Tag je Pilot-Stand, voriges Build-Verzeichnis behalten,
   Backup vor jedem Release (DEPLOYMENT_NOTES „Rollback im Pilot“).
+- **MacBook als Pilot-Zielsystem (`infra/pilot-macbook/`, docs/PILOT_MACBOOK_RUNBOOK.md):**
+  (1) Mac mit Claude Code verbinden oder `bootstrap.sh` im Terminal ausführen (sudo einmalig; Deckel
+  offen lassen oder Clamshell-Betrieb mit externem Display, sonst schläft das Gerät trotz `pmset`);
+  (2) STRATO: Dynamic DNS für `pilot`, `staff-pilot`, `api-pilot` aktivieren und DynDNS-Passwort
+  setzen – `www`/Apex/MX unverändert; (3) Router: feste LAN-Adresse des Macs, Portweiterleitung nur
+  TCP 80 und 443 (kein 22/5432/3000–3002, kein UPnP, keine DMZ); (4) Postfach bei STRATO für den
+  Pilot und Eingabe über `configure-secrets.sh mail`; (5) STRATO-SFTP-Backupzugang mit hinterlegtem
+  Public Key, `configure-secrets.sh offsite`; (6) age-Identität der Backups außerhalb des Macs
+  aufbewahren; (7) externe Prüfung aus dem Mobilfunknetz (443 offen, 80 Redirect, sonst nichts),
+  `pilot-check.sh` PASS, Testmail nur an eine freigegebene Adresse.
 
 ## Sicherheitsregel
 Echte Zugangsdaten nie in Chat-Prompts oder Git-Dateien kopieren, wenn sie als

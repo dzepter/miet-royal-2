@@ -312,6 +312,15 @@ selbstsignierter Test-CA nachgewiesen (docs/PHASE19_PILOT_REPORT.md):
   lokal; der Lexware-Webhook-Callback (`https://api.…/webhooks/lexware`) erreichte die API über
   den Proxy (Contract-Fake, 4 Subscriptions).
 
+### Pilot-Zielsystem MacBook (Phase 19, Fortsetzung)
+
+Für den Pilot auf Dennis’ dauerhaft laufendem MacBook existiert ein versioniertes Betriebs-Kit
+(`infra/pilot-macbook/`: Bootstrap, Deployment/Rollback, Backup/Restore, launchd, Caddy, Watchdog,
+Prüfskripte) und das Runbook docs/PILOT_MACBOOK_RUNBOOK.md. Dort gelten dieselben Regeln wie oben;
+Prozessmanager ist launchd (LaunchAgents), Reverse-Proxy Caddy mit den Pilot-Hosts, Umgebung
+`production` ohne Indexierung und ohne Live-Provider. Stand und offene Schritte: docs/PHASE19_PILOT_REPORT.md
+„Pilot-Zielsystem MacBook“.
+
 ## Offene Punkte für spätere Phasen
 
 - Konkreter Hoster/VPS (OPEN_ITEMS.md „Hosting“), TLS/Reverse Proxy,

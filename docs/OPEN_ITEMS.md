@@ -722,3 +722,42 @@ PRE_START_CHECKLIST „Pilotbetrieb (Phase 19)“):**
   `clientMutationId`: Staff-App sendet beides immer; andere Clients existieren nicht – als
   Pilotrisiko akzeptiert, Pflichtfelder wären eine API-Vertragsänderung.
 - WebKit/`pwa-smoke`: siehe Pilotbericht (Ausführung im Phase-19-Gate).
+
+### Phase 19 Fortsetzung – Pilot-Zielsystem MacBook (Stand 2026-11-21)
+
+Entscheidung des Inhabers: das dauerhaft laufende MacBook (Heim-Internet, STRATO-Domain) ist das
+Pilot-Zielsystem – keine zusätzlichen Hostingkosten. Umsetzung als Kit `infra/pilot-macbook/`
+(Runbook `docs/PILOT_MACBOOK_RUNBOOK.md`, Inventar `docs/PILOT_MACBOOK_INVENTORY.md`).
+
+**Stand:** Das Kit ist vollständig (Bootstrap, PostgreSQL-Einrichtung, Deployment mit
+Pre-Deploy-Backup/Health/Smoke/Auto-Fallback, Rollback, launchd-Autostart, Caddy-Vorlage,
+verschlüsseltes Backup mit täglichem Restore-Test, Off-site per SFTP, DynDNS-Updater, Watchdog,
+Pilot-Check, Secret-Scan) und auf Linux mit dem echten Repo-Stand durchgespielt (Pilotbericht
+Abschnitt 21). **Auf dem MacBook selbst ist noch nichts installiert:** aus der Cloud-Session
+bestand kein Zugriff auf den Rechner (kein per Remote Control freigegebener Ordner, keine
+Claude-Session auf dem Mac). Alles Mac-Spezifische (Homebrew, launchd, pmset, Caddy/ACME,
+Inventar) ist deshalb **vorbereitet, nicht ausgeführt**.
+
+**Zwingend manuell (Dennis), in dieser Reihenfolge:**
+
+1. **MacBook verbinden oder Bootstrap starten** – entweder Claude Desktop → Einstellungen →
+   Claude Code → Remote Control → Ordner (z. B. `~/mietroyal`) freigeben, oder im Terminal des
+   Macs: `git clone https://github.com/dzepter/miet-royal-2.git ~/miet-royal-2 && bash
+   ~/miet-royal-2/infra/pilot-macbook/bootstrap.sh`. Das Skript fragt einmal nach dem
+   Admin-Passwort (sudo für `/opt/mietroyal` und pmset) und richtet alles Übrige selbst ein.
+2. **STRATO DynDNS** – im STRATO-Kundenlogin für `pilot`, `staff-pilot`, `api-pilot` (nur diese
+   Subdomains) Dynamic DNS aktivieren; DynDNS-Passwort danach ausschließlich über
+   `configure-secrets.sh dyndns` (verdeckte Eingabe) hinterlegen. `www`, Apex und MX bleiben
+   unverändert.
+3. **Router** – feste LAN-IP (DHCP-Reservierung) für das MacBook; Portfreigaben **nur** TCP 80 und
+   443 auf diese IP. Kein 22, kein 5432, kein DMZ, kein pauschales UPnP.
+4. **Mail** – STRATO-Postfach für den Pilot anlegen (z. B. `pilot@miet-royal.de`), Zugang über
+   `configure-secrets.sh mail` hinterlegen (setzt `MAIL_ENABLED=true`); danach Mailtests 1–8
+   (`mail-smoke.sh`, Runbook).
+5. **STRATO SFTP (Off-site)** – im Webhosting einen eigenen SFTP-Benutzer für Backups anlegen
+   (Zielordner außerhalb des öffentlichen Webroots), Schlüssel aus `configure-secrets.sh offsite`
+   hinterlegen.
+
+Anschließend `pilot-check.sh` (muss PASS liefern), externer Portcheck vom Mobilfunknetz,
+Neustart-Test, Deploy/Rollback-Test und der Pilotvorgang laut Runbook. Erst dann kann der
+echte Pilot starten; Phase 19 FINAL bleibt bis dahin NEIN.
