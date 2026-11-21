@@ -55,3 +55,14 @@ Keine Lieferpreisformel; keine automatische Kundennachricht bei Verspätung;
 keine Kunden-ETA; GPS nur während aktiver Tour ohne Historie.
 Feste Stopppositionen rechnet Miet-Royal selbst (Matrix + eigener Planer),
 weil der Provider sie nicht dokumentiert.
+
+## Gesamt-Abnahme (Phase 18)
+Veraltete Kundenformulare überschreiben zwischenzeitliche Änderungen nicht
+still (Hinweis + Neuladen statt „letzter gewinnt“); Mitarbeitende dürfen
+Kundendaten weiterhin bewusst ändern.
+Schadensformulare sind idempotent (ein Schaden je Formular, online wie offline).
+Backup/Restore: Datenbank, Storage und Umgebungs-Schlüssel gehören zusammen in
+eine Sicherung; Restore immer in eine leere Datenbank mit Verifikation.
+Kein generisches Fach-Audit-Log – Historie = Zeilenfelder, Jobs, Mails,
+unveränderliche Dokumente, Security-Events.
+

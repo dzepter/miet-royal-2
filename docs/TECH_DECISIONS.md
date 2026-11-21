@@ -5152,3 +5152,68 @@ Host-Header-Logik im Code, `Disallow` privater Bereiche oder ganzer Staging-Inst
 LocalBusiness-/FAQ-/Review-/Product-Markup, automatische Ortsseiten, Analytics/Tracker/
 Consent-Manager, neue Cache-Architektur, Search-Console-Anbindung, Speichersperre für
 Preis-Freitext in Produktdaten.
+
+## Phase 18: Gesamt-Abnahmetest / systemweite Endabnahme (2026-11-21)
+
+Phase 18 baut keine Features: Sie beweist auf frischen Testdatenbanken mit Fakes/Mocks, dass die
+acht Vermietungsszenarien (Standard, Schaden, Kundeneinspruch, Storno, Offline, Konflikt/Override,
+fehlende Berechtigungen, Demo/Training) fachlich korrekt, idempotent, konfliktsicher und
+datenintegre enden. Nachweis und Zahlen: docs/PHASE18_ACCEPTANCE_REPORT.md; Testübersicht:
+docs/TEST_PLAN.md „Gesamt-Abnahme (Phase 18)“. Produktänderungen gab es nur für reproduzierte
+Befunde (roter Test → Fix → grün), jeweils ohne Migration und ohne brechende API-Änderung:
+
+- **F1 CRM-Concurrency (OPEN_ITEMS „Phase 15“, Prüfpunkt Phase 18):** `PATCH /staff/customers/:id`
+  war ein Full-Replace ohne Vorbedingung – ein vor einer fremden Änderung (zweite Mitarbeiterin,
+  verifizierter Portal-E-Mail-Wechsel) geladenes Formular drehte die Änderung still zurück
+  (reproduziert in `acceptance-fixes` P18-F1a/F1b). Entscheidung: optionales Feld
+  `expectedUpdatedAt` (ISO-Zeitstempel des geladenen Datensatzes) als **optimistische Sperre im
+  UPDATE selbst** (`date_trunc('milliseconds', updated_at) = …`, Millisekunden, weil Clients den
+  Wert nur aus dem JSON kennen) ⇒ bei Abweichung 409 `CONFLICT` „Der Kunde wurde zwischenzeitlich
+  geändert …“, nichts geschrieben. Ohne das Feld bleibt das bisherige Verhalten (keine
+  brechende Änderung, keine neue Versionsspalte, keine Migration). Die Staff-App sendet den
+  Wert mit, zeigt bei 409 den Hinweis und lädt den aktuellen Stand neu. Verworfen: eigene
+  `version`-Spalte (Migration ohne Not), pessimistische Sperre (keine Bearbeitungssitzungen im
+  CRM), Feld-Merge (würde „E-Mail bewusst ändern“ unterlaufen). Der Portal-Pfad
+  (`updateCustomerFromPortal`) bleibt Feld-Merge ohne `email`/`type` (Phase 15 R7).
+- **F2 Schaden online ohne Idempotenzschlüssel:** Doppel-Submit (zwei POSTs mit identischem Body)
+  erzeugte zwei Dokumentationszeilen und zwei Klärungen (offline war die Wiederholung über
+  `clientMutationId` längst abgesichert). Entscheidung: beide Online-Routen
+  (`POST /staff/returns/:bookingId/machines/:rm/damages`, `POST /staff/machines/:id/damages`)
+  nehmen optional `clientMutationId` (UUID) entgegen und nutzen **denselben Replay-Pfad** wie der
+  Offline-Sync (bestehende Spalte `machine_damages.client_mutation_id` mit partiellem Unique-
+  Index; Serialisierung über die vorhandene Zeilensperre des Returns bzw. der Maschine; beim
+  Nachtrag wird das erneut hochgeladene Foto verworfen). Die Staff-App erzeugt den Schlüssel beim
+  Öffnen des Formulars (`crypto.randomUUID()`) und verwirft ihn nach Erfolg. Ohne Schlüssel bleibt
+  das bisherige Verhalten (API-Clients). Tests `acceptance-fixes` P18-F2a/F2b, E2E return-flow F.
+- **F3 Log-Policy der öffentlichen Annahme:** `routes/commerce.ts` loggte den Fehler der
+  Terminerzeugung mit `err` (bei DrizzleQueryError enthält `message` SQL samt Parametern) –
+  Abweichung von der Regel des globalen Fehlerhandlers („Datenbankfehler ohne message/stack“).
+  Jetzt nur `bookingId` + `errorName`. Test P18-F3 (Spy wirft einen datenbankähnlichen Fehler mit
+  Marker; Marker und „Failed query“ fehlen im Log).
+- **F4 Testinfrastruktur – zweite Testdatenbank:** `TEST_DATABASE_URL_SECOND` (Default
+  `mietroyal_test7`) wurde von keiner Infra angelegt; vier Cross-Environment-Suiten scheiterten
+  auf frischer Infrastruktur, zwei Tests (`portal-auth` A19, `routing-global-rate-limit` G6)
+  skippten still. `infra/postgres-init/01-create-databases.sql` legt die Datenbank an; A19 nutzt
+  denselben Default wie die übrigen Suiten, G6 scheitert sichtbar statt zu skippen
+  (TEST_PLAN „Keine Skips“).
+- **F5 Backup/Restore war nur als Zielwert dokumentiert:** Verfahren (Container-`pg_dump -Fc`
+  ≥ Server-Major, Storage-Tar, Schlüssel als Teil der Sicherung, Restore-Verifikation) steht
+  jetzt in docs/DEPLOYMENT_NOTES.md „Backup & Restore (Phase 18)“ und wurde auf einer
+  Wegwerf-Testdatenbank nachgewiesen. Kein neues Backup-Tooling.
+- **F6 Doku:** PERMISSIONS.md nannte ein nicht existierendes Security-Event
+  `demo.reset_requested` – an den Code angeglichen.
+
+### Bewusst nicht geändert (Phase 18)
+- Tour-Übernahme ohne `expectedVersion` (API-Clients): die spätere Übernahme gewinnt; die
+  Staff-App sendet immer `tour.version` (CAS belegt in `acceptance-conflict`).
+- Nachträgliche Feststellung nach bereits gesperrtem Settlement erzeugt keine Klärung mehr
+  (Settlement unveränderlich nach Transfer) – fachlich offener Punkt, OPEN_ITEMS „Phase 18“.
+- Kein generisches Fach-Audit-Log: „Audit/Historie“ ist die Zeilenhistorie (`sent_by`,
+  `approved_by`, `finalized_by`, `cleaned_by`, `locked_at`, …), `integration_jobs`,
+  `mail_deliveries`, immutable `documents` sowie `staff_security_events` für
+  sicherheitsrelevante Ereignisse (Design seit Phase 1).
+- `handovers.status='finalized'` ohne DB-CHECK auf `protocol_document_id` (nur Code) – als
+  Invariante im Integritätscheck geprüft, keine Migration ohne Defekt.
+- Keine neue Concurrency-Architektur, keine injizierbare API-Uhr (E2E-Restfenster bleiben
+  dokumentiert), kein Egress-Block im Code (Provider-Nachweis über Config-Fail-closed,
+  Start-Assertions, Fake-Zähler und einen globalen `fetch`-Spion im Demo-Akzeptanztest).

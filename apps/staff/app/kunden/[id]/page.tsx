@@ -45,6 +45,8 @@ interface CustomerDetail {
     department: string | null;
     costCenter: string | null;
     orderReference: string | null;
+    /** Phase 18: Stand des geladenen Datensatzes – Vorbedingung beim Speichern. */
+    updatedAt: string;
   };
   processes: ProcessRow[];
   /** Phase 11 (§52): Wiederkehrer-Gutschein – nur wenn vorhanden; nie der Code. */
@@ -75,10 +77,18 @@ function CustomerView() {
     const payload = Object.fromEntries(Object.entries(values).filter(([, v]) => v.trim() !== ''));
     const result = await apiFetch(`/staff/customers/${params.id}`, {
       method: 'PATCH',
-      body: payload,
+      // Phase 18: Formularstand mitsenden – wurde der Kunde zwischenzeitlich geändert
+      // (zweite Mitarbeiterin, Portal-E-Mail-Wechsel), antwortet der Server 409 statt
+      // die fremde Änderung still zu überschreiben.
+      body: { ...payload, expectedUpdatedAt: detail?.customer.updatedAt },
     });
     setBusy(false);
     if (!result.ok) {
+      if (result.status === 409) {
+        // Veraltetes Formular: aktuellen Stand laden, Hinweis zeigen, Bearbeitung neu beginnen.
+        setEditing(false);
+        await load();
+      }
       setError(result.errorMessage ?? 'Speichern fehlgeschlagen.');
       return;
     }

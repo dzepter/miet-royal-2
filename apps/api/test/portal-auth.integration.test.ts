@@ -26,7 +26,13 @@ import {
 } from '../src/portal/guard.ts';
 import { PORTAL_MESSAGES } from '../src/portal/types.ts';
 import { IpWindowLimiter } from '../src/routes/portal-auth.ts';
-import { bootstrapAdmin, login, truncateAuthTables, type TestContext } from './auth-helpers.ts';
+import {
+  bootstrapAdmin,
+  login,
+  truncateAuthTables,
+  type TestContext,
+  TEST_DATABASE_URL,
+} from './auth-helpers.ts';
 import { truncateCommerceTables } from './commerce-helpers.ts';
 import { drainJobs, truncateCommunicationTables } from './communication-helpers.ts';
 import { createTestCustomer, customerServiceFor, truncateCrmTables } from './crm-helpers.ts';
@@ -483,50 +489,51 @@ describe('Session-Lebensdauer (Order §8)', () => {
 });
 
 describe('Umgebungs-Isolation / Host-Header (Order §48/§49)', () => {
-  const secondDb = process.env.TEST_DATABASE_URL_SECOND;
+  // Phase 18: zweite Testdatenbank wie in den übrigen Cross-Environment-Suiten
+  // (Default `mietroyal_test7`, von infra/postgres-init angelegt) – kein stiller Skip.
+  const secondDb =
+    process.env.TEST_DATABASE_URL_SECOND ??
+    TEST_DATABASE_URL.replace(/\/[^/?]+(\?.*)?$/, '/mietroyal_test7$1');
 
-  it.skipIf(secondDb === undefined)(
-    'A19. Cross-Environment: Session-Cookie und Magic-Link-Token der Demo-DB sind im development-Kontext ungültig (und umgekehrt)',
-    async () => {
-      const demo = await createPortalTestContext({
-        appEnv: 'demo',
-        databaseUrl: secondDb!,
-        env: { MAIL_DEMO_WHITELIST: '@example.com', MAIL_PUBLIC_WEB_BASE_URL: WEB_BASE_URL },
+  it('A19. Cross-Environment: Session-Cookie und Magic-Link-Token der Demo-DB sind im development-Kontext ungültig (und umgekehrt)', async () => {
+    const demo = await createPortalTestContext({
+      appEnv: 'demo',
+      databaseUrl: secondDb,
+      env: { MAIL_DEMO_WHITELIST: '@example.com', MAIL_PUBLIC_WEB_BASE_URL: WEB_BASE_URL },
+    });
+    try {
+      await resetAll(demo);
+      const demoAdmin = await bootstrapAdmin(demo);
+      const demoCustomer = await createTestCustomer(demo, demoAdmin.id, {
+        email: 'iso@example.com',
       });
-      try {
-        await resetAll(demo);
-        const demoAdmin = await bootstrapAdmin(demo);
-        const demoCustomer = await createTestCustomer(demo, demoAdmin.id, {
-          email: 'iso@example.com',
-        });
-        const demoLogin = await loginPortalCustomerSession(demo, demoCustomer.id);
-        const demoToken = await requestMagicLinkToken(demo, 'iso@example.com');
-        // development-Kontext (eigene DB): weder Session noch Magic Link bekannt.
-        const { customer } = await adminAndCustomer('iso@example.com');
-        expect((await me(`${portalCookieName(ctx)}=${demoLogin.token}`)).statusCode).toBe(401);
-        expect((await consume(demoToken)).statusCode).toBe(401);
-        // Umgekehrt: development-Session/-Token sind in der Demo-App unbekannt.
-        const devLogin = await loginPortalCustomerSession(ctx, customer.id);
-        const devToken = await requestMagicLinkToken(ctx, 'iso@example.com');
-        const demoMe = await demo.app.inject({
-          method: 'GET',
-          url: '/portal/me',
-          headers: { cookie: `${portalCookieName(demo)}=${devLogin.token}` },
-        });
-        expect(demoMe.statusCode).toBe(401);
-        const demoConsume = await demo.app.inject({
-          method: 'POST',
-          url: '/portal/auth/consume',
-          payload: { token: devToken },
-        });
-        expect(demoConsume.statusCode).toBe(401);
-        expect(await demo.db.select().from(customerPortalSessions)).toHaveLength(1);
-      } finally {
-        await resetAll(demo);
-        await destroyPortalTestContext(demo);
-      }
-    },
-  );
+      const demoLogin = await loginPortalCustomerSession(demo, demoCustomer.id);
+      const demoToken = await requestMagicLinkToken(demo, 'iso@example.com');
+      // development-Kontext (eigene DB): weder Session noch Magic Link bekannt.
+      const { customer } = await adminAndCustomer('iso@example.com');
+      expect((await me(`${portalCookieName(ctx)}=${demoLogin.token}`)).statusCode).toBe(401);
+      expect((await consume(demoToken)).statusCode).toBe(401);
+      // Umgekehrt: development-Session/-Token sind in der Demo-App unbekannt.
+      const devLogin = await loginPortalCustomerSession(ctx, customer.id);
+      const devToken = await requestMagicLinkToken(ctx, 'iso@example.com');
+      const demoMe = await demo.app.inject({
+        method: 'GET',
+        url: '/portal/me',
+        headers: { cookie: `${portalCookieName(demo)}=${devLogin.token}` },
+      });
+      expect(demoMe.statusCode).toBe(401);
+      const demoConsume = await demo.app.inject({
+        method: 'POST',
+        url: '/portal/auth/consume',
+        payload: { token: devToken },
+      });
+      expect(demoConsume.statusCode).toBe(401);
+      expect(await demo.db.select().from(customerPortalSessions)).toHaveLength(1);
+    } finally {
+      await resetAll(demo);
+      await destroyPortalTestContext(demo);
+    }
+  });
 
   it('A19b. Cookie-Namen sind je Umgebung verschieden: ein development-Cookie wird außerhalb development nie gelesen', async () => {
     const { customer } = await adminAndCustomer();

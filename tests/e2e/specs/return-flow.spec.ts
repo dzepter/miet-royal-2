@@ -482,7 +482,17 @@ test('F: Schaden: Schema markieren → mittel → Beschreibung → Foto → Zusa
   await expect(staff.getByTestId('damage-diagram-view-left')).toContainText('(1)');
   await form.locator('#damage-severity').selectOption('medium');
   await form.locator('#damage-description').fill('Delle links am Gehäuse');
+  // Phase 18: das Formular sendet einen Idempotenzschlüssel (Doppelklick/Wiederholung ⇒ ein Schaden).
+  const damageRequest = staff.waitForRequest(
+    (request) => request.method() === 'POST' && /\/machines\/[^/]+\/damages$/.test(request.url()),
+  );
   await staff.getByTestId('damage-save').click();
+  const damageBody = JSON.parse((await damageRequest).postData() ?? '{}') as {
+    clientMutationId?: string;
+  };
+  expect(damageBody.clientMutationId).toMatch(
+    /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+  );
   await expect(staff.getByText(/Schaden gespeichert/)).toBeVisible();
   const damage = staff.locator('.conflict-box', { hasText: 'Delle links am Gehäuse' }).first();
   await expect(damage).toContainText('mittel');

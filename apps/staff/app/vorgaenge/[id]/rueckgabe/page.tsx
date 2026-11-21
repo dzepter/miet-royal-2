@@ -109,6 +109,9 @@ function ReturnWizard() {
   const [quantities, setQuantities] = useState<Record<string, string>>({});
   const [damageFor, setDamageFor] = useState<string | null>(null);
   const [draft, setDraft] = useState<DamageDraft>(EMPTY_DRAFT);
+  // Phase 18: Idempotenzschlüssel des offenen Schadensformulars – Doppelklick oder
+  // Request-Wiederholung erzeugen serverseitig genau einen Schaden.
+  const [draftMutationId, setDraftMutationId] = useState('');
   const [actualTime, setActualTime] = useState('');
 
   const canPerform = hasPermission(me, 'return.perform');
@@ -913,6 +916,7 @@ function ReturnWizard() {
                     disabled={busy}
                     onClick={() => {
                       setDraft(EMPTY_DRAFT);
+                      setDraftMutationId(crypto.randomUUID());
                       setDamageFor(machine.id);
                     }}
                   >
@@ -992,12 +996,14 @@ function ReturnWizard() {
                             severity: draft.severity,
                             description: draft.description.trim(),
                             markers: draft.markers,
+                            clientMutationId: draftMutationId,
                           },
                           'Schaden gespeichert – bitte jetzt mindestens ein Foto aufnehmen.',
                         ).then((ok) => {
                           if (ok) {
                             setDamageFor(null);
                             setDraft(EMPTY_DRAFT);
+                            setDraftMutationId('');
                           }
                         })
                       }

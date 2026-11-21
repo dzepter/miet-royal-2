@@ -918,8 +918,13 @@ export function registerCommerceRoutes(app: FastifyInstance, options: CommerceRo
       try {
         await new SchedulingService(db).ensureAppointmentsForBooking(result.bookingId);
       } catch (schedulingError) {
+        // Phase 18: kein `err` – ein Datenbankfehler trägt SQL samt Parametern
+        // (Kundendaten) in message/stack (Log-Policy wie der globale Fehlerhandler).
         request.log.warn(
-          { err: schedulingError, bookingId: result.bookingId },
+          {
+            bookingId: result.bookingId,
+            errorName: schedulingError instanceof Error ? schedulingError.name : 'unknown',
+          },
           'Terminerzeugung nach Annahme fehlgeschlagen – Selbstheilung greift beim nächsten Kalenderaufruf.',
         );
       }

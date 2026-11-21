@@ -360,6 +360,8 @@ export class DamageService implements ExistingDamageProvider {
       description: string;
       markers: readonly DamageMarkerInput[];
       photo: { bytes: Uint8Array; mimeType: ImageMimeType };
+      /** Phase 18: Idempotenzschlüssel des Formulars – Wiederholung liefert den bestehenden Nachtrag. */
+      clientMutationId?: string;
     },
     now = new Date(),
   ): Promise<{ damageId: string; returnId: string }> {
@@ -381,6 +383,18 @@ export class DamageService implements ExistingDamageProvider {
           .for('no key update');
         const machine = machineRows[0];
         if (machine === undefined) throw new AuthError('NOT_FOUND', 'Maschine nicht gefunden.');
+        if (input.clientMutationId !== undefined) {
+          // Wiederholung desselben Formulars (Doppelklick/Request-Retry): bestehenden
+          // Nachtrag zurückgeben, das erneut hochgeladene Foto verwerfen.
+          const prior = await tx
+            .select({ id: machineDamages.id, returnId: machineDamages.returnId })
+            .from(machineDamages)
+            .where(eq(machineDamages.clientMutationId, input.clientMutationId));
+          if (prior[0] !== undefined) {
+            await this.deleteKeys([key]);
+            return { damageId: prior[0].id, returnId: prior[0].returnId };
+          }
+        }
         const last = await this.lastFinalizedReturnMachine(tx, machineId);
         // Fenster nur in der Reinigungsphase NACH DER RÜCKGABE (cleaning_since wird
         // ausschließlich von der Rückgabe-Finalisierung gesetzt); ein später manuell
@@ -406,6 +420,7 @@ export class DamageService implements ExistingDamageProvider {
           origin: 'post_return_finding',
           activatedAt: now,
           now,
+          clientMutationId: input.clientMutationId ?? null,
         });
         await tx.insert(damagePhotos).values({
           damageId,

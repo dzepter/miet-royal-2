@@ -78,6 +78,8 @@ const damageBody = z.strictObject({
   severity: z.enum(['light', 'medium', 'severe']),
   description: z.string().min(1).max(2000),
   markers: z.array(markerSchema).min(1).max(20),
+  /** Phase 18: optionaler Idempotenzschlüssel des Formulars (Doppelklick/Wiederholung ⇒ ein Schaden). */
+  clientMutationId: uuidSchema.optional(),
 });
 const postReturnDamageBody = damageBody.extend({ photo: embeddablePhotoBody });
 const defectBody = z.strictObject({
@@ -456,11 +458,14 @@ export function registerReturnRoutes(app: FastifyInstance, options: ReturnRouteO
     '/staff/returns/:bookingId/machines/:returnMachineId/damages',
     damageBody,
     async (context, params, body) => {
+      const { clientMutationId, ...damage } = body;
       const created = await returns.addDamage(
         context.user.id,
         params.bookingId,
         params.returnMachineId!,
-        body,
+        damage,
+        undefined,
+        clientMutationId,
       );
       return { ...created, ...(await withDetail(params.bookingId)) };
     },
@@ -636,6 +641,9 @@ export function registerReturnRoutes(app: FastifyInstance, options: ReturnRouteO
           description: body.description,
           markers: body.markers,
           photo: { bytes, mimeType: body.photo.mimeType },
+          ...(body.clientMutationId === undefined
+            ? {}
+            : { clientMutationId: body.clientMutationId }),
         });
       } catch (error) {
         if (sendAuthError(request, reply, error)) return;

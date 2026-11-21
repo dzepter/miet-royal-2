@@ -58,6 +58,9 @@ Neuer Schaden benötigt:
 - Text
 - mind. 1 Foto
 Schaden dokumentieren und finanziell abrechnen sind getrennt.
+Ein Schadensformular erzeugt genau einen Schaden – auch bei Doppelklick oder
+wiederholtem Absenden (Phase 18: Idempotenzschlüssel des Formulars, online wie
+offline).
 
 ## Physische Rückgabe vs. Abrechnung
 Rückgabe darf abgeschlossen werden trotz offenem Schaden/Fehlteil.
@@ -199,6 +202,11 @@ Snapshot-Adresse.
   fachlich offen (OPEN_ITEMS „Phase 15“).
 - Buchungsansicht nur aus dem Snapshot; Profiländerungen gelten nur für
   zukünftige Anfragen.
+- Kundendaten im CRM: Mitarbeitende dürfen Stammdaten (auch die E-Mail) bewusst
+  ändern; ein Formular, das vor einer zwischenzeitlichen Änderung (zweite
+  Mitarbeiterin, verifizierter Portal-E-Mail-Wechsel) geladen wurde, überschreibt
+  diese nie still – Speichern wird abgelehnt, der aktuelle Stand neu geladen
+  (Phase 18).
 - Portalnachrichten nur zu einer aktiven Buchung; nach Abschluss oder
   kostenpflichtigem Storno nur noch lesbar (Retention wie Phase 12); nach
   kostenfreiem Storno nicht mehr erreichbar.

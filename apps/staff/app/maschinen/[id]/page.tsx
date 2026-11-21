@@ -68,6 +68,8 @@ function MachineDetailView() {
   const [findingDescription, setFindingDescription] = useState('');
   const [findingMarkers, setFindingMarkers] = useState<DamageMarkerShape[]>([]);
   const [findingPhoto, setFindingPhoto] = useState<File | null>(null);
+  // Phase 18: Idempotenzschlüssel des offenen Nachtrag-Formulars (Doppelklick ⇒ ein Schaden).
+  const [findingMutationId, setFindingMutationId] = useState('');
   const [defectPhoto, setDefectPhoto] = useState<File | null>(null);
   const [defectDescription, setDefectDescription] = useState('');
   const [defectHint, setDefectHint] = useState<string | null>(null);
@@ -181,8 +183,10 @@ function MachineDetailView() {
       description: findingDescription.trim(),
       markers: findingMarkers,
       photo: { mimeType: mime, dataBase64: await fileToBase64(findingPhoto) },
+      clientMutationId: findingMutationId,
     });
     if (ok) {
+      setFindingMutationId('');
       setNotice(
         'Nachträglicher Schaden dokumentiert – das unterschriebene Rückgabeprotokoll bleibt unverändert.',
       );
@@ -347,7 +351,13 @@ function MachineDetailView() {
           <div data-testid="post-return-damage">
             {!findingOpen ? (
               <p>
-                <button data-testid="post-return-damage-open" onClick={() => setFindingOpen(true)}>
+                <button
+                  data-testid="post-return-damage-open"
+                  onClick={() => {
+                    setFindingMutationId(crypto.randomUUID());
+                    setFindingOpen(true);
+                  }}
+                >
                   Nachträglich entdeckten Schaden ergänzen
                 </button>
               </p>

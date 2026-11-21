@@ -418,9 +418,10 @@ Serverseitige Umsetzung (Phase 14, W2, Order §55–§66, §97–§100):
 - Der Live↔Demo-Wechsel („Demo öffnen“ / „Live öffnen“) ist kein Recht: Er
   öffnet nur die feste Anmeldeseite der Gegen-Umgebung in einem neuen Tab;
   dort gilt die separate Anmeldung mit den dortigen Rechten.
-- Jede Reset-Anforderung wird als Security-Event `demo.reset_requested`
-  (Actor, Session) protokolliert; der Abschluss wird vom Reset-Service
-  auditiert.
+- Eine Reset-Anforderung wird nur als Logzeile (`actorId`) festgehalten; die
+  Security-Events schreibt der Reset-Service: `demo.reset_started`,
+  `demo.reset_completed` bzw. `demo.reset_failed` (Phase 18: Doku an den Code
+  angeglichen – ein Event `demo.reset_requested` gibt es nicht).
 - `training.manage` (Kategorie „Demo / Training“): außerhalb der Demo die
   Verwaltung der Live-Sperren, Freigaben und Overrides (Abschnitt „Training
   Gate“); in der Demo die Trainingsverwaltung (Zuweisungen, Fortschritt,

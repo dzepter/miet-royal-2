@@ -358,45 +358,49 @@ describe('Globale GraphHopper-Drossel (Phase 13 Final §1)', () => {
     expect(Number(row!.paused_until_ms)).toBeGreaterThanOrEqual(Date.now() + 7_190_000);
   });
 
-  it.skipIf(!secondDatabaseAvailable)(
-    'G6. Unterschiedliche Umgebungen (eigene Datenbanken) beeinflussen sich nicht – weder Slots noch Pausen',
-    async () => {
-      const pool2 = new pg.Pool({ connectionString: SECOND_DATABASE_URL, max: 2 });
-      const clean = () =>
-        pool2.query(`DELETE FROM integration_rate_limits WHERE provider = $1`, [
-          GRAPHHOPPER_RATE_LIMIT_PROVIDER,
-        ]);
-      try {
-        await clean();
-        const intervalMs = 500;
-        const limiterOne = limiterOn(ctx.db, { intervalMs, environment: 'development' });
-        const limiterTwo = limiterOn(createDb(pool2), { intervalMs, environment: 'staging' });
-        expect((await limiterOne.reserveSlot()).waitMs).toBe(0);
-        expect((await limiterOne.reserveSlot()).waitMs).toBeGreaterThanOrEqual(intervalMs - TOL_MS);
-        expect((await limiterOne.reserveSlot()).waitMs).toBeGreaterThanOrEqual(
-          2 * intervalMs - TOL_MS,
-        );
-        // Die andere Umgebung ist unbelastet.
-        expect((await limiterTwo.reserveSlot()).waitMs).toBe(0);
-        // Pause in Umgebung 1 ⇒ Umgebung 2 läuft weiter.
-        await limiterOne.pause(new Date(Date.now() + 3_600_000), 'credit_limited');
-        expect((await limiterOne.reserveSlot()).paused?.kind).toBe('credit_limited');
-        const two = await limiterTwo.reserveSlot();
-        expect(two.paused).toBeNull();
-        const gatewayOne = gatewayWith(limiterOne);
-        const gatewayTwo = gatewayWith(limiterTwo);
-        expect((await expectRoutingError(route(gatewayOne))).kind).toBe('credit_limited');
-        expect((await route(gatewayTwo)).legs).toHaveLength(1);
-        expect(fake.state.requests).toHaveLength(1);
-        expect((await limiterRow())!.environment).toBe('development');
-        expect((await limiterRow(pool2))!.environment).toBe('staging');
-        expect((await limiterRow(pool2))!.pause_kind).toBeNull();
-      } finally {
-        await clean().catch(() => undefined);
-        await pool2.end();
-      }
-    },
-  );
+  it('G6. Unterschiedliche Umgebungen (eigene Datenbanken) beeinflussen sich nicht – weder Slots noch Pausen', async () => {
+    // Phase 18: die zweite Testdatenbank ist Pflicht (infra/postgres-init legt
+    // `mietroyal_test7` an) – fehlt sie, scheitert der Test sichtbar statt still zu skippen.
+    if (!secondDatabaseAvailable) {
+      throw new Error(
+        'Zweite Testdatenbank (TEST_DATABASE_URL_SECOND, Default mietroyal_test7) fehlt oder ist nicht migriert.',
+      );
+    }
+    const pool2 = new pg.Pool({ connectionString: SECOND_DATABASE_URL, max: 2 });
+    const clean = () =>
+      pool2.query(`DELETE FROM integration_rate_limits WHERE provider = $1`, [
+        GRAPHHOPPER_RATE_LIMIT_PROVIDER,
+      ]);
+    try {
+      await clean();
+      const intervalMs = 500;
+      const limiterOne = limiterOn(ctx.db, { intervalMs, environment: 'development' });
+      const limiterTwo = limiterOn(createDb(pool2), { intervalMs, environment: 'staging' });
+      expect((await limiterOne.reserveSlot()).waitMs).toBe(0);
+      expect((await limiterOne.reserveSlot()).waitMs).toBeGreaterThanOrEqual(intervalMs - TOL_MS);
+      expect((await limiterOne.reserveSlot()).waitMs).toBeGreaterThanOrEqual(
+        2 * intervalMs - TOL_MS,
+      );
+      // Die andere Umgebung ist unbelastet.
+      expect((await limiterTwo.reserveSlot()).waitMs).toBe(0);
+      // Pause in Umgebung 1 ⇒ Umgebung 2 läuft weiter.
+      await limiterOne.pause(new Date(Date.now() + 3_600_000), 'credit_limited');
+      expect((await limiterOne.reserveSlot()).paused?.kind).toBe('credit_limited');
+      const two = await limiterTwo.reserveSlot();
+      expect(two.paused).toBeNull();
+      const gatewayOne = gatewayWith(limiterOne);
+      const gatewayTwo = gatewayWith(limiterTwo);
+      expect((await expectRoutingError(route(gatewayOne))).kind).toBe('credit_limited');
+      expect((await route(gatewayTwo)).legs).toHaveLength(1);
+      expect(fake.state.requests).toHaveLength(1);
+      expect((await limiterRow())!.environment).toBe('development');
+      expect((await limiterRow(pool2))!.environment).toBe('staging');
+      expect((await limiterRow(pool2))!.pause_kind).toBeNull();
+    } finally {
+      await clean().catch(() => undefined);
+      await pool2.end();
+    }
+  });
 
   it('G7. Die Reservierungs-Transaktion ist VOR dem Warten geschlossen (keine „idle in transaction“, Zeile sperrbar, Slot bereits committed)', async () => {
     const single = createPool(ctx.config.databaseUrl, { max: 1 });

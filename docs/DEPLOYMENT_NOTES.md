@@ -38,8 +38,8 @@ gewünscht ist, wird das als eigene Entscheidung in TECH_DECISIONS.md ergänzt.
 2. Integration/E2E gegen lokale Infrastruktur (`pnpm infra:up`,
    `pnpm test:integration`, `pnpm test:e2e`).
 3. Staging deployen, dort abnehmen.
-4. **Backup vor kritischem Release** (Datenbank + Storage, siehe
-   ARCHITECTURE.md „Backups“).
+4. **Backup vor kritischem Release** (Datenbank + Storage + Schlüssel, Verfahren
+   im Abschnitt „Backup & Restore (Phase 18)“; Richtwerte ARCHITECTURE.md „Backups“).
 5. `pnpm check:env-isolation <prod.env> <demo.env>` — Release abbrechen, wenn
    Umgebungen kollidieren.
 6. Migrationen anwenden: `pnpm db:migrate` (läuft vor dem App-Start; nur
@@ -90,7 +90,8 @@ gewünscht ist, wird das als eigene Entscheidung in TECH_DECISIONS.md ergänzt.
    - `curl -sI https://www.miet-royal.de/favicon.ico` ⇒ `200`.
 7. Prozesse neu starten, dann Smoke Test: `/health` muss 200 liefern,
    `/ready` muss 200 liefern (prüft die Datenbankverbindung).
-8. Bei Fehlern: Rollback auf vorherigen Stand + Backup-Restore-Pfad.
+8. Bei Fehlern: Rollback auf vorherigen Stand + Restore nach Abschnitt „Backup & Restore
+   (Phase 18)“ (Datenbank, Storage, identische Schlüssel).
 
 Claude Code deployt niemals eigenmächtig auf Produktion.
 
@@ -148,6 +149,55 @@ Claude Code deployt niemals eigenmächtig auf Produktion.
 - Phase 11 versendet nichts; `delivery_status` bleibt `pending`, bis Phase 12
   den Versand übernimmt.
 
+## Backup & Restore (Phase 18)
+
+Verfahren für Datenbank, Storage und Schlüssel – in Phase 18 auf einer Wegwerf-Testdatenbank
+vollständig durchlaufen (Dump → Löschen → Restore → Vergleich → Anwendung starten; Protokoll in
+docs/PHASE18_ACCEPTANCE_REPORT.md „Backup/Restore“). Es ist der Pfad, auf den Release-Schritt 4
+und 8 verweisen; die Richtwerte (täglich, 7/4/monatlich, Off-site, Restore-Test) stehen in
+ARCHITECTURE.md „Backups“.
+
+Grundsätze:
+- `pg_dump` muss mindestens die Major-Version des Servers haben (hier PostgreSQL 18). Lokal
+  liefert der Host ein älteres `pg_dump` (16) ⇒ Dump und Restore **im Postgres-Container**
+  ausführen (`docker exec mietroyal-postgres …`); auf dem Server analog mit passenden
+  Client-Tools.
+- Ein Backup besteht aus **drei Teilen**: (1) Datenbank-Dump, (2) Storage-Objekte
+  (`STORAGE_FS_ROOT` bzw. S3-Bucket – Dokumente, Fotos, Unterschriften, CMS-Medien),
+  (3) die Umgebungs-Schlüssel `AUTH_SECRET_KEY` und `COMMUNICATION_PAYLOAD_KEY` (+ `…_PREVIOUS`)
+  aus dem Secret-Store. Ohne identische Schlüssel sind verschlüsselte Mail-Payloads und
+  Gutschein-Versandkopien nach dem Restore unlesbar (`SECRET_UNDECRYPTABLE`); die
+  Schlüssel gehören deshalb in dieselbe Sicherung (getrennt verschlüsselt abgelegt).
+- Reihenfolge: zuerst Dump (snapshot-konsistent, API/Worker dürfen laufen; `processing`-Jobs
+  heilt der Worker über die Lease), dann Storage. Für einen exakt konsistenten Stand API und
+  Worker vorher stoppen.
+
+Backup (Beispiel lokal, Datenbank `<db>`):
+
+```bash
+docker exec mietroyal-postgres pg_dump -U mietroyal -Fc --no-owner --no-privileges -d <db> > <ziel>/db.dump
+tar -C "$STORAGE_FS_ROOT" -czf <ziel>/storage.tar.gz .
+sha256sum <ziel>/db.dump <ziel>/storage.tar.gz > <ziel>/backup.sha256
+```
+
+Restore in eine leere Datenbank (nie in eine laufende Produktivdatenbank hinein):
+
+```bash
+docker exec mietroyal-postgres psql -U mietroyal -d postgres -c "CREATE DATABASE <db_neu>;"
+docker exec -i mietroyal-postgres pg_restore -U mietroyal -d <db_neu> --no-owner --no-privileges --exit-on-error < <ziel>/db.dump
+mkdir -p <storage_neu> && tar -C <storage_neu> -xzf <ziel>/storage.tar.gz
+```
+
+Verifikation (Pflicht nach jedem Restore-Test):
+1. Zeilenzahl + ordnungsunabhängige Prüfsumme je Tabelle vor/nach identisch
+   (`SELECT count(*), md5(string_agg(t::text, E'\n' ORDER BY t::text)) FROM <tabelle> t`),
+   Sequenzen (`pg_sequences.last_value`) identisch, `drizzle.__drizzle_migrations` vollständig.
+2. `pnpm db:migrate` gegen die Restore-Datenbank ist ein No-op (Migrationszahl unverändert).
+3. Storage: SHA-256 aller Dateien identisch; `documents.sha256`/`byte_size` passen zu den Bytes.
+4. Anwendung gegen den Restore starten (`DATABASE_URL`, `STORAGE_FS_ROOT`, dieselben Schlüssel):
+   `GET /health` 200, `GET /ready` 200, Staff-Login, Vorgangs-/Kunden-/Maschinenliste, ein
+   Dokument-Download liefert die unveränderten PDF-Bytes.
+
 ## Healthchecks
 
 - `/health`: Prozess lebt (ohne Abhängigkeiten) – für Prozessmanager/Uptime.
@@ -160,7 +210,9 @@ Claude Code deployt niemals eigenmächtig auf Produktion.
 - S3-kompatibler Object Storage je Umgebung.
 - Rechnungsversand per Miet-Royal-Mailadapter (Phase 12) – bis dahin
   `invoice_delivery_status = pending`.
-- Backup-Automatisierung + Restore-Test (ARCHITECTURE.md).
+- Backup-Automatisierung (Zeitplan, Aufbewahrung, Off-site-Kopie je Hoster) – das manuelle
+  Verfahren und der Restore-Test sind seit Phase 18 dokumentiert und lokal nachgewiesen
+  (Abschnitt „Backup & Restore (Phase 18)“); die Automatisierung bleibt Go-live-Thema.
 - CI-Pipeline (Lint/Typecheck/Tests auf jedem Push).
 
 ## E-Mail-Versand und Kommunikations-Schlüssel (Phase 12, mail)

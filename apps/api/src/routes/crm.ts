@@ -49,6 +49,17 @@ const customerInputSchema = z.object({
   orderReference: z.string().max(100).optional(),
 });
 
+/**
+ * Phase 18 (Gesamt-Abnahme, CRM-Concurrency): optionale optimistische Sperre –
+ * `expectedUpdatedAt` ist der `updatedAt`-Wert des geladenen Datensatzes. Weicht
+ * er vom Serverstand ab (zweite Mitarbeiterin, verifizierter Portal-E-Mail-
+ * Wechsel), antwortet die Route 409 statt still zu überschreiben. Ohne das Feld
+ * bleibt das bisherige Verhalten (bestehende Clients).
+ */
+const customerUpdateSchema = customerInputSchema.extend({
+  expectedUpdatedAt: z.string().datetime({ offset: true }).optional(),
+});
+
 const createProcessSchema = z.object({
   customerId: uuidSchema,
   source: z.enum(['website', 'whatsapp', 'staff_manual', 'other']).optional(),
@@ -148,9 +159,16 @@ export function registerCrmRoutes(app: FastifyInstance, options: CrmRouteOptions
     if (context === null) return;
     if (!(await requirePermission(request, reply, auth, context, 'customer.edit'))) return;
     const params = parseOrThrow(idParams, request.params, 'params');
-    const body = parseOrThrow(customerInputSchema, request.body);
+    const { expectedUpdatedAt, ...body } = parseOrThrow(customerUpdateSchema, request.body);
     try {
-      return { customer: await customersService.updateCustomer(context.user.id, params.id, body) };
+      return {
+        customer: await customersService.updateCustomer(
+          context.user.id,
+          params.id,
+          body,
+          expectedUpdatedAt === undefined ? undefined : new Date(expectedUpdatedAt),
+        ),
+      };
     } catch (error) {
       if (sendAuthError(request, reply, error)) return;
       throw error;

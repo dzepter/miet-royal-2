@@ -375,12 +375,12 @@ folgenden Härtungen und Restrisiken sind KEINE Phase-15-Blocker (Phase 15 Final
   geänderte, vom Kunden nicht verifizierte Adresse. Die Anrede kommt weiter aus
   dem Buchungs-Snapshot. Bewusst so umgesetzt; bei Bedarf fachlich nachschärfen.
 - **Allgemeines CRM-Concurrency-Hardening – Staff-PATCH mit veraltetem Formular
-  (vorbestehend, Nachbar von R7; kein Phase-15-Blocker):** Mitarbeitende dürfen
-  die Kunden-E-Mail im CRM bewusst ändern (bleibt so). Speichert eine
-  Mitarbeiterin aber ein vor dem verifizierten Portal-Wechsel geladenes
-  Kundenformular, kann sie die Adresse unbemerkt zurückdrehen. Spätestens in
-  Phase 18 / Acceptance prüfen (möglicher Weg: optimistische Sperre); jetzt keine
-  CRM-Versionierungsarchitektur.
+  (vorbestehend, Nachbar von R7):** in Phase 18 reproduziert und behoben –
+  `PATCH /staff/customers/:id` nimmt optional `expectedUpdatedAt` (den geladenen
+  `updatedAt`) entgegen und antwortet bei abweichendem Serverstand 409 ohne
+  Änderung; die Staff-App sendet den Wert und lädt den aktuellen Stand neu
+  (docs/TECH_DECISIONS.md „Phase 18“; Tests `acceptance-fixes` P18-F1a–c,
+  E2E crm-flow). Mitarbeitende dürfen die Kunden-E-Mail weiterhin bewusst ändern.
 - **Optionale Härtungen (theoretisch, nicht reproduziert):**
   - R5 (TOCTOU): Die Bedingung „Bestätigung nur bei `prepared` nachreihen“ wird
     vor dem Service-Aufruf geprüft; zusätzlich unter `FOR UPDATE` in
@@ -632,3 +632,46 @@ Testuhr-Pin der Touren-Integrationstests; Lexware-Wartebedingung.
   nicht gegen eine Primärquelle verifiziert (kein Blocker).
 - **Staging darf nie indexiert werden:** `WEB_INDEXING_ENABLED` dort nicht setzen; Staging bleibt
   crawlbar, jede Antwort `noindex`, keine Sitemap-Zeile (docs/ENVIRONMENTS.md „Website-SEO“).
+
+## Phase 18 (Gesamt-Abnahme)
+
+Erledigt in Phase 18 (siehe docs/TECH_DECISIONS.md „Phase 18“): CRM-Concurrency-Hardening
+(optimistische Sperre), Idempotenzschlüssel für Online-Schäden, Log-Policy der Annahme, zweite
+Testdatenbank in der Infra, dokumentiertes Backup-/Restore-Verfahren, PERMISSIONS-Korrektur.
+Offen bzw. bewusst so belassen:
+
+- **Nachträgliche Feststellung nach gesperrtem Settlement:** Ist die Abrechnung bereits
+  übertragen (Auto-Transfer ohne Vorinformationspflicht kann sofort erfolgen) und die Maschine noch
+  in Reinigung, erzeugt ein Nachtrag (`POST /staff/machines/:id/damages`) einen Schaden mit
+  `requires_financial_review = true`, aber keine Klärung mehr (Settlement unveränderlich). Der
+  Punkt ist nirgends als offener Finanzpunkt gelistet. Fachentscheidung nötig (separate
+  Nachberechnung? Hinweis an die Verwaltung?). Kontroll-SQL:
+  `SELECT d.id FROM machine_damages d JOIN settlements s ON s.return_id = d.return_id WHERE
+  d.requires_financial_review AND s.locked_at IS NOT NULL AND NOT EXISTS (SELECT 1 FROM
+  settlement_clarifications c WHERE c.source_id = d.id)`.
+- **Tour-Übernahme ohne `expectedVersion`:** API-Clients, die keine Version senden, lassen eine
+  spätere Übernahme „gewinnen“ (die Staff-App sendet immer `tour.version`, CAS ⇒ 409). Bewusst
+  optional belassen; bei Bedarf Pflichtfeld (API-Vertragsänderung).
+- **Online-Schaden ohne `clientMutationId`:** API-Clients ohne Schlüssel erzeugen bei
+  Wiederholung weiterhin eine neue Zeile (Kompatibilität); die Staff-App sendet den Schlüssel
+  immer.
+- **`dead`-Jobs ohne Operator-Sicht** (außer Demo-Storage-Cleanup) und **Web-Push
+  at-least-once** (Teilerfolg + Retry kann bereits erreichte Geräte erneut treffen; Browser-`tag`
+  fasst zusammen) – bekannte Grenzen, keine Phase-18-Defekte.
+- **`handovers.status = 'finalized'` ohne DB-CHECK** auf `protocol_document_id` (nur Code; die
+  Rückgabe hat `rental_returns_finalized_check`) – als Invariante im Integritätscheck geprüft;
+  eine Migration nur bei nachgewiesenem Defekt.
+- **Kein Egress-Block im Code:** der Nachweis „kein echter Provider“ beruht auf Config-Fail-closed,
+  Start-Assertions, Fake-Zählern und dem `fetch`-Spion des Demo-Akzeptanztests; ein Netzwerk-
+  Egress-Block ist Hosting-Thema (Firewall), nicht Repo.
+- **Backup-Automatisierung** (Zeitplan, Aufbewahrung, Off-site, S3-Bucket-Sicherung) bleibt
+  Go-live-/Hosting-Thema; das manuelle Verfahren ist dokumentiert und lokal nachgewiesen.
+- **DATA_MODEL.md ohne Offline-/Override-Tabellen:** `offline_access_leases`,
+  `offline_mutation_receipts`, `machine_assignment_overrides`, `appointment_conflict_suppressions`
+  sind nur in Schema/TECH_DECISIONS beschrieben – Dokumentationslücke, kein Codefehler.
+- **MinIO/S3-Integrationstest** (`packages/integrations/test/s3-storage.integration.test.ts`)
+  konnte in der Phase-18-Umgebung nicht laufen (Image nicht ladbar) – auf Staging/CI nachholen.
+- Unverändert aus Phase 17: E2E-Zeitfenster (`tours-flow` 22:43–00:02; `portal-flow` G,
+  `training-demo` H, `tours-offline-conflict` 23:38–00:02 Berlin), Rechtstexte als Go-live-Blocker,
+  Google-Reviews-EWR/Permitted-Use, DNS/HTTPS/Search Console (Phase 19/20).
+

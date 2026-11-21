@@ -48,13 +48,18 @@ Abschnitt „Website-SEO (Phase 17)“.
 
 ## Lokale Entwicklung
 
-`pnpm infra:up` startet PostgreSQL 18 mit drei getrennten Datenbanken:
+`pnpm infra:up` startet PostgreSQL 18 mit vier getrennten Datenbanken:
 
-| Datenbank        | Zweck                          |
-| ---------------- | ------------------------------ |
-| `mietroyal_dev`  | Entwicklung (`APP_ENV=development`-Default) |
-| `mietroyal_test` | Integrationstests (`TEST_DATABASE_URL`)     |
-| `mietroyal_demo` | Lokale Demo-Experimente        |
+| Datenbank         | Zweck                          |
+| ----------------- | ------------------------------ |
+| `mietroyal_dev`   | Entwicklung (`APP_ENV=development`-Default) |
+| `mietroyal_test`  | Integrationstests (`TEST_DATABASE_URL`)     |
+| `mietroyal_test7` | Zweite Integrationstest-DB (`TEST_DATABASE_URL_SECOND`, Cross-Environment-Tests Demo/Live; Phase 18) |
+| `mietroyal_demo`  | Lokale Demo-Experimente        |
+
+Bestehende lokale Container (Init-Skripte laufen nur beim ersten Start des Volumes) legen die
+vierte Datenbank mit `docker exec mietroyal-postgres createdb -U mietroyal -O mietroyal mietroyal_test7`
+nach.
 
 Lokale Verbindungsdaten (kein Geheimnis, nur Docker-lokal; der Port ist
 ausschließlich an 127.0.0.1 gebunden):

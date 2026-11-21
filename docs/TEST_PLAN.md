@@ -524,9 +524,9 @@ die App-Shell mit Service Worker brauchen.
 ## Kundenportal (Phase 15)
 Fachdoku: docs/CUSTOMER_PORTAL.md. Testnamen tragen die Nummer bzw. den Fund am Anfang
 („A7. …“, „R12. …“). Integration: `cd apps/api && TEST_DATABASE_URL=… pnpm vitest run --config
-vitest.integration.config.ts <Datei>`; A19 (`portal-auth`) läuft nur mit
-`TEST_DATABASE_URL_SECOND` (sonst übersprungen), E4 (`portal-demo`) nutzt die zweite Datenbank
-(Default `mietroyal_test7`). Web: `pnpm --filter @mietroyal/web test` (`node --test`), Config:
+vitest.integration.config.ts <Datei>`; A19 (`portal-auth`) und E4 (`portal-demo`) nutzen die
+zweite Datenbank (`TEST_DATABASE_URL_SECOND`, Default `mietroyal_test7`; seit Phase 18 von
+`infra/postgres-init` angelegt und Pflicht – kein stiller Skip mehr). Web: `pnpm --filter @mietroyal/web test` (`node --test`), Config:
 `cd packages/config && pnpm vitest run`. Keine echten Provider (Fake-Mail-Gateway, SMTP-Senke).
 
 **Magic-Link-Testtokens nur in-process:** Integrationstests lesen den Token ausschließlich im
@@ -851,6 +851,44 @@ ohne Fenster über den Testuhr-Pin (siehe „Touren … Phase 13“); verbleiben
 sind durch die Produktregel `TOUR_NOT_TODAY` bedingt und ohne Produktänderung (injizierbare
 API-Uhr) nicht behebbar – deterministischer Abbruch mit Fensterangabe statt stiller Flake
 (docs/OPEN_ITEMS.md „Phase 17“).
+
+## Gesamt-Abnahme (Phase 18)
+Nachweis und Zahlen: docs/PHASE18_ACCEPTANCE_REPORT.md; Entscheidungen: docs/TECH_DECISIONS.md
+„Phase 18“. Die acht Abnahmeszenarien laufen als API-Integrationssuiten auf frischer Datenbank
+(echte Services, nur Fakes/Mocks) und enden jeweils mit dem gemeinsamen Integritätscheck
+`apps/api/test/acceptance-integrity.ts` (SQL-Invarianten: Statuskombinationen, Doppelobjekte,
+weiche Referenzen ohne FK, Jobs/Quittungen; plus Dokument↔Storage-SHA-256). Testnamen tragen
+das Präfix `P18-<Szenario><n>.`:
+
+| Datei (`apps/api/test/`) | Szenario / Inhalt |
+| --- | --- |
+| `acceptance-integrity.integration.test.ts` | P18-C0: Selbsttest des Integritätschecks (alle Abfragen ausführbar, eindeutig, Storage-Abgleich) |
+| `acceptance-standard.integration.test.ts` | A Standardvermietung: Website-Anfrage (Replay) → Angebot → parallele Annahme → AB → Übergabe/Rückgabe je Doppel-Finalize → Settlement → Transfer genau einmal → bezahlt → Gutschein → Portal-Sichtbarkeit → Historienfelder |
+| `acceptance-damage-objection.integration.test.ts` | B Schaden (Pflichtfelder, Foto-Blocker, Kostenentscheid parallel, Schaden A≠B, 403, Portal ohne Beträge) + C Kundeneinspruch (Vorabmail/Frist, Portalnachricht zählt nie, parallele Rückmeldung, Freigabe nur manuell, Rechte) |
+| `acceptance-cancellation.integration.test.ts` | D Storno: Gebühr 0/50/100 %, Ressourcenfreigabe, Doppel-/Parallelstorno, Portal-Gebührenbindung, Blocker, Rechte, Transfer genau einmal |
+| `acceptance-offline.integration.test.ts` | E Offline: minimales Paket, Replay deduplicated, gleicher `clientMutationId` parallel, Recovery nach Abbruch, Konflikte nie still, Re-Autorisierung |
+| `acceptance-conflict.integration.test.ts` | F Konflikt/Override: harter Blocker (auch Admin), Pflichtgrund/Recht, Stale-Override, Tour-Doppelstart, parallele Übernahmen (CAS), Termin-CAS |
+| `acceptance-permissions.integration.test.ts` | G Berechtigungen: 403 ohne Nebeneffekt (Zähler Jobs/Mails/Dokumente/Audit/Fachtabellen) für kritische Mutationen, Systemadmin-Semantik, CSRF-Legacy-Pfad, 401 |
+| `acceptance-demo.integration.test.ts` | H Demo/Training: globaler `fetch`-Spion (kein Egress), Whitelist/[DEMO], Disabled-Accounting, Mock-Provider, Reset ohne Wirkung auf die Live-DB, production lehnt Fakes ab, Env-Isolation-CLI |
+| `acceptance-fixes.integration.test.ts` | Regressionstests der Phase-18-Befunde: P18-F1a–c CRM optimistische Sperre (`expectedUpdatedAt`), P18-F2a/b Idempotenzschlüssel Schaden/Nachtrag, P18-F3 Log-Policy Annahme |
+
+Ergänzte E2E-Prüfungen: `crm-flow` (veraltetes Kundenformular ⇒ 409-Hinweis statt stillem
+Überschreiben), `return-flow` F (Schadensformular sendet `clientMutationId`).
+
+Gate-Lauf (frische Datenbanken, alle Suiten; zwei Test-DBs Pflicht – `TEST_DATABASE_URL_SECOND`
+wird von `infra/postgres-init` als `mietroyal_test7` angelegt):
+
+```bash
+cd apps/api && TEST_DATABASE_URL=… TEST_DATABASE_URL_SECOND=… APP_ENV=development \
+  pnpm vitest run --config vitest.integration.config.ts            # alle Integrationssuiten
+pnpm vitest run --config vitest.integration.config.ts test/acceptance-*.ts   # nur Phase-18-Suiten
+```
+
+Regeln der Abnahme (Auftrag Phase 18): keine Skips, keine `sleep`-Wartezeiten, keine großzügigen
+Timeouts, keine geschwächten Assertions; Zeitfenster nur über bestehende Mechanismen
+(`pinMorningClockIfEvening`, SQL-Backdating der Notice, Mock `expire-wait`); Flakes sind Befunde.
+Backup/Restore wird nicht als Repo-Test, sondern als dokumentierter Lauf auf einer
+Wegwerf-Datenbank geprüft (docs/DEPLOYMENT_NOTES.md „Backup & Restore (Phase 18)“).
 
 ## Definition of Done
 Fachregel korrekt, Rechte serverseitig, Validierung, Fehlerfall,

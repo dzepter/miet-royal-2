@@ -189,20 +189,38 @@ export class CustomerService {
     return rows.map((row) => row.id);
   }
 
+  /**
+   * Phase 18 (CRM-Concurrency): `expectedUpdatedAt` ist optional die
+   * Vorbedingung des Clients (geladener `updatedAt`). Der Vergleich läuft im
+   * UPDATE selbst (kein TOCTOU) auf Millisekunden – Clients kennen den Wert nur
+   * aus dem JSON (ISO, ms); ein abweichender Stand ⇒ CONFLICT, nichts geändert.
+   */
   async updateCustomer(
     _actorId: string,
     customerId: string,
     input: CustomerInput,
+    expectedUpdatedAt?: Date,
   ): Promise<Customer> {
     const existing = await this.getActiveCustomer(customerId);
     const row = toRow({ ...input, type: existing.type });
+    const unchangedSince =
+      expectedUpdatedAt === undefined
+        ? undefined
+        : sql`date_trunc('milliseconds', ${customers.updatedAt}) = date_trunc('milliseconds', ${expectedUpdatedAt.toISOString()}::timestamptz)`;
     const updated = await this.db
       .update(customers)
       .set({ ...row, updatedAt: new Date() })
-      .where(and(eq(customers.id, customerId), isNull(customers.deletedAt)))
+      .where(and(eq(customers.id, customerId), isNull(customers.deletedAt), unchangedSince))
       .returning();
     const customer = updated[0];
-    if (customer === undefined) throw new AuthError('NOT_FOUND', 'Kunde nicht gefunden.');
+    if (customer === undefined) {
+      // Zeile existiert (oben gelesen) ⇒ die Vorbedingung hat nicht gehalten.
+      await this.getActiveCustomer(customerId);
+      throw new AuthError(
+        'CONFLICT',
+        'Der Kunde wurde zwischenzeitlich geändert. Bitte neu laden und erneut prüfen.',
+      );
+    }
     return customer;
   }
 

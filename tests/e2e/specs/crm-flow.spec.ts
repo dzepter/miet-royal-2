@@ -43,6 +43,39 @@ test('Kunde anlegen (Privatperson, minimale Pflichtfelder)', async () => {
   await expect(page.getByText('E-Mail: klara@e2e.example')).toBeVisible();
 });
 
+test('Veraltetes Kundenformular überschreibt eine fremde Änderung nicht still (409 + Hinweis)', async () => {
+  // Phase 18 (CRM-Concurrency): Formular öffnen, dann ändert eine zweite Stelle den Kunden
+  // (hier über die API derselben Sitzung); das veraltete Formular darf den neuen Stand
+  // nicht zurückdrehen – der Server antwortet 409, die Seite zeigt den Hinweis und lädt neu.
+  const customerId = page.url().split('/kunden/')[1]!.split(/[?#]/)[0]!;
+  await page.getByRole('button', { name: 'Bearbeiten' }).click();
+  await expect(page.getByLabel('Telefon (optional)')).toHaveValue('0170 1112233');
+  const concurrent = await page.request.patch(`/api/staff/customers/${customerId}`, {
+    data: {
+      type: 'private',
+      firstName: 'Klara',
+      lastName: 'Musterfrau',
+      email: 'klara@e2e.example',
+      phone: '0170 9999999',
+    },
+  });
+  expect(concurrent.status()).toBe(200);
+  await page.getByLabel('Telefon (optional)').fill('0170 5555555');
+  await page.getByRole('button', { name: 'Speichern' }).click();
+  await expect(page.locator('.error')).toContainText('zwischenzeitlich geändert');
+  await expect(page.getByText('Telefon: 0170 9999999')).toBeVisible();
+  const reloaded = await page.request.get(`/api/staff/customers/${customerId}`);
+  expect(((await reloaded.json()) as { customer: { phone: string } }).customer.phone).toBe(
+    '0170 9999999',
+  );
+  // Erneutes Bearbeiten auf aktuellem Stand gelingt.
+  await page.getByRole('button', { name: 'Bearbeiten' }).click();
+  await expect(page.getByLabel('Telefon (optional)')).toHaveValue('0170 9999999');
+  await page.getByLabel('Telefon (optional)').fill('0170 1112233');
+  await page.getByRole('button', { name: 'Speichern' }).click();
+  await expect(page.getByText('Telefon: 0170 1112233')).toBeVisible();
+});
+
 test('Vorgang für den Kunden anlegen (MR-Nummer sichtbar)', async () => {
   await page.getByRole('button', { name: 'Vorgang anlegen' }).click();
   await expect(page.getByRole('heading', { name: /^MR-\d{4}-\d{4,}$/ })).toBeVisible();
