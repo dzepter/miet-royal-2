@@ -241,6 +241,50 @@ docs/SEO_TECHNICAL.md, docs/REDIRECT_MATRIX.md, docs/DEPLOYMENT_NOTES.md
   `apps/web/app/favicon.ico`) vor dem Go-live durch die finalen Dateien ersetzen
   (gleiche Dateinamen).
 
+## Pilotbetrieb (Phase 19) – menschliche Freigaben vor dem ersten echten Vorgang
+Phase 19 hat die technische Pilotfähigkeit lokal produktionsnah nachgewiesen
+(docs/PHASE19_PILOT_REPORT.md). Ein echter Pilot („wenige echte Vorgänge unter enger
+Beobachtung“, ROADMAP) braucht vorher diese Entscheidungen des Inhabers – nichts davon
+trifft Claude Code:
+
+- **Zielsystem (OPEN_ITEMS „Hosting“):** Linux-VPS/Cloud-Server, Hostnamen für Staff/Web/API
+  (nicht `www.miet-royal.de` – DNS bleibt bis Phase 20 bei der Alt-Website), TLS-Zertifikate,
+  Reverse-Proxy nach DEPLOYMENT_NOTES „Reverse-Proxy für Staff, Website und API-Direktrouten“,
+  Firewall mit Egress-Allowlist (nur konfigurierte Provider-Hosts, SMTP/IMAP-Host, Datenbank,
+  Object Storage), Prozessmanager mit `APP_ENV`, Secret-Ablage (0600) für die Umgebungsdateien.
+- **Umgebung des Piloten:** `APP_ENV=production` für echte Kunden (Training-Gate, https-Pflicht,
+  Provider-Schalter); `staging` nur für Testdaten. Vor dem Start `pnpm check:env-isolation` für
+  alle Paare (prod↔demo, prod↔staging).
+- **Provider-Stufen je Integration** (disabled/live) ausdrücklich festlegen: Mail (Pflicht für
+  Portal und Kundenmails: Postfach, SPF/DKIM/DMARC, `pnpm mail:smoke` an eine eigene Adresse),
+  Lexware (`LEXWARE_ENABLED=true` erst nach Steuerkonfiguration und Testaccount-Smoke; sonst
+  `false`), Routing (`disabled` bis zur Vertragsprüfung), WhatsApp (`disabled` ohne WABA),
+  Push (VAPID-Paar der Umgebung), Google Reviews (`disabled` bis EWR-Klärung).
+- **Rechtstexte:** Impressum/Datenschutz juristisch freigegeben und im Staff veröffentlicht,
+  bevor Website-Anfragen oder Portalnutzung durch echte Kunden erfolgen (fail-closed:
+  `PRIVACY_NOT_PUBLISHED`).
+- **Pilotgruppe:** Auswahl und Information der teilnehmenden Kunden/Mitarbeitenden durch den
+  Inhaber; Umfang (Anzahl Vorgänge, Dauer), Abbruchkriterien und Rollback-Entscheidung
+  (DEPLOYMENT_NOTES Release-Schritt 8) schriftlich festhalten.
+- **Backup vor dem ersten Vorgang:** Verfahren „Backup & Restore (Phase 18)“ auf dem Zielsystem
+  einmal vollständig durchspielen (Dump, Storage-Export, Schlüssel, Restore-Test), Zeitplan und
+  Off-site-Kopie einrichten.
+- **Beobachtung:** Uptime-Check auf `/health`/`/ready`, tägliche Routine nach DEPLOYMENT_NOTES
+  „Betrieb im Pilot“ (inkl. „Worker verarbeitet“-Signal unter Einstellungen → System), Alarm auf
+  die Log-Zeile `Job endgültig fehlgeschlagen (dead)`.
+- **Schutz vor Fehlbedienung (aus der Phase-19-Lektüre):** Pilot-/Produktionsdatenbank nie mit
+  `mietroyal_test` im Namen (E2E-Seeds leeren jede Datenbank mit diesem Namensbestandteil) und nie
+  `APP_ENV=demo` mit einer Pilot-`DATABASE_URL` in einer Shell (`demo:reset --yes` prüft nur
+  `APP_ENV`); Operator-Skripte (`settlement:ensure`, `voucher:ensure`,
+  `scheduling:ensure-booking-appointments`, `communication:rewrap-secrets`, `lexware:setup`,
+  `lexware:reconcile`) wenden Migrationen implizit an und können Jobs/Lexware-Änderungen
+  auslösen – nur im Wartungsfenster, mit gestopptem Worker und dokumentierter Freigabe;
+  `cms:bootstrap --publish-demo` prüft nur die rohe `APP_ENV`-Variable des Aufrufs. Web-Instanz:
+  `WEB_APP_ENV` setzen und nach dem Start das Serverlog prüfen (fehlt die Variable, läuft Next
+  stillschweigend als development).
+- **Rollback vorbereitet:** Git-Tag je Pilot-Stand, voriges Build-Verzeichnis behalten,
+  Backup vor jedem Release (DEPLOYMENT_NOTES „Rollback im Pilot“).
+
 ## Sicherheitsregel
 Echte Zugangsdaten nie in Chat-Prompts oder Git-Dateien kopieren, wenn sie als
 Secrets/Environment-Variablen auf dem Zielsystem gesetzt werden können.

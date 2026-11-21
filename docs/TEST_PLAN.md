@@ -890,6 +890,33 @@ Timeouts, keine geschwächten Assertions; Zeitfenster nur über bestehende Mecha
 Backup/Restore wird nicht als Repo-Test, sondern als dokumentierter Lauf auf einer
 Wegwerf-Datenbank geprüft (docs/DEPLOYMENT_NOTES.md „Backup & Restore (Phase 18)“).
 
+## Pilot-Readiness (Phase 19)
+
+Phase 19 weist die technische Pilotfähigkeit produktionsnah nach (Ergebnisse und Zahlen:
+docs/PHASE19_PILOT_REPORT.md). Neue Repo-Tests:
+
+| Test | Datei | Inhalt |
+| --- | --- | --- |
+| P19-L1–L3 | `packages/config/test/load-config.test.ts` | production: Lexware nur mit `LEXWARE_ENABLED=true` (Key allein ⇒ Konfigurationsfehler ohne Werte), `false` = Kill-Switch, aktiv ⇒ Organisation + Webhook-Callback Pflicht |
+| P19-I1 | `packages/config/test/demo-links.test.ts` | Isolations-Check: dieselbe `MAIL_PUBLIC_WEB_BASE_URL` in zwei Umgebungen kollidiert; eigene Basis bleibt isoliert |
+| Runner „dead-Signal“ | `packages/integrations/test/runner.test.ts` | letzter Fehlversuch loggt zusätzlich `Job endgültig fehlgeschlagen (dead)`; frühere Fehlversuche nicht |
+| P19-J1–J4 | `apps/api/test/system-jobs.integration.test.ts` | `GET /staff/system/jobs`: 401/403/200, dead/retrying mit Typ, Versuchen, Fehler, nur UUID-Referenzen (keine Adressen/Inhalte), Anweisung je Jobfamilie; Worker-Lebenszeichen (fälliger Job wartet > 5 min ⇒ `stalled`, zukünftige Jobs zählen nicht, nach Verarbeitung `lastSucceededAt`) |
+| P19-F8/F9 | `apps/api/test/settlement-notice-wait.integration.test.ts`, `apps/api/test/communication-templates.test.ts` | Freigabe-Vorschau der Kundeninformation = gesendete Mail (Betreff, Text, [DEMO]; nur der persönliche Link entsteht beim Versand); Schadenbeschreibung mit 2.000 Zeichen ⇒ Vorschau vollständig, Freigabe 200, Mail gesendet (vorher 500) |
+| P19-F12 | `apps/api/test/mail-recipient-name.test.ts`, `settlement-notice-wait.integration.test.ts` | Anrede/Empfängername aller Kundenmails in natürlicher Reihenfolge („Hallo Klara Kommerz,“), Organisationsname für Organisationen, nie das Listenformat „Nachname, Vorname“ |
+| P19-F13 | `apps/api/test/staff-proxy-body-limit.test.ts` | Staff-Proxy-Puffer (`proxyClientMaxBodySize`) ≥ API-Limit des Offline-Syncs (12 MiB) + Reserve |
+| P19-F11 | `apps/api/test/routing-smoke-script.integration.test.ts` | `pnpm routing:smoke` baut das GraphHopper-Gateway mit globaler Drossel auf (Kindprozess gegen geschlossenen Port: Startzeile, Exit 1, keine Drossel-Fehlermeldung, kein Schlüssel in der Ausgabe) |
+| S3-Storage | `packages/integrations/test/s3-storage.integration.test.ts` | unverändert; läuft wieder gegen `pnpm infra:up` (Dienst `s3`, RustFS) – in Phase 18 nicht ausführbar |
+
+Nicht im Repo (Nachweise des Pilot-Stacks, Skripte im Phase-19-Arbeitsverzeichnis, Protokolle im
+Pilotbericht): Fail-closed-Startmatrix API/Worker (19 Fehlkonfigurationen × 2 Prozesse),
+nginx-Topologie (Hosts, Redirects, 444, Cookies, X-Forwarded-For, Log-Maskierung), UI-Smoke
+über TLS inkl. mobiler Viewports, Worker-Nachweis (Zustellung, Retry, Herunterfahren, Absturz +
+Lease-Recovery, Neustart, Heartbeat-Idempotenz), Pilotabläufe Standard/Edge/Offline über die
+echten HTTPS-APIs mit lesender DB-Prüfung, Backup/Restore mit S3-Variante.
+
+Gate der Phase 19 = Gate der Phase 18 (Abschnitt „Gesamt-Abnahme (Phase 18)“) plus S3-Test,
+WebKit-Projekt (`pwa-smoke`, sofern installiert) und Pilot-Deployment-Smoke.
+
 ## Definition of Done
 Fachregel korrekt, Rechte serverseitig, Validierung, Fehlerfall,
 responsive, Tests ausgeführt, Doku aktualisiert, Staging geprüft.

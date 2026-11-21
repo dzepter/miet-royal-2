@@ -60,6 +60,7 @@ import {
   type DamageView,
 } from './damage-service.ts';
 import { sketchImagesFor } from './sketch-assets.ts';
+import { mailRecipientName } from '../communication/transactional/keys.ts';
 
 /**
  * Zentrale Rückgabegrenze (Phase-7-Order §2): orchestriert Rückgabeperson,
@@ -1834,7 +1835,7 @@ export class ReturnService {
             processNumber,
             recipient: {
               email: typeof customer.email === 'string' ? customer.email : '',
-              name: typeof customer.displayName === 'string' ? customer.displayName : null,
+              name: mailRecipientName(customer), // Phase 19 (P19-F12)
             },
             finalizedAt,
             documents: [

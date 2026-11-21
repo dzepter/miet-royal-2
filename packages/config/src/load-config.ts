@@ -271,8 +271,12 @@ export interface PushConfig {
 
 /**
  * Lexware-Konfiguration (Phase 10, Order §§4/5):
- * - production: `enabled` genau dann, wenn LEXWARE_API_KEY gesetzt ist; Host
- *   ist fest api.lexware.io (LEXWARE_BASE_URL wird in production abgelehnt).
+ * - production: `enabled` nur mit LEXWARE_API_KEY UND ausdrücklichem Opt-in
+ *   LEXWARE_ENABLED=true (Phase 19: kein Live-Provider allein durch Zugangsdaten;
+ *   LEXWARE_ENABLED=false ist der Kill-Switch, ein Key ohne Entscheidung ein
+ *   Konfigurationsfehler); aktiv ⇒ LEXWARE_ORGANIZATION_ID und
+ *   LEXWARE_WEBHOOK_CALLBACK_URL Pflicht. Host ist fest api.lexware.io
+ *   (LEXWARE_BASE_URL wird in production abgelehnt).
  * - demo: niemals aktiv – ein gesetzter LEXWARE_API_KEY ist ein Konfigurationsfehler.
  * - development/staging: nur per explizitem Opt-in (LEXWARE_ENABLED=true + Key);
  *   LEXWARE_BASE_URL darf hier auf einen lokalen Fake-/Testserver zeigen.
@@ -283,7 +287,7 @@ export interface LexwareConfig {
   /** Nur gesetzt, wenn enabled; nie serialisieren. */
   apiKey: string | null;
   baseUrl: string;
-  /** Erwartete organizationId (Pinning gegen falschen Lexware-Account); optional. */
+  /** Erwartete organizationId (Pinning gegen falschen Lexware-Account); production Pflicht bei enabled. */
   organizationId: string | null;
   /** Öffentliche Callback-URL für Event-Subscriptions (HTTPS, production Pflicht bei enabled). */
   webhookCallbackUrl: string | null;
@@ -560,7 +564,30 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   let lexwareEnabled = false;
   let lexwareBaseUrl = LEXWARE_PRODUCTION_BASE_URL;
   if (raw.APP_ENV === 'production') {
-    lexwareEnabled = lexwareKey !== undefined && lexwareKey !== '';
+    const hasLexwareKey = lexwareKey !== undefined && lexwareKey !== '';
+    // Phase 19 (Pilot-Readiness): Ein Live-Provider wird niemals allein durch vorhandene
+    // Zugangsdaten aktiv. Auch in production ist LEXWARE_ENABLED=true das ausdrückliche
+    // Opt-in; LEXWARE_ENABLED=false ist der Kill-Switch bei gesetztem Key. Ein Key ohne
+    // Entscheidung ist ein Konfigurationsfehler (fail-closed, nur Variablennamen).
+    if (hasLexwareKey && raw.LEXWARE_ENABLED === undefined) {
+      problems.push(
+        'LEXWARE_ENABLED: in production muss die Lexware-Anbindung bei gesetztem LEXWARE_API_KEY ausdrücklich mit true aktiviert oder mit false deaktiviert werden',
+      );
+    }
+    if (raw.LEXWARE_ENABLED === 'true' && !hasLexwareKey) {
+      problems.push('LEXWARE_API_KEY: muss gesetzt sein, wenn LEXWARE_ENABLED=true');
+    }
+    lexwareEnabled = hasLexwareKey && raw.LEXWARE_ENABLED === 'true';
+    if (lexwareEnabled && raw.LEXWARE_ORGANIZATION_ID === undefined) {
+      problems.push(
+        'LEXWARE_ORGANIZATION_ID: in production Pflicht bei aktiver Lexware-Anbindung (gepinnte Organisation gegen Buchungen in einen falschen Account)',
+      );
+    }
+    if (lexwareEnabled && raw.LEXWARE_WEBHOOK_CALLBACK_URL === undefined) {
+      problems.push(
+        'LEXWARE_WEBHOOK_CALLBACK_URL: in production Pflicht bei aktiver Lexware-Anbindung (öffentliche HTTPS-Callback-URL für Event-Subscriptions)',
+      );
+    }
     if (
       raw.LEXWARE_BASE_URL !== undefined &&
       raw.LEXWARE_BASE_URL.replace(/\/+$/, '') !== LEXWARE_PRODUCTION_BASE_URL

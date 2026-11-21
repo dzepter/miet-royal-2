@@ -16,9 +16,11 @@ import {
   assertNoHeaderInjection,
   escapeHtml,
   formatEuroCents,
+  MAIL_PREVIEW_LINK_TEXT,
   MAIL_TEMPLATE_VERSIONS,
   MailRenderError,
   renderMail,
+  renderMailPreview,
   renderMailSubject,
   type MailRenderOptions,
 } from '../src/communication/mail/templates/index.ts';
@@ -476,5 +478,56 @@ describe('Demo-Whitelist und Outbox-Backoff', () => {
     expect(mailRetryDelayMs(7)).toBe(3_840_000);
     expect(mailRetryDelayMs(20)).toBe(6 * 60 * 60 * 1000);
     expect(MAIL_MAX_ATTEMPTS).toBe(8);
+  });
+});
+
+describe('Phase 19 (P19-F8/F9) – Freigabe-Vorschau = Versand', () => {
+  it('renderMailPreview liefert Betreff und Text der späteren Mail; nur der persönliche Link steht als Platzhalter', () => {
+    const sample = SAMPLES.settlement_damage_missing_notice;
+    const sent = renderMail(
+      'settlement_damage_missing_notice',
+      sample.context,
+      sample.secrets,
+      options,
+    );
+    const preview = renderMailPreview('settlement_damage_missing_notice', sample.context, {
+      appEnv: 'production',
+    });
+    expect(preview.subject).toBe(sent.subject);
+    const link = `${BASE}/dokument/${sample.secrets.documentToken}`;
+    expect(sent.text).toContain(link);
+    expect(preview.text).toBe(sent.text.replace(link, MAIL_PREVIEW_LINK_TEXT));
+    expect(preview.text).not.toMatch(/placeholder/i);
+    expect(preview.text).toContain(MAIL_SIGNATURE);
+    expect(preview.text).not.toMatch(/Frist|24 Stunden|Mahnung/i);
+  });
+
+  it('Vorschau trägt in demo denselben [DEMO]-Betreff wie der Versand; Positionstext bis 2600 Zeichen zulässig, darüber Kontextfehler', () => {
+    const sample = SAMPLES.settlement_damage_missing_notice;
+    const demo = renderMailPreview('settlement_damage_missing_notice', sample.context, {
+      appEnv: 'demo',
+    });
+    expect(demo.subject.startsWith('[DEMO] ')).toBe(true);
+    expect(demo.subject).toBe(
+      renderMailSubject('settlement_damage_missing_notice', sample.context, { appEnv: 'demo' }),
+    );
+    const long = `Schadenkosten Maschine MR-10-01-01 (leicht): ${'x'.repeat(2000)}`;
+    const preview = renderMailPreview(
+      'settlement_damage_missing_notice',
+      { ...sample.context, positions: [{ label: long, amountCents: 100 }], totalCents: 100 },
+      { appEnv: 'production' },
+    );
+    expect(preview.text).toContain(long);
+    expect(() =>
+      renderMailPreview(
+        'settlement_damage_missing_notice',
+        {
+          ...sample.context,
+          positions: [{ label: 'x'.repeat(2601), amountCents: 100 }],
+          totalCents: 100,
+        },
+        { appEnv: 'production' },
+      ),
+    ).toThrow(MailRenderError);
   });
 });

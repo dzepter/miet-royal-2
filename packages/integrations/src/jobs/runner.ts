@@ -256,6 +256,20 @@ export class JobRunner {
         { jobId: job.id, jobType: job.type, attempt: job.attempts, error: message },
         'Job fehlgeschlagen',
       );
+      if (job.attempts >= job.maxAttempts) {
+        // Phase 19 (Pilot-Readiness): Der letzte Versuch ist verbraucht – die Queue hat den Job
+        // als `dead` beendet. Eigene, eindeutig filterbare Fehlerzeile für Log-Alarmierung;
+        // die Operator-Sicht liegt in der Staff-App (Einstellungen → System).
+        this.logger.error(
+          {
+            jobId: job.id,
+            jobType: job.type,
+            attempts: job.attempts,
+            maxAttempts: job.maxAttempts,
+          },
+          'Job endgültig fehlgeschlagen (dead) – Operator-Eingriff nötig',
+        );
+      }
       return 'failed';
     } finally {
       if (release !== null) {

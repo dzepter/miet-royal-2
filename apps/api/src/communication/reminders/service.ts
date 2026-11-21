@@ -55,6 +55,7 @@ import type { MailOutboxService } from '../mail/outbox.ts';
 import type { MailPreSendGuard, MailSentListener } from '../mail/send-job.ts';
 import type { ReminderMailContext } from '../mail/templates/contexts.ts';
 import type { MailDeliveryStatus } from '../types.ts';
+import { mailRecipientName } from '../transactional/keys.ts';
 
 export type ReminderKind = 'reminder_7_days' | 'reminder_1_day';
 
@@ -115,7 +116,8 @@ function snapshotString(snapshot: unknown, key: string): string | null {
 
 /** Anrede aus dem eingefrorenen Kunden-Snapshot (nie aus dem Live-Kunden). */
 export function salutationFor(customerSnapshot: unknown): string {
-  const name = snapshotString(customerSnapshot, 'displayName');
+  // Phase 19 (P19-F12): natürliche Reihenfolge statt Listen-Anzeigename.
+  const name = mailRecipientName(customerSnapshot);
   return name === null ? 'Hallo,' : `Hallo ${name},`;
 }
 
@@ -308,7 +310,7 @@ export class ReminderService {
           processId: appointment.processId,
           customerId: booking.customerId,
           bookingId: booking.id,
-          recipient: { email, name: snapshotString(booking.customerSnapshot, 'displayName') },
+          recipient: { email, name: mailRecipientName(booking.customerSnapshot) },
           context: context as unknown as Record<string, unknown>,
           ...(secrets === undefined ? {} : { secrets }),
           idempotencyKey: reminderIdempotencyKey(kind, fingerprint),
@@ -462,7 +464,7 @@ export class AppointmentCustomerInfoService {
       bookingId: booking.id,
       recipient: {
         email: snapshotString(booking.customerSnapshot, 'email') ?? '',
-        name: snapshotString(booking.customerSnapshot, 'displayName'),
+        name: mailRecipientName(booking.customerSnapshot),
       },
       context: {
         salutation: salutationFor(booking.customerSnapshot),

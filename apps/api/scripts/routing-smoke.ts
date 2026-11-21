@@ -11,6 +11,7 @@
  *   GRAPHHOPPER_API_KEY=… pnpm routing:smoke
  */
 import { loadConfig } from '@mietroyal/config';
+import { createDb, createPool } from '@mietroyal/database';
 import { createRoutingGateway } from '../src/routing/factory.ts';
 import { RoutingError } from '../src/routing/types.ts';
 
@@ -46,7 +47,9 @@ const TEST_ADDRESS = 'Jockel-Fuchs-Platz 1, 55116 Mainz';
 const ROUTE_FROM = { latitude: 50.0011, longitude: 8.2588 };
 const ROUTE_TO = { latitude: 50.0706, longitude: 8.2437 };
 
-const gateway = createRoutingGateway(config, logger);
+// Phase 19 (P19-F11): GraphHopper verlangt die globale Drossel (Datenbank) – wie API und Worker.
+const pool = createPool(config.databaseUrl);
+const gateway = createRoutingGateway(config, logger, { db: createDb(pool) });
 console.log(
   `Routing-Smoke (APP_ENV=${config.appEnv}, provider=${gateway.providerName}, Timeout ${config.routing.graphhopper.requestTimeoutMs} ms) – 1× geocode, 1× route`,
 );
@@ -74,4 +77,5 @@ try {
   );
   exitCode = 1;
 }
+await pool.end();
 process.exit(exitCode);

@@ -66,3 +66,27 @@ eine Sicherung; Restore immer in eine leere Datenbank mit Verifikation.
 Kein generisches Fach-Audit-Log – Historie = Zeilenfelder, Jobs, Mails,
 unveränderliche Dokumente, Security-Events.
 
+## Pilot-Readiness (Phase 19)
+Ein Live-Provider wird nie allein durch vorhandene Zugangsdaten aktiv – auch in
+production braucht Lexware das ausdrückliche Opt-in (`LEXWARE_ENABLED=true`),
+`false` ist der Kill-Switch.
+Endgültig fehlgeschlagene Hintergrundjobs müssen für Operatoren ohne
+Datenbankzugriff sichtbar sein (Einstellungen → System); niemand setzt Jobs
+„auf erfolgreich“, die Wiederholung bleibt fachlich.
+Web- und Staff-Server lauschen nur auf Loopback; der Reverse-Proxy ist der
+einzige Zugang.
+Zwei Umgebungen teilen nie dieselbe öffentliche Web-Basis.
+Die Verwaltung gibt genau den Text frei, den der Kunde erhält: Vorschau und
+Versand der Kundeninformation kommen aus derselben Mailvorlage; Kundentext wird
+nie gekürzt (Vertragsgrenzen folgen den zulässigen Eingaben).
+Kundenmails sprechen in natürlicher Reihenfolge an („Hallo Vorname Nachname,“
+bzw. Organisationsname), nie im Listenformat der Staff-App.
+Ein Operator erkennt ohne Datenbankzugriff, ob der Worker verarbeitet
+(fällige Jobs warten nie länger als die Lease von 5 Minuten).
+Jeder Proxy-Puffer vor einer API-Route ist mindestens so groß wie deren
+Body-Limit plus Reserve (Web und Staff 13 MiB).
+Go-live-Werkzeuge (`*:smoke`) laufen gegen dieselben Schutzmechanismen wie der
+Betrieb (globale Drossel) und werden als Kindprozess getestet.
+Ein echter Pilot mit realen Kunden beginnt erst nach Hosting-, Rechtstext-,
+Buchhaltungs- und Pilotgruppen-Freigabe durch den Inhaber – Phase 19 weist die
+technische Pilotfähigkeit nach, startet aber keinen Echtbetrieb.

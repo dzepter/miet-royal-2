@@ -298,6 +298,10 @@ Serverseitige Umsetzung (Phase 14, W2, Order §55–§66, §97–§100):
 - **Admin-Status** (`system.settings`, Einstellungen → Kommunikation):
   `pushStatusSummary` liefert nur enabled/öffentlichen VAPID-Key/aktive
   Geräte – nie den privaten Schlüssel.
+- **Phase 19 (Pilot-Readiness):** `system.settings` deckt zusätzlich die rein lesende
+  Operator-Sicht auf Hintergrundjobs ab (`GET /staff/system/jobs`, Einstellungen → System:
+  dead/retrying-Jobs mit Typ, Versuchen, PII-armer Fehlerzusammenfassung, nur UUID-Referenzen
+  des Payloads und Betriebsanweisung). Keine neuen Rechte; keine Route verändert Jobstatus.
 
 ## Touren, Routing, aktive Fahrt, GPS (Phase 13)
 

@@ -1,11 +1,13 @@
 /**
- * Phase-3-Pflichttests 55/56 gegen echtes MinIO (infra/docker-compose.yml):
+ * Phase-3-Pflichttests 55/56 gegen einen echten S3-kompatiblen Storage (infra/docker-compose.yml,
+ * Dienst `s3`; seit Phase 19 RustFS statt MinIO):
  * S3-Provider-Roundtrip, KEIN öffentlicher Objektzugriff (anonym → 403),
  * kurzlebige signierte URLs und Bucket-Isolation zwischen Umgebungen.
  * Die Konfigurations-Seite der Isolation (gleicher Bucket/gleiche Secrets
  * → Startabbruch) ist in packages/config/test abgedeckt.
  *
- * Voraussetzung: `pnpm infra:up` (MinIO auf 127.0.0.1:59000).
+ * Voraussetzung: `pnpm infra:up` (S3-Dienst auf 127.0.0.1:59000; Endpoint/Zugangsdaten per
+ * TEST_S3_ENDPOINT / TEST_S3_ACCESS_KEY / TEST_S3_SECRET_KEY überschreibbar).
  */
 import { randomUUID } from 'node:crypto';
 import { CreateBucketCommand, S3Client } from '@aws-sdk/client-s3';

@@ -41,7 +41,8 @@ import type { CleaningEndedListener } from '../voucher/voucher-jobs.ts';
 import { UUID_PATTERN } from './auth.ts';
 
 /** Ein Request je Mutation; Fotos (≤ 6 MB) + Unterschrift Base64-kodiert (Order §§27/30). */
-const SYNC_BODY_LIMIT = 12 * 1024 * 1024;
+/** Phase 19 (P19-F13): exportiert, damit der Staff-Proxy-Puffer (next.config) dagegen geprüft wird. */
+export const SYNC_BODY_LIMIT = 12 * 1024 * 1024;
 
 const uuidSchema = z.string().regex(UUID_PATTERN, 'muss eine UUID sein');
 const bookingParams = z.object({ bookingId: uuidSchema });

@@ -10,8 +10,8 @@ nur, was die Foundation bereits festlegt.
 | ------- | --------------------------------------- | ---------------------------------------- |
 | API     | `pnpm api` (`apps/api`, tsx)            | HTTP-API inkl. `/health` und `/ready`.   |
 | Worker  | `pnpm worker` (`apps/worker`, tsx)      | Verarbeitet die PostgreSQL-Jobqueue.     |
-| Web     | `pnpm --filter @mietroyal/web build && … start`   | Öffentliche Website (Next.js).  |
-| Staff   | `pnpm --filter @mietroyal/staff build && … start` | Mitarbeiter-App (Next.js).      |
+| Web     | `pnpm --filter @mietroyal/web build && … start`   | Öffentliche Website (Next.js); `start` bindet seit Phase 19 an `127.0.0.1` (nur über den Reverse-Proxy erreichbar). |
+| Staff   | `pnpm --filter @mietroyal/staff build && … start` | Mitarbeiter-App (Next.js); `start` bindet seit Phase 19 an `127.0.0.1`. |
 
 Alle Prozesse werden über einen Prozessmanager (z. B. systemd) mit den
 Umgebungsvariablen der jeweiligen Umgebung betrieben (kein `.env`-Autoloading,
@@ -104,6 +104,13 @@ Claude Code deployt niemals eigenmächtig auf Produktion.
   `LEXWARE_API_KEY_REMINDER_DATE`. In demo darf KEIN Key gesetzt sein; in
   development/staging nur mit `LEXWARE_ENABLED=true`. `LEXWARE_BASE_URL` ist
   in production verboten (fester Host `https://api.lexware.io`).
+- **Explizites Opt-in auch in production (Phase 19):** Ein gesetzter Key allein aktiviert
+  Lexware nicht mehr. `LEXWARE_ENABLED=true` schaltet die Anbindung bewusst ein,
+  `LEXWARE_ENABLED=false` ist der Kill-Switch bei weiterhin hinterlegtem Key; ein Key ohne
+  `LEXWARE_ENABLED` bricht den Start ab (Konfigurationsfehler nennt nur den Variablennamen).
+  Bei aktiver Anbindung sind in production `LEXWARE_ORGANIZATION_ID` (Pinning gegen Buchungen in
+  einen falschen Account) und `LEXWARE_WEBHOOK_CALLBACK_URL` Pflicht. Ohne diese drei Werte
+  bleibt die Buchhaltung „nicht konfiguriert“ – kein Transfer, keine Rechnung.
 - Berechtigungen des Keys (Least Privilege, siehe docs/LEXWARE_API_NOTES.md):
   Profil lesen; Kontakte lesen/schreiben; Rechnungen lesen/schreiben;
   Zahlungen lesen; Belegliste lesen; Rechnungsdatei lesen;
@@ -188,6 +195,14 @@ docker exec -i mietroyal-postgres pg_restore -U mietroyal -d <db_neu> --no-owner
 mkdir -p <storage_neu> && tar -C <storage_neu> -xzf <ziel>/storage.tar.gz
 ```
 
+S3-Variante (Phase 19, `STORAGE_DRIVER=s3`): Statt des Tar-Archivs wird der Bucket vollständig
+exportiert (jedes Objekt mit Schlüssel, Bytes, SHA-256 und Content-Type in einem Manifest; z. B.
+`aws s3 sync`, `rclone sync` oder ein SDK-Export) und beim Restore in einen NEUEN Bucket der
+Zielumgebung importiert; der Vergleich prüft Manifest ↔ Bucket (SHA-256/Bytes) und
+`documents.sha256`/`byte_size` ↔ Objekte. Die Restore-API startet dann mit `STORAGE_S3_BUCKET` des
+neuen Buckets. Lokal nachgewiesen in Phase 19 (docs/PHASE19_PILOT_REPORT.md „Backup / restore
+readiness“).
+
 Verifikation (Pflicht nach jedem Restore-Test):
 1. Zeilenzahl + ordnungsunabhängige Prüfsumme je Tabelle vor/nach identisch
    (`SELECT count(*), md5(string_agg(t::text, E'\n' ORDER BY t::text)) FROM <tabelle> t`),
@@ -203,11 +218,107 @@ Verifikation (Pflicht nach jedem Restore-Test):
 - `/health`: Prozess lebt (ohne Abhängigkeiten) – für Prozessmanager/Uptime.
 - `/ready`: Datenbank erreichbar – für Load-Balancer/Deploy-Gates.
 
+## Betrieb im Pilot: Beobachtung und Hintergrundjobs (Phase 19)
+
+Pilotbetrieb heißt „wenige echte Vorgänge unter enger Beobachtung“ (ROADMAP). Die vorhandenen
+Betriebssignale – kein zusätzliches Monitoringprodukt:
+
+| Signal | Wo | Was prüfen |
+| --- | --- | --- |
+| Prozess lebt / Datenbank erreichbar | `GET /health`, `GET /ready` (Uptime-Check des Hosters, Prozessmanager) | 200; `/health.environment` passt zur Instanz (`production`/`staging`, nie `development`) |
+| Endgültig fehlgeschlagene Jobs | Staff: Einstellungen → System (`GET /staff/system/jobs`, Recht `system.settings`) | `dead` = 0; sonst je Eintrag Typ, Versuche, Fehlerzusammenfassung, Vorgang und die angezeigte Anweisung befolgen; Worker-Log zusätzlich `Job endgültig fehlgeschlagen (dead)` (Fehlerzeile, alarmierbar) |
+| Worker lebt | dieselbe Seite („Worker verarbeitet“ / „Worker verarbeitet nicht“, zuletzt erfolgreich verarbeitet, Alter der ältesten fälligen Aufgabe) | fällige Aufgaben warten nie länger als 5 min (Lease verwaister Jobs); Meldung „verarbeitet nicht“ ⇒ Worker-Prozess, Datenbankverbindung und `APP_ENV`/`DATABASE_URL` des Workers prüfen, Prozess neu starten |
+| Jobs in Wiederholung | dieselbe Seite („in Wiederholung“, nächster Versuch) | kurzzeitig normal (Backoff 30 s … 1 h); dauerhaft wachsende Liste ⇒ Provider/Netz prüfen |
+| Mailversand | Einstellungen → Kommunikation (SMTP-Status, Zustellungen mit Filter `failed`/`retry`, „Erneut senden“) | `blocked`/`failed` nicht liegen lassen; `outcome_unknown` nur bewusst wiederholen |
+| Buchhaltung | Einstellungen → Lexware (Verbindung, Webhooks, Organisation) und Abrechnungsblock je Vorgang (Transferstatus, Blocker) | Transfer `succeeded`; Blocker (Steuerkonfiguration, Anzahlung/Kaution) sind fachlich, kein technischer Fehler |
+| Sicherheitsereignisse | `staff_security_events` (Login-Fehlversuche, neue Geräte, `offline.environment_mismatch`, Portal-Ereignisse) | ungewöhnliche Häufungen; `environment_mismatch` darf im Betrieb nie auftreten |
+| Offline-Sync | Staff-App (offene Konflikte je Gerät), `offline_mutation_receipts` | Konflikte werden explizit aufgelöst, nie still |
+| HTTP 5xx / 4xx-Spitzen | Reverse-Proxy-Access-Log (Token-Pfade maskiert, ohne Bodies/Cookies), API-Log (`level: 50`) | 5xx = Fehler untersuchen; 429-Spitzen = Rate-Limit (hinter Proxy nur mit `API_TRUST_PROXY_HOPS=1` aussagekräftig) |
+
+Mail-Wiederholungen laufen auf Zustellungsebene (Outbox: `attempts`, bis zu 8 Versuche, Backoff
+1 min · 2ⁿ, höchstens 6 h; je Versuch ein eigener `mail.send`-Job, der selbst `succeeded` endet) –
+eine liegengebliebene Mail steht daher unter Einstellungen → Kommunikation als `retry`/`failed`,
+nicht als dead-Job. Bricht die SMTP-Verbindung nach `DATA` ab (Ausgang unbekannt), endet die
+Zustellung als `outcome_unknown` und wird NIE automatisch wiederholt (kein Doppelversand an
+Kunden); der Operator entscheidet nach Blick ins Postfach/Provider-Log über „Erneut senden“.
+Hinweis Storno durch Staff: der Transfer der Stornokosten (und damit die Rechnungsmail des
+Buchhaltungssystems) läuft nach dem Storno automatisch, die Stornobestätigung wird dagegen
+manuell freigegeben – im Pilot die Bestätigung direkt nach dem Storno senden, damit der Kunde
+nicht zuerst die Rechnung erhält.
+
+Tägliche Pilot-Routine (wenige Minuten): Einstellungen → System (dead = 0?), Einstellungen →
+Kommunikation (Zustellungen ohne `failed`/`blocked`?), Abrechnungsblöcke offener Vorgänge
+(Transfer/Zahlung), Worker-/API-Log auf `level: 50`, Backup-Lauf des Vortags vorhanden.
+Niemals einen Jobstatus per SQL ändern: Ursache klären (Log, jobId), dann die fachliche Aktion
+erneut auslösen – Jobs kehren nie automatisch aus `dead` zurück. Nachträglich festgestellte
+Schäden nach bereits übertragener Abrechnung tragen `requires_financial_review` (Kontroll-SQL
+in OPEN_ITEMS „Phase 18“) – Nachberechnung ist eine Fachentscheidung des Inhabers.
+
+### Rollback im Pilot (Phase 19)
+
+Rollback ist eine Entscheidung des Inhabers (Release-Schritt 8), technisch vorbereitet so:
+
+1. **Code (API, Worker):** API und Worker laufen per `tsx` aus dem Quellbaum. Jeden Pilot-Stand
+   als Git-Tag markieren (`pilot-JJJJ-MM-TT-n`); Rollback = `git checkout <voriger Tag>`,
+   `pnpm install --frozen-lockfile`, Worker stoppen, API neu starten, Worker starten. Jobs sind
+   idempotent und at-least-once – ein zum Zeitpunkt des Stopps laufender Job wird nach
+   Lease-Ablauf (5 min) erneut verarbeitet, nie doppelt wirksam.
+2. **Web/Staff-Builds:** je Release in ein eigenes Build-Verzeichnis bauen
+   (`WEB_DIST_DIR`/`STAFF_DIST_DIR`, z. B. `.next/pilot-<n>`), das vorige Verzeichnis behalten;
+   Rollback = `next start` mit dem vorigen Verzeichnis (Sekunden, kein Rebuild). Die im Build
+   eingebackenen Origins (`WEB_API_ORIGIN`, `STAFF_API_ORIGIN`) müssen zum Zielsystem passen.
+3. **Datenbank:** Migrationen sind additiv und idempotent (Phase 18 „Migrationen leer/
+   idempotent/Drift“); ein älterer Code-Stand läuft auf einem neueren Schema weiter, solange keine
+   Spalte entfernt wurde (bisher nie). Muss eine Migration selbst zurückgenommen werden
+   (Migration 0024 ist nicht umkehrbar), ist der einzige Weg der Restore des Backups von VOR dem
+   Release in eine leere Datenbank (Abschnitt „Backup & Restore“) – mit Verlust aller Daten seit
+   dem Backup; daher vor jedem Pilot-Release Backup + Restore-Test, und das Release nur im
+   Zeitfenster ohne laufende Vorgänge.
+4. **Provider-Kill-Switches (ohne Code-Rollback):** `MAIL_ENABLED=false` (Outbox sammelt weiter,
+   nichts geht raus), `LEXWARE_ENABLED=false` (Transfers warten mit Blocker), `ROUTING_PROVIDER=
+   disabled`, `WHATSAPP_ENABLED=false`, `REVIEWS_PROVIDER=disabled`, Push-Schlüssel entfernen –
+   jeweils Neustart von API und Worker; Fail-closed-Konfiguration verhindert versehentliche
+   Teilaktivierung.
+5. **Pilot-Abbruch:** keine neuen Pilotvorgänge annehmen (Website-Anfrage über Rechtstexte
+   entziehen oder Proxy sperren), offene Vorgänge manuell zu Ende führen oder stornieren,
+   Datenbank und Storage unverändert aufbewahren (Aufbewahrungsregeln), Entscheidung über
+   Pilotdaten in production dokumentieren (es gibt kein Pilot-Flag im Schema).
+
+Nicht rückrollbar sind Außenwirkungen: gesendete Kundenmails, in Lexware erzeugte Rechnungen,
+GraphHopper-Abrufe – deshalb bleiben diese Provider bis zur ausdrücklichen Freigabe deaktiviert.
+
+### Reverse-Proxy für Staff, Website und API-Direktrouten (Phase 19, lokal validiert)
+
+Das nginx-Beispiel in „Website SEO, Redirects, kanonischer Host (Phase 17)“ deckt nur den
+Website-Host. Für den Pilot wurde die vollständige Topologie lokal mit nginx 1.24 und
+selbstsignierter Test-CA nachgewiesen (docs/PHASE19_PILOT_REPORT.md):
+
+- Drei TLS-Hosts: Website + Kundenportal (`www.…` → Web-Next), Staff (`app.…` → Staff-Next), API
+  nur für Direktrouten (`api.…` → API: `location /webhooks/`, `location /public/calendar/`,
+  `= /health`, `= /ready`; alles andere `return 404`). HTTP → HTTPS 308 mit festem Ziel je Host,
+  Apex → `www` 308, `default_server` mit `return 444`.
+- `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;` und `API_TRUST_PROXY_HOPS=1`:
+  nachgewiesen, dass ein vom Client gesetztes `X-Forwarded-For` die Login-Drossel nicht umgeht
+  (429 nach zehn Fehlversuchen trotz wechselnder Werte).
+- `client_max_body_size 13m` vor Web (Portal-Fotos) und Staff (Offline-Sync, CMS-Medien ≥ 9 MiB);
+  API-Direktrouten 2m.
+- `Set-Cookie` unverändert durchreichen: `__Host-mr_staff_device`, `mr_staff_session`,
+  `__Host-mr_customer_session`, `__Host-mr_cms_preview` kamen mit `Secure; HttpOnly;
+  SameSite=Strict; Path=/` ohne `Domain` beim Browser an.
+- Access-Log mit `map $request_uri $masked_uri` (Pfade `/kontakt/`, `/dokument/`, `/angebot/`,
+  `/api/public/`, `/konto`, `/api/portal`, `/vorschau`, `/webhooks` ⇒ `…/***`), keine Bodies,
+  keine Cookies; `error_log warn`.
+- Next-Server (`next start --hostname 127.0.0.1`) und API (`API_HOST=127.0.0.1`) lauschen nur
+  lokal; der Lexware-Webhook-Callback (`https://api.…/webhooks/lexware`) erreichte die API über
+  den Proxy (Contract-Fake, 4 Subscriptions).
+
 ## Offene Punkte für spätere Phasen
 
 - Konkreter Hoster/VPS (OPEN_ITEMS.md „Hosting“), TLS/Reverse Proxy,
   Firewall, Rate Limits.
-- S3-kompatibler Object Storage je Umgebung.
+- S3-kompatibler Object Storage je Umgebung (Anbieter offen; Phase 19 hat den S3-Treiber im
+  lokalen Pilot-Stack end-to-end gegen einen S3-kompatiblen Dienst nachgewiesen, Abschnitt
+  „Backup & Restore“, S3-Variante).
 - Rechnungsversand per Miet-Royal-Mailadapter (Phase 12) – bis dahin
   `invoice_delivery_status = pending`.
 - Backup-Automatisierung (Zeitplan, Aufbewahrung, Off-site-Kopie je Hoster) – das manuelle

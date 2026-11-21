@@ -25,11 +25,15 @@ import { customers, mailDeliveries, vouchers, type Database } from '@mietroyal/d
 import { isVoucherExpired } from '@mietroyal/domain';
 import type { JobHandler, JobQueue, JobRunnerLogger } from '@mietroyal/integrations';
 import { and, asc, eq, gt, isNotNull, isNull, lte, ne, or } from 'drizzle-orm';
-import { customerDisplayName } from '../crm/customer-service.ts';
 import { VOUCHER_PROBLEM_EXPIRED, VoucherDeliveryService } from '../voucher/voucher-delivery.ts';
 import type { MailOutboxService } from './mail/outbox.ts';
 import type { VoucherDeliveryMailContext } from './mail/templates/contexts.ts';
-import { mailSalutation, transactionalKey, transactionalRetryKey } from './transactional/keys.ts';
+import {
+  mailRecipientName,
+  mailSalutation,
+  transactionalKey,
+  transactionalRetryKey,
+} from './transactional/keys.ts';
 import { VOUCHER_DELIVERY_JOB_TYPE, type OutboundMailGateway } from './types.ts';
 
 export const VOUCHER_PROBLEM_NO_EMAIL = 'NO_EMAIL';
@@ -208,7 +212,7 @@ export class VoucherDeliveryJob {
       return 'undecryptable';
     }
     const context: VoucherDeliveryMailContext = {
-      salutation: mailSalutation(customerDisplayName(customer)),
+      salutation: mailSalutation(mailRecipientName(customer)),
       validUntil: voucher.expiresAt.toISOString(),
     };
     const result = await this.deps.outbox.enqueueAndSchedule({
@@ -216,7 +220,7 @@ export class VoucherDeliveryJob {
       processId: voucher.originProcessId,
       customerId: voucher.customerId,
       bookingId: voucher.originBookingId,
-      recipient: { email, name: customerDisplayName(customer) },
+      recipient: { email, name: mailRecipientName(customer) },
       context,
       secrets: { voucherCode: code },
       idempotencyKey:

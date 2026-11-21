@@ -9,6 +9,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { buildApp } from '../src/app.ts';
 import { DisabledMailGateway } from '../src/communication/mail/gateways.ts';
+import { MAIL_PREVIEW_LINK_TEXT } from '../src/communication/mail/templates/index.ts';
 import { createTestContext, destroyTestContext, type TestContext } from './auth-helpers.ts';
 import { jpegBytes, POINT_MARKER } from './return-helpers.ts';
 import {
@@ -133,11 +134,13 @@ describe('Kundeninformation (§91)', () => {
       recipientEmail: 'klara.kommerz@test.example',
       totalCents: 5000,
     });
+    // Phase 19 (P19-F8): Vorschau = Mailvorlage settlement_damage_missing_notice (Betreff und Text).
     expect(view.notice!.subject).toBe(
-      `Information zu Ihrer Rückgabe – Vorgang ${view.settlement.processNumber}`,
+      `Information zur Rückgabe – Vorgang ${view.settlement.processNumber}`,
     );
     expect(view.notice!.bodyText).toContain('Riss im Deckel');
-    expect(view.notice!.bodyText).toContain('50,00 EUR');
+    expect(view.notice!.bodyText).toContain('50,00');
+    expect(view.notice!.bodyText).toContain(MAIL_PREVIEW_LINK_TEXT);
     expect(view.notice!.bodyText).toContain('Rückgabeprotokoll');
     expect(view.notice!.bodyText).not.toMatch(/MwSt|Mahnung|rechtliche Schritte/i);
     expect(view.settlement.noticeSentAt).toBeNull();
@@ -225,7 +228,7 @@ describe('Kundeninformation (§91)', () => {
     expect(current.notice!.bodyText).toContain('Kratzer links');
     expect(current.notice!.bodyText).toContain('Delle hinten');
     expect(current.notice!.bodyText).toContain('Tropfschale');
-    expect(current.notice!.bodyText).toContain('48,00 EUR');
+    expect(current.notice!.bodyText).toContain('Gesamtsumme: 48,00');
     const sent = await sendNotice(cookie, world.processId);
     expect(await sentNoticeMails(ctx)).toHaveLength(1);
     expect((await sentNoticeMails(ctx))[0]!.recipientEmail).toBe('klara.kommerz@test.example');
@@ -675,5 +678,62 @@ describe('Kundeninformation (§91)', () => {
       expect(after.settlement.status).toBe('transferred');
       expect(ctx.accounting.calls).toHaveLength(1);
     }
+  });
+});
+
+describe('Phase 19 – freigegebene Kundeninformation = gesendete Mail (P19-F8/F9)', () => {
+  it('P19-F8: Betreff und Text der freigegebenen Vorschau sind die der gesendeten Mail (nur der persönliche Link entsteht beim Versand)', async () => {
+    const { admin, cookie } = await adminSession(ctx);
+    const { world, view } = await chargedDamage(cookie, admin.id);
+    const preview = view.notice!;
+    ctx.mailGateway.sent.length = 0;
+    await sendNotice(cookie, world.processId);
+    const mails = await sentNoticeMails(ctx);
+    expect(mails).toHaveLength(1);
+    expect(mails[0]!.subject).toBe(preview.subject);
+    const sent = ctx.mailGateway.sent.find((m) => m.to.email === 'klara.kommerz@test.example');
+    expect(sent).toBeDefined();
+    expect(sent!.subject).toBe(preview.subject);
+    const link = sent!.text.match(/https?:\/\/\S+\/dokument\/\S+/)?.[0];
+    expect(link).toBeDefined();
+    // Vorschau ⇒ Mailtext: genau der persönliche Dokumentlink tritt an die Stelle des Platzhalters, sonst nichts.
+    expect(preview.bodyText).not.toMatch(/placeholder/i);
+    expect(preview.bodyText).toContain(MAIL_PREVIEW_LINK_TEXT);
+    expect(sent!.text).not.toContain(MAIL_PREVIEW_LINK_TEXT);
+    // P19-F12: Anrede in natürlicher Reihenfolge, nie das Listenformat „Nachname, Vorname“.
+    expect(preview.bodyText).toContain('Hallo Klara Kommerz,');
+    expect(sent!.text).toContain('Hallo Klara Kommerz,');
+    expect(sent!.text).not.toContain('Kommerz, Klara');
+    expect(sent!.to.name).toBe('Klara Kommerz');
+    const previewLines = preview.bodyText.split('\n');
+    const sentLines = sent!.text.split('\n');
+    expect(sentLines).toHaveLength(previewLines.length);
+    const differing = sentLines.filter((line, index) => line !== previewLines[index]);
+    expect(differing).toEqual([link]);
+  });
+
+  it('P19-F9: lange Schadenbeschreibung (2000 Zeichen) ⇒ Vorschau vollständig, Freigabe 200, Mail gesendet', async () => {
+    const { admin, cookie } = await adminSession(ctx);
+    const long = `Riss ${'x'.repeat(1995)}`;
+    expect(long).toHaveLength(2000);
+    const { world, view } = await settledReturn(ctx, admin.id, cookie, {
+      damages: [{ description: long, severity: 'light' }],
+    });
+    const clarification = openClarifications(view, 'damage_cost')[0]!;
+    const decided = await post(
+      ctx.app,
+      cookie,
+      `/staff/settlements/${view.settlement.id}/clarifications/${clarification.id}/resolve`,
+      { decision: 'charge', amountCents: 5000, version: view.settlement.version },
+    );
+    expect(decided.status).toBe(200);
+    const before = await settlementViewFor(ctx.app, cookie, world.processId);
+    expect(before.notice!.bodyText).toContain(long);
+    const after = await sendNotice(cookie, world.processId);
+    expect(after.settlement.status).toBe('customer_waiting');
+    const mails = await sentNoticeMails(ctx);
+    expect(mails).toHaveLength(1);
+    expect(mails[0]!.status).toBe('sent');
+    expect(ctx.mailGateway.sent.at(-1)!.text).toContain(long);
   });
 });

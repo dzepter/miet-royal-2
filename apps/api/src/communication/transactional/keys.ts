@@ -49,6 +49,27 @@ export function parseTransactionalKey(
 }
 
 /** Fertige Anrede für die Vorlagen („Hallo Max Mustermann,“; ohne Namen „Hallo,“). */
+/**
+ * Phase 19 (P19-F12): Name für Anrede und Empfängerzeile aus Kundenstammdaten oder -Snapshot –
+ * natürliche Reihenfolge „Vorname Nachname“ bzw. Organisationsname, nie das Listenformat der
+ * Staff-App („Nachname, Vorname“, `displayName`). Fallback: `displayName`, sonst null (⇒ „Hallo,“).
+ */
+export function mailRecipientName(source: unknown): string | null {
+  if (typeof source !== 'object' || source === null) return null;
+  const record = source as Record<string, unknown>;
+  const text = (key: string): string =>
+    typeof record[key] === 'string'
+      ? (record[key] as string).replace(/[\r\n\0]+/g, ' ').trim()
+      : '';
+  const organization = text('organizationName');
+  if (record['type'] === 'organization' && organization !== '') return organization;
+  const natural = `${text('firstName')} ${text('lastName')}`.trim();
+  if (natural !== '') return natural;
+  if (organization !== '') return organization;
+  const display = text('displayName');
+  return display === '' ? null : display;
+}
+
 export function mailSalutation(displayName: string | null | undefined): string {
   const name = (displayName ?? '').replace(/[\r\n\0]+/g, ' ').trim();
   return name === '' ? 'Hallo,' : `Hallo ${name.slice(0, 180)},`;

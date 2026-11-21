@@ -121,6 +121,17 @@ export function assertConfigsIsolated(a: AppConfig, b: AppConfig): void {
       `STAFF_DEMO_URL/STAFF_LIVE_URL: beide Umgebungen verlinken auf dieselbe Ziel-URL (${linkA.url})`,
     );
   }
+  // Phase 19 (Pilot-Readiness): Dieselbe öffentliche Web-Basis in zwei Umgebungen bedeutet,
+  // dass Kundenlinks (Angebote, Portal-Anmeldung, Vorschau) und die SEO-Basis einer Umgebung
+  // auf die Web-App der ANDEREN zeigen – eine Verwechslung der Umgebungen (ENVIRONMENTS.md
+  // „Kundenportal“: die Basis zeigt immer auf die Web-App DERSELBEN Umgebung).
+  const publicWebA = originOf(a.mail.publicWebBaseUrl);
+  const publicWebB = originOf(b.mail.publicWebBaseUrl);
+  if (publicWebA !== null && publicWebA === publicWebB) {
+    collisions.push(
+      `MAIL_PUBLIC_WEB_BASE_URL: beide Umgebungen nennen dieselbe öffentliche Web-Basis (${publicWebA})`,
+    );
+  }
   for (const config of [a, b]) {
     const link = config.environmentLinks.counterpart;
     const ownPublicWeb = originOf(config.mail.publicWebBaseUrl);

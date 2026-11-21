@@ -644,7 +644,8 @@ describe('Phase 18 – Szenario C: Kundeneinspruch/Widerspruch (Kundenrückmeldu
     expect(prepared.totalCents).toBe(4500);
     expect(prepared.recipientEmail).toBe('klara.kommerz@test.example');
     expect(prepared.bodyText).toContain('Kratzer am Gehäuse');
-    expect(prepared.bodyText).toContain('45,00 EUR');
+    // Phase 19 (P19-F8): Vorschau = Mailvorlage – Betrag im Mailformat „45,00 €“ (geschütztes Leerzeichen).
+    expect(prepared.bodyText).toMatch(/45,00\s€/);
     expect(prepared.bodyText).toContain('Rückgabeprotokoll');
     // Keine Frist, kein Countdown, keine Drohformulierung gegenüber dem Kunden (Phase 9 §25).
     expect(prepared.bodyText).not.toMatch(

@@ -26,7 +26,12 @@ import type { LexwareContext } from '../lexware/context.ts';
 import type { MailOutboxService } from './mail/outbox.ts';
 import type { InvoiceFileFetcher } from './mail/send-job.ts';
 import type { InvoiceDeliveryMailContext } from './mail/templates/contexts.ts';
-import { mailSalutation, safeAttachmentName, transactionalKey } from './transactional/keys.ts';
+import {
+  mailRecipientName,
+  mailSalutation,
+  safeAttachmentName,
+  transactionalKey,
+} from './transactional/keys.ts';
 import { INVOICE_DELIVERY_JOB_TYPE } from './types.ts';
 
 export function invoiceDeliveryJobKey(mappingId: string): string {
@@ -156,7 +161,7 @@ export class InvoiceDeliveryJob {
     if (booking === undefined) return 'not_ready';
     const customer = (booking.customerSnapshot ?? {}) as Record<string, unknown>;
     const email = typeof customer.email === 'string' ? customer.email.trim() : '';
-    const name = typeof customer.displayName === 'string' ? customer.displayName : null;
+    const name = mailRecipientName(customer); // Phase 19 (P19-F12)
     const context: InvoiceDeliveryMailContext = {
       salutation: mailSalutation(name),
       processNumber: booking.processNumber,

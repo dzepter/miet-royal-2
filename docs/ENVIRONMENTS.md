@@ -28,7 +28,13 @@ Framework-Optimierungen, `APP_ENV` die fachliche Umgebung.
 
 ## Variablen
 
-Siehe `.env.example` für die vollständige Liste. Pflicht außerhalb von
+Siehe `.env.example` für die vollständige Liste (Staff-Server zusätzlich `STAFF_API_ORIGIN`
+für den Same-Origin-Rewrite `/api/*` – beim Build eingebacken, wie `WEB_API_ORIGIN` beim Web).
+Lexware (Phase 10/19): `LEXWARE_API_KEY` wirkt in production nur zusammen mit dem Opt-in
+`LEXWARE_ENABLED=true` (`false` = Kill-Switch, Key ohne Entscheidung = Startabbruch); aktiv ⇒
+`LEXWARE_ORGANIZATION_ID` und `LEXWARE_WEBHOOK_CALLBACK_URL` Pflicht; in demo ist ein Key ein
+Konfigurationsfehler, in development/staging gilt dasselbe Opt-in (docs/DEPLOYMENT_NOTES.md
+„Lexware Office“). Pflicht außerhalb von
 development: `APP_ENV`, `DATABASE_URL`, `AUTH_SECRET_KEY` (≥ 32 Zeichen,
 verschlüsselt u. a. TOTP-Secrets im Ruhezustand; je Umgebung ein eigener
 Zufallswert – der Isolations-Check erzwingt das), `STORAGE_DRIVER` (+ die zum
@@ -76,8 +82,12 @@ explizit in der Shell.
 `assertConfigsIsolated` (`@mietroyal/config`) erkennt Kollisionen zweier
 Umgebungen: gleiche Datenbank (auch bei kosmetisch unterschiedlicher URL),
 gleicher S3-Bucket/Endpoint, gleiche S3-Zugangsdaten, gleiches
-Storage-Verzeichnis. Vor jedem Deployment mit realen Serverkonfigurationen
-ausführen:
+Storage-Verzeichnis, gleicher `AUTH_SECRET_KEY`/`COMMUNICATION_PAYLOAD_KEY`,
+gleicher Lexware-/GraphHopper-/Places-Key, gleicher WhatsApp-Zugang, gleiches
+VAPID-Paar, gleiches IMAP-Postfach, gegenseitige Staff-Wechsel-URLs sowie (Phase 19)
+dieselbe `MAIL_PUBLIC_WEB_BASE_URL`. Nicht verglichen (bewusst): SMTP-Zugang,
+DB-Zugangsdaten, gleiches `APP_ENV`. Vor jedem Deployment mit realen Serverkonfigurationen
+für ALLE Paare (prod↔demo, prod↔staging, demo↔staging) ausführen:
 
 ```bash
 pnpm check:env-isolation /pfad/zu/prod.env /pfad/zu/demo.env

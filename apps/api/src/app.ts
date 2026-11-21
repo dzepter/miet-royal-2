@@ -65,6 +65,8 @@ import { COMMUNICATION_LOG_REDACT_PATHS } from './communication/logging.ts';
 import type { OutboundMailGateway } from './communication/types.ts';
 import { registerCommunicationJobHandlers } from './jobs/communication.ts';
 import { registerCommunicationAdminRoutes } from './routes/communication-admin.ts';
+// Phase 19 (Pilot-Readiness): lesende Operator-Sicht auf Hintergrundjobs (dead/retrying).
+import { registerSystemJobRoutes } from './routes/system-jobs.ts';
 // Phase 12 (push)
 import type { PushGateway } from './communication/types.ts';
 import { createPushModule, registerPushJobHandlers } from './jobs/communication-push.ts';
@@ -820,6 +822,8 @@ export function buildApp({
         config,
         communication,
       });
+      // Phase 19: GET /staff/system/jobs – Operator-Sicht auf endgültig fehlgeschlagene Jobs.
+      registerSystemJobRoutes(instance, { db, auth: authService, config });
       // Phase 12 (push): Web Push (Subscriptions, Versandjob push.send, Regeln
       // für communication.scan_due) und privater ICS-Feed.
       const pushModule = createPushModule(

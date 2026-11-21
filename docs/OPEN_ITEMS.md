@@ -392,11 +392,10 @@ folgenden Härtungen und Restrisiken sind KEINE Phase-15-Blocker (Phase 15 Final
   `/staff/messages/:id/photos/:photoId` liefert Kundenbilder ohne
   `Content-Security-Policy: default-src 'none'; sandbox` (die Portal-Fotoroute hat
   sie seit dem Review). Defense in Depth, kein bekannter Angriff.
-- **Body-Limit der Staff-App (vorbestehend seit Phase 8):**
-  `apps/staff/next.config.ts` behält den Next-Default von 10 MiB für den
-  Rewrite, `POST /staff/offline/sync` erlaubt 12 MiB – ein Sync-Body zwischen 10
-  und 12 MiB würde ohne Fehler abgeschnitten. Empfehlung:
-  `experimental.proxyClientMaxBodySize` ≥ 13 MiB wie in `apps/web`.
+- **Body-Limit der Staff-App (vorbestehend seit Phase 8) – in Phase 19 behoben (P19-F13):**
+  `apps/staff/next.config.ts` puffert jetzt 13 MiB wie `apps/web` (Test
+  `staff-proxy-body-limit.test.ts`); zuvor Next-Default 10 MiB vor dem 12-MiB-Limit von
+  `POST /staff/offline/sync`.
 - **Consume-Limit 10/min je IP:** `POST /portal/auth/consume` (und die übrigen
   Consumes) greifen hinter einer gemeinsamen IP (Firmen-/Carrier-NAT) schon bei
   etwa 10 Anmeldungen pro Minute; der Kunde sieht „Zu viele Versuche …“ und muss
@@ -657,7 +656,9 @@ Offen bzw. bewusst so belassen:
   immer.
 - **`dead`-Jobs ohne Operator-Sicht** (außer Demo-Storage-Cleanup) und **Web-Push
   at-least-once** (Teilerfolg + Retry kann bereits erreichte Geräte erneut treffen; Browser-`tag`
-  fasst zusammen) – bekannte Grenzen, keine Phase-18-Defekte.
+  fasst zusammen) – bekannte Grenzen, keine Phase-18-Defekte. Phase 19: Operator-Sicht umgesetzt
+  (Einstellungen → System, `GET /staff/system/jobs`, Log-Signal); Push bleibt at-least-once
+  (rein informativ, bewertet).
 - **`handovers.status = 'finalized'` ohne DB-CHECK** auf `protocol_document_id` (nur Code; die
   Rückgabe hat `rental_returns_finalized_check`) – als Invariante im Integritätscheck geprüft;
   eine Migration nur bei nachgewiesenem Defekt.
@@ -670,8 +671,54 @@ Offen bzw. bewusst so belassen:
   `offline_mutation_receipts`, `machine_assignment_overrides`, `appointment_conflict_suppressions`
   sind nur in Schema/TECH_DECISIONS beschrieben – Dokumentationslücke, kein Codefehler.
 - **MinIO/S3-Integrationstest** (`packages/integrations/test/s3-storage.integration.test.ts`)
-  konnte in der Phase-18-Umgebung nicht laufen (Image nicht ladbar) – auf Staging/CI nachholen.
+  konnte in der Phase-18-Umgebung nicht laufen (Image nicht ladbar) – Phase 19: Ursache war das
+  nicht mehr abrufbare MinIO-Image; Compose nutzt jetzt RustFS (Dienst `s3`), Test 4/4 grün und
+  S3-Treiber im Pilot-Stack end-to-end nachgewiesen.
 - Unverändert aus Phase 17: E2E-Zeitfenster (`tours-flow` 22:43–00:02; `portal-flow` G,
   `training-demo` H, `tours-offline-conflict` 23:38–00:02 Berlin), Rechtstexte als Go-live-Blocker,
   Google-Reviews-EWR/Permitted-Use, DNS/HTTPS/Search Console (Phase 19/20).
 
+## Phase 19 (Pilot-Readiness)
+
+Erledigt (docs/TECH_DECISIONS.md „Phase 19“, Nachweise docs/PHASE19_PILOT_REPORT.md): S3-Test-
+Storage wieder lauffähig (RustFS), Lexware-Opt-in in production, Operator-Sicht auf
+Hintergrundjobs, Next-Bindung an Loopback, Isolationsregel für die öffentliche Web-Basis,
+ehrlicher Passwort-vergessen-Hinweis, Kundeninformation „Freigabe-Vorschau = gesendete Mail“
+(P19-F8) und Freigabe auch bei langer Schadenbeschreibung (P19-F9, vorher 500), Pilot-Topologie
+(nginx/TLS/Cookies/XFF/Log-Maskierung), Worker-Betriebsnachweis, Backup/Restore-S3-Variante,
+Pilotabläufe Standard/Edge/Offline, 92 Integritätsprüfungen gegen die Pilot-DB.
+
+**Kein echter Pilot in Phase 19 – Voraussetzungen (Entscheidungen des Inhabers, siehe
+PRE_START_CHECKLIST „Pilotbetrieb (Phase 19)“):**
+
+- Hosting/Zielsystem, Hostnamen, TLS, Firewall/Egress-Allowlist, Prozessmanager, Secret-Ablage
+  („Hosting“ oben) – ohne Zielsystem gibt es keine Pilotumgebung; der Phase-19-Nachweis lief
+  auf einem lokalen Stand-in (`APP_ENV=staging`, Fakes statt Provider).
+- Rechtstexte (Impressum/Datenschutz) juristisch freigegeben und veröffentlicht; ohne
+  `/datenschutz` keine Website-Anfrage (fail-closed) – im Pilot-Stack daher Staff-Anfrage statt
+  Website-Pfad geprüft.
+- Provider-Stufen: Mail-Postfach (Pflicht für Portal/Kundenmails), Lexware-Freigabe nach
+  Steuerkonfiguration (GO-LIVE-BLOCKER Buchhaltung), Routing/WhatsApp/Reviews `disabled` bis zur
+  jeweiligen Klärung; keine echten Provider in Phase 19 aufgerufen.
+- Pilotgruppe (Kunden/Mitarbeitende), Umfang, Dauer, Abbruch-/Rollback-Kriterien; Kennzeichnung
+  oder spätere Bereinigung von Pilotvorgängen in production ist nicht vorgesehen (kein Flag im
+  Schema) – Entscheidung nötig, falls Pilotdaten später von Echtdaten zu trennen sind.
+- Backup-Automatisierung und Off-site-Kopie auf dem Zielsystem; Restore-Test dort wiederholen.
+
+**Offen / bewusst belassen:**
+
+- Self-Service-Passwort-Reset der Mitarbeitenden sendet außerhalb von development keine
+  E-Mail (`NoopMailAdapter`, Phase-1-Entscheidung; Admin-Reset-Link ist der Weg). Anbindung an die
+  Phase-12-Outbox wäre eine Produktentscheidung (neue Mailart, Staff-Basis-URL) – vor dem
+  Echtbetrieb entscheiden.
+- Nachträglich festgestellte Schäden nach bereits übertragener Abrechnung (`requires_financial_review`,
+  Phase 18) bleiben eine Fachentscheidung (Nachberechnung?) – im Pilot über das Kontroll-SQL und
+  die Maschinenansicht beobachten.
+- Rate-Limits prozesslokal: ausreichend für genau eine API-Instanz hinter dem Proxy
+  (Pilot-Topologie); vor horizontaler Skalierung gemeinsamer Store nötig.
+- Egress nur durch Hosting-Firewall begrenzbar (kein Block im Code); Allowlist-Vorgabe in
+  PRE_START_CHECKLIST.
+- Tour-Übernahme mit optionalem `expectedVersion` und Online-Schäden mit optionalem
+  `clientMutationId`: Staff-App sendet beides immer; andere Clients existieren nicht – als
+  Pilotrisiko akzeptiert, Pflichtfelder wären eine API-Vertragsänderung.
+- WebKit/`pwa-smoke`: siehe Pilotbericht (Ausführung im Phase-19-Gate).

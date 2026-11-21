@@ -48,6 +48,7 @@ import {
   transactionalStatusOf,
   type CancellationConfirmationMailer,
 } from '../communication/transactional/mailers.ts';
+import { mailRecipientName } from '../communication/transactional/keys.ts';
 
 /**
  * Storno einer bestätigten, noch nicht ausgegebenen Buchung (Phase-9-
@@ -1038,7 +1039,7 @@ export class CancellationService {
         processNumber: process.processNumber,
         customerId: booking?.customerId ?? process.customerId,
         bookingId: row.bookingId,
-        recipient: { email: recipientEmail, name: str(customer.displayName) },
+        recipient: { email: recipientEmail, name: mailRecipientName(customer) },
         eventDate: event.eventDate ?? process.eventDate,
         chargeCents: row.feeCents,
         now,

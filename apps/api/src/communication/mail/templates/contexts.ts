@@ -51,7 +51,13 @@ export const returnProtocolContextSchema = z.object({
 export const settlementNoticeContextSchema = z.object({
   salutation,
   processNumber,
-  positions: z.array(z.object({ label: z.string().min(1).max(300), amountCents: cents })).min(1),
+  /**
+   * Phase 19 (P19-F9): Positionsbezeichnung = Abrechnungszeile („Schadenkosten
+   * Maschine … (…): <Schadenbeschreibung bis 2000 Zeichen>“) – die Grenze muss
+   * jede zulässige Zeile aufnehmen, sonst scheitert die Freigabe der
+   * Kundeninformation am Kontextvertrag (vorher: 500 bei langer Beschreibung).
+   */
+  positions: z.array(z.object({ label: z.string().min(1).max(2600), amountCents: cents })).min(1),
   totalCents: cents,
 });
 export const settlementNoticeSecretsSchema = z.object({

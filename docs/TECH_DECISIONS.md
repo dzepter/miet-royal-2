@@ -5217,3 +5217,133 @@ Befunde (roter Test → Fix → grün), jeweils ohne Migration und ohne brechend
 - Keine neue Concurrency-Architektur, keine injizierbare API-Uhr (E2E-Restfenster bleiben
   dokumentiert), kein Egress-Block im Code (Provider-Nachweis über Config-Fail-closed,
   Start-Assertions, Fake-Zähler und einen globalen `fetch`-Spion im Demo-Akzeptanztest).
+
+## Phase 19: Pilot-Readiness / kontrollierter Pilotbetrieb (2026-11-21)
+
+Phase 19 ist laut ROADMAP „wenige echte Vorgänge unter enger Beobachtung“. Ein echter Pilot
+braucht Zielsystem, Freigaben und Provider-Entscheidungen, die im Repository nicht existieren
+(OPEN_ITEMS „Hosting“, Rechtstexte, Buchhaltung, Pilotgruppe). Phase 19 hat deshalb die
+technische Pilotfähigkeit produktionsnah nachgewiesen (lokaler Stand-in: `APP_ENV=staging`,
+Production-Builds von Web und Staff, nginx mit TLS-Terminierung und der dokumentierten
+Pflicht-Topologie, Worker, S3-kompatibler Storage, SMTP/IMAP/Push/GraphHopper- und
+Lexware-Fakes) und die Betriebsfähigkeit gehärtet. Ergebnisse: docs/PHASE19_PILOT_REPORT.md.
+
+- **S3-Test-Storage: RustFS statt MinIO (P19-F1).** `minio/minio:latest` ist auf Docker Hub
+  („repository does not exist“) und quay.io (401) nicht mehr anonym abrufbar – `pnpm infra:up`
+  und der S3-Integrationstest waren damit nicht reproduzierbar (Phase-18-Lücke). Der Dienst heißt
+  jetzt `s3` (`rustfs/rustfs:1.0.6`, Apache-2.0, S3-API-kompatibel), Port 59000 und lokale
+  Zugangsdaten unverändert, Healthcheck `/health`. Der Provider-Code (`S3StorageProvider`,
+  `forcePathStyle`) bleibt unverändert; der Test ist produkt-neutral (jeder S3-kompatible
+  Endpoint über `TEST_S3_ENDPOINT`/`TEST_S3_ACCESS_KEY`/`TEST_S3_SECRET_KEY`).
+- **Lexware in production nur per explizitem Opt-in (P19-F4).** Bisher aktivierte ein gesetzter
+  `LEXWARE_API_KEY` die Buchhaltung in production allein; `LEXWARE_ENABLED` wurde dort nicht
+  gelesen. Das widerspricht der Pilotregel „ein Live-Provider wird nie allein durch vorhandene
+  Zugangsdaten genutzt“ (und war inkonsistent zu `ROUTING_ENABLED`/`WHATSAPP_ENABLED`). Jetzt:
+  Key UND `LEXWARE_ENABLED=true` ⇒ aktiv; `LEXWARE_ENABLED=false` ⇒ Kill-Switch; Key ohne
+  Entscheidung ⇒ Konfigurationsfehler; aktiv ⇒ `LEXWARE_ORGANIZATION_ID` (Pinning) und
+  `LEXWARE_WEBHOOK_CALLBACK_URL` Pflicht. Tests P19-L1–L3 (`packages/config`).
+- **Operator-Sicht auf Hintergrundjobs (P19-F3).** `dead`-Jobs waren nur im Worker-Log sichtbar
+  (OPEN_ITEMS Phase 18). Neu: `GET /staff/system/jobs` (Recht `system.settings`, rein lesend),
+  Staff-Seite Einstellungen → System mit Zählern (dead/retrying/pending/processing/erfolgreich
+  24 h), Liste je Job (Typ, Versuche, Zeitpunkte, PII-arme Fehlerzusammenfassung, nur UUID-
+  Referenzen des Payloads, Link zum Vorgang) und Betriebsanweisung je Jobfamilie; Karte in der
+  Einstellungsübersicht. Zusätzlich loggt der Runner beim letzten Fehlversuch eine eigene
+  Fehlerzeile `Job endgültig fehlgeschlagen (dead) – Operator-Eingriff nötig` (Log-Alarmierung).
+  Bewusst KEINE Route, die Jobs „auf erfolgreich“ setzt oder aus `dead` zurückholt – die
+  Wiederholung bleibt fachlich (Erneut senden, manueller Transfer, Reconcile, `voucher:ensure`).
+  Tests: `apps/api/test/system-jobs.integration.test.ts` (P19-J1–J3), `packages/integrations`
+  Runner-Tests (dead-Signal).
+- **Next-Server binden an Loopback (P19-F2).** `next start` lauscht ohne `--hostname` auf allen
+  Interfaces (im Pilot-Stack 0.0.0.0:3400/3402, die API dagegen 127.0.0.1). Die dokumentierte
+  Pflicht-Topologie verlangt, dass Web/Staff nie direkt erreichbar sind; die Start-Skripte von
+  `apps/web` und `apps/staff` setzen deshalb `--hostname 127.0.0.1` (Firewall bleibt zweite
+  Verteidigungslinie). E2E-/Dev-Kommandos starten Next weiterhin direkt mit eigenem Port.
+- **Isolations-Check: gleiche öffentliche Web-Basis ist eine Kollision (P19-F5).**
+  ENVIRONMENTS.md behauptete, `check:env-isolation` vergleiche `MAIL_PUBLIC_WEB_BASE_URL`; der
+  Code prüfte nur die Gegen-URLs. Jetzt kollidieren zwei Umgebungen mit derselben Basis
+  (Kundenlinks, Portal-Anmeldung, Vorschau und SEO-Basis zeigten sonst auf die fremde Web-App).
+  Test P19-I1. Weiter nicht verglichen (bewusst): SMTP-Zugang (ein gemeinsames Relay kann
+  legitim sein), DB-Zugangsdaten, gleiches `APP_ENV` in beiden Dateien.
+- **Passwort vergessen (Staff) ehrlich formuliert (P19-F6).** Der Self-Service-Reset nutzt
+  außerhalb von development bewusst den `NoopMailAdapter` (Phase-1-Entscheidung: Admin-Reset-Link
+  als Weg); die Seite behauptete trotzdem „Link verschickt“. Text korrigiert („Zurücksetzen
+  angestoßen … erhältst du keine E-Mail, wende dich an die Verwaltung“). Die Anbindung des
+  Self-Service-Resets an die Phase-12-Outbox ist eine offene Produktentscheidung
+  (OPEN_ITEMS Phase 19), kein Phase-19-Fix.
+- **Finanzielle Prüfung sichtbar (P19-F7).** `machine_damages.requires_financial_review` war in
+  der Maschinenansicht nicht sichtbar – ein nachträglich festgestellter Schaden nach bereits
+  übertragener Abrechnung (OPEN_ITEMS Phase 18) blieb still. Die Maschinenseite zeigt jetzt je
+  Schaden das Badge „Finanzielle Prüfung offen“ und beim Nachtrag den Hinweis, die Abrechnung
+  des Vorgangs zu prüfen. Keine Fachregel erfunden: ob und wie nachberechnet wird, bleibt
+  Entscheidung der Verwaltung (API unverändert, Feld war bereits Teil der DamageView).
+- **Kundeninformation: Freigabe-Vorschau = gesendete Mail (P19-F8).** Der Pilot-Edge-Ablauf
+  zeigte, dass die von Staff freigegebene Vorschau (`settlement/notice-text.ts`: Sie-Form, „EUR“,
+  Betreff „Information zu Ihrer Rückgabe …“) nicht der tatsächlich gesendeten Mail entsprach
+  (Vorlage `settlement_damage_missing_notice`: du-Form, „€“, Betreff „Information zur Rückgabe …“,
+  Link zum Rückgabeprotokoll) – Fakten identisch, Wortlaut nicht. In einem kontrollierten Pilot
+  muss die Verwaltung genau den Text freigeben, den der Kunde erhält. Entscheidung: eine Quelle.
+  Die Vorschau entsteht aus derselben Vorlage und demselben Kontext wie der Versand
+  (`renderMailPreview` in den Mailvorlagen, `previewSettlementNotice` im Transaktionsmailer);
+  Betreff (inkl. „[DEMO] “), Sätze, Beträge und Signatur sind identisch, nur der persönliche
+  Dokumentlink (Token entsteht erst beim Versand) steht in der Vorschau als Platzhalter
+  `[persönlicher Link – entsteht beim Versand]`. Der separate Textaufbau wurde entfernt;
+  `notice-text.ts` enthält nur noch den Positionstyp. Vorlagenversion unverändert (der
+  Mailinhalt ändert sich nicht). Regressionstests: `communication-templates.test.ts`
+  (Vorschau = Versand bis auf den Link, [DEMO]) und
+  `settlement-notice-wait.integration.test.ts` (P19-F8: Betreff und Text der Outbox-Mail =
+  Vorschau; genau der Link unterscheidet sich).
+- **Lange Schadenbeschreibung blockierte die Freigabe (P19-F9).** Die Positionsbezeichnung der
+  Kundeninformation („Schadenkosten Maschine … (…): <Beschreibung>“) kann bis ~2.100 Zeichen lang
+  werden (Schadenbeschreibung bis 2.000 Zeichen zulässig), der Kontextvertrag der Mailvorlage
+  erlaubte 300 ⇒ `approve-and-send` antwortete mit 500 (MailRenderError beim Einreihen), die
+  Information war nicht versendbar. Entscheidung: Vertragsgrenze auf 2.600 Zeichen (jede zulässige
+  Zeile passt), kein Kürzen von Kundentext. Regressionstest P19-F9 (2.000 Zeichen ⇒ Vorschau
+  vollständig, Freigabe 200, Mail gesendet) in `settlement-notice-wait.integration.test.ts`;
+  Grenzprüfung (2.601 ⇒ Kontextfehler) im Vorlagen-Unit-Test.
+- **Worker-Lebenszeichen ohne neue Infrastruktur (P19-F10).** Die Pflichtlektüre bestätigte,
+  dass `/health` und `/ready` nichts über den Worker sagen und `system.heartbeat` nur beim Start
+  läuft: ein gestoppter oder hängender Worker fiele im Pilot erst über liegengebliebene Mails
+  oder Rechnungen auf. Statt eines Monitoring-Produkts liefert der Jobmonitor
+  (`GET /staff/system/jobs`) ein abgeleitetes Signal aus der Queue selbst: letzter erfolgreich
+  abgeschlossener Job und Alter des ältesten fälligen, noch wartenden Jobs; wartet ein fälliger
+  Job länger als `WORKER_STALL_SECONDS` (300 s – Lease verwaister Jobs 5 min, Poll 1 s, also nie
+  normal), zeigt Einstellungen → System „Worker verarbeitet nicht“ mit Handlungsanweisung. Rein
+  lesend, keine Statusänderung. Regressionstest P19-J4 (`system-jobs.integration.test.ts`):
+  leer ⇒ kein Signal; fälliger Job seit 10 min ⇒ `stalled`, zukünftiger Job zählt nicht; nach
+  Verarbeitung `lastSucceededAt` gesetzt und kein Rückstand.
+- **`pnpm routing:smoke` war nicht ausführbar (P19-F11).** Die Pflichtlektüre meldete, dass das
+  dokumentierte Go-live-Werkzeug das GraphHopper-Gateway ohne die seit Phase 13 Final
+  verpflichtende globale Drossel aufbaut; gegen den Pilot-Stack reproduziert: Abbruch vor dem
+  ersten Request mit „GraphHopper braucht die globale Drossel (db oder limiter)“. Minimaler Fix:
+  das Skript öffnet wie API und Worker eine Datenbankverbindung und übergibt sie der Fabrik
+  (Postgres-Limiter, 1 Request/s je Umgebung), schließt den Pool am Ende. Regressionstest
+  `routing-smoke-script.integration.test.ts`: Skript als Kindprozess gegen einen geschlossenen
+  Port – Startzeile erscheint, Exit 1 mit „Smoke-Test fehlgeschlagen“, nie „globale Drossel“,
+  Schlüssel nicht in der Ausgabe. Kein echter Provider aufgerufen.
+- **Kundenmails sprachen im Listenformat an (P19-F12).** Der Edge-Pilotablauf zeigte Anreden wie
+  „Hallo Kommerz, Klara,“: Angebot, Auftragsbestätigung, Protokoll-, Rechnungs-, Erinnerungs-,
+  Gutschein- und Kundeninformationsmails nahmen `displayName` (Staff-Listenformat „Nachname,
+  Vorname“) als Anrede- und Empfängername, Portal- und Antwort-Mails dagegen „Vorname Nachname“.
+  Entscheidung: eine Funktion `mailRecipientName` (Kundenzeile oder Buchungs-Snapshot ⇒ „Vorname
+  Nachname“ bzw. Organisationsname, Fallback `displayName`, sonst „Hallo,“) an allen Mail-Stellen;
+  der Listen-Anzeigename bleibt für Staff-Listen, Lexware-Adressen und Offline-Pakete unverändert.
+  Regressionstests: `mail-recipient-name.test.ts` (Formen, Organisation, Fallbacks) und die
+  Kundeninformation in `settlement-notice-wait.integration.test.ts` (Vorschau, Mailtext und
+  Empfängerzeile „Klara Kommerz“, nie „Kommerz, Klara“).
+- **Staff-Proxy-Puffer vor dem Offline-Sync (P19-F13, Phase-18-Restpunkt).** Der Same-Origin-
+  Rewrite der Staff-App pufferte Request-Bodies nur bis zum Next-Default von 10 MiB und reicht
+  größere Bodies ohne Fehler abgeschnitten weiter; `POST /staff/offline/sync` erlaubt 12 MiB –
+  fotoreiche Offline-Übergaben wären im Pilot still gescheitert. Entscheidung wie in `apps/web`
+  (Phase 15): `experimental.proxyClientMaxBodySize = 13 MiB` in `apps/staff/next.config.ts`;
+  Regressionstest `staff-proxy-body-limit.test.ts` hält die Kette „Puffer ≥ API-Limit + Reserve“
+  fest (das Routen-Limit ist dafür exportiert). Reverse-Proxy weiterhin `client_max_body_size 13m`.
+- **Bewusst nicht geändert (bewertet):** Web-Push bleibt at-least-once (rein informativ, kein
+  Fachzustand hängt an genau einer Zustellung); Rate-Limits bleiben prozesslokal (Pilot mit
+  genau einer API-Instanz hinter nginx, `API_TRUST_PROXY_HOPS=1` – vor horizontaler Skalierung
+  neu bewerten); `mr_staff_session` ohne `__Host-`-Präfix (über TLS mit Secure, HttpOnly,
+  SameSite=Strict, Path=/, ohne Domain verifiziert – gleiche Wirkung); Tour-Übernahme mit
+  optionalem `expectedVersion` (die Staff-App sendet immer `tour.version`, andere Clients
+  existieren nicht; Pflichtfeld wäre eine Vertragsänderung – Pilotrisiko akzeptiert und
+  dokumentiert); `clientMutationId` auf Online-Schadensrouten optional (Staff-App sendet immer
+  eine UUID; keine weiteren Clients); API/Worker weiterhin über `tsx` aus dem Quellbaum
+  (Phase-0-Entscheidung, Typecheck als Compile-Gate).

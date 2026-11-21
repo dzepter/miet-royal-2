@@ -7,7 +7,10 @@ Ausgabe/Rückgabe, Abrechnung und Integrationen.
 **Leitprinzip: Das System darf intern komplex sein. Für Mitarbeitende und
 Kunden muss es einfach wirken.**
 
-Aktueller Stand: **Phase 8 (Offlinebetrieb, PWA-Sync & Lager-/Tabletmodus) auf Basis von Phase 7 (Rückgabe, Schäden, Fehlteile,
+Aktueller Stand: **Phase 19 – Pilot-Readiness** (docs/PHASE19_PILOT_REPORT.md) nach bestandener
+Gesamt-Abnahme in Phase 18 (docs/PHASE18_ACCEPTANCE_REPORT.md); Phasenübersicht in docs/ROADMAP.md,
+Entscheidungen je Phase in docs/TECH_DECISIONS.md. Funktionsumfang der Grundphasen:
+**Phase 8 (Offlinebetrieb, PWA-Sync & Lager-/Tabletmodus) auf Basis von Phase 7 (Rückgabe, Schäden, Fehlteile,
 Kommissionsrückgabe, Reinigung & Rückgabeprotokoll) umgesetzt** —
 zusätzlich zu Phase 6 (Maschinenzuweisung, Vorbereitung, Ausgabe &
 Übergabe), Phase 5 (Physische Maschinen,
@@ -79,7 +82,7 @@ und Fehlteilkosten folgen ab Phase 9.
 
 ```bash
 pnpm install        # Abhängigkeiten
-pnpm infra:up       # PostgreSQL 18 (dev/test/demo) + MinIO (S3-Dev/Test-Storage)
+pnpm infra:up       # PostgreSQL 18 (dev/test/demo) + S3-kompatibler Test-Storage (RustFS)
 pnpm db:migrate:dev # versionierte Migrationen auf die lokale Dev-DB anwenden
 pnpm dev            # alle Apps im Watch-Modus
 ```
@@ -148,7 +151,7 @@ packages/
   ui/         gemeinsame UI-Bausteine (spätere Phasen)
   validation/ Zod-Basis für serverseitige Validierung
 tests/e2e/    Playwright-Smoke-Tests
-infra/        Docker Compose (PostgreSQL + Init-SQL)
+infra/        Docker Compose (PostgreSQL + Init-SQL, S3-kompatibler Test-Storage RustFS)
 docs/         Spezifikation + TECH_DECISIONS / ENVIRONMENTS / DEPLOYMENT_NOTES
 prompts/      Phasen-Prompts (PHASE_00_FOUNDATION.md)
 ```

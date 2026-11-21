@@ -311,6 +311,24 @@ function MachineDetailView() {
                   : 'bei Rückgabe'}{' '}
                 · {formatBerlin(damage.createdAt)})
               </span>
+              {/* Phase 19: finanzielle Prüfung sichtbar machen – ein Nachtrag nach bereits
+                  übertragener Abrechnung erzeugt keine Klärung mehr (OPEN_ITEMS Phase 18),
+                  der Entscheid über eine Nachberechnung ist fachlich. */}
+              {damage.requiresFinancialReview && (
+                <p
+                  style={{ margin: '0.3rem 0 0' }}
+                  data-testid={`damage-${damage.id}-financial-review`}
+                >
+                  <span className="badge warn">Finanzielle Prüfung offen</span>
+                  {damage.origin === 'post_return_finding' && (
+                    <span className="muted">
+                      {' '}
+                      – nachträglicher Schaden: Abrechnung des Vorgangs prüfen (ist sie bereits
+                      übertragen, entscheidet die Verwaltung über eine Nachberechnung).
+                    </span>
+                  )}
+                </p>
+              )}
               <DamageDiagram
                 markers={damage.markers}
                 compact

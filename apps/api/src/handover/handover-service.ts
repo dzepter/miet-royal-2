@@ -49,6 +49,7 @@ import type { InventoryService } from '../warehouse/inventory-service.ts';
 import type { MachineService } from '../warehouse/machine-service.ts';
 import type { AssignmentService, AssignmentView } from './assignment-service.ts';
 import { sketchImagesFor } from '../returns/sketch-assets.ts';
+import { mailRecipientName } from '../communication/transactional/keys.ts';
 
 /**
  * Geführter Ausgabe-/Übergabeprozess (Phase-6-Order §§10, 12, 14–44):
@@ -1874,7 +1875,7 @@ export class HandoverService {
           processNumber,
           recipient: {
             email: typeof customer.email === 'string' ? customer.email : '',
-            name: typeof customer.displayName === 'string' ? customer.displayName : null,
+            name: mailRecipientName(customer), // Phase 19 (P19-F12)
           },
           finalizedAt,
           documents: [

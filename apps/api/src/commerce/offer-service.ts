@@ -50,7 +50,11 @@ import type {
   OfferMailContext,
   OfferMailSecrets,
 } from '../communication/mail/templates/contexts.ts';
-import { mailSalutation, transactionalKey } from '../communication/transactional/keys.ts';
+import {
+  mailRecipientName,
+  mailSalutation,
+  transactionalKey,
+} from '../communication/transactional/keys.ts';
 import type { MailEnqueueResult } from '../communication/types.ts';
 import { ProductService } from './product-service.ts';
 import { TermsService } from './terms-service.ts';
@@ -1143,9 +1147,9 @@ export class OfferService {
           kind: 'offer',
           processId: process.id,
           customerId: customer.id,
-          recipient: { email: customerEmail, name: customerDisplayName(customer) },
+          recipient: { email: customerEmail, name: mailRecipientName(customer) },
           context: {
-            salutation: mailSalutation(customerDisplayName(customer)),
+            salutation: mailSalutation(mailRecipientName(customer)),
             processNumber: process.processNumber,
             eventDate,
             validUntil: expiresAt.toISOString(),

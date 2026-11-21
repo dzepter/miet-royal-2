@@ -27,8 +27,14 @@ export default function ForgotPasswordPage() {
         {done ? (
           <div>
             <p className="success">
-              Falls ein Konto zu dieser E-Mail existiert, wurde ein Link zum Zurücksetzen
-              verschickt.
+              Falls ein Konto zu dieser E-Mail existiert, wurde das Zurücksetzen angestoßen.
+            </p>
+            {/* Phase 19: ehrlicher Hinweis – außerhalb der lokalen Entwicklung versendet der
+                Self-Service-Reset derzeit keine E-Mail (NoopMailAdapter); der Admin-Reset-Link
+                aus der Mitarbeiterverwaltung ist der dokumentierte Weg. */}
+            <p className="muted">
+              Erhältst du keine E-Mail, wende dich an die Verwaltung: Sie kann dir in der
+              Mitarbeiterverwaltung einen Reset-Link erstellen.
             </p>
             <Link href="/login">Zurück zur Anmeldung</Link>
           </div>

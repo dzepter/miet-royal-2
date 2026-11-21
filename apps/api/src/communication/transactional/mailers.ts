@@ -7,6 +7,7 @@
  * Vorlagenkontext); Blockaden (kein Empfänger, Mail nicht konfiguriert, Demo-
  * Whitelist) sind Ergebnisse, keine Fehler.
  */
+import { APP_ENVIRONMENTS } from '@mietroyal/config';
 import {
   cancellations,
   deliveryPackets,
@@ -22,6 +23,7 @@ import type {
   ReturnProtocolMailContext,
   SettlementNoticeMailContext,
 } from '../mail/templates/contexts.ts';
+import { renderMailPreview, type MailRenderOptions } from '../mail/templates/index.ts';
 import type { MailDeliveryStatus, MailEnqueueResult, OutboundMailGateway } from '../types.ts';
 import {
   isoDateOrNull,
@@ -184,6 +186,49 @@ export interface SettlementNoticeMailInput {
   now: Date;
 }
 
+/** Fachliche Eingabe der Kundeninformation – identisch für Vorschau (Freigabe) und Versand. */
+export interface SettlementNoticeContent {
+  processNumber: string;
+  recipientName: string | null;
+  positions: readonly { label: string; amountCents: number }[];
+  totalCents: number;
+}
+
+function settlementNoticeContext(input: SettlementNoticeContent): SettlementNoticeMailContext {
+  return {
+    salutation: mailSalutation(input.recipientName),
+    processNumber: input.processNumber,
+    positions: input.positions.map((p) => ({ label: p.label, amountCents: p.amountCents })),
+    totalCents: input.totalCents,
+  };
+}
+
+function mailAppEnv(appEnv: string): MailRenderOptions['appEnv'] {
+  const known = APP_ENVIRONMENTS.find((candidate) => candidate === appEnv);
+  if (known === undefined) throw new Error('APP_ENV für die Mailvorschau unbekannt');
+  return known;
+}
+
+/**
+ * Phase 19 (P19-F8): Vorschau der Kundeninformation für die Staff-Freigabe =
+ * exakt die spätere Mail (gleiche Vorlage `settlement_damage_missing_notice`,
+ * gleicher Kontext, gleicher Betreff inkl. „[DEMO] “); nur der persönliche
+ * Dokumentlink entsteht beim Versand und steht in der Vorschau als Platzhalter.
+ */
+export function previewSettlementNotice(
+  input: SettlementNoticeContent,
+  appEnv: string,
+): { subject: string; bodyText: string } {
+  const preview = renderMailPreview(
+    'settlement_damage_missing_notice',
+    settlementNoticeContext(input),
+    {
+      appEnv: mailAppEnv(appEnv),
+    },
+  );
+  return { subject: preview.subject, bodyText: preview.text };
+}
+
 export class SettlementNoticeMailer {
   constructor(
     private readonly deps: TransactionalMailDeps,
@@ -214,12 +259,12 @@ export class SettlementNoticeMailer {
       tx,
       input.now,
     );
-    const context: SettlementNoticeMailContext = {
-      salutation: mailSalutation(input.recipient.name),
+    const context = settlementNoticeContext({
       processNumber: input.processNumber,
-      positions: input.positions.map((p) => ({ label: p.label, amountCents: p.amountCents })),
+      recipientName: input.recipient.name,
+      positions: input.positions,
       totalCents: input.totalCents,
-    };
+    });
     const result = await this.deps.outbox.enqueue(
       {
         kind: 'settlement_damage_missing_notice',

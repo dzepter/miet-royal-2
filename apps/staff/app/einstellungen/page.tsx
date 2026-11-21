@@ -5,6 +5,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { AuthGuard, useMe } from '../../components/auth-guard';
 import { ConfirmDialog } from '../../components/confirm-dialog';
 import { apiFetch, hasPermission } from '../../lib/api';
+import { fetchJobMonitor, type JobMonitorSnapshot } from '../../lib/system-jobs';
 import { formatBerlin } from '../../lib/handover';
 import {
   checkConnection,
@@ -66,6 +67,8 @@ function SettingsView() {
           </Link>
         </p>
       </div>
+      {/* Phase 19 (Pilot-Readiness): Operator-Sicht auf Hintergrundjobs (system.settings). */}
+      {hasPermission(me, 'system.settings') && <SystemJobsCard />}
       {/* Phase 14 (demo): Demo-Verwaltung nur in der Demo-Umgebung mit demo.manage (Order §§15/16). */}
       {me?.environment === 'demo' && hasPermission(me, 'demo.manage') && (
         <div className="card" data-testid="settings-demo-card">
@@ -126,6 +129,52 @@ function SettingsView() {
       <LexwareSettings />
       <TermsSettings />
     </main>
+  );
+}
+
+/** Phase 19: Zähler endgültig fehlgeschlagener Hintergrundjobs mit Link zur Systemseite. */
+function SystemJobsCard() {
+  const [snapshot, setSnapshot] = useState<JobMonitorSnapshot | null>(null);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    void fetchJobMonitor().then((result) => {
+      if (result.data !== null) setSnapshot(result.data);
+      else setFailed(true);
+    });
+  }, []);
+  const dead = snapshot?.counts.dead ?? 0;
+  return (
+    <div className="card" data-testid="settings-system-card">
+      <h2>System</h2>
+      <p className="muted">
+        Hintergrundjobs (E-Mail, Buchhaltung, Gutscheine, Push): endgültig fehlgeschlagene Jobs
+        erscheinen hier mit Handlungsanweisung.
+      </p>
+      {snapshot !== null && (
+        <p>
+          <span
+            className={`badge ${dead > 0 ? 'locked' : 'ok'}`}
+            data-testid="settings-system-dead-count"
+          >
+            {dead === 0
+              ? 'Keine endgültig fehlgeschlagenen Jobs'
+              : `${dead} Job(s) endgültig fehlgeschlagen`}
+          </span>
+          {snapshot.counts.retrying > 0 && (
+            <>
+              {' '}
+              <span className="badge warn">{snapshot.counts.retrying} in Wiederholung</span>
+            </>
+          )}
+        </p>
+      )}
+      {failed && <p className="muted">Jobstatus konnte nicht geladen werden.</p>}
+      <p>
+        <Link href="/einstellungen/system" data-testid="settings-link-system">
+          <strong>System öffnen</strong>
+        </Link>
+      </p>
+    </div>
   );
 }
 

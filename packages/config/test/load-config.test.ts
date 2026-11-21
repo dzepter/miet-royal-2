@@ -218,21 +218,27 @@ describe('Lexware-Konfiguration (Phase 10)', () => {
     expect(config.lexware.baseUrl).toBe('https://api.lexware.io');
   });
 
-  it('2. production mit Key ⇒ aktiv; 13./164. fremder Host in production abgelehnt', () => {
-    const config = loadConfig({ ...production, LEXWARE_API_KEY: 'prod-key-SYNTH' });
+  // Phase 19 (Pilot-Readiness): Live-Provider werden niemals allein durch vorhandene
+  // Zugangsdaten aktiv – auch in production braucht Lexware das explizite Opt-in
+  // LEXWARE_ENABLED=true (plus gepinnte Organisation und Webhook-Callback).
+  const productionLexware = {
+    ...production,
+    LEXWARE_API_KEY: 'prod-key-SYNTH',
+    LEXWARE_ENABLED: 'true',
+    LEXWARE_ORGANIZATION_ID: 'org-00000000-0000-4000-8000-000000000001',
+    LEXWARE_WEBHOOK_CALLBACK_URL: 'https://api.example.invalid/webhooks/lexware',
+  };
+
+  it('2. production mit Key UND LEXWARE_ENABLED=true ⇒ aktiv; 13./164. fremder Host in production abgelehnt', () => {
+    const config = loadConfig(productionLexware);
     expect(config.lexware.enabled).toBe(true);
     expect(config.lexware.baseUrl).toBe('https://api.lexware.io');
     expect(() =>
-      loadConfig({
-        ...production,
-        LEXWARE_API_KEY: 'prod-key-SYNTH',
-        LEXWARE_BASE_URL: 'https://api.lexoffice.io',
-      }),
+      loadConfig({ ...productionLexware, LEXWARE_BASE_URL: 'https://api.lexoffice.io' }),
     ).toThrow(/LEXWARE_BASE_URL/);
     expect(() =>
       loadConfig({
-        ...production,
-        LEXWARE_API_KEY: 'prod-key-SYNTH',
+        ...productionLexware,
         LEXWARE_WEBHOOK_CALLBACK_URL: 'http://localhost:3001/webhooks/lexware',
       }),
     ).toThrow(/LEXWARE_WEBHOOK_CALLBACK_URL/);
@@ -270,8 +276,36 @@ describe('Lexware-Konfiguration (Phase 10)', () => {
     );
   });
 
+  it('P19-L1. production: Key ohne LEXWARE_ENABLED ⇒ Konfigurationsfehler (kein Live-Provider allein durch Zugangsdaten)', () => {
+    expect(() => loadConfig({ ...production, LEXWARE_API_KEY: 'prod-key-SYNTH' })).toThrow(
+      /LEXWARE_ENABLED/,
+    );
+    try {
+      loadConfig({ ...production, LEXWARE_API_KEY: 'prod-key-SYNTH' });
+    } catch (error) {
+      expect(String((error as Error).message)).not.toContain('prod-key-SYNTH');
+    }
+  });
+
+  it('P19-L2. production: LEXWARE_ENABLED=false ist ein wirksamer Kill-Switch trotz gesetztem Key', () => {
+    const config = loadConfig({ ...productionLexware, LEXWARE_ENABLED: 'false' });
+    expect(config.lexware.enabled).toBe(false);
+    expect(config.lexware.apiKey).toBeNull();
+  });
+
+  it('P19-L3. production: aktives Lexware verlangt gepinnte Organisation und HTTPS-Webhook-Callback', () => {
+    const { LEXWARE_ORGANIZATION_ID: _org, ...withoutOrg } = productionLexware;
+    expect(() => loadConfig(withoutOrg)).toThrow(/LEXWARE_ORGANIZATION_ID/);
+    const { LEXWARE_WEBHOOK_CALLBACK_URL: _cb, ...withoutCallback } = productionLexware;
+    expect(() => loadConfig(withoutCallback)).toThrow(/LEXWARE_WEBHOOK_CALLBACK_URL/);
+    // Ohne Lexware (kein Key) bleiben beide Werte optional – fail-closed „nicht konfiguriert“.
+    expect(loadConfig(production).lexware.enabled).toBe(false);
+    // LEXWARE_ENABLED=true ohne Key bleibt (wie in development/staging) ein Fehler.
+    expect(() => loadConfig({ ...production, LEXWARE_ENABLED: 'true' })).toThrow(/LEXWARE_API_KEY/);
+  });
+
   it('Env-Isolation: derselbe Lexware-Key in zwei Umgebungen kollidiert', () => {
-    const a = loadConfig({ ...production, LEXWARE_API_KEY: 'same-key' });
+    const a = loadConfig({ ...productionLexware, LEXWARE_API_KEY: 'same-key' });
     const b = loadConfig({
       APP_ENV: 'staging',
       DATABASE_URL: 'postgresql://app:pw@db.internal:5432/mietroyal_staging',

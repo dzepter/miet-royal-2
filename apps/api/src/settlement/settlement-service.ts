@@ -49,11 +49,13 @@ import { buildAccountingBlock, type AccountingBlockView } from '../lexware/trans
 import type { ProcessService } from '../crm/process-service.ts';
 import { ACCESSORY_LABELS } from '../returns/return-service.ts';
 import { SEVERITY_LABELS } from '../returns/damage-service.ts';
-import type {
-  EnqueuedMail,
-  SettlementNoticeMailer,
+import {
+  previewSettlementNotice,
+  type EnqueuedMail,
+  type SettlementNoticeMailer,
 } from '../communication/transactional/mailers.ts';
-import { buildCustomerNoticeText, type NoticePosition } from './notice-text.ts';
+import { mailRecipientName } from '../communication/transactional/keys.ts';
+import type { NoticePosition } from './notice-text.ts';
 
 /**
  * Zentrale Abrechnungsgrenze (Phase-9-Vorgabe §§2–48). Die Abrechnung
@@ -1152,12 +1154,19 @@ export class SettlementService {
           .onConflictDoNothing();
         const customer = booking.customerSnapshot as Record<string, unknown>;
         const totalCents = noticePositions.reduce((sum, position) => sum + position.amountCents, 0);
-        const text = buildCustomerNoticeText({
-          processNumber: process.processNumber,
-          customerName: asString(customer.displayName),
-          positions: noticePositions,
-          totalCents,
-        });
+        // Phase 19 (P19-F8): Vorschau = spätere Mail (gleiche Vorlage, gleicher Kontext wie `enqueueWithin`).
+        const text = previewSettlementNotice(
+          {
+            processNumber: process.processNumber,
+            recipientName: mailRecipientName(customer),
+            positions: noticePositions.map((p) => ({
+              label: p.description,
+              amountCents: p.amountCents,
+            })),
+            totalCents,
+          },
+          this.appEnv,
+        );
         const recipient = asString(customer.email).trim();
         const existingNotice = await tx
           .select()
@@ -1961,7 +1970,7 @@ export class SettlementService {
           customerId: booking.customerId,
           bookingId: s.bookingId,
           returnProtocolDocumentId: protocolDocumentId,
-          recipient: { email: recipient, name: asString(customer.displayName) || null },
+          recipient: { email: recipient, name: mailRecipientName(customer) },
           positions: positions.map((p) => ({ label: p.description, amountCents: p.amountCents })),
           totalCents: notice.totalCents,
           previousDeliveryId: notice.mailDeliveryId,

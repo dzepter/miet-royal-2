@@ -67,6 +67,20 @@ export interface MailRenderOptions {
   publicWebBaseUrl: string | null;
   /** Default: MAIL_SIGNATURE. */
   signature?: string;
+  /**
+   * Phase 19 (P19-F8): Vorschau zur Staff-Freigabe. Persönliche Links entstehen
+   * erst beim Versand (Token) – in der Vorschau steht an ihrer Stelle dieser
+   * Text; Betreff, Sätze, Beträge und Signatur sind mit dem Versand identisch.
+   */
+  previewLinkText?: string;
+}
+
+/** Phase 19 (P19-F8): Platzhalter für persönliche Links in der Freigabe-Vorschau. */
+export const MAIL_PREVIEW_LINK_TEXT = '[persönlicher Link – entsteht beim Versand]';
+
+export interface MailPreview {
+  subject: string;
+  text: string;
 }
 
 export interface RenderedMail {
@@ -111,6 +125,7 @@ type Parsed<K extends MailDeliveryKind> = z.output<(typeof MAIL_CONTEXT_SCHEMAS)
 type ParsedSecrets<K extends MailDeliveryKind> = z.output<(typeof MAIL_SECRET_SCHEMAS)[K]>;
 
 function publicLink(options: MailRenderOptions, path: string): string {
+  if (options.previewLinkText !== undefined) return options.previewLinkText;
   if (options.publicWebBaseUrl === null) throw new MailRenderError('PUBLIC_WEB_BASE_URL_MISSING');
   return `${options.publicWebBaseUrl}${path}`;
 }
@@ -614,6 +629,26 @@ function placeholderSecretsFor(kind: MailDeliveryKind): Record<string, string> {
 function decorateSubject(subject: string, appEnv: MailRenderOptions['appEnv']): string {
   assertNoHeaderInjection(subject, 'subject');
   return appEnv === 'demo' ? `${DEMO_SUBJECT_PREFIX}${subject}` : subject;
+}
+
+/**
+ * Phase 19 (P19-F8): Vorschau für die Staff-Freigabe aus DERSELBEN Vorlage und
+ * demselben Kontext wie der spätere Versand (eine Quelle, keine Textdrift).
+ * Geheimnisse gibt es noch nicht ⇒ Platzhalter-Secrets, Links als
+ * MAIL_PREVIEW_LINK_TEXT; Betreff inkl. „[DEMO] “ wie beim Versand.
+ */
+export function renderMailPreview(
+  kind: MailDeliveryKind,
+  context: unknown,
+  options: Pick<MailRenderOptions, 'appEnv' | 'signature'>,
+): MailPreview {
+  const rendered = renderMail(kind, context, placeholderSecretsFor(kind), {
+    appEnv: options.appEnv,
+    publicWebBaseUrl: null,
+    previewLinkText: MAIL_PREVIEW_LINK_TEXT,
+    ...(options.signature === undefined ? {} : { signature: options.signature }),
+  });
+  return { subject: rendered.subject, text: rendered.text };
 }
 
 export function renderMail(

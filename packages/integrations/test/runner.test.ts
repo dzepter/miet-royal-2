@@ -122,3 +122,72 @@ describe('summarizeJobError (Phase 12, Härtung RA-10/H3)', () => {
     expect(summarizeJobError('kaputt')).toBe('string: kaputt');
   });
 });
+
+describe('Phase 19 – dead-Job-Signal im Log', () => {
+  class OneJobQueue implements JobQueue {
+    private delivered = false;
+    readonly failed: string[] = [];
+    constructor(private readonly job: ClaimedJob) {}
+    async enqueue(): Promise<{ jobId: string; deduplicated: boolean }> {
+      return { jobId: this.job.id, deduplicated: false };
+    }
+    async claimNext(): Promise<ClaimedJob | null> {
+      if (this.delivered) return null;
+      this.delivered = true;
+      return this.job;
+    }
+    async markSucceeded(): Promise<void> {}
+    async markFailed(_job: ClaimedJob, message: string): Promise<void> {
+      this.failed.push(message);
+    }
+    async reclaimExpired(): Promise<ReclaimResult> {
+      return { reclaimed: 0, died: 0 };
+    }
+  }
+  const baseJob = {
+    id: 'job-1',
+    type: 'mail.send',
+    payload: {},
+    idempotencyKey: 'k',
+    claimedBy: 'test-worker',
+  };
+  function capturingLogger() {
+    const errors: string[] = [];
+    return {
+      errors,
+      logger: {
+        info: () => undefined,
+        warn: () => undefined,
+        error: (_context: Record<string, unknown>, message: string) => {
+          errors.push(message);
+        },
+      },
+    };
+  }
+
+  it('letzter Fehlversuch (attempts = maxAttempts) loggt zusätzlich „endgültig fehlgeschlagen (dead)“', async () => {
+    const { errors, logger } = capturingLogger();
+    const queue = new OneJobQueue({ ...baseJob, attempts: 3, maxAttempts: 3 });
+    const runner = new JobRunner(queue, 'test-worker', logger);
+    runner.register('mail.send', async () => {
+      throw new Error('SMTP 450');
+    });
+    await runner.drain();
+    expect(queue.failed).toEqual(['Error: SMTP 450']);
+    expect(errors).toEqual([
+      'Job fehlgeschlagen',
+      'Job endgültig fehlgeschlagen (dead) – Operator-Eingriff nötig',
+    ]);
+  });
+
+  it('ein Fehlversuch mit verbleibenden Versuchen loggt nur „Job fehlgeschlagen“', async () => {
+    const { errors, logger } = capturingLogger();
+    const queue = new OneJobQueue({ ...baseJob, attempts: 1, maxAttempts: 3 });
+    const runner = new JobRunner(queue, 'test-worker', logger);
+    runner.register('mail.send', async () => {
+      throw new Error('SMTP 450');
+    });
+    await runner.drain();
+    expect(errors).toEqual(['Job fehlgeschlagen']);
+  });
+});

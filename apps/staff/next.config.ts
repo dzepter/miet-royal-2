@@ -17,6 +17,13 @@ const nextConfig: NextConfig = {
   // Phase 8: Offline-Kern und Fachregeln als Workspace-Pakete (reines TS) bündeln.
   transpilePackages: ['@mietroyal/offline', '@mietroyal/domain', '@mietroyal/validation'],
   allowedDevOrigins: ['127.0.0.1'],
+  // Phase 19 (P19-F13, Phase-18-Restpunkt): Der Rewrite `/api/*` puffert Request-Bodies nur bis
+  // `proxyClientMaxBodySize` (Next-Default 10 MiB) und reicht größere Bodies OHNE Fehler abgeschnitten
+  // an die API weiter (siehe apps/web/next.config.ts). `POST /staff/offline/sync` erlaubt 12 MiB,
+  // CMS-Medien 9 MiB – Puffer 13 MiB (Reserve) wie in apps/web; Test apps/api/test/staff-proxy-body-limit.test.ts.
+  experimental: {
+    proxyClientMaxBodySize: 13 * 1024 * 1024,
+  },
   async rewrites() {
     return [{ source: '/api/:path*', destination: `${apiOrigin}/:path*` }];
   },

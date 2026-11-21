@@ -19,6 +19,7 @@ import type { DocumentService } from './document-service.ts';
 import type { OfferDeliveryGateway } from './delivery-gateway.ts';
 import type { OrderConfirmationMailContext } from '../communication/mail/templates/contexts.ts';
 import {
+  mailRecipientName,
   isoDateOrNull,
   mailSalutation,
   safeAttachmentName,
@@ -370,7 +371,8 @@ export class OrderConfirmationService {
       }
       const processNumber = processRows[0]?.processNumber ?? '';
       const event = (booking.eventSnapshot ?? {}) as Record<string, unknown>;
-      const displayName = typeof customer.displayName === 'string' ? customer.displayName : null;
+      // Phase 19 (P19-F12): Anrede/Empfänger in natürlicher Reihenfolge, nie „Nachname, Vorname“.
+      const displayName = mailRecipientName(customer);
       const result = await this.gateway.enqueue(
         {
           kind: 'order_confirmation',

@@ -175,6 +175,46 @@ describe('Phase 14 – Live↔Demo-Wechsel: STAFF_DEMO_URL / STAFF_LIVE_URL', ()
     }
   });
 
+  it('P19-I1. Isolation: dieselbe MAIL_PUBLIC_WEB_BASE_URL in zwei Umgebungen ist eine Kollision (Kundenlinks/Portal/SEO-Basis einer fremden Umgebung)', () => {
+    const base = {
+      STORAGE_DRIVER: 'fs',
+      AUTH_SECRET_KEY: 'a-very-long-auth-secret-key-for-isolation-test-1',
+      COMMUNICATION_PAYLOAD_KEY: 'a-very-long-communication-key-for-isolation-1',
+      MAIL_ENABLED: 'true',
+      MAIL_SMTP_HOST: 'smtp.example.invalid',
+      MAIL_SMTP_USER: 'u',
+      MAIL_SMTP_PASSWORD: 'p-synth',
+      MAIL_FROM_ADDRESS: 'service@example.invalid',
+    };
+    const production = loadConfig({
+      ...base,
+      APP_ENV: 'production',
+      DATABASE_URL: 'postgresql://app:pw@db.internal:5432/mietroyal_prod',
+      STORAGE_FS_ROOT: '/var/lib/mietroyal/prod',
+      MAIL_PUBLIC_WEB_BASE_URL: 'https://www.example.invalid',
+    });
+    const staging = loadConfig({
+      ...base,
+      APP_ENV: 'staging',
+      DATABASE_URL: 'postgresql://app:pw@db.internal:5432/mietroyal_staging',
+      STORAGE_FS_ROOT: '/var/lib/mietroyal/staging',
+      AUTH_SECRET_KEY: 'a-very-long-auth-secret-key-for-isolation-test-2',
+      COMMUNICATION_PAYLOAD_KEY: 'a-very-long-communication-key-for-isolation-2',
+      MAIL_PUBLIC_WEB_BASE_URL: 'https://www.example.invalid/',
+    });
+    expect(() => assertConfigsIsolated(production, staging)).toThrow(/MAIL_PUBLIC_WEB_BASE_URL/);
+    const stagingOwnBase = loadConfig({
+      ...base,
+      APP_ENV: 'staging',
+      DATABASE_URL: 'postgresql://app:pw@db.internal:5432/mietroyal_staging',
+      STORAGE_FS_ROOT: '/var/lib/mietroyal/staging',
+      AUTH_SECRET_KEY: 'a-very-long-auth-secret-key-for-isolation-test-2',
+      COMMUNICATION_PAYLOAD_KEY: 'a-very-long-communication-key-for-isolation-2',
+      MAIL_PUBLIC_WEB_BASE_URL: 'https://staging.example.invalid',
+    });
+    expect(() => assertConfigsIsolated(production, stagingOwnBase)).not.toThrow();
+  });
+
   it('D-C11. Isolation: korrekt verlinkte production/demo-Konfigurationen bleiben isoliert; Meldungen nennen keine Secrets', () => {
     const prod = loadConfig({
       ...productionEnv,
